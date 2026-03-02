@@ -11,7 +11,7 @@ import { calculateFee, getFeeTier, isOwnerWallet, registerOwner } from "../engin
 import CONFIG from "../engine/config.mjs";
 
 // Security middleware
-import { cors, securityHeaders, requestId, bodyLimit, extractIP } from "../middleware/security.mjs";
+import { securityHeaders, requestId, bodyLimit, extractIP } from "../middleware/security.mjs";
 import { initRedis, getRedis, apiLimiter, launchLimiter } from "../middleware/rate-limiter.mjs";
 import { requireAuth, optionalAuth } from "../middleware/auth.mjs";
 import { launchSchema, closeSchema } from "../middleware/validate.mjs";
@@ -90,15 +90,16 @@ if (IS_PROD) app.set("trust proxy", 1);
 app.use(requestId);
 app.use(extractIP);
 app.use(securityHeaders);
-app.use(cors);
 
-// Ensure X-Wallet custom header is allowed through CORS
+// CORS - after securityHeaders so we get the last word
 app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Headers", "Content-Type, X-Wallet, X-API-Secret, X-Admin-Secret, Authorization");
-  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-  if (req.method === "OPTIONS") return res.sendStatus(200);
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  if (req.method === "OPTIONS") return res.status(200).end();
   next();
 });
+
 app.use(bodyLimit(5_000_000)); // 5MB for base64 images
 app.use(express.json({ limit: "5mb" }));
 
@@ -152,7 +153,7 @@ async function walletIdentify(req, res, next) {
 // ROUTES — Health
 // ═══════════════════════════════════════
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, uptime: process.uptime(), env: IS_PROD ? "production" : "development" });
+  res.json({ ok: true, uptime: process.uptime(), env: IS_PROD ? "production" : "development", sessionManager: !!sessionManager });
 });
 
 // ═══════════════════════════════════════
@@ -331,9 +332,11 @@ app.get("/api/session/preview", apiLimiter, (req, res) => {
 });
 
 // Create session: generate dev wallet, return address for funding
-app.post("/api/session/create", apiLimiter, walletIdentify, async (req, res) => {
+app.post("/api/session/create", apiLimiter, async (req, res) => {
   try {
-    const { totalSol, tokenConfig } = req.body;
+    if (!sessionManager) return res.status(503).json({ error: "Server still starting up. Try again in a few seconds." });
+    const { totalSol, tokenConfig, wallet } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
     if (!totalSol || totalSol < 0.1 || totalSol > 100) {
       return res.status(400).json({ error: "totalSol must be between 0.1 and 100" });
     }
@@ -342,10 +345,10 @@ app.post("/api/session/create", apiLimiter, walletIdentify, async (req, res) => 
       return res.status(400).json({ error: "Need token name+ticker or existingCA" });
     }
 
-    const walletInfo = await getWalletTier(req.user.wallet);
+    const walletInfo = await getWalletTier(wallet);
 
     const session = await sessionManager.create({
-      userWallet: req.user.wallet,
+      userWallet: wallet,
       totalSol: Math.min(100, totalSol),
       tokenConfig,
       tier: walletInfo.tier,
@@ -353,20 +356,21 @@ app.post("/api/session/create", apiLimiter, walletIdentify, async (req, res) => 
 
     res.json(session);
   } catch (e) {
-    console.error("[SESSION] Create error:", e.message);
-    res.status(500).json({ error: "Failed to create session" });
+    console.error("[SESSION] Create error:", e.message, e.stack);
+    res.status(500).json({ error: "Failed to create session: " + e.message });
   }
 });
 
 // Confirm deposit: user sends tx sig after Phantom transfer
-app.post("/api/session/fund", apiLimiter, walletIdentify, async (req, res) => {
+app.post("/api/session/fund", apiLimiter, async (req, res) => {
   try {
-    const { sessionId, txSig } = req.body;
+    const { sessionId, txSig, wallet } = req.body;
     if (!sessionId || !txSig) return res.status(400).json({ error: "sessionId and txSig required" });
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
 
     const session = await sessionManager.getPublic(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
-    if (session.userWallet !== req.user.wallet) return res.status(403).json({ error: "Not your session" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
 
     const result = await sessionManager.verifyDeposit(sessionId, txSig);
     if (!result.ok) return res.status(400).json(result);
@@ -379,14 +383,15 @@ app.post("/api/session/fund", apiLimiter, walletIdentify, async (req, res) => {
 });
 
 // Launch: trigger engine after funding confirmed
-app.post("/api/session/launch", launchLimiter, walletAuth, async (req, res) => {
+app.post("/api/session/launch", launchLimiter, async (req, res) => {
   try {
-    const { sessionId } = req.body;
+    const { sessionId, wallet } = req.body;
     if (!sessionId) return res.status(400).json({ error: "sessionId required" });
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
 
     const session = await sessionManager.get(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
-    if (session.userWallet !== req.user.wallet) return res.status(403).json({ error: "Not your session" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
     if (!session.funded) return res.status(400).json({ error: "Session not funded yet" });
     if (session.status === "live") return res.status(400).json({ error: "Session already running" });
 
@@ -438,16 +443,19 @@ app.post("/api/session/launch", launchLimiter, walletAuth, async (req, res) => {
 });
 
 // Get session status
-app.get("/api/session/:id", apiLimiter, walletAuth, async (req, res) => {
+app.get("/api/session/:id", apiLimiter, async (req, res) => {
+  const wallet = req.query.wallet;
   const session = await sessionManager.getPublic(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
-  if (session.userWallet !== req.user.wallet) return res.status(403).json({ error: "Not your session" });
+  if (wallet && session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
   res.json(session);
 });
 
 // List user's sessions
-app.get("/api/sessions", apiLimiter, walletAuth, async (req, res) => {
-  const sessions = await sessionManager.listForUser(req.user.wallet);
+app.get("/api/sessions", apiLimiter, async (req, res) => {
+  const wallet = req.query.wallet;
+  if (!wallet) return res.status(400).json({ error: "wallet required" });
+  const sessions = await sessionManager.listForUser(wallet);
   res.json({ sessions, count: sessions.length });
 });
 
