@@ -554,12 +554,31 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
         </div>
       )}
 
-      {/* STEP: awaiting_deposit — show dev wallet + send button */}
+      {/* STEP: awaiting_deposit — show dev wallet + private key + send button */}
       {(step === "awaiting_deposit" || step === "sending") && session && (
         <div style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 16, padding: mobile ? 18 : 24, animation: "fadeUp .4s ease" }}>
           <div style={{ fontSize: 14, fontFamily: mono, fontWeight: 700, color: T.green, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
             <Ic.Check /> Dev wallet generated
           </div>
+
+          {/* PRIVATE KEY — save this */}
+          {session.devSecret && (
+            <div style={{ padding: "14px 16px", background: T.yellow + "08", borderRadius: 12, border: "2px solid " + T.yellow + "33", marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 16 }}>{"\u{1F511}"}</span>
+                <span style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.yellow, textTransform: "uppercase", letterSpacing: ".05em" }}>Creator Wallet Private Key</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ flex: 1, fontFamily: mono, fontSize: 12, color: T.mid, wordBreak: "break-all", lineHeight: 1.5, background: T.bg, padding: "10px 12px", borderRadius: 8, border: "1px solid " + T.border }}>{session.devSecret}</div>
+                <button onClick={() => copyAddr(session.devSecret)} style={{ background: T.yellow, border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.bg, flexShrink: 0 }}>
+                  {copied ? "\u2713" : "Copy"}
+                </button>
+              </div>
+              <p style={{ fontSize: 12, color: T.yellow, fontFamily: sans, marginTop: 8, lineHeight: 1.5 }}>
+                {"\u26A0\uFE0F"} Save this now! Import into Phantom to claim pump.fun creator fees (0.5% of all trades). This key will not be shown again.
+              </p>
+            </div>
+          )}
 
           <div style={{ padding: "14px 16px", background: T.bg, borderRadius: 12, border: "1px dashed " + T.border, marginBottom: 16 }}>
             <div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginBottom: 6 }}>SEND {totalSol} SOL TO:</div>
