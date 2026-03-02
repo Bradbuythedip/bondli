@@ -409,14 +409,20 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     try {
       const res = await fetch(API + "/api/session/create", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ totalSol, tokenConfig, wallet: user.pubkey }),
       });
+      if (!res.ok) {
+        const text = await res.text();
+        try { const d = JSON.parse(text); setError(d.error || "Server error " + res.status); }
+        catch { setError("Server error " + res.status + ": " + text.slice(0, 200)); }
+        setStep("idle"); return;
+      }
       const data = await res.json();
       if (data.error) { setError(data.error); setStep("idle"); return; }
       setSession(data);
       setStep("awaiting_deposit");
-    } catch { setError("Failed to create session"); setStep("idle"); }
+    } catch (e) { setError("Failed to create session: " + (e.message || e)); setStep("idle"); }
   };
 
   // Step 2: Send SOL via Phantom
@@ -465,7 +471,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     try {
       const res = await fetch(API + "/api/session/fund", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: session.sessionId, txSig: signature, wallet: user.pubkey }),
       });
       const data = await res.json();
@@ -487,7 +493,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     try {
       const res = await fetch(API + "/api/session/launch", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: session.sessionId, wallet: user.pubkey }),
       });
       const data = await res.json();
