@@ -91,6 +91,14 @@ app.use(requestId);
 app.use(extractIP);
 app.use(securityHeaders);
 app.use(cors);
+
+// Ensure X-Wallet custom header is allowed through CORS
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Headers", "Content-Type, X-Wallet, X-API-Secret, X-Admin-Secret, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(200);
+  next();
+});
 app.use(bodyLimit(5_000_000)); // 5MB for base64 images
 app.use(express.json({ limit: "5mb" }));
 
@@ -119,6 +127,25 @@ async function initServices() {
   paymentVerifier = new PaymentVerifier(connection);
   await paymentVerifier.init();
   console.log("[INIT] All services ready");
+}
+
+// Simple wallet auth — checks X-Wallet header + tier access
+async function walletAuth(req, res, next) {
+  const wallet = req.headers["x-wallet"] || req.body?.wallet || req.query?.wallet;
+  if (!wallet) return res.status(401).json({ error: "Wallet required. Pass X-Wallet header." });
+  const info = await getWalletTier(wallet);
+  if (info.tier === "none") return res.status(403).json({ error: "No access. Choose a tier first." });
+  req.user = { wallet, tier: info.tier, whitelisted: info.whitelisted, profitCut: info.profitCut };
+  next();
+}
+
+// Wallet identification only — no tier check (for session create)
+async function walletIdentify(req, res, next) {
+  const wallet = req.headers["x-wallet"] || req.body?.wallet || req.query?.wallet;
+  if (!wallet) return res.status(401).json({ error: "Wallet required." });
+  const info = await getWalletTier(wallet);
+  req.user = { wallet, tier: info.tier, whitelisted: info.whitelisted, profitCut: info.profitCut };
+  next();
 }
 
 // ═══════════════════════════════════════
@@ -304,7 +331,7 @@ app.get("/api/session/preview", apiLimiter, (req, res) => {
 });
 
 // Create session: generate dev wallet, return address for funding
-app.post("/api/session/create", apiLimiter, requireAuth, async (req, res) => {
+app.post("/api/session/create", apiLimiter, walletIdentify, async (req, res) => {
   try {
     const { totalSol, tokenConfig } = req.body;
     if (!totalSol || totalSol < 0.1 || totalSol > 100) {
@@ -332,7 +359,7 @@ app.post("/api/session/create", apiLimiter, requireAuth, async (req, res) => {
 });
 
 // Confirm deposit: user sends tx sig after Phantom transfer
-app.post("/api/session/fund", apiLimiter, requireAuth, async (req, res) => {
+app.post("/api/session/fund", apiLimiter, walletIdentify, async (req, res) => {
   try {
     const { sessionId, txSig } = req.body;
     if (!sessionId || !txSig) return res.status(400).json({ error: "sessionId and txSig required" });
@@ -352,7 +379,7 @@ app.post("/api/session/fund", apiLimiter, requireAuth, async (req, res) => {
 });
 
 // Launch: trigger engine after funding confirmed
-app.post("/api/session/launch", launchLimiter, requireAuth, async (req, res) => {
+app.post("/api/session/launch", launchLimiter, walletAuth, async (req, res) => {
   try {
     const { sessionId } = req.body;
     if (!sessionId) return res.status(400).json({ error: "sessionId required" });
@@ -411,7 +438,7 @@ app.post("/api/session/launch", launchLimiter, requireAuth, async (req, res) => 
 });
 
 // Get session status
-app.get("/api/session/:id", apiLimiter, requireAuth, async (req, res) => {
+app.get("/api/session/:id", apiLimiter, walletAuth, async (req, res) => {
   const session = await sessionManager.getPublic(req.params.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
   if (session.userWallet !== req.user.wallet) return res.status(403).json({ error: "Not your session" });
@@ -419,7 +446,7 @@ app.get("/api/session/:id", apiLimiter, requireAuth, async (req, res) => {
 });
 
 // List user's sessions
-app.get("/api/sessions", apiLimiter, requireAuth, async (req, res) => {
+app.get("/api/sessions", apiLimiter, walletAuth, async (req, res) => {
   const sessions = await sessionManager.listForUser(req.user.wallet);
   res.json({ sessions, count: sessions.length });
 });
@@ -427,11 +454,11 @@ app.get("/api/sessions", apiLimiter, requireAuth, async (req, res) => {
 // ═══════════════════════════════════════
 // ROUTES — Protected (legacy launch, still works)
 // ═══════════════════════════════════════
-app.get("/api/wallets", apiLimiter, requireAuth, (req, res) => {
+app.get("/api/wallets", apiLimiter, walletAuth, (req, res) => {
   res.json({ wallets: orch.walletOpt.summary() });
 });
 
-app.get("/api/curve/:ca", apiLimiter, requireAuth, async (req, res) => {
+app.get("/api/curve/:ca", apiLimiter, walletAuth, async (req, res) => {
   try {
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(req.params.ca)) return res.status(400).json({ error: "Invalid contract address" });
     const info = await orch.router.getCurveInfo(req.params.ca);
@@ -439,7 +466,7 @@ app.get("/api/curve/:ca", apiLimiter, requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: "Failed to fetch curve info" }); }
 });
 
-app.post("/api/launch", launchLimiter, requireAuth, launchSchema, async (req, res) => {
+app.post("/api/launch", launchLimiter, walletAuth, launchSchema, async (req, res) => {
   try {
     const { ca, totalSol, force } = req.body;
     const sol = Math.min(totalSol || CONFIG.TOTAL_SOL, 100);
@@ -452,7 +479,7 @@ app.post("/api/launch", launchLimiter, requireAuth, launchSchema, async (req, re
 // ═══════════════════════════════════════
 // CLOSE — with free tier profit skim
 // ═══════════════════════════════════════
-app.post("/api/close", apiLimiter, requireAuth, closeSchema, async (req, res) => {
+app.post("/api/close", apiLimiter, walletAuth, closeSchema, async (req, res) => {
   try {
     const { ca } = req.body;
     const wallet = req.user.wallet;
@@ -518,7 +545,7 @@ app.post("/api/close", apiLimiter, requireAuth, closeSchema, async (req, res) =>
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post("/api/close-all", apiLimiter, requireAuth, async (req, res) => {
+app.post("/api/close-all", apiLimiter, walletAuth, async (req, res) => {
   try {
     const wallet = req.user.wallet;
     const walletInfo = await getWalletTier(wallet);
@@ -546,7 +573,7 @@ app.post("/api/close-all", apiLimiter, requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post("/api/fees/calculate", apiLimiter, requireAuth, (req, res) => {
+app.post("/api/fees/calculate", apiLimiter, walletAuth, (req, res) => {
   const { solIn, solReturn, wallet } = req.body;
   if (typeof solIn !== "number" || typeof solReturn !== "number") return res.status(400).json({ error: "solIn and solReturn must be numbers" });
   const fee = calculateFee(solIn, solReturn, wallet || "");
