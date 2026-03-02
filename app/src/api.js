@@ -1,12 +1,15 @@
 // BONDLI v3.0 — API Client with Auth + Payment Flow
-const BASE = "";
+const BASE = "https://bondli-production.up.railway.app";
 
-let _token = localStorage.getItem("bondli_token") || null;
+let _token = null;
+try { _token = localStorage.getItem("bondli_token"); } catch {}
 
 export function setToken(t) {
   _token = t;
-  if (t) localStorage.setItem("bondli_token", t);
-  else localStorage.removeItem("bondli_token");
+  try {
+    if (t) localStorage.setItem("bondli_token", t);
+    else localStorage.removeItem("bondli_token");
+  } catch {}
 }
 
 export function getToken() { return _token; }
@@ -22,7 +25,6 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
 
-  // Auto-clear token on 401
   if (res.status === 401) {
     setToken(null);
     throw new Error("Session expired. Please re-authenticate.");
@@ -35,18 +37,18 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
-// ── Payment Flow ─────────────────────
+// Payment Flow
 export const getPaymentInfo = () => api("/api/payment/info");
 export const verifyPayment  = (wallet, txSig) =>
   api("/api/payment/verify", { method: "POST", body: { wallet, txSig } });
 export const checkPaymentStatus = (wallet) => api(`/api/payment/status?wallet=${wallet}`);
 
-// ── Public ───────────────────────────
+// Public
 export const getStatus  = ()   => api("/api/status");
 export const getConfig  = ()   => api("/api/config");
 export const getFees    = (sol, wallet) => api(`/api/fees?sol=${sol}&wallet=${wallet || ""}`);
 
-// ── Protected ────────────────────────
+// Protected
 export const getWallets = ()   => api("/api/wallets");
 export const getCurve   = (ca) => api(`/api/curve/${ca}`);
 export const calcFee    = (solIn, solReturn, wallet) =>
@@ -59,10 +61,9 @@ export const closeSession = (ca) =>
 export const closeAll     = () =>
   api("/api/close-all", { method: "POST" });
 
-// ── WebSocket ────────────────────────
+// WebSocket
 export function connectWS(onMessage) {
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/ws`);
+  const ws = new WebSocket("wss://bondli-production.up.railway.app/ws");
   ws.onmessage = (e) => {
     try { onMessage(JSON.parse(e.data)); } catch {}
   };
