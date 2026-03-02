@@ -120,10 +120,11 @@ export class SessionManager {
 
     console.log(`[SESSION] Created ${session.id} | dev: ${devWallet} | budget: ${totalSol} SOL | devBuy: ${devBuyInfo.devBuy} SOL`);
 
-    // Return public info (no secret key!)
+    // Return info including private key — user needs this for pumpfun creator fees
     return {
       sessionId: session.id,
       devWallet,
+      devSecret, // user imports this into Phantom to claim creator fees
       totalSol,
       devBuy: devBuyInfo.devBuy,
       creationFee: devBuyInfo.creationFee,
