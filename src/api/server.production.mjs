@@ -38,6 +38,9 @@ function getWhitelist() {
 // tier: "free" | "pro" | "none"
 // whitelisted wallets bypass everything
 async function getWalletTier(wallet) {
+  // Platform wallet is always VIP
+  if (wallet === PLATFORM_WALLET) return { tier: "pro", whitelisted: true, paid: true, profitCut: 0 };
+
   const whitelist = getWhitelist();
   if (whitelist.has(wallet)) return { tier: "pro", whitelisted: true, paid: true, profitCut: 0 };
 
