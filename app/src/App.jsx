@@ -3,8 +3,7 @@ import { useState, useEffect, useRef, useMemo, useCallback, createContext, useCo
 const API = "https://bondli-production.up.railway.app";
 const WS_URL = "wss://bondli-production.up.railway.app/ws";
 const PLATFORM_WALLET = "anal.sol";
-const ACCESS_FEE_SOL = 0.1;
-const WHITELISTED = new Set(["bigtrench.sol"]);
+const ACCESS_FEE_SOL = 10;
 
 // === THEMES ===
 const dark = {
@@ -237,7 +236,17 @@ function PhantomGate({ onConnect }) {
       }
       const resp = await provider.connect();
       const pubkey = resp.publicKey.toString();
-      onConnect({ pubkey, token: null, demo: false });
+
+      // Check whitelist + payment status from backend
+      let whitelisted = false, paid = false;
+      try {
+        const res = await fetch(API + "/api/access/check?wallet=" + pubkey);
+        const data = await res.json();
+        whitelisted = !!data.whitelisted;
+        paid = !!data.paid;
+      } catch {}
+
+      onConnect({ pubkey, token: null, demo: false, whitelisted, paid });
     } catch (e) {
       if (e.code === 4001) setError("Connection rejected");
       else setError("Failed to connect");
@@ -289,7 +298,7 @@ function PhantomGate({ onConnect }) {
             color: T.green, wordBreak: "break-all", textAlign: "center", letterSpacing: ".03em", fontWeight: 600,
           }}>{PLATFORM_WALLET}</div>
           <p style={{ fontSize: 14, color: T.faint, textAlign: "center", marginTop: 12, fontFamily: sans, lineHeight: 1.5 }}>
-            Connect Phantom, pay once, trade forever
+            Connect Phantom. 10 SOL = unlimited access forever.
           </p>
         </div>
 
@@ -571,8 +580,16 @@ export default function App() {
   useEffect(() => {
     const p = window?.phantom?.solana || window?.solana;
     if (p?.isPhantom && p?.isConnected && !user) {
-      p.connect({ onlyIfTrusted: true }).then(r => {
-        setUser({ pubkey: r.publicKey.toString(), token: null, demo: false });
+      p.connect({ onlyIfTrusted: true }).then(async (r) => {
+        const pubkey = r.publicKey.toString();
+        let whitelisted = false, paid = false;
+        try {
+          const res = await fetch(API + "/api/access/check?wallet=" + pubkey);
+          const data = await res.json();
+          whitelisted = !!data.whitelisted;
+          paid = !!data.paid;
+        } catch {}
+        setUser({ pubkey, token: null, demo: false, whitelisted, paid });
       }).catch(() => {});
     }
   }, []);
@@ -608,7 +625,7 @@ export default function App() {
   }, [walletCount]);
 
   const canLaunch = (existingCA || (tokenName && ticker)) && seed && rpc;
-  const isWhitelisted = user && WHITELISTED.has(user.pubkey);
+  const isWhitelisted = user && user.whitelisted;
 
   const disconnect = async () => {
     try { const p = window?.phantom?.solana || window?.solana; await p?.disconnect(); } catch {}
