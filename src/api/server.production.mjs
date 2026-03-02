@@ -23,6 +23,9 @@ import createPaymentRoutes from "../payments/payment-routes.mjs";
 // Sessions
 import SessionStore from "../db/session-store.mjs";
 
+// Launch Sessions (dev wallet generation + funding)
+import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
+
 // ═══════════════════════════════════════
 // TIER + ACCESS SYSTEM
 // ═══════════════════════════════════════
@@ -105,12 +108,13 @@ app.use((req, res, next) => {
 // ═══════════════════════════════════════
 // SERVICES
 // ═══════════════════════════════════════
-let sessionStore, paymentVerifier;
+let sessionStore, paymentVerifier, sessionManager;
 const orch = new Orchestrator();
 
 async function initServices() {
   const redis = await initRedis(process.env.REDIS_URL);
   sessionStore = new SessionStore(redis);
+  sessionManager = new SessionManager(redis);
   const connection = new Connection(CONFIG.RPC_URL, "confirmed");
   paymentVerifier = new PaymentVerifier(connection);
   await paymentVerifier.init();
@@ -289,7 +293,139 @@ app.get("/api/fees", apiLimiter, (req, res) => {
 });
 
 // ═══════════════════════════════════════
-// ROUTES — Protected (auth required)
+// ROUTES — Launch Sessions (dev wallet flow)
+// ═══════════════════════════════════════
+
+// Preview dev buy calculation (no auth needed)
+app.get("/api/session/preview", apiLimiter, (req, res) => {
+  const totalSol = Math.min(100, Math.max(0.1, parseFloat(req.query.sol || "1")));
+  const info = calculateDevBuy(totalSol);
+  res.json(info);
+});
+
+// Create session: generate dev wallet, return address for funding
+app.post("/api/session/create", apiLimiter, requireAuth, async (req, res) => {
+  try {
+    const { totalSol, tokenConfig } = req.body;
+    if (!totalSol || totalSol < 0.1 || totalSol > 100) {
+      return res.status(400).json({ error: "totalSol must be between 0.1 and 100" });
+    }
+    if (!tokenConfig) return res.status(400).json({ error: "tokenConfig required" });
+    if (!tokenConfig.existingCA && (!tokenConfig.name || !tokenConfig.ticker)) {
+      return res.status(400).json({ error: "Need token name+ticker or existingCA" });
+    }
+
+    const walletInfo = await getWalletTier(req.user.wallet);
+
+    const session = await sessionManager.create({
+      userWallet: req.user.wallet,
+      totalSol: Math.min(100, totalSol),
+      tokenConfig,
+      tier: walletInfo.tier,
+    });
+
+    res.json(session);
+  } catch (e) {
+    console.error("[SESSION] Create error:", e.message);
+    res.status(500).json({ error: "Failed to create session" });
+  }
+});
+
+// Confirm deposit: user sends tx sig after Phantom transfer
+app.post("/api/session/fund", apiLimiter, requireAuth, async (req, res) => {
+  try {
+    const { sessionId, txSig } = req.body;
+    if (!sessionId || !txSig) return res.status(400).json({ error: "sessionId and txSig required" });
+
+    const session = await sessionManager.getPublic(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== req.user.wallet) return res.status(403).json({ error: "Not your session" });
+
+    const result = await sessionManager.verifyDeposit(sessionId, txSig);
+    if (!result.ok) return res.status(400).json(result);
+
+    res.json({ ok: true, ...result, status: "funded" });
+  } catch (e) {
+    console.error("[SESSION] Fund error:", e.message);
+    res.status(500).json({ error: "Deposit verification failed" });
+  }
+});
+
+// Launch: trigger engine after funding confirmed
+app.post("/api/session/launch", launchLimiter, requireAuth, async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    if (!sessionId) return res.status(400).json({ error: "sessionId required" });
+
+    const session = await sessionManager.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== req.user.wallet) return res.status(403).json({ error: "Not your session" });
+    if (!session.funded) return res.status(400).json({ error: "Session not funded yet" });
+    if (session.status === "live") return res.status(400).json({ error: "Session already running" });
+
+    // Get the dev keypair
+    const devKeypair = await sessionManager.getDevKeypair(sessionId);
+    if (!devKeypair) return res.status(500).json({ error: "Dev wallet key not found" });
+
+    // Update status
+    await sessionManager.update(sessionId, { status: "creating", launchedAt: new Date().toISOString() });
+
+    // Launch the engine with the dev wallet
+    const ca = session.tokenConfig.existingCA || null;
+    const launchConfig = {
+      totalSol: session.fleetBudget,
+      devBuy: session.devBuy,
+      devKeypair,
+      tokenConfig: session.tokenConfig,
+      sessionId: session.id,
+      force: true,
+    };
+
+    if (sessionStore) {
+      await sessionStore.recordLaunch(session.userWallet, ca || "new_token", session.totalSol);
+    }
+
+    const result = await orch.launch(ca, launchConfig);
+
+    // Update with token CA if created
+    const tokenCA = result.tokenCA || ca;
+    await sessionManager.update(sessionId, {
+      status: "live",
+      tokenCA,
+    });
+
+    console.log(`[SESSION] ${sessionId} launched | CA: ${tokenCA} | devBuy: ${session.devBuy} SOL | fleet: ${session.fleetBudget} SOL`);
+
+    res.json({
+      ok: true,
+      sessionId,
+      tokenCA,
+      devBuy: session.devBuy,
+      fleetBudget: session.fleetBudget,
+      ...result,
+    });
+  } catch (e) {
+    console.error("[SESSION] Launch error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get session status
+app.get("/api/session/:id", apiLimiter, requireAuth, async (req, res) => {
+  const session = await sessionManager.getPublic(req.params.id);
+  if (!session) return res.status(404).json({ error: "Session not found" });
+  if (session.userWallet !== req.user.wallet) return res.status(403).json({ error: "Not your session" });
+  res.json(session);
+});
+
+// List user's sessions
+app.get("/api/sessions", apiLimiter, requireAuth, async (req, res) => {
+  const sessions = await sessionManager.listForUser(req.user.wallet);
+  res.json({ sessions, count: sessions.length });
+});
+
+// ═══════════════════════════════════════
+// ROUTES — Protected (legacy launch, still works)
 // ═══════════════════════════════════════
 app.get("/api/wallets", apiLimiter, requireAuth, (req, res) => {
   res.json({ wallets: orch.walletOpt.summary() });
