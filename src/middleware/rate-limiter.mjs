@@ -4,11 +4,17 @@ import { createClient } from "redis";
 let redis = null;
 
 export async function initRedis(url) {
-  redis = createClient({ url: url || process.env.REDIS_URL || "redis://localhost:6379" });
-  redis.on("error", (e) => console.error("[REDIS]", e.message));
-  await redis.connect();
-  console.log("[REDIS] Connected");
-  return redis;
+  try {
+    redis = createClient({ url: url || process.env.REDIS_URL || "redis://localhost:6379" });
+    redis.on("error", () => {});
+    await redis.connect();
+    console.log("[REDIS] Connected");
+    return redis;
+  } catch (e) {
+    console.warn("[REDIS] Skipping — not available:", e.message);
+    redis = null;
+    return null;
+  }
 }
 
 export function getRedis() { return redis; }
@@ -16,14 +22,14 @@ export function getRedis() { return redis; }
 // Sliding window rate limiter
 export function rateLimit(opts = {}) {
   const {
-    windowMs = 60_000,         // 1 minute window
-    max = 30,                  // max requests per window
+    windowMs = 60_000,
+    max = 30,
     keyPrefix = "rl:",
     message = "Too many requests, slow down.",
   } = opts;
 
   return async (req, res, next) => {
-    if (!redis) return next(); // fail open if redis down
+    if (!redis) return next();
 
     const ip = req.headers["x-real-ip"] || req.headers["x-forwarded-for"]?.split(",")[0] || req.ip;
     const key = `${keyPrefix}${ip}`;
@@ -31,7 +37,6 @@ export function rateLimit(opts = {}) {
     const windowStart = now - windowMs;
 
     try {
-      // Remove old entries, add new, count
       await redis.zRemRangeByScore(key, 0, windowStart);
       const count = await redis.zCard(key);
 
@@ -53,12 +58,11 @@ export function rateLimit(opts = {}) {
       next();
     } catch (e) {
       console.error("[RATE-LIMIT]", e.message);
-      next(); // fail open
+      next();
     }
   };
 }
 
-// Specific limiters
 export const apiLimiter = rateLimit({ max: 60, windowMs: 60_000, keyPrefix: "rl:api:" });
 export const launchLimiter = rateLimit({ max: 3, windowMs: 300_000, keyPrefix: "rl:launch:", message: "Launch rate limited. Max 3 per 5 minutes." });
 export const paymentLimiter = rateLimit({ max: 10, windowMs: 60_000, keyPrefix: "rl:pay:" });
