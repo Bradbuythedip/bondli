@@ -409,7 +409,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     try {
       const res = await fetch(API + "/api/session/create", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
         body: JSON.stringify({ totalSol, tokenConfig }),
       });
       const data = await res.json();
@@ -465,7 +465,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     try {
       const res = await fetch(API + "/api/session/fund", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
         body: JSON.stringify({ sessionId: session.sessionId, txSig: signature }),
       });
       const data = await res.json();
@@ -487,7 +487,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     try {
       const res = await fetch(API + "/api/session/launch", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
         body: JSON.stringify({ sessionId: session.sessionId }),
       });
       const data = await res.json();
