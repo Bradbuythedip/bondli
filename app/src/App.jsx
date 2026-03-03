@@ -719,7 +719,7 @@ export default function App() {
   useEffect(() => { const p = window?.phantom?.solana || window?.solana; if (p?.isPhantom && p?.isConnected && !user) { p.connect({ onlyIfTrusted: true }).then(async (r) => { const pubkey = r.publicKey.toString(); let whitelisted = false, paid = false, tier = "free"; try { const res = await fetch(API + "/api/access/check?wallet=" + pubkey); const data = await res.json(); whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "free"; } catch { tier = "free"; } setUser({ pubkey, whitelisted, paid, tier, demo: false }); }).catch(() => {}); } }, []);
   useEffect(() => { if (!hasAccess) return; let ws, dead = false; const connect = () => { if (dead) return; try { ws = new WebSocket(WS_URL); ws.onopen = () => setWsConnected(true); ws.onclose = () => { setWsConnected(false); if (!dead) setTimeout(connect, 3000); }; ws.onerror = () => {}; } catch {} }; connect(); return () => { dead = true; if (ws) ws.close(); }; }, [hasAccess]);
   useEffect(() => { if (!user?.pubkey || (!user?.whitelisted && user?.tier !== "pro")) return; fetch(API + "/api/sessions?wallet=" + user.pubkey).then(r => r.json()).then(d => { if (d.sessions) setPastSessions(d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5)); }).catch(() => {}); }, [user, launched]);
-  useEffect(() => { if (!launched || !launchCA) return; const iv = setInterval(async () => { try { const res = await fetch(API + "/api/status", { headers: { "X-Wallet": user?.pubkey } }); if (res.ok) { const data = await res.json(); setFleetStatus(data); if (data.curveProgress) setCurveProgress(data.curveProgress); } } catch {} }, 5000); return () => clearInterval(iv); }, [launched, launchCA]);
+  useEffect(() => { if (!launched || !launchCA) return; const iv = setInterval(async () => { try { const res = await fetch(API + "/api/fleet", { headers: { "X-Wallet": user?.pubkey } }); if (res.ok) { const data = await res.json(); setFleetStatus(data); if (data.curveProgress) setCurveProgress(data.curveProgress); } } catch {} }, 3000); return () => clearInterval(iv); }, [launched, launchCA]);
   useEffect(() => { if (!launched) return; const iv = setInterval(() => setCurveProgress(p => Math.min(1, p + Math.random() * 0.004)), 2000); return () => clearInterval(iv); }, [launched]);
   const walletCount = totalSol < 0.5 ? 3 : totalSol < 1 ? 5 : totalSol < 5 ? 9 : totalSol < 10 ? 11 : totalSol < 25 ? 15 : 20;
   const activeRoles = useMemo(() => { if (walletCount <= 3) return ROLES.filter(r => ["accumulator","momentum","whale"].includes(r.id)); if (walletCount <= 5) return ROLES.filter(r => ["sniper","accumulator","momentum","whale","liquidator"].includes(r.id)); if (walletCount <= 9) return ROLES.filter(r => r.id !== "recycler"); return ROLES; }, [walletCount]);
@@ -759,17 +759,84 @@ export default function App() {
           <div style={{ maxWidth: launched ? 1100 : 760, margin: "0 auto", padding: mobile ? "16px 12px" : "28px 24px", position: "relative", zIndex: 1 }}>
             {launched && launchCA ? (
               <div>
-                <div style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 14, overflow: "hidden", marginBottom: mobile ? 12 : 16 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: "1px solid " + T.border }}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ fontSize: 10, fontWeight: 800, fontFamily: mono, color: T.bg, background: T.green, padding: "2px 8px", borderRadius: 6, animation: "pulse 2s infinite" }}>LIVE</span><span style={{ fontFamily: mono, fontSize: 14, fontWeight: 700, color: T.text }}>{tokenName || ticker || "Trading"}</span></div><span style={{ fontFamily: mono, fontSize: 11, color: T.mid, cursor: "pointer" }} onClick={() => navigator.clipboard?.writeText(launchCA)}>{launchCA.slice(0, 6)}...{launchCA.slice(-4)} {"\u{1F4CB}"}</span></div>
-                  <iframe src={"https://dexscreener.com/solana/" + launchCA + "?embed=1&theme=dark&trades=0&info=0"} style={{ width: "100%", height: mobile ? 420 : 560, border: "none", display: "block" }} title="Chart" />
+                {/* ═══ CHART ═══ */}
+                <div style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 14, overflow: "hidden", marginBottom: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: "1px solid " + T.border }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 10, fontWeight: 800, fontFamily: mono, color: T.bg, background: T.green, padding: "2px 8px", borderRadius: 6, animation: "pulse 2s infinite" }}>LIVE</span>
+                      <span style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: T.text }}>{tokenName || ticker || "Trading"}</span>
+                    </div>
+                    <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(launchCA); toast("CA copied", "success"); }}>{launchCA.slice(0, 6)}...{launchCA.slice(-4)} {"\u{1F4CB}"}</span>
+                  </div>
+                  <iframe src={"https://pump.fun/coin/" + launchCA} style={{ width: "100%", height: mobile ? 380 : 520, border: "none", display: "block" }} title="Chart" />
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 6, marginBottom: 16 }}>{[{ l: "pump.fun", u: "https://pump.fun/coin/" + launchCA, c: T.green }, { l: "Solscan", u: "https://solscan.io/token/" + launchCA }, { l: "DexScreener", u: "https://dexscreener.com/solana/" + launchCA }, { l: "Photon", u: "https://photon-sol.tinyastro.io/en/lp/" + launchCA }].map(x => (<a key={x.l} href={x.u} target="_blank" rel="noopener" style={{ textAlign: "center", padding: "8px 4px", background: T.surface, borderRadius: 8, border: "1px solid " + T.border, color: x.c || T.mid, fontFamily: mono, fontSize: mobile ? 10 : 11, fontWeight: 700, textDecoration: "none" }}>{x.l}</a>))}</div>
-                <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>{[{ k: "Phase", v: fleetStatus?.phase || "starting", c: T.green }, { k: "Trades", v: fleetStatus?.tradeCount || 0, c: T.green }, { k: "Spent", v: (fleetStatus?.solSpent || 0).toFixed(3), c: T.red }, { k: "Recovered", v: (fleetStatus?.solRecovered || 0).toFixed(3), c: T.green }].map(s => (<div key={s.k} style={{ background: T.surface, borderRadius: 10, padding: "10px 12px", border: "1px solid " + T.border }}><div style={{ fontSize: 9, fontFamily: mono, color: T.faint, textTransform: "uppercase", marginBottom: 3 }}>{s.k}</div><div style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: s.c }}>{s.v}</div></div>))}</div>
+
+                {/* ═══ LINKS ═══ */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
+                  {[{ l: "pump.fun", u: "https://pump.fun/coin/" + launchCA, c: T.green }, { l: "Solscan", u: "https://solscan.io/token/" + launchCA }, { l: "DexScreener", u: "https://dexscreener.com/solana/" + launchCA }, { l: "Photon", u: "https://photon-sol.tinyastro.io/en/lp/" + launchCA }].map(x => (
+                    <a key={x.l} href={x.u} target="_blank" rel="noopener" style={{ textAlign: "center", padding: "8px 4px", background: T.surface, borderRadius: 8, border: "1px solid " + T.border, color: x.c || T.mid, fontFamily: mono, fontSize: mobile ? 10 : 12, fontWeight: 700, textDecoration: "none" }}>{x.l}</a>
+                  ))}
+                </div>
+
+                {/* ═══ STATS ═══ */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
+                  {[
+                    { k: "Phase", v: fleetStatus?.phase || "init", c: T.green },
+                    { k: "Wallets", v: fleetStatus?.activeWallets || 0, c: T.green },
+                    { k: "Trades", v: fleetStatus?.tradeCount || 0, c: T.green },
+                    { k: "Spent", v: (fleetStatus?.solSpent || 0).toFixed(3), c: T.red },
+                    { k: "Recovered", v: (fleetStatus?.solRecovered || 0).toFixed(3), c: T.green },
+                  ].map(s => (
+                    <div key={s.k} style={{ background: T.surface, borderRadius: 10, padding: mobile ? "8px 6px" : "10px 12px", border: "1px solid " + T.border }}>
+                      <div style={{ fontSize: 9, fontFamily: mono, color: T.faint, textTransform: "uppercase", marginBottom: 2 }}>{s.k}</div>
+                      <div style={{ fontSize: mobile ? 14 : 16, fontFamily: mono, fontWeight: 800, color: s.c }}>{s.v}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* ═══ FLEET WALLETS ═══ */}
+                {fleetStatus?.wallets && fleetStatus.wallets.length > 0 && (
+                  <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 12, overflow: "hidden", marginBottom: 12 }}>
+                    <div style={{ padding: "10px 14px", borderBottom: "1px solid " + T.border, fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.text }}>Fleet Wallets</div>
+                    {fleetStatus.wallets.map((w, i) => {
+                      const net = (w.recovered || 0) - (w.spent || 0);
+                      const rc = { sniper: "#ff6b6b", accumulator: T.green, momentum: "#ffd43b", whale: "#4dabf7", liquidator: "#da77f2", recycler: "#69db7c", support: "#748ffc" };
+                      return (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", borderBottom: "1px solid " + T.border + "22" }}>
+                          <span style={{ width: 8, height: 8, borderRadius: "50%", background: rc[w.role] || T.green, flexShrink: 0 }} />
+                          <span style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.mid, width: 80, textTransform: "capitalize" }}>{w.role}</span>
+                          <span style={{ fontFamily: mono, fontSize: 11, color: T.faint }}>{w.pubkey}...</span>
+                          <span style={{ marginLeft: "auto", fontFamily: mono, fontSize: 12, fontWeight: 700, color: net >= 0 ? T.green : T.red }}>{net >= 0 ? "+" : ""}{net.toFixed(4)}</span>
+                          <span style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>{w.tradeCount || 0}tx</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* ═══ TRADE FEED ═══ */}
+                {fleetStatus?.trades && fleetStatus.trades.length > 0 && (
+                  <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 12, overflow: "hidden", marginBottom: 12, maxHeight: 300, overflowY: "auto" }}>
+                    <div style={{ padding: "10px 14px", borderBottom: "1px solid " + T.border, fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.text, position: "sticky", top: 0, background: T.surface, zIndex: 1 }}>Trade Feed ({fleetStatus.trades.length})</div>
+                    {fleetStatus.trades.map((t, i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 14px", borderBottom: "1px solid " + T.border + "15", fontSize: 12, fontFamily: mono }}>
+                        <span style={{ width: 36, fontWeight: 800, color: t.side === "buy" ? T.green : T.red, textTransform: "uppercase" }}>{t.side}</span>
+                        <span style={{ color: T.mid, textTransform: "capitalize", width: 70 }}>{t.role}</span>
+                        <span style={{ color: T.text, fontWeight: 700 }}>{Number(t.sol || 0).toFixed(4)} SOL</span>
+                        <span style={{ marginLeft: "auto", color: T.faint, fontSize: 10 }}>{t.wallet}...</span>
+                        {t.sig && <a href={"https://solscan.io/tx/" + t.sig} target="_blank" rel="noopener" style={{ color: T.dim, fontSize: 10, textDecoration: "none" }}>tx{"↗"}</a>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ═══ CONTROLS ═══ */}
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={async () => { if (!confirm("Close all positions?")) return; try { const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca: launchCA, wallet: user?.pubkey }) }); const data = await res.json(); if (data.error) toast(data.error, "error"); else toast("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL", "success"); } catch (e) { toast(e.message, "error"); } }} style={{ flex: 1, padding: "12px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 13, fontWeight: 800, borderRadius: 10, cursor: "pointer" }}>{"\u2620"} Close All</button>
-                  <button onClick={() => { setLaunched(false); setLaunchCA(""); setCaAnalysis(null); setFleetStatus(null); }} style={{ padding: "12px 20px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 12, borderRadius: 10, cursor: "pointer" }}>New</button>
+                  <button onClick={async () => { if (!confirm("Close all positions?")) return; try { const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca: launchCA, wallet: user?.pubkey }) }); const data = await res.json(); if (data.error) toast(data.error, "error"); else toast("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL", "success"); } catch (e) { toast(e.message, "error"); } }} style={{ flex: 1, padding: "14px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: "pointer" }}>{"\u2620"} Close All</button>
+                  <button onClick={() => { setLaunched(false); setLaunchCA(""); setCaAnalysis(null); setFleetStatus(null); }} style={{ padding: "14px 20px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 13, borderRadius: 10, cursor: "pointer" }}>New</button>
                 </div>
               </div>
+
             ) : (
               <div>
                 <h1 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 24 : 34, textAlign: "center", marginBottom: 4, color: T.text }}>Launch on <span style={{ color: T.green }}>pump.fun</span></h1>
