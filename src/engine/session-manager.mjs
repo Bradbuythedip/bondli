@@ -74,11 +74,23 @@ export class SessionManager {
   }
 
   // Create a new launch session
-  async create({ userWallet, totalSol, tokenConfig, tier, fleetConfig }) {
-    // Generate fresh dev wallet
-    const devKeypair = Keypair.generate();
-    const devWallet = devKeypair.publicKey.toString();
-    const devSecret = bs58.encode(devKeypair.secretKey);
+  async create({ userWallet, totalSol, tokenConfig, tier, fleetConfig, masterSeed }) {
+    let devKeypair, devWallet, devSecret;
+    if (masterSeed) {
+      try {
+        devKeypair = Keypair.fromSecretKey(bs58.decode(masterSeed));
+        devWallet = devKeypair.publicKey.toString();
+        devSecret = masterSeed;
+      } catch (e) {
+        devKeypair = Keypair.generate();
+        devWallet = devKeypair.publicKey.toString();
+        devSecret = bs58.encode(devKeypair.secretKey);
+      }
+    } else {
+      devKeypair = Keypair.generate();
+      devWallet = devKeypair.publicKey.toString();
+      devSecret = bs58.encode(devKeypair.secretKey);
+    }
 
     const devBuyInfo = calculateDevBuy(totalSol);
 
@@ -107,8 +119,9 @@ export class SessionManager {
         slippage: fleetConfig?.slippage || 25,
         duration: fleetConfig?.duration || 60,
       },
-      status: "awaiting_deposit", // awaiting_deposit → funded → creating → live → closing → closed
-      funded: false,
+      useMaster: !!masterSeed,
+      status: masterSeed ? "funded" : "awaiting_deposit", // awaiting_deposit → funded → creating → live → closing → closed
+      funded: !!masterSeed,
       depositTx: null,
       tokenCA: tokenConfig.existingCA || null,
       createdAt: new Date().toISOString(),
@@ -136,7 +149,7 @@ export class SessionManager {
       creationFee: devBuyInfo.creationFee,
       fleetBudget: devBuyInfo.fleetBudget,
       devBuyPercent: devBuyInfo.devBuyPercent,
-      status: "awaiting_deposit",
+      status: masterSeed ? "funded" : "awaiting_deposit",
     };
   }
 
