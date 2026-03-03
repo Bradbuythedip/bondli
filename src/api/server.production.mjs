@@ -401,6 +401,16 @@ app.get("/api/fleet", apiLimiter, (req, res) => {
   });
 });
 
+// Price proxy for client-side chart (avoids CORS)
+app.get("/api/price/:ca", apiLimiter, async (req, res) => {
+  try {
+    const r = await fetch("https://frontend-api-v2.pump.fun/coins/" + req.params.ca, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return res.json({ mcap: 0 });
+    const coin = await r.json();
+    res.json({ mcap: coin.usd_market_cap || 0, bp: coin.bonding_curve_progress || 0, price: coin.market_cap ? coin.market_cap / 1e9 : 0, complete: coin.complete || false });
+  } catch { res.json({ mcap: 0 }); }
+});
+
 app.get("/api/config", apiLimiter, (req, res) => {
   res.json({
     dryRun: CONFIG.DRY_RUN,
@@ -663,38 +673,44 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
       metadataUri: createResult?.metadataUri || null,
     });
 
-    // ── Step 3: Start fleet trading on this CA ──
+    // ── Step 3: Start fleet trading on this CA (skip for deploy-only) ──
     let orchResult = { ok: true };
-    try {
-      CONFIG.TOKEN_CA = tokenCA;
+    const isDeployOnly = session.fleetConfig?.deployOnly || session.fleetBudget <= 0;
+    if (!isDeployOnly) {
+      try {
+        CONFIG.TOKEN_CA = tokenCA;
 
-      console.log(`[LAUNCH] Starting fleet with ${session.fleetBudget} SOL on ${tokenCA}`);
-      
-      orchResult = await orch.launch(tokenCA, {
-        totalSol: session.fleetBudget,
-        devKeypair,
-        sessionId: session.id,
-        force: true,
-        fleetConfig: session.fleetConfig || {},
-      });
-      console.log(`[LAUNCH] Fleet started:`, JSON.stringify(orchResult).slice(0, 300));
-      
-      // Start live price tracking
-      startPricePolling(tokenCA);
-
-      // CRITICAL: Save fleet wallet keys for recovery
-      if (orchResult.walletKeys) {
-        await sessionManager.update(session.id, {
-          fleetWallets: orchResult.walletKeys,
-          status: "live",
-          launchedAt: new Date().toISOString(),
+        console.log(`[LAUNCH] Starting fleet with ${session.fleetBudget} SOL on ${tokenCA}`);
+        
+        orchResult = await orch.launch(tokenCA, {
+          totalSol: session.fleetBudget,
+          devKeypair,
+          sessionId: session.id,
+          force: true,
+          fleetConfig: session.fleetConfig || {},
         });
-        console.log(`[LAUNCH] Saved ${orchResult.walletKeys.length} fleet wallet keys to session`);
-      }
+        console.log(`[LAUNCH] Fleet started:`, JSON.stringify(orchResult).slice(0, 300));
+        
+        // Start live price tracking
+        startPricePolling(tokenCA);
+
+        // CRITICAL: Save fleet wallet keys for recovery
+        if (orchResult.walletKeys) {
+          await sessionManager.update(session.id, {
+            fleetWallets: orchResult.walletKeys,
+            status: "live",
+            launchedAt: new Date().toISOString(),
+          });
+          console.log(`[LAUNCH] Saved ${orchResult.walletKeys.length} fleet wallet keys to session`);
+        }
     } catch (orchErr) {
       console.warn("[LAUNCH] Fleet start failed:", orchErr.message);
       console.warn("[LAUNCH] Stack:", orchErr.stack?.split("\n").slice(0, 3).join("\n"));
       orchResult = { ok: true, fleetError: orchErr.message };
+    }
+    } else {
+      console.log(`[LAUNCH] Deploy-only mode — no fleet, no dev buy`);
+      await sessionManager.update(session.id, { status: "deployed", launchedAt: new Date().toISOString() });
     }
 
     if (sessionStore) {
