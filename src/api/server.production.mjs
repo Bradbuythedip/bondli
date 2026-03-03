@@ -25,7 +25,7 @@ import SessionStore from "../db/session-store.mjs";
 
 // Launch Sessions (dev wallet generation + funding)
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
-import { createToken } from "../engine/token-creator.mjs";
+import { createToken, testPumpPortal } from "../engine/token-creator.mjs";
 
 // ═══════════════════════════════════════
 // TIER + ACCESS SYSTEM
@@ -383,6 +383,19 @@ app.post("/api/session/fund", apiLimiter, async (req, res) => {
   }
 });
 
+// Diagnostic: test PumpPortal connectivity
+app.get("/api/test-pumpportal", async (req, res) => {
+  try {
+    const wallet = req.query.wallet || "11111111111111111111111111111111";
+    console.log("[TEST] Running PumpPortal diagnostic...");
+    const results = await testPumpPortal(wallet);
+    console.log("[TEST] Results:", JSON.stringify(results, null, 2));
+    res.json(results);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Launch: create token on pump.fun + start orchestrator
 app.post("/api/session/launch", apiLimiter, async (req, res) => {
   try {
@@ -408,6 +421,8 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
     // ── Step 1: Create token on pump.fun (if no existing CA) ──
     if (!existingCA) {
       console.log(`[LAUNCH] Creating token: ${session.tokenConfig.name} ($${session.tokenConfig.ticker})`);
+      console.log(`[LAUNCH] Dev wallet: ${devKeypair.publicKey.toBase58()}`);
+      console.log(`[LAUNCH] Budget: ${session.devBuy} SOL dev buy + ${session.fleetBudget} SOL fleet`);
       
       const connection = new Connection(CONFIG.RPC_URL, "confirmed");
       
