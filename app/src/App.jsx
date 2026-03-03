@@ -377,7 +377,11 @@ function TierGate({ user, onSelect, onDisconnect }) {
 // ══════════════════════════════════════════
 // LAUNCH FLOW — generate dev wallet, fund, launch
 // ══════════════════════════════════════════
-function calcDevBuyPreview(totalSol) {
+function calcDevBuyPreview(totalSol, isApe) {
+  if (isApe) {
+    // APE mode: no dev buy, no creation fee, all to fleet
+    return { devBuy: 0, creationFee: 0, fleet: +totalSol.toFixed(4), pct: 0 };
+  }
   let pct, min, max;
   if (totalSol < 1) { pct = 0.50; min = 0.1; max = 0.5; }
   else if (totalSol < 5) { pct = 0.40; min = 0.3; max = 2.0; }
@@ -399,7 +403,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
   const [txSig, setTxSig] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const preview = calcDevBuyPreview(totalSol);
+  const isApe = !!(tokenConfig?.existingCA); const preview = calcDevBuyPreview(totalSol, isApe);
   const pollRef = useRef(null);
 
   const copyText = (text) => { navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); };
@@ -582,18 +586,24 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
       )}
 
       {/* BUDGET */}
-      <div style={{ padding: "8px 0", marginBottom: 12, display: "flex", justifyContent: "center", gap: mobile ? 12 : 20, fontFamily: mono, fontSize: 12, color: T.dim }}>
-        <span><span style={{ color: T.yellow, fontWeight: 700 }}>{preview.devBuy}</span> dev buy</span>
-        <span style={{ color: T.border }}>{"\u00B7"}</span>
-        <span><span style={{ color: T.dim, fontWeight: 700 }}>{preview.creationFee}</span> fee</span>
-        <span style={{ color: T.border }}>{"\u00B7"}</span>
-        <span><span style={{ color: T.green, fontWeight: 700 }}>{preview.fleet}</span> fleet</span>
-      </div>
+      {isApe ? (
+        <div style={{ padding: "8px 0", marginBottom: 12, textAlign: "center", fontFamily: mono, fontSize: mobile ? 12 : 13, color: T.dim }}>
+          <span style={{ color: T.green, fontWeight: 700 }}>{totalSol} SOL</span> fleet budget
+        </div>
+      ) : (
+        <div style={{ padding: "8px 0", marginBottom: 12, display: "flex", justifyContent: "center", gap: mobile ? 12 : 20, fontFamily: mono, fontSize: mobile ? 12 : 13, color: T.dim }}>
+          <span><span style={{ color: T.yellow, fontWeight: 700 }}>{preview.devBuy}</span> dev buy</span>
+          <span style={{ color: T.border }}>{"\u00B7"}</span>
+          <span><span style={{ color: T.dim, fontWeight: 700 }}>{preview.creationFee}</span> fee</span>
+          <span style={{ color: T.border }}>{"\u00B7"}</span>
+          <span><span style={{ color: T.green, fontWeight: 700 }}>{preview.fleet}</span> fleet</span>
+        </div>
+      )}
 
       {step === "idle" && (
         <Btn onClick={startLaunch} full disabled={!canLaunch}
           style={{ padding: "16px 24px", fontSize: mobile ? 16 : 18, borderRadius: 14, animation: canLaunch ? "glow 3s infinite" : "none" }}>
-          <Ic.Zap /> Launch on pump.fun
+          <Ic.Zap /> {isApe ? "Start Trading" : "Launch on pump.fun"}
         </Btn>
       )}
 
@@ -877,7 +887,7 @@ export default function App() {
                     <NumInput label="Duration m" value={duration} onChange={setDuration} min={5} max={240} step={5} T={T} />
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 2, background: T.border + "44", borderRadius: 8, overflow: "hidden" }}>
-                    {[{ k: "Dev Buy", v: calcDevBuyPreview(totalSol).devBuy.toFixed(2) }, { k: "Fleet", v: calcDevBuyPreview(totalSol).fleet.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }].map(s => (
+                    {(existingCA ? [{ k: "Fleet", v: totalSol.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }] : [{ k: "Dev Buy", v: calcDevBuyPreview(totalSol, false).devBuy.toFixed(2) }, { k: "Fleet", v: calcDevBuyPreview(totalSol, false).fleet.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }]).map(s => (
                       <div key={s.k} style={{ background: T.bg, padding: "10px 6px", textAlign: "center" }}><div style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 9, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.k}</div></div>
                     ))}
                   </div>
