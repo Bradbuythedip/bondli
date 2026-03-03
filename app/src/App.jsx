@@ -707,7 +707,7 @@ export default function App() {
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState("");
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
-  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false);
+  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
   const mobile = useIsMobile();
@@ -728,6 +728,19 @@ export default function App() {
   const handleTierSelect = (tier) => setUser({ ...user, tier, paid: tier === "pro" });
   const analyzeCA = async (ca) => { if (!ca || ca.length < 32) return; setCaAnalysis({ ca, loading: true, error: null, data: null }); try { const res = await fetch(API + "/api/analyze/" + ca); if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "Not found"); } const coin = await res.json(); setCaAnalysis({ ca, loading: false, error: null, data: coin }); } catch (e) { setCaAnalysis({ ca, loading: false, error: e.message || "Analysis failed", data: null }); } };
   const handleCAChange = (v) => { setExistingCA(v); setCaAnalysis(null); };
+  const closeSession = async (ca) => {
+    if (!ca) { toast("No active session", "error"); return; }
+    if (isClosing) { toast("Already closing — please wait", "error"); return; }
+    if (!confirm("Close all positions for " + ca.slice(0, 8) + "...?")) return;
+    setIsClosing(true);
+    try {
+      const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca, wallet: user?.pubkey }) });
+      const data = await res.json();
+      if (data.error) { toast(data.error, "error"); }
+      else { toast("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL | Recovered: " + (data.solRecovered || 0).toFixed(4) + " SOL", "success"); setLaunched(false); setLaunchCA(""); setFleetStatus(null); }
+    } catch (e) { toast(e.message, "error"); }
+    setIsClosing(false);
+  };
   const handleCAKeyDown = (e) => { if (e.key === "Enter" && existingCA.length >= 32) { e.preventDefault(); analyzeCA(existingCA); } };
   return (
     <ThemeCtx.Provider value={T}>
@@ -745,7 +758,7 @@ export default function App() {
               {wsConnected && <span style={{ fontSize: 10, fontFamily: mono, color: T.green, opacity: 0.8 }}>{"\u25CF"} live</span>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: mobile ? 6 : 10 }}>
-              {(launched || pastSessions.length > 0) && (<button onClick={async () => { const ca = launchCA || pastSessions[0]?.tokenCA; if (!ca) { toast("No active session", "error"); return; } if (!confirm("Emergency close all positions for " + ca.slice(0, 8) + "...?")) return; try { const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca, wallet: user?.pubkey }) }); const data = await res.json(); if (data.error) toast(data.error, "error"); else { toast("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL", "success"); setLaunched(false); setLaunchCA(""); setFleetStatus(null); } } catch (e) { toast(e.message, "error"); } }} style={{ background: T.red + "15", border: "1px solid " + T.red + "44", borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: T.red, fontFamily: mono, fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4 }}>{"\u2620"} Close</button>)}
+              {(launched || pastSessions.length > 0) && (<button onClick={() => closeSession(launchCA || pastSessions[0]?.tokenCA)} disabled={isClosing} style={{ background: T.red + "15", border: "1px solid " + T.red + "44", borderRadius: 8, padding: "5px 10px", cursor: isClosing ? "wait" : "pointer", color: T.red, fontFamily: mono, fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Closing..." : "\u2620 Close"}</button>)}
               <button onClick={() => setShowSettings(!showSettings)} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: T.dim, fontSize: 14 }}>{"\u2699"}</button>
               <ThemeToggle isDark={isDark} toggle={toggleTheme} mobile={mobile} />
               {tierLabel && <span style={{ padding: "3px 8px", borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 700, background: tierColor + "18", color: tierColor, border: "1px solid " + tierColor + "33" }}>{tierLabel}</span>}
@@ -769,7 +782,12 @@ export default function App() {
                     </div>
                     <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(launchCA); toast("CA copied", "success"); }}>{launchCA.slice(0, 6)}...{launchCA.slice(-4)} {"\u{1F4CB}"}</span>
                   </div>
-                  <iframe src={"https://pump.fun/coin/" + launchCA} style={{ width: "100%", height: mobile ? 380 : 520, border: "none", display: "block" }} title="Chart" />
+                  <iframe src={"https://pump.fun/coin/" + launchCA} style={{ width: "100%", height: mobile ? 380 : 520, border: "none", display: "block" }} title="Chart" allow="clipboard-read; clipboard-write" />
+                  <div style={{ padding: "6px 12px", background: T.bg, borderTop: "1px solid " + T.border, display: "flex", gap: 8, justifyContent: "center" }}>
+                    <button onClick={() => { const el = document.querySelector('iframe[title="Chart"]'); if (el) el.src = "https://pump.fun/coin/" + launchCA; }} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "4px 10px", color: T.green, fontFamily: mono, fontSize: 11, cursor: "pointer" }}>pump.fun</button>
+                    <button onClick={() => { const el = document.querySelector('iframe[title="Chart"]'); if (el) el.src = "https://www.gmgn.cc/kline/sol/" + launchCA; }} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "4px 10px", color: T.mid, fontFamily: mono, fontSize: 11, cursor: "pointer" }}>gmgn</button>
+                    <button onClick={() => { const el = document.querySelector('iframe[title="Chart"]'); if (el) el.src = "https://dexscreener.com/solana/" + launchCA + "?embed=1&theme=dark&trades=0&info=0"; }} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "4px 10px", color: T.mid, fontFamily: mono, fontSize: 11, cursor: "pointer" }}>dex</button>
+                  </div>
                 </div>
 
                 {/* ═══ LINKS ═══ */}
@@ -833,7 +851,7 @@ export default function App() {
 
                 {/* ═══ CONTROLS ═══ */}
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={async () => { if (!confirm("Close all positions?")) return; try { const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca: launchCA, wallet: user?.pubkey }) }); const data = await res.json(); if (data.error) toast(data.error, "error"); else toast("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL", "success"); } catch (e) { toast(e.message, "error"); } }} style={{ flex: 1, padding: "14px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: "pointer" }}>{"\u2620"} Close All</button>
+                  <button onClick={() => closeSession(launchCA)} disabled={isClosing} style={{ flex: 1, padding: "14px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Closing..." : "\u2620 Close All"}</button>
                   <button onClick={() => { setLaunched(false); setLaunchCA(""); setCaAnalysis(null); setFleetStatus(null); }} style={{ padding: "14px 20px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 13, borderRadius: 10, cursor: "pointer" }}>New</button>
                 </div>
               </div>
@@ -894,7 +912,7 @@ export default function App() {
                 <Section n={"\u{1F680}"} title={isApe ? "Start Trading" : "Launch"} highlight={canLaunch} T={T} mobile={mobile}>
                   <LaunchFlow user={user} mobile={mobile} totalSol={totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip }} onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }} />
                 </Section>
-                {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginTop: 8 }}><div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12 }}>Active Sessions</div>{pastSessions.map(s => (<div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid " + T.border + "22" }}><span style={{ fontFamily: mono, fontSize: 13, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || s.tokenConfig?.name || "?"} {"\u2014"} <span style={{ color: T.faint, fontSize: 11 }}>{s.tokenCA?.slice(0, 8)}...</span></span><button onClick={async () => { if (!confirm("Close all for " + (s.tokenConfig?.ticker || "this token") + "?")) return; try { const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca: s.tokenCA, wallet: user?.pubkey }) }); const data = await res.json(); if (data.error) toast(data.error, "error"); else toast("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL", "success"); } catch (e) { toast(e.message, "error"); } }} style={{ background: T.red + "15", color: T.red, border: "1px solid " + T.red + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: "pointer" }}>{"\u2620"} Close</button><button onClick={async () => { try { const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) }); const data = await res.json(); if (data.ok) { setLaunchCA(data.tokenCA || s.tokenCA); setLaunched(true); if (s.tokenConfig?.name) setTokenName(s.tokenConfig.name); if (s.tokenConfig?.ticker) setTicker(s.tokenConfig.ticker); } else toast(data.error || "Failed", "error"); } catch (e) { toast(e.message, "error"); } }} style={{ background: T.green, color: T.bg, border: "none", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 12px", borderRadius: 6, cursor: "pointer" }}>Resume</button></div>))}</div>)}
+                {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginTop: 8 }}><div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12 }}>Active Sessions</div>{pastSessions.map(s => (<div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid " + T.border + "22" }}><span style={{ fontFamily: mono, fontSize: 13, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || s.tokenConfig?.name || "?"} {"\u2014"} <span style={{ color: T.faint, fontSize: 11 }}>{s.tokenCA?.slice(0, 8)}...</span></span><button onClick={() => closeSession(s.tokenCA)} disabled={isClosing} style={{ background: T.red + "15", color: T.red, border: "1px solid " + T.red + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{"\u2620"} Close</button><button onClick={async () => { try { const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) }); const data = await res.json(); if (data.ok) { setLaunchCA(data.tokenCA || s.tokenCA); setLaunched(true); if (s.tokenConfig?.name) setTokenName(s.tokenConfig.name); if (s.tokenConfig?.ticker) setTicker(s.tokenConfig.ticker); } else toast(data.error || "Failed", "error"); } catch (e) { toast(e.message, "error"); } }} style={{ background: T.green, color: T.bg, border: "none", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 12px", borderRadius: 6, cursor: "pointer" }}>Resume</button></div>))}</div>)}
               </div>
             )}
           </div>
