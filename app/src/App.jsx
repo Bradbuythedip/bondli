@@ -261,7 +261,7 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
         </div>
       </section>
 
-      <footer style={{ padding: "16px 28px", borderTop: "1px solid " + T.border, display: "flex", justifyContent: "space-between", fontSize: 13, color: T.faint, fontFamily: mono }}><span>BONDLI v3.0</span><span>{PLATFORM_WALLET}</span></footer>
+      <footer style={{ padding: "16px 28px", borderTop: "1px solid " + T.border, display: "flex", justifyContent: "space-between", fontSize: 13, color: T.faint, fontFamily: mono }}><span>BONDLI v3.1</span><span>{PLATFORM_WALLET}</span></footer>
     </div>
   );
 }
@@ -281,7 +281,7 @@ function TierGate({ user, onSelect, onDisconnect }) {
     try {
       const res = await fetch(API + "/api/access/activate-free", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wallet: user.pubkey }),
+        body: JSON.stringify({ wallet: user?.pubkey }),
       });
       const data = await res.json();
       if (data.ok) onSelect("free");
@@ -296,7 +296,7 @@ function TierGate({ user, onSelect, onDisconnect }) {
     try {
       const res = await fetch(API + "/api/access/activate-pro", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wallet: user.pubkey, txSig }),
+        body: JSON.stringify({ wallet: user?.pubkey, txSig }),
       });
       const data = await res.json();
       if (data.ok) onSelect("pro");
@@ -312,7 +312,7 @@ function TierGate({ user, onSelect, onDisconnect }) {
         <div style={{ textAlign: "center", marginBottom: 24 }}>
           <RedPill size={40} />
           <h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 22 : 28, marginTop: 12, color: T.text }}>Choose your path</h2>
-          <p style={{ fontSize: 14, color: T.dim, marginTop: 6 }}>Connected as <span style={{ fontFamily: mono, color: T.green }}>{(user.pubkey || "").slice(0, 6)}...{(user.pubkey || "").slice(-4)}</span></p>
+          <p style={{ fontSize: 14, color: T.dim, marginTop: 6 }}>Connected as <span style={{ fontFamily: mono, color: T.green }}>{(user?.pubkey || "").slice(0, 6)}...{(user?.pubkey || "").slice(-4)}</span></p>
         </div>
 
         {error && <p style={{ fontSize: 14, color: T.red, marginBottom: 14, fontFamily: mono, textAlign: "center" }}>{error}</p>}
@@ -411,8 +411,8 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     try {
       const res = await fetch(API + "/api/session/create", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
-        body: JSON.stringify({ totalSol, tokenConfig, wallet: user.pubkey }),
+        headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey },
+        body: JSON.stringify({ totalSol, tokenConfig, wallet: user?.pubkey }),
       });
       if (!res.ok) {
         try { const d = await res.json(); setError(d.error || "Server error " + res.status); }
@@ -441,7 +441,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
       try {
         const sid = session?.sessionId;
         if (!sid) return;
-        const res = await fetch(API + "/api/session/balance?sessionId=" + sid + "&wallet=" + user.pubkey);
+        const res = await fetch(API + "/api/session/balance?sessionId=" + sid + "&wallet=" + user?.pubkey);
         const data = await res.json();
         if (data.funded) { clearInterval(pollRef.current); setStep("funded"); }
       } catch {}
@@ -455,8 +455,8 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     try {
       const res = await fetch(API + "/api/session/fund", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
-        body: JSON.stringify({ sessionId: session?.sessionId, txSig: signature, wallet: user.pubkey }),
+        headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey },
+        body: JSON.stringify({ sessionId: session?.sessionId, txSig: signature, wallet: user?.pubkey }),
       });
       const data = await res.json();
       if (!data.ok) {
@@ -475,8 +475,8 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     try {
       const res = await fetch(API + "/api/session/launch", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
-        body: JSON.stringify({ sessionId: session?.sessionId, wallet: user.pubkey }),
+        headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey },
+        body: JSON.stringify({ sessionId: session?.sessionId, wallet: user?.pubkey }),
       });
       const data = await res.json();
       if (data.error) { setError(data.error); setStep("funded"); return; }
@@ -510,7 +510,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
           <span style={{ color: T.green, animation: "pulse 2s infinite", fontSize: 20 }}>{"\u25CF"}</span>
           <div>
             <div style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 15 }}>Engine Running</div>
-            {session && <div style={{ fontSize: 12, color: T.dim, fontFamily: mono, marginTop: 2 }}>Dev: {(session.devWallet || "").slice(0, 8)}...</div>}
+            {session && <div style={{ fontSize: 12, color: T.dim, fontFamily: mono, marginTop: 2 }}>Dev: {(session?.devWallet || "").slice(0, 8)}...</div>}
           </div>
         </div>
         <KeyBox />
@@ -572,9 +572,9 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
             </div>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16, fontSize: 13, fontFamily: mono }}>
-            <div style={{ textAlign: "center" }}><div style={{ color: T.yellow, fontWeight: 700 }}>{session.devBuy || 0} SOL</div><div style={{ color: T.faint, fontSize: 11 }}>dev buy</div></div>
-            <div style={{ textAlign: "center" }}><div style={{ color: T.green, fontWeight: 700 }}>{session.fleetBudget || 0} SOL</div><div style={{ color: T.faint, fontSize: 11 }}>fleet</div></div>
-            <div style={{ textAlign: "center" }}><div style={{ color: T.mid, fontWeight: 700 }}>{session.devBuyPercent || 0}%</div><div style={{ color: T.faint, fontSize: 11 }}>dev %</div></div>
+            <div style={{ textAlign: "center" }}><div style={{ color: T.yellow, fontWeight: 700 }}>{session?.devBuy || 0} SOL</div><div style={{ color: T.faint, fontSize: 11 }}>dev buy</div></div>
+            <div style={{ textAlign: "center" }}><div style={{ color: T.green, fontWeight: 700 }}>{session?.fleetBudget || 0} SOL</div><div style={{ color: T.faint, fontSize: 11 }}>fleet</div></div>
+            <div style={{ textAlign: "center" }}><div style={{ color: T.mid, fontWeight: 700 }}>{session?.devBuyPercent || 0}%</div><div style={{ color: T.faint, fontSize: 11 }}>dev %</div></div>
           </div>
           <Btn onClick={openPhantomSend} full style={{ borderRadius: 12, background: "linear-gradient(135deg, #534bb1, #551bf9)", marginBottom: 10 }}>
             <Ic.Phantom /> {/iPhone|iPad|Android/i.test(navigator.userAgent) ? "Open Phantom & Send " + totalSol + " SOL" : "Copy Address & Send " + totalSol + " SOL"}
@@ -624,7 +624,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
             <Ic.Zap /> Launch Token + Start Fleet
           </Btn>
           <p style={{ fontSize: 12, color: T.faint, fontFamily: mono, textAlign: "center", marginTop: 10 }}>
-            Dev buy: {session.devBuy || 0} SOL ({session.devBuyPercent || 0}%) {"\u2192"} Fleet: {session.fleetBudget || 0} SOL
+            Dev buy: {session?.devBuy || 0} SOL ({session?.devBuyPercent || 0}%) {"\u2192"} Fleet: {session?.fleetBudget || 0} SOL
           </p>
         </div>
       )}
@@ -697,8 +697,8 @@ export default function App() {
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const mobile = useIsMobile();
 
-  const hasAccess = user && (user.whitelisted || user.tier === "free" || user.tier === "pro" || user.demo);
-  const needsTier = user && !user.demo && !user.whitelisted && user.tier === "none";
+  const hasAccess = user && (user?.whitelisted || user?.tier === "free" || user?.tier === "pro" || user?.demo);
+  const needsTier = user && !user?.demo && !user?.whitelisted && user?.tier === "none";
   const tierLabel = user?.whitelisted ? "VIP" : user?.tier === "pro" ? "PRO" : user?.tier === "free" ? "FREE" : user?.demo ? "DEMO" : "";
   const tierColor = user?.whitelisted ? T.yellow : user?.tier === "pro" ? T.purple : user?.tier === "free" ? T.green : T.orange;
 
@@ -754,14 +754,14 @@ export default function App() {
               {tierLabel && <span style={{ padding: "4px 10px", borderRadius: 8, fontFamily: mono, fontSize: 11, fontWeight: 700, background: tierColor + "18", color: tierColor, border: "1px solid " + tierColor + "33" }}>{tierLabel === "FREE" ? "\u{1F30D}" : tierLabel === "VIP" ? "\u2B50" : tierLabel === "PRO" ? "\u{1F451}" : ""} {tierLabel}</span>}
               <div style={{ display: "flex", alignItems: "center", gap: mobile ? 6 : 10, padding: mobile ? "6px 10px" : "8px 16px", background: T.bg, borderRadius: 12, border: "1px solid " + T.border }}>
                 {!mobile && <Ic.Phantom />}
-                <span style={{ fontFamily: mono, fontSize: mobile ? 12 : 13, color: T.mid }}>{user.demo ? "demo" : (user.pubkey || "").slice(0, 4) + ".." + (user.pubkey || "").slice(-4)}</span>
+                <span style={{ fontFamily: mono, fontSize: mobile ? 12 : 13, color: T.mid }}>{user?.demo ? "demo" : (user?.pubkey || "").slice(0, 4) + ".." + (user?.pubkey || "").slice(-4)}</span>
                 <button onClick={disconnect} style={{ background: "none", border: "none", cursor: "pointer", color: T.dim, display: "flex", padding: 0 }}><Ic.Disconnect /></button>
               </div>
             </div>
           </header>
 
           {/* Free tier banner */}
-          {user.tier === "free" && !user.whitelisted && (
+          {user?.tier === "free" && !user?.whitelisted && (
             <div style={{ background: T.green + "10", borderBottom: "1px solid " + T.green + "22", padding: "8px 28px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap" }}>
               <span style={{ fontSize: 13, fontFamily: mono, color: T.green }}>Free tier: {FREE_PROFIT_CUT}% of profits go to Bondli on close</span>
               <button onClick={() => { setUser({ ...user, tier: "none" }); }} style={{ background: T.green, color: T.bg, border: "none", borderRadius: 8, padding: "4px 12px", fontFamily: mono, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>Upgrade to Pro</button>
@@ -806,7 +806,7 @@ export default function App() {
               <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}><h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, marginBottom: 24, display: "flex", alignItems: "center", gap: 10, color: T.text }}><Ic.Zap /> Trading Parameters</h3><div style={{ display: "flex", flexDirection: "column", gap: 24 }}>{[{ label: "Slippage", val: slippage, set: setSlippage, min: 1, max: 50, step: 1, suf: "%" }, { label: "Duration", val: duration, set: setDuration, min: 5, max: 240, step: 5, suf: " min" }, { label: "SOL Budget", val: totalSol, set: setTotalSol, min: 0.1, max: 50, step: 0.1, suf: " SOL" }].map(s => (<div key={s.label}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}><span style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".1em" }}>{s.label}</span><span style={{ fontSize: 18, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.val}{s.suf}</span></div><input type="range" min={s.min} max={s.max} step={s.step} value={s.val} onChange={e => s.set(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>))}<div style={{ padding: mobile ? 16 : 20, background: T.bg, borderRadius: 12, border: "1px solid " + T.border }}><Label>computed strategy</Label><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginTop: 14 }}>{[{ k: "Wallets", v: walletCount }, { k: "Reserve", v: (totalSol * 0.12).toFixed(3) }, { k: "Per Wallet", v: "~" + (totalSol * 0.88 / walletCount).toFixed(3) }].map(s => (<div key={s.k} style={{ textAlign: "center" }}><div style={{ fontSize: mobile ? 20 : 24, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 12, color: T.faint, fontFamily: mono }}>{s.k}</div></div>))}</div></div></div></div>
             </div>)}
           </div>
-          {mobile ? <MobileNav tab={tab} setTab={setTab} /> : <footer style={{ padding: "16px 28px", borderTop: "1px solid " + T.border, marginTop: 40, display: "flex", justifyContent: "space-between", fontSize: 13, color: T.faint, fontFamily: mono }}><span>BONDLI v3.0 {"\u00B7"} {PLATFORM_WALLET}</span><span>{launched ? <span style={{ color: T.green }}>{"\u25CF"} ACTIVE</span> : "\u25CF IDLE"}</span></footer>}
+          {mobile ? <MobileNav tab={tab} setTab={setTab} /> : <footer style={{ padding: "16px 28px", borderTop: "1px solid " + T.border, marginTop: 40, display: "flex", justifyContent: "space-between", fontSize: 13, color: T.faint, fontFamily: mono }}><span>BONDLI v3.1 {"\u00B7"} {PLATFORM_WALLET}</span><span>{launched ? <span style={{ color: T.green }}>{"\u25CF"} ACTIVE</span> : "\u25CF IDLE"}</span></footer>}
         </div>
       )}
     </ThemeCtx.Provider>
