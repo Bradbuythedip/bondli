@@ -425,43 +425,42 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     } catch (e) { setError("Failed to create session: " + (e.message || e)); setStep("idle"); }
   };
 
-  // Step 2: Send SOL via Phantom
-  const sendViaPhantom = async () => {
-    setError(""); setStep("sending");
-    try {
-      const provider = window?.phantom?.solana || window?.solana;
-      if (!provider) { setError("Phantom not found"); setStep("awaiting_deposit"); return; }
-
-      const { PublicKey: PK, SystemProgram: SP, Transaction: Tx, LAMPORTS_PER_SOL: LSOL } = await import("https://cdnjs.cloudflare.com/ajax/libs/solana-web3.js/1.87.6/solana-web3.js");
-
-      // Build SOL transfer tx
-      const connection = new (await import("https://cdnjs.cloudflare.com/ajax/libs/solana-web3.js/1.87.6/solana-web3.js")).Connection(
-        "https://api.mainnet-beta.solana.com", "confirmed"
-      );
-      const fromPubkey = provider.publicKey;
-      const toPubkey = new PK(session.devWallet);
-      const lamports = Math.floor(totalSol * LSOL);
-
-      const tx = new Tx().add(
-        SP.transfer({ fromPubkey, toPubkey, lamports })
-      );
-      tx.feePayer = fromPubkey;
-      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-
-      const signed = await provider.signAndSendTransaction(tx);
-      const sig = signed.signature || signed;
-      setTxSig(typeof sig === "string" ? sig : sig.toString());
-      setStep("verifying");
-
-      // Auto-verify after short delay for confirmation
-      setTimeout(() => verifyDeposit(typeof sig === "string" ? sig : sig.toString()), 4000);
-
-    } catch (e) {
-      if (e.code === 4001) { setError("Transaction rejected"); }
-      else { setError("Send failed: " + (e.message || "unknown error")); }
-      setStep("awaiting_deposit");
+  // Step 2: Open Phantom to send (deep link on mobile, manual on desktop)
+  const openPhantomSend = () => {
+    const addr = session.devWallet;
+    const isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      // Phantom deep link for transfer
+      window.location.href = `https://phantom.app/ul/transfer?recipient=${addr}&amount=${totalSol}`;
+    } else {
+      // Desktop: copy address, user sends manually
+      navigator.clipboard?.writeText(addr);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     }
+    // Start polling balance
+    setStep("polling");
+    pollBalance();
   };
+
+  // Auto-poll dev wallet balance until deposit detected
+  const pollRef = useRef(null);
+  const pollBalance = () => {
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(API + "/api/session/balance?sessionId=" + session.sessionId + "&wallet=" + user.pubkey);
+        const data = await res.json();
+        if (data.funded) {
+          clearInterval(pollRef.current);
+          setStep("funded");
+        }
+      } catch {}
+    }, 5000); // check every 5s
+  };
+
+  // Cleanup poll on unmount
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
   // Step 3: Verify deposit on-chain
   const verifyDeposit = async (sig) => {
@@ -602,18 +601,37 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
             <div style={{ textAlign: "center" }}><div style={{ color: T.mid, fontWeight: 700 }}>{session.devBuyPercent}%</div><div style={{ color: T.faint, fontSize: 11 }}>dev %</div></div>
           </div>
 
-          <Btn onClick={sendViaPhantom} full disabled={step === "sending"}
+          <Btn onClick={openPhantomSend} full
             style={{ borderRadius: 12, background: "linear-gradient(135deg, #534bb1, #551bf9)", marginBottom: 10 }}>
-            <Ic.Phantom /> {step === "sending" ? "Sending..." : "Send " + totalSol + " SOL via Phantom"}
+            <Ic.Phantom /> {/iPhone|iPad|Android/i.test(navigator.userAgent) ? "Open Phantom & Send " + totalSol + " SOL" : "Copy Address & Send " + totalSol + " SOL"}
           </Btn>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 12, borderTop: "1px solid " + T.border }}>
-            <span style={{ fontSize: 12, color: T.faint, fontFamily: mono, flex: 1 }}>Or send manually and paste tx sig:</span>
+            <span style={{ fontSize: 12, color: T.faint, fontFamily: mono, flex: 1 }}>Already sent? Paste tx sig or we'll auto-detect:</span>
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <div style={{ flex: 1 }}><Input value={txSig} onChange={setTxSig} placeholder="tx signature..." /></div>
+            <div style={{ flex: 1 }}><Input value={txSig} onChange={setTxSig} placeholder="tx signature (optional)..." /></div>
             <Btn onClick={() => verifyDeposit()} small disabled={!txSig} ghost color={T.green}>Verify</Btn>
           </div>
+        </div>
+      )}
+
+      {/* STEP: polling — waiting for deposit */}
+      {step === "polling" && session && (
+        <div style={{ background: T.surface, border: "2px solid " + T.yellow + "33", borderRadius: 16, padding: mobile ? 18 : 24, animation: "fadeUp .4s ease" }}>
+          <div style={{ textAlign: "center", marginBottom: 16 }}>
+            <div style={{ fontSize: 32, marginBottom: 10, animation: "pulse 1.5s infinite" }}>{"\u23F3"}</div>
+            <div style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: T.yellow }}>Waiting for {totalSol} SOL...</div>
+            <div style={{ fontSize: 13, color: T.dim, fontFamily: mono, marginTop: 6 }}>Send to: <span style={{ color: T.green }}>{session.devWallet.slice(0, 8)}...{session.devWallet.slice(-6)}</span></div>
+            <div style={{ fontSize: 12, color: T.faint, fontFamily: mono, marginTop: 8 }}>Auto-detecting deposit every 5s</div>
+          </div>
+
+          <div style={{ display: "flex", gap: 8, paddingTop: 14, borderTop: "1px solid " + T.border }}>
+            <div style={{ flex: 1 }}><Input value={txSig} onChange={setTxSig} placeholder="or paste tx sig to verify now..." /></div>
+            <Btn onClick={() => verifyDeposit()} small disabled={!txSig} ghost color={T.green}>Verify</Btn>
+          </div>
+
+          <button onClick={() => { if (pollRef.current) clearInterval(pollRef.current); setStep("awaiting_deposit"); }} style={{ display: "block", margin: "12px auto 0", background: "none", border: "none", color: T.faint, cursor: "pointer", fontFamily: mono, fontSize: 13, textDecoration: "underline", textUnderlineOffset: 4 }}>{"\u2190"} Back</button>
         </div>
       )}
 
