@@ -424,7 +424,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
       // If master wallet used, skip deposit — go straight to launch
       if (data.useMaster && data.funded) { setStep("launching"); executeLaunch(data); return; }
       setStep("awaiting");
-    } catch (e) { setError("Failed: " + (e.message || "")); setStep("idle"); }
+    } catch (e) { setError(e.message?.includes("NetworkError") || e.message?.includes("fetch") ? "Server unreachable — check if backend is running at " + API : "Failed: " + (e.message || "")); setStep("idle"); }
   };
 
   // ── STEP 2: Send SOL → auto-poll → auto-launch ──
