@@ -6,7 +6,7 @@ import { WebSocketServer } from "ws";
 import { Connection, PublicKey, LAMPORTS_PER_SOL, SystemProgram, Transaction } from "@solana/web3.js";
 
 // Engine
-import { Orchestrator } from "../engine/orchestrator.mjs";
+import { FleetTrader } from "../engine/fleet-trader.mjs";
 import { calculateFee, getFeeTier, isOwnerWallet, registerOwner } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
 
@@ -119,7 +119,7 @@ app.use((req, res, next) => {
 // SERVICES
 // ═══════════════════════════════════════
 let sessionStore, paymentVerifier, sessionManager;
-const orch = new Orchestrator();
+const orch = new FleetTrader();
 
 async function initServices() {
   const redis = await initRedis(process.env.REDIS_URL);
@@ -297,8 +297,19 @@ app.get("/api/access/profits", async (req, res) => {
 // ═══════════════════════════════════════
 app.get("/api/status", apiLimiter, optionalAuth, (req, res) => {
   const status = orch.status();
-  if (!req.user) return res.json({ ok: true, dryRun: status.dryRun, activeSessions: Object.keys(status.sessions).length });
-  res.json({ ok: true, ...status });
+  // Also include first active session's details for frontend
+  const activeSession = orch.getSessionStatus();
+  const sessionInfo = activeSession ? {
+    phase: activeSession.phase,
+    tradeCount: activeSession.tradeCount,
+    solSpent: activeSession.solSpent,
+    solRecovered: activeSession.solRecovered,
+    activeWallets: 1,
+    running: activeSession.running,
+    ca: activeSession.ca,
+  } : {};
+  if (!req.user) return res.json({ ok: true, activeSessions: status.activeSessions, ...sessionInfo });
+  res.json({ ok: true, ...status, ...sessionInfo });
 });
 
 app.get("/api/config", apiLimiter, (req, res) => {
@@ -435,26 +446,23 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
       metadataUri: createResult?.metadataUri || null,
     });
 
-    // ── Step 3: Start orchestrator fleet on this CA ──
+    // ── Step 3: Start fleet trading on this CA ──
     let orchResult = { ok: true };
     try {
-      // Set the CA in config so orchestrator trades it
       CONFIG.TOKEN_CA = tokenCA;
+
+      console.log(`[LAUNCH] Starting fleet with ${session.fleetBudget} SOL on ${tokenCA}`);
       
-      const launchConfig = {
+      orchResult = await orch.launch(tokenCA, {
         totalSol: session.fleetBudget,
-        devBuy: existingCA ? session.devBuy : 0, // already bought in create tx
         devKeypair,
-        tokenConfig: session.tokenConfig,
         sessionId: session.id,
         force: true,
-      };
-
-      orchResult = await orch.launch(tokenCA, launchConfig);
-      console.log(`[LAUNCH] Fleet started on ${tokenCA}`);
+      });
+      console.log(`[LAUNCH] Fleet started:`, JSON.stringify(orchResult).slice(0, 300));
     } catch (orchErr) {
-      // Fleet failed but token was created — still a partial success
       console.warn("[LAUNCH] Fleet start failed:", orchErr.message);
+      console.warn("[LAUNCH] Stack:", orchErr.stack?.split("\n").slice(0, 3).join("\n"));
       orchResult = { ok: true, fleetError: orchErr.message };
     }
 
@@ -534,15 +542,23 @@ app.get("/api/sessions", apiLimiter, async (req, res) => {
 // ROUTES — Protected (legacy launch, still works)
 // ═══════════════════════════════════════
 app.get("/api/wallets", apiLimiter, walletAuth, (req, res) => {
-  res.json({ wallets: orch.walletOpt.summary() });
+  const status = orch.status();
+  const wallets = [];
+  for (const [ca, s] of Object.entries(status.sessions || {})) {
+    wallets.push({ ca, ...s });
+  }
+  res.json({ wallets });
 });
 
 app.get("/api/curve/:ca", apiLimiter, walletAuth, async (req, res) => {
   try {
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(req.params.ca)) return res.status(400).json({ error: "Invalid contract address" });
-    const info = await orch.router.getCurveInfo(req.params.ca);
-    res.json(info);
-  } catch (e) { res.status(500).json({ error: "Failed to fetch curve info" }); }
+    // Use SDK to fetch bonding curve
+    const mint = new PublicKey(req.params.ca);
+    const onlineSdk = new (await import("@pump-fun/pump-sdk")).OnlinePumpSdk(new Connection(CONFIG.RPC_URL, "confirmed"));
+    const bc = await onlineSdk.fetchBondingCurve(mint);
+    res.json({ exists: true, ...bc });
+  } catch (e) { res.status(500).json({ error: "Failed to fetch curve info", detail: e.message }); }
 });
 
 app.post("/api/launch", launchLimiter, walletAuth, launchSchema, async (req, res) => {
