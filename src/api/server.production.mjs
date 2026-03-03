@@ -637,6 +637,16 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
         fleetConfig: session.fleetConfig || {},
       });
       console.log(`[LAUNCH] Fleet started:`, JSON.stringify(orchResult).slice(0, 300));
+
+      // CRITICAL: Save fleet wallet keys for recovery
+      if (orchResult.walletKeys) {
+        await sessionManager.update(session.id, {
+          fleetWallets: orchResult.walletKeys,
+          status: "live",
+          launchedAt: new Date().toISOString(),
+        });
+        console.log(`[LAUNCH] Saved ${orchResult.walletKeys.length} fleet wallet keys to session`);
+      }
     } catch (orchErr) {
       console.warn("[LAUNCH] Fleet start failed:", orchErr.message);
       console.warn("[LAUNCH] Stack:", orchErr.stack?.split("\n").slice(0, 3).join("\n"));
@@ -715,54 +725,171 @@ app.get("/api/sessions", apiLimiter, async (req, res) => {
   res.json({ sessions, count: sessions.length });
 });
 
-// Resume trading on a previously launched session (VIP only)
+// Resume/view a previously launched session — shows wallet balances and recovery options
 app.post("/api/session/resume", apiLimiter, async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
     if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
-
-    const walletInfo = await getWalletTier(wallet);
-    if (walletInfo.tier !== "pro" && !walletInfo.whitelisted) {
-      return res.status(403).json({ error: "Resume is VIP/Pro only" });
-    }
 
     const session = await sessionManager.get(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
     if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
     if (!session.tokenCA) return res.status(400).json({ error: "No token CA — session was never launched" });
 
-    // Check if already running
+    // Check if fleet is currently running
     const orchStatus = orch.getSessionStatus(session.tokenCA);
     if (orchStatus && orchStatus.running) {
-      return res.json({ ok: true, already_running: true, ...orchStatus });
+      return res.json({ ok: true, status: "running", tokenCA: session.tokenCA, ...orchStatus });
     }
 
-    // Reconstruct devKeypair from stored secret
-    const devKeypair = await sessionManager.getDevKeypair(sessionId);
-    if (!devKeypair) return res.status(500).json({ error: "Cannot recover dev wallet" });
-
-    // Check remaining balance in dev wallet
+    // Gather wallet balances (don't start trading!)
     const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const balance = await connection.getBalance(devKeypair.publicKey);
-    const balanceSol = balance / LAMPORTS_PER_SOL;
+    const walletInfo = [];
+    let totalBalance = 0;
 
-    if (balanceSol < 0.01) return res.status(400).json({ error: "Dev wallet empty (" + balanceSol.toFixed(4) + " SOL)" });
+    // Dev/master wallet
+    const devKeypair = await sessionManager.getDevKeypair(sessionId);
+    if (devKeypair) {
+      try {
+        const bal = await connection.getBalance(devKeypair.publicKey);
+        const solBal = bal / LAMPORTS_PER_SOL;
+        totalBalance += solBal;
+        walletInfo.push({ role: "master", pubkey: devKeypair.publicKey.toBase58().slice(0, 8), balance: solBal });
+      } catch {}
+    }
 
-    // Resume fleet trading
-    const result = await orch.launch(session.tokenCA, {
-      totalSol: balanceSol * 0.9,
-      devKeypair,
-      sessionId: session.id,
-      force: true,
-      fleetConfig: session.fleetConfig || {},
+    // Fleet wallets (if saved)
+    if (session.fleetWallets && session.fleetWallets.length > 0) {
+      for (const fw of session.fleetWallets) {
+        try {
+          const kp = Keypair.fromSecretKey(bs58.decode(fw.secret));
+          const bal = await connection.getBalance(kp.publicKey);
+          const solBal = bal / LAMPORTS_PER_SOL;
+          totalBalance += solBal;
+          walletInfo.push({ role: fw.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: solBal });
+        } catch {}
+      }
+    }
+
+    res.json({
+      ok: true,
+      status: "stopped",
+      tokenCA: session.tokenCA,
+      totalBalance,
+      wallets: walletInfo,
+      hasFleetKeys: !!(session.fleetWallets && session.fleetWallets.length > 0),
+      canRecover: totalBalance > 0.001,
+      session: {
+        id: session.id,
+        totalSol: session.totalSol,
+        devBuy: session.devBuy,
+        fleetBudget: session.fleetBudget,
+        createdAt: session.createdAt,
+        ticker: session.tokenConfig?.ticker,
+        name: session.tokenConfig?.name,
+      },
     });
-
-    await sessionManager.update(sessionId, { status: "resumed", resumedAt: new Date().toISOString() });
-    console.log("[RESUME] " + sessionId + " resumed on " + session.tokenCA + " with " + balanceSol.toFixed(4) + " SOL");
-
-    res.json({ ok: true, ...result, balance: balanceSol, tokenCA: session.tokenCA });
   } catch (e) {
     console.error("[RESUME] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Emergency recover: sweep all SOL from fleet wallets back to master/user wallet
+app.post("/api/session/recover", apiLimiter, async (req, res) => {
+  try {
+    const { sessionId, wallet } = req.body;
+    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
+
+    const session = await sessionManager.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
+
+    // Stop any running fleet first
+    if (session.tokenCA) {
+      try { await orch.close(session.tokenCA); } catch {}
+    }
+
+    // Collect all wallet secrets
+    const secrets = [];
+    const devKeypair = await sessionManager.getDevKeypair(sessionId);
+
+    // Fleet wallets
+    if (session.fleetWallets) {
+      for (const fw of session.fleetWallets) {
+        if (fw.secret) secrets.push(fw.secret);
+      }
+    }
+
+    // Sweep everything to user's connected wallet (or dev wallet if master)
+    const destination = session.useMaster && devKeypair ? devKeypair.publicKey.toBase58() : wallet;
+
+    if (secrets.length === 0) {
+      return res.json({ ok: true, message: "No fleet wallets found to recover", totalRecovered: 0, wallets: [] });
+    }
+
+    const result = await orch.recover(secrets, destination);
+
+    // Also sweep dev wallet to user if it's not the master
+    if (!session.useMaster && devKeypair) {
+      try {
+        const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+        const balance = await connection.getBalance(devKeypair.publicKey);
+        const sweepAmount = balance - 5000;
+        if (sweepAmount > 0) {
+          const tx = new Transaction().add(
+            SystemProgram.transfer({ fromPubkey: devKeypair.publicKey, toPubkey: new PublicKey(wallet), lamports: sweepAmount })
+          );
+          await sendAndConfirmTransaction(connection, tx, [devKeypair], { skipPreflight: true, commitment: "confirmed" });
+          result.totalRecovered += sweepAmount / LAMPORTS_PER_SOL;
+          result.wallets.push({ pubkey: devKeypair.publicKey.toBase58().slice(0, 8), swept: sweepAmount / LAMPORTS_PER_SOL, status: "ok", role: "dev" });
+        }
+      } catch (e) {
+        console.error("[RECOVER] Dev wallet sweep failed:", e.message);
+      }
+    }
+
+    await sessionManager.update(sessionId, { status: "recovered", recoveredAt: new Date().toISOString() });
+    console.log(`[RECOVER] ${sessionId} | Recovered ${result.totalRecovered.toFixed(4)} SOL to ${destination.slice(0, 8)}`);
+
+    res.json({ ok: true, ...result, destination });
+  } catch (e) {
+    console.error("[RECOVER] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get fleet wallet private keys for manual recovery (VIP only)
+app.get("/api/session/:id/keys", apiLimiter, async (req, res) => {
+  try {
+    const wallet = req.headers["x-wallet"];
+    if (!wallet) return res.status(401).json({ error: "wallet required" });
+
+    const walletInfo = await getWalletTier(wallet);
+    if (walletInfo.tier !== "pro" && !walletInfo.whitelisted) {
+      return res.status(403).json({ error: "VIP/Pro only — for safety" });
+    }
+
+    const session = await sessionManager.get(req.params.id);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
+
+    const keys = [];
+    
+    // Dev wallet
+    if (session.devSecret) {
+      keys.push({ role: "dev/master", pubkey: session.devWallet, secret: session.devSecret });
+    }
+
+    // Fleet wallets
+    if (session.fleetWallets) {
+      for (const fw of session.fleetWallets) {
+        keys.push({ role: fw.role, pubkey: fw.pubkey, secret: fw.secret });
+      }
+    }
+
+    res.json({ ok: true, keys, tokenCA: session.tokenCA, warning: "NEVER share these keys. Import into Phantom to manually recover funds." });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
