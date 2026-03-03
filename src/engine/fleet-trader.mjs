@@ -394,7 +394,13 @@ export class FleetTrader {
   // ── Close: sell everything + sweep SOL back ──
   async close(ca) {
     const session = this.sessions.get(ca);
-    if (!session) throw new Error(`No session for ${ca}`);
+    if (!session) throw new Error(`No active session for ${ca.slice(0, 8)}... (already closed or expired)`);
+
+    // Idempotent: if already closing or closed, return cached result
+    if (session.phase === "closing") throw new Error("Already closing — please wait");
+    if (session.phase === "closed") {
+      return session._closeResult || { trades: session.tradeCount, wallets: session.fleetWallets.length, solSpent: session.totalSolSpent, solRecovered: session.totalSolRecovered, netProfit: session.totalSolRecovered - session.totalSolSpent };
+    }
 
     session.running = false;
     session.phase = "closing";
@@ -452,15 +458,20 @@ export class FleetTrader {
 
     const netProfit = session.totalSolRecovered - session.totalSolSpent;
     session.phase = "closed";
-    this.sessions.delete(ca);
 
-    console.log(`[FLEET] Closed ${ca.slice(0, 8)} | Spent: ${session.totalSolSpent.toFixed(4)} | Recovered: ${session.totalSolRecovered.toFixed(4)} | Net: ${netProfit.toFixed(4)}`);
-
-    return {
+    const closeResult = {
       trades: session.tradeCount, wallets: session.fleetWallets.length,
       solSpent: session.totalSolSpent, solRecovered: session.totalSolRecovered,
       netProfit, totalIn: session.totalSol, totalReturn: session.totalSolRecovered, masterBalance,
     };
+    session._closeResult = closeResult;
+
+    console.log(`[FLEET] Closed ${ca.slice(0, 8)} | Spent: ${session.totalSolSpent.toFixed(4)} | Recovered: ${session.totalSolRecovered.toFixed(4)} | Net: ${netProfit.toFixed(4)}`);
+
+    // Keep session for 5 minutes for reference, then clean up
+    setTimeout(() => { this.sessions.delete(ca); }, 5 * 60 * 1000);
+
+    return closeResult;
   }
 
   async closeAll() {
