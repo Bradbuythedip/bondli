@@ -85,22 +85,34 @@ input,textarea,button{font-size:16px}
 `;
 
 // === RED PILL ===
-const RedPill = ({ size = 34 }) => (
-  <svg width={size} height={size} viewBox="0 0 40 40" style={{ filter: "drop-shadow(0 2px 6px rgba(200,0,0,.4))" }}>
+const BondliLogo = ({ size = 34 }) => (
+  <svg width={size} height={size} viewBox="0 0 40 40" style={{ filter: "drop-shadow(0 2px 8px rgba(0,255,136,.3))" }}>
     <defs>
-      <linearGradient id="pillBody" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#ff1a1a"/><stop offset="45%" stopColor="#cc0000"/><stop offset="100%" stopColor="#880000"/></linearGradient>
-      <linearGradient id="pillShine" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="white" stopOpacity="0.5"/><stop offset="100%" stopColor="white" stopOpacity="0"/></linearGradient>
-      <linearGradient id="pillHalf" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#ff6666"/><stop offset="100%" stopColor="#cc3333"/></linearGradient>
+      <linearGradient id="crystalA" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#00ff88"/><stop offset="100%" stopColor="#006644"/></linearGradient>
+      <linearGradient id="crystalB" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#00cc66" stopOpacity="0.9"/><stop offset="100%" stopColor="#004422" stopOpacity="0.8"/></linearGradient>
+      <linearGradient id="crystalC" x1="1" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#00ffaa" stopOpacity="0.7"/><stop offset="100%" stopColor="#008855" stopOpacity="0.5"/></linearGradient>
+      <linearGradient id="crystalGlow" x1="0.5" y1="0" x2="0.5" y2="1"><stop offset="0%" stopColor="#00ff88" stopOpacity="0.4"/><stop offset="100%" stopColor="#00ff88" stopOpacity="0"/></linearGradient>
     </defs>
-    <g transform="rotate(-15 20 20)">
-      <rect x="10" y="8" width="20" height="24" rx="10" fill="url(#pillBody)"/>
-      <rect x="10" y="8" width="20" height="12" rx="10" fill="url(#pillHalf)"/>
-      <rect x="10" y="14" width="20" height="6" fill="url(#pillHalf)"/>
-      <line x1="10" y1="20" x2="30" y2="20" stroke="#660000" strokeWidth="0.8" opacity="0.6"/>
-      <ellipse cx="17" cy="14" rx="4" ry="6" fill="url(#pillShine)" opacity="0.6"/>
-    </g>
+    {/* Diamond/crystal shape — 4 facets */}
+    <polygon points="20,2 33,16 20,38 7,16" fill="none" stroke="#00ff8822" strokeWidth="0.5"/>
+    {/* Left facet */}
+    <polygon points="20,2 7,16 20,22" fill="url(#crystalB)"/>
+    {/* Right facet */}
+    <polygon points="20,2 33,16 20,22" fill="url(#crystalA)"/>
+    {/* Bottom-left */}
+    <polygon points="7,16 20,38 20,22" fill="url(#crystalC)"/>
+    {/* Bottom-right */}
+    <polygon points="33,16 20,38 20,22" fill="#005533"/>
+    {/* Center shine line */}
+    <line x1="20" y1="2" x2="20" y2="38" stroke="#00ffaa" strokeWidth="0.4" opacity="0.5"/>
+    {/* Top highlight */}
+    <polygon points="20,2 14,12 20,16 26,12" fill="url(#crystalGlow)"/>
+    {/* Edge highlights */}
+    <line x1="20" y1="2" x2="7" y2="16" stroke="#00ffbb" strokeWidth="0.5" opacity="0.4"/>
+    <line x1="20" y1="2" x2="33" y2="16" stroke="#00ffbb" strokeWidth="0.3" opacity="0.3"/>
   </svg>
 );
+const RedPill = BondliLogo; // backward compat
 
 // === ICONS ===
 const Ic = {
@@ -174,7 +186,7 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
 
       {/* Top bar */}
       <header style={{ padding: mobile ? "12px 16px" : "14px 40px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 40, background: T.surface + (T.mode === "dark" ? "ee" : "e8"), backdropFilter: "blur(12px)", borderBottom: "1px solid " + T.border }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}><RedPill size={mobile ? 24 : 30} /><span style={{ fontFamily: mono, fontWeight: 800, fontSize: mobile ? 16 : 20 }}>BOND<span style={{ color: T.red }}>LI</span></span></div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}><RedPill size={mobile ? 24 : 30} /><span style={{ fontFamily: mono, fontWeight: 800, fontSize: mobile ? 16 : 20 }}>BOND<span style={{ color: T.green }}>LI</span></span></div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <ThemeToggle isDark={isDark} toggle={toggleTheme} mobile={mobile} />
           <Btn onClick={connectPhantom} small disabled={connecting} style={{ background: "linear-gradient(135deg, #534bb1, #551bf9)", borderRadius: 10 }}><Ic.Phantom /> {mobile ? "Connect" : "Connect Phantom"}</Btn>
@@ -262,7 +274,7 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
         </div>
       </section>
 
-      <footer style={{ padding: "16px 28px", borderTop: "1px solid " + T.border, display: "flex", justifyContent: "space-between", fontSize: 13, color: T.faint, fontFamily: mono }}><span>BONDLI v3.1</span><span>{PLATFORM_WALLET}</span></footer>
+      <footer style={{ padding: "16px 28px", borderTop: "1px solid " + T.border, display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, color: T.faint, fontFamily: mono }}><span>BONDLI v3.3</span><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{ color: T.dim, textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@Bondlifun</a><span>{PLATFORM_WALLET}</span></footer>
     </div>
   );
 }
@@ -1034,9 +1046,9 @@ export default function App() {
         <div style={{ minHeight: "100dvh", background: T.bg, color: T.text, fontFamily: sans }}>
           <div style={{ position: "fixed", inset: 0, opacity: T.mode === "dark" ? 0.015 : 0.025, pointerEvents: "none", zIndex: 0, backgroundImage: T.gridLines, backgroundSize: "60px 60px" }} />
           <header style={{ padding: mobile ? "10px 14px" : "12px 28px", borderBottom: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "space-between", position: "relative", zIndex: 10, background: T.bg + "ee", backdropFilter: "blur(10px)" }}>
-            <div onClick={() => { setLaunched(false); setLaunchCA(""); setCaAnalysis(null); setShowSettings(false); }} style={{ display: "flex", alignItems: "center", gap: mobile ? 8 : 12, cursor: "pointer", userSelect: "none" }}>
+            <div onClick={() => { setLaunched(false); setLaunchCA(""); setActiveSessionId(""); setCaAnalysis(null); setShowSettings(false); setFleetStatus(null); setSessionDetail(null); }} style={{ display: "flex", alignItems: "center", gap: mobile ? 8 : 12, cursor: "pointer", userSelect: "none" }}>
               <RedPill size={mobile ? 26 : 34} />
-              <span style={{ fontFamily: mono, fontWeight: 800, fontSize: mobile ? 17 : 22, color: T.text }}>BOND<span style={{ color: T.red }}>LI</span></span>
+              <span style={{ fontFamily: mono, fontWeight: 800, fontSize: mobile ? 17 : 22, color: T.text }}>BOND<span style={{ color: T.green }}>LI</span></span>
               {wsConnected && <span style={{ fontSize: 10, fontFamily: mono, color: T.green, opacity: 0.8 }}>{"\u25CF"} live</span>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: mobile ? 6 : 10 }}>
@@ -1231,7 +1243,7 @@ export default function App() {
               </div>
             )}
           </div>
-          {!mobile && <footer style={{ padding: "12px 28px", borderTop: "1px solid " + T.border, marginTop: 32, display: "flex", justifyContent: "space-between", fontSize: 12, color: T.faint, fontFamily: mono }}><span>BONDLI v3.2</span><span>{launched ? <span style={{ color: T.green }}>{"\u25CF"} ACTIVE</span> : "\u25CF IDLE"}</span></footer>}
+          {!mobile && <footer style={{ padding: "12px 28px", borderTop: "1px solid " + T.border, marginTop: 32, display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: T.faint, fontFamily: mono }}><span>BONDLI v3.3</span><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{ color: T.dim, textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@Bondlifun</a><span>{launched ? <span style={{ color: T.green }}>{"\u25CF"} ACTIVE</span> : "\u25CF IDLE"}</span></footer>}
         </div>
       )}
     </ThemeCtx.Provider>
