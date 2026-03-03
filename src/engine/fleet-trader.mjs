@@ -1,280 +1,279 @@
-// BONDLI — Fleet Trader (real buy/sell via pump.fun SDK)
-// Executes actual on-chain trades from the dev wallet after token creation
+// BONDLI — Fleet Trader v2 (real multi-wallet trading via pump.fun SDK)
+// Generates wallet fleet, funds from dev wallet, trades with role-based strategies
 import {
   Connection, Keypair, PublicKey, Transaction,
   ComputeBudgetProgram, sendAndConfirmTransaction,
   LAMPORTS_PER_SOL, SystemProgram,
 } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync, getAccount, TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { PumpSdk, OnlinePumpSdk, getBuyTokenAmountFromSolAmount, getSellSolAmountFromTokenAmount, bondingCurvePda } from "@pump-fun/pump-sdk";
+import { PumpSdk, OnlinePumpSdk, getBuyTokenAmountFromSolAmount, getSellSolAmountFromTokenAmount } from "@pump-fun/pump-sdk";
 import BN from "bn.js";
 import bs58 from "bs58";
 import CONFIG from "./config.mjs";
 
 // ═══════════════════════════════════════
-// FLEET TRADER — runs post-launch trading loop
+// WALLET ROLES — each role has timing + behavior
+// ═══════════════════════════════════════
+const ROLES = [
+  { id: "sniper",      weight: 0.08, phase: "snipe",    buyPct: 0.90, sellPct: 0.0,  delayMin: 1,  delayMax: 3    },
+  { id: "accumulator", weight: 0.12, phase: "accum",    buyPct: 0.70, sellPct: 0.15, delayMin: 5,  delayMax: 15   },
+  { id: "momentum",    weight: 0.22, phase: "momentum", buyPct: 0.80, sellPct: 0.20, delayMin: 8,  delayMax: 25   },
+  { id: "swing",       weight: 0.18, phase: "swing",    buyPct: 0.50, sellPct: 0.40, delayMin: 15, delayMax: 45   },
+  { id: "whale",       weight: 0.28, phase: "whale",    buyPct: 0.85, sellPct: 0.10, delayMin: 20, delayMax: 60   },
+  { id: "liquidator",  weight: 0.08, phase: "exit",     buyPct: 0.30, sellPct: 0.70, delayMin: 30, delayMax: 90   },
+  { id: "recycler",    weight: 0.04, phase: "recycle",  buyPct: 0.40, sellPct: 0.60, delayMin: 45, delayMax: 120  },
+];
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ═══════════════════════════════════════
+// FLEET TRADER
 // ═══════════════════════════════════════
 export class FleetTrader {
   constructor(connection) {
     this.connection = connection || new Connection(CONFIG.RPC_URL, "confirmed");
     this.sdk = new PumpSdk(this.connection);
     this.onlineSdk = new OnlinePumpSdk(this.connection);
-    this.sessions = new Map(); // CA -> session
+    this.sessions = new Map();
     this.listeners = [];
   }
 
   emit(event, data) {
     const msg = JSON.stringify({ event, data, ts: Date.now() });
-    for (const fn of this.listeners) {
-      try { fn(msg); } catch {}
-    }
+    for (const fn of this.listeners) { try { fn(msg); } catch {} }
   }
 
   onEvent(fn) { this.listeners.push(fn); }
 
-  // ── Start trading on a CA with budget ──
+  // ── Launch fleet on a CA ──
   async launch(ca, opts = {}) {
-    const {
-      totalSol = 0.5,
-      devKeypair,        // Keypair object — has the SOL
-      sessionId,
-      force = false,
-    } = opts;
+    const { totalSol = 0.5, devKeypair, sessionId, force = false } = opts;
 
     if (this.sessions.has(ca)) {
-      console.warn(`[FLEET] Session already exists for ${ca}`);
+      console.warn(`[FLEET] Session already exists for ${ca.slice(0, 8)}`);
       return { ok: true, existing: true };
     }
 
     const mint = new PublicKey(ca);
 
-    // Resolve keypair
-    let trader;
-    if (devKeypair instanceof Keypair) {
-      trader = devKeypair;
-    } else if (devKeypair?.secretKey) {
-      trader = Keypair.fromSecretKey(
-        typeof devKeypair.secretKey === "string"
-          ? bs58.decode(devKeypair.secretKey)
-          : devKeypair.secretKey
+    // Resolve devKeypair
+    let masterKp;
+    if (devKeypair instanceof Keypair) masterKp = devKeypair;
+    else if (devKeypair?.secretKey) {
+      masterKp = Keypair.fromSecretKey(
+        typeof devKeypair.secretKey === "string" ? bs58.decode(devKeypair.secretKey) : devKeypair.secretKey
       );
     } else {
-      console.error("[FLEET] No valid keypair provided");
+      console.error("[FLEET] No valid keypair");
       return { ok: false, error: "No keypair" };
     }
 
-    console.log(`[FLEET] Starting on ${ca.slice(0, 8)}... | Budget: ${totalSol} SOL | Wallet: ${trader.publicKey.toBase58().slice(0, 8)}...`);
+    console.log(`[FLEET] Launching on ${ca.slice(0, 8)}... | Budget: ${totalSol} SOL | Master: ${masterKp.publicKey.toBase58().slice(0, 8)}...`);
+
+    // ── Generate wallet fleet ──
+    const fleetWallets = [];
+    const minBudget = 0.3;
+    const useFleet = totalSol >= minBudget;
+
+    if (useFleet) {
+      const selectedRoles = totalSol < 0.5
+        ? ROLES.filter(r => ["momentum", "whale"].includes(r.id))
+        : totalSol < 2
+          ? ROLES.filter(r => ["sniper", "accumulator", "momentum", "whale", "liquidator"].includes(r.id))
+          : ROLES;
+
+      const totalWeight = selectedRoles.reduce((s, r) => s + r.weight, 0);
+      const reserveForFees = Math.min(0.05, totalSol * 0.05);
+      const distributable = totalSol - reserveForFees;
+
+      for (const role of selectedRoles) {
+        const kp = Keypair.generate();
+        const allocation = (role.weight / totalWeight) * distributable;
+        if (allocation < 0.003) continue;
+
+        fleetWallets.push({
+          keypair: kp, pubkey: kp.publicKey.toBase58(),
+          role: role.id, roleConfig: role, allocation,
+          funded: false, solSpent: 0, solRecovered: 0, trades: [],
+        });
+      }
+
+      console.log(`[FLEET] Generated ${fleetWallets.length} wallets:`);
+      for (const w of fleetWallets) console.log(`  [${w.role}] ${w.pubkey.slice(0, 8)}... -> ${w.allocation.toFixed(4)} SOL`);
+
+      // Fund wallets
+      await this._fundWallets(masterKp, fleetWallets);
+    } else {
+      fleetWallets.push({
+        keypair: masterKp, pubkey: masterKp.publicKey.toBase58(),
+        role: "solo",
+        roleConfig: { id: "solo", weight: 1, buyPct: 0.80, sellPct: 0.20, delayMin: 3, delayMax: 10, phase: "solo" },
+        allocation: totalSol, funded: true, solSpent: 0, solRecovered: 0, trades: [],
+      });
+    }
 
     const session = {
-      ca,
-      mint,
-      trader,
-      totalSol,
-      sessionId,
-      startTime: Date.now(),
-      phase: "starting",
-      trades: [],
-      solSpent: 0,
-      solRecovered: 0,
-      tokenBalance: 0,
-      running: true,
-      tradeCount: 0,
+      ca, mint, masterKp, totalSol, sessionId, fleetWallets,
+      startTime: Date.now(), phase: "starting", running: true,
+      tradeCount: 0, totalSolSpent: 0, totalSolRecovered: 0,
     };
     this.sessions.set(ca, session);
 
-    // Start the trading loop in background
-    this._runTradingLoop(session).catch(e => {
-      console.error(`[FLEET] Loop error on ${ca.slice(0, 8)}:`, e.message);
-      session.running = false;
-      session.phase = "error";
-      session.error = e.message;
+    // Start all wallet trading loops
+    this._runFleet(session).catch(e => {
+      console.error(`[FLEET] Fatal on ${ca.slice(0, 8)}:`, e.message);
+      session.running = false; session.phase = "error";
     });
 
-    return { ok: true, ca, phase: "starting" };
+    return { ok: true, ca, wallets: fleetWallets.length, phase: "starting" };
   }
 
-  // ── Main trading loop ──
-  async _runTradingLoop(session) {
-    const { ca, mint, trader, totalSol } = session;
+  // ── Fund wallets from master ──
+  async _fundWallets(master, wallets) {
+    for (const w of wallets) {
+      const lamports = Math.floor(w.allocation * LAMPORTS_PER_SOL);
+      if (lamports < 10000) continue;
 
-    // Wait a few seconds for the token creation tx to confirm
-    await sleep(5000);
+      try {
+        const tx = new Transaction().add(
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+          SystemProgram.transfer({
+            fromPubkey: master.publicKey, toPubkey: w.keypair.publicKey, lamports,
+          })
+        );
+        const sig = await sendAndConfirmTransaction(this.connection, tx, [master], { skipPreflight: true, commitment: "confirmed" });
+        w.funded = true;
+        console.log(`[FLEET] Funded [${w.role}] ${w.pubkey.slice(0, 8)}: ${w.allocation.toFixed(4)} SOL`);
+        this.emit("wallet:funded", { role: w.role, pubkey: w.pubkey, sol: w.allocation });
+      } catch (e) {
+        console.error(`[FLEET] Fund [${w.role}] failed:`, e.message);
+      }
+      await sleep(500 + Math.random() * 500);
+    }
+  }
 
-    // Fetch global + fee config once
+  // ── Run all wallet roles concurrently ──
+  async _runFleet(session) {
+    await sleep(5000); // wait for token propagation
+
     let global, feeConfig;
     try {
       global = await this.onlineSdk.fetchGlobal();
       feeConfig = await this.onlineSdk.fetchFeeConfig();
     } catch (e) {
-      console.error("[FLEET] Failed to fetch global/feeConfig:", e.message);
-      session.phase = "error";
-      return;
+      console.error("[FLEET] Failed to fetch global:", e.message);
+      session.phase = "error"; return;
     }
 
-    // ── Phase 1: SNIPE — quick buys to fill the chart ──
-    session.phase = "sniping";
-    this.emit("phase", { ca, phase: "sniping" });
-    console.log(`[FLEET] Phase 1: SNIPING — ${totalSol.toFixed(3)} SOL budget`);
+    session.phase = "trading";
+    this.emit("phase", { ca: session.ca, phase: "trading" });
 
-    const snipeBudget = totalSol * 0.6; // 60% for initial buys
-    const snipeTrades = 3 + Math.floor(Math.random() * 3); // 3-5 buys
-    const perTrade = snipeBudget / snipeTrades;
+    // Stagger wallet activation by phase
+    const phaseDelays = { snipe: 0, accum: 5, momentum: 12, swing: 25, whale: 40, exit: 60, recycle: 90, solo: 0 };
 
-    for (let i = 0; i < snipeTrades && session.running; i++) {
-      // Jitter the amount ±30%
-      const jitter = 0.7 + Math.random() * 0.6;
-      const buyAmount = Math.max(0.01, perTrade * jitter);
-
-      if (session.solSpent + buyAmount > totalSol * 0.85) break; // leave reserve
-
-      try {
-        const result = await this._executeBuy(session, global, feeConfig, buyAmount);
-        if (result.ok) {
-          session.trades.push({ ...result, phase: "snipe", time: Date.now() });
-          session.solSpent += buyAmount;
-          session.tradeCount++;
-          this.emit("trade", { ca, side: "buy", sol: buyAmount, ...result });
-          console.log(`[FLEET] SNIPE BUY #${i + 1}: ${buyAmount.toFixed(4)} SOL → tx: ${result.sig?.slice(0, 12)}...`);
-        }
-      } catch (e) {
-        console.error(`[FLEET] Snipe buy ${i + 1} failed:`, e.message);
+    const promises = session.fleetWallets.filter(w => w.funded).map(async (wallet) => {
+      const startDelay = (phaseDelays[wallet.roleConfig.phase] || 0) * 1000;
+      if (startDelay > 0) {
+        console.log(`[FLEET] [${wallet.role}] Activating in ${startDelay / 1000}s...`);
+        await sleep(startDelay + Math.random() * 3000);
       }
+      if (!session.running) return;
+      return this._runWalletLoop(session, wallet, global, feeConfig);
+    });
 
-      // Human-like delay: 3-8 seconds between trades
-      await sleep(3000 + Math.random() * 5000);
+    await Promise.allSettled(promises);
+
+    if (session.running) {
+      session.phase = "holding";
+      this.emit("phase", { ca: session.ca, phase: "holding" });
+      console.log(`[FLEET] All wallets done. Holding. Total trades: ${session.tradeCount}`);
     }
-
-    // ── Phase 2: MOMENTUM — buy/sell oscillation for chart activity ──
-    session.phase = "momentum";
-    this.emit("phase", { ca, phase: "momentum" });
-    console.log(`[FLEET] Phase 2: MOMENTUM — oscillating buys/sells`);
-
-    const momentumBudget = totalSol * 0.3; // 30% for momentum
-    const momentumRounds = 4 + Math.floor(Math.random() * 4); // 4-7 rounds
-    let momentumSpent = 0;
-
-    for (let i = 0; i < momentumRounds && session.running; i++) {
-      // Alternate: mostly buys with occasional sells
-      const isBuy = Math.random() > 0.35; // 65% chance buy
-      const amount = Math.max(0.005, (momentumBudget / momentumRounds) * (0.5 + Math.random()));
-
-      if (isBuy && momentumSpent + amount > momentumBudget) break;
-
-      try {
-        if (isBuy) {
-          const result = await this._executeBuy(session, global, feeConfig, amount);
-          if (result.ok) {
-            session.trades.push({ ...result, phase: "momentum", time: Date.now() });
-            session.solSpent += amount;
-            momentumSpent += amount;
-            session.tradeCount++;
-            this.emit("trade", { ca, side: "buy", sol: amount, ...result });
-            console.log(`[FLEET] MOMENTUM BUY: ${amount.toFixed(4)} SOL`);
-          }
-        } else {
-          // Sell 10-30% of token balance
-          const sellPct = 0.1 + Math.random() * 0.2;
-          const result = await this._executeSell(session, global, feeConfig, sellPct);
-          if (result.ok) {
-            session.trades.push({ ...result, phase: "momentum", time: Date.now() });
-            session.solRecovered += result.solOut || 0;
-            session.tradeCount++;
-            this.emit("trade", { ca, side: "sell", ...result });
-            console.log(`[FLEET] MOMENTUM SELL: ${(sellPct * 100).toFixed(0)}% → ${(result.solOut || 0).toFixed(4)} SOL back`);
-          }
-        }
-      } catch (e) {
-        console.error(`[FLEET] Momentum trade ${i + 1} failed:`, e.message);
-      }
-
-      // Longer delays for organic feel: 8-20 seconds
-      await sleep(8000 + Math.random() * 12000);
-    }
-
-    // ── Phase 3: HOLD — keep position, monitor ──
-    session.phase = "holding";
-    this.emit("phase", { ca, phase: "holding" });
-    console.log(`[FLEET] Phase 3: HOLDING — ${session.tradeCount} trades done, ${session.solSpent.toFixed(4)} SOL spent`);
-
-    // Periodic small trades to keep chart alive
-    while (session.running) {
-      await sleep(30000 + Math.random() * 60000); // 30-90s between maintenance trades
-      if (!session.running) break;
-
-      const remaining = totalSol - session.solSpent;
-      if (remaining < 0.005) break;
-
-      // Small maintenance buy or sell
-      const isBuy = Math.random() > 0.4;
-      const amount = Math.max(0.003, remaining * 0.05 * Math.random());
-
-      try {
-        if (isBuy && remaining > amount) {
-          const result = await this._executeBuy(session, global, feeConfig, amount);
-          if (result.ok) {
-            session.solSpent += amount;
-            session.tradeCount++;
-            session.trades.push({ ...result, phase: "hold", time: Date.now() });
-            this.emit("trade", { ca, side: "buy", sol: amount, ...result });
-          }
-        } else {
-          const result = await this._executeSell(session, global, feeConfig, 0.05 + Math.random() * 0.1);
-          if (result.ok) {
-            session.solRecovered += result.solOut || 0;
-            session.tradeCount++;
-            session.trades.push({ ...result, phase: "hold", time: Date.now() });
-            this.emit("trade", { ca, side: "sell", ...result });
-          }
-        }
-      } catch (e) {
-        // Holding trades can fail silently
-      }
-    }
-
-    session.phase = "complete";
-    this.emit("phase", { ca, phase: "complete" });
-    console.log(`[FLEET] Session complete on ${ca.slice(0, 8)} | Trades: ${session.tradeCount} | Spent: ${session.solSpent.toFixed(4)} | Recovered: ${session.solRecovered.toFixed(4)}`);
   }
 
-  // ── Execute a buy via pump.fun SDK ──
-  async _executeBuy(session, global, feeConfig, solAmount) {
-    const { mint, trader } = session;
+  // ── Individual wallet loop ──
+  async _runWalletLoop(session, wallet, global, feeConfig) {
+    const { ca, mint } = session;
+    const { roleConfig, allocation } = wallet;
+    const { buyPct, sellPct, delayMin, delayMax } = roleConfig;
 
-    // Fetch current bonding curve state
-    const buyState = await this.onlineSdk.fetchBuyState(mint, trader.publicKey);
-    const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } = buyState;
+    const maxBuySol = allocation * buyPct;
+    let spent = 0;
+    const rounds = 2 + Math.floor(Math.random() * 3);
 
-    // Decode mint supply from token account or use bonding curve data
-    const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
+    console.log(`[FLEET] [${wallet.role}] Starting — ${allocation.toFixed(4)} SOL, ${rounds} rounds`);
 
-    // Calculate expected tokens
-    const solBN = new BN(Math.floor(solAmount * 1e9));
-    const tokenAmount = getBuyTokenAmountFromSolAmount({
-      global,
-      feeConfig,
-      mintSupply,
-      bondingCurve,
-      amount: solBN,
-    });
+    // BUY PHASE
+    for (let i = 0; i < rounds && session.running; i++) {
+      const remaining = maxBuySol - spent;
+      if (remaining < 0.003) break;
 
-    if (tokenAmount.isZero()) {
-      return { ok: false, error: "Zero tokens out" };
+      const baseBuy = remaining / (rounds - i);
+      const buyAmount = Math.max(0.003, baseBuy * (0.6 + Math.random() * 0.8));
+      const cappedBuy = Math.min(buyAmount, remaining);
+
+      try {
+        const freshGlobal = await this.onlineSdk.fetchGlobal().catch(() => global);
+        const result = await this._executeBuy(wallet, mint, freshGlobal, feeConfig, cappedBuy);
+        if (result.ok) {
+          spent += cappedBuy;
+          wallet.solSpent += cappedBuy;
+          wallet.trades.push({ side: "buy", sol: cappedBuy, sig: result.sig, time: Date.now() });
+          session.tradeCount++;
+          session.totalSolSpent += cappedBuy;
+          this.emit("trade", { ca, role: wallet.role, side: "buy", sol: cappedBuy, sig: result.sig });
+          console.log(`[FLEET] [${wallet.role}] BUY ${cappedBuy.toFixed(4)} SOL -> ${result.sig?.slice(0, 12)}...`);
+        }
+      } catch (e) {
+        console.error(`[FLEET] [${wallet.role}] Buy failed:`, e.message);
+      }
+
+      await sleep((delayMin + Math.random() * (delayMax - delayMin)) * 1000);
     }
 
-    // Build buy instructions
+    // SELL PHASE
+    if (sellPct > 0 && session.running) {
+      await sleep((delayMin * 2 + Math.random() * delayMax) * 1000);
+
+      const sellRounds = 1 + Math.floor(Math.random() * 2);
+      for (let i = 0; i < sellRounds && session.running; i++) {
+        const pctToSell = sellPct / sellRounds * (0.8 + Math.random() * 0.4);
+
+        try {
+          const result = await this._executeSell(wallet, mint, global, feeConfig, Math.min(pctToSell, 0.95));
+          if (result.ok) {
+            wallet.solRecovered += result.solOut || 0;
+            wallet.trades.push({ side: "sell", solOut: result.solOut, sig: result.sig, time: Date.now() });
+            session.tradeCount++;
+            session.totalSolRecovered += result.solOut || 0;
+            this.emit("trade", { ca, role: wallet.role, side: "sell", sol: result.solOut, sig: result.sig });
+            console.log(`[FLEET] [${wallet.role}] SELL ${(pctToSell * 100).toFixed(0)}% -> ${(result.solOut || 0).toFixed(4)} SOL`);
+          }
+        } catch (e) {
+          console.error(`[FLEET] [${wallet.role}] Sell failed:`, e.message);
+        }
+        await sleep((delayMin + Math.random() * delayMax) * 1000);
+      }
+    }
+
+    console.log(`[FLEET] [${wallet.role}] Done — spent: ${wallet.solSpent.toFixed(4)}, recovered: ${wallet.solRecovered.toFixed(4)}`);
+  }
+
+  // ── Execute buy ──
+  async _executeBuy(wallet, mint, global, feeConfig, solAmount) {
+    const { keypair } = wallet;
+    const buyState = await this.onlineSdk.fetchBuyState(mint, keypair.publicKey);
+    const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } = buyState;
+    const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
+
+    const solBN = new BN(Math.floor(solAmount * 1e9));
+    const tokenAmount = getBuyTokenAmountFromSolAmount({ global, feeConfig, mintSupply, bondingCurve, amount: solBN });
+    if (tokenAmount.isZero()) return { ok: false, error: "Zero tokens" };
+
     const instructions = await this.sdk.buyInstructions({
-      global,
-      bondingCurveAccountInfo,
-      bondingCurve,
-      associatedUserAccountInfo,
-      mint,
-      user: trader.publicKey,
-      amount: tokenAmount,
-      solAmount: solBN,
-      slippage: 25, // 25% slippage for safety on small cap
+      global, bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo,
+      mint, user: keypair.publicKey, amount: tokenAmount, solAmount: solBN, slippage: 25,
     });
 
-    // Build tx with compute budget
     const tx = new Transaction();
     tx.add(
       ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
@@ -282,63 +281,34 @@ export class FleetTrader {
       ...instructions,
     );
 
-    const sig = await sendAndConfirmTransaction(
-      this.connection, tx, [trader],
-      { skipPreflight: true, commitment: "confirmed", maxRetries: 3 }
-    );
-
-    return { ok: true, side: "buy", sol: solAmount, tokens: tokenAmount.toString(), sig };
+    const sig = await sendAndConfirmTransaction(this.connection, tx, [keypair], { skipPreflight: true, commitment: "confirmed", maxRetries: 3 });
+    return { ok: true, sig, tokens: tokenAmount.toString() };
   }
 
-  // ── Execute a sell via pump.fun SDK ──
-  async _executeSell(session, global, feeConfig, sellPercent) {
-    const { mint, trader } = session;
-
-    // Get current token balance
+  // ── Execute sell ──
+  async _executeSell(wallet, mint, global, feeConfig, sellPercent) {
+    const { keypair } = wallet;
     let tokenBalance;
     try {
-      const ata = getAssociatedTokenAddressSync(mint, trader.publicKey, true);
+      const ata = getAssociatedTokenAddressSync(mint, keypair.publicKey, true);
       const account = await getAccount(this.connection, ata);
       tokenBalance = new BN(account.amount.toString());
-    } catch {
-      return { ok: false, error: "No token account" };
-    }
+    } catch { return { ok: false, error: "No token account" }; }
 
-    if (tokenBalance.isZero()) {
-      return { ok: false, error: "Zero balance" };
-    }
+    if (tokenBalance.isZero()) return { ok: false, error: "Zero balance" };
 
-    // Sell a percentage
     const sellAmount = tokenBalance.muln(Math.floor(sellPercent * 1000)).divn(1000);
-    if (sellAmount.isZero()) {
-      return { ok: false, error: "Sell amount too small" };
-    }
+    if (sellAmount.isZero()) return { ok: false, error: "Too small" };
 
-    // Fetch sell state
-    const sellState = await this.onlineSdk.fetchSellState(mint, trader.publicKey);
+    const sellState = await this.onlineSdk.fetchSellState(mint, keypair.publicKey);
     const { bondingCurveAccountInfo, bondingCurve } = sellState;
-
     const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
 
-    // Estimate SOL out
-    const solOut = getSellSolAmountFromTokenAmount({
-      global,
-      feeConfig,
-      mintSupply,
-      bondingCurve,
-      amount: sellAmount,
-    });
+    const solOut = getSellSolAmountFromTokenAmount({ global, feeConfig, mintSupply, bondingCurve, amount: sellAmount });
 
-    // Build sell instructions
     const instructions = await this.sdk.sellInstructions({
-      global,
-      bondingCurveAccountInfo,
-      bondingCurve,
-      mint,
-      user: trader.publicKey,
-      amount: sellAmount,
-      solAmount: solOut,
-      slippage: 25,
+      global, bondingCurveAccountInfo, bondingCurve,
+      mint, user: keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 50,
     });
 
     const tx = new Transaction();
@@ -348,168 +318,120 @@ export class FleetTrader {
       ...instructions,
     );
 
-    const sig = await sendAndConfirmTransaction(
-      this.connection, tx, [trader],
-      { skipPreflight: true, commitment: "confirmed", maxRetries: 3 }
-    );
-
-    const solOutNum = parseFloat(solOut.toString()) / 1e9;
-    return { ok: true, side: "sell", tokens: sellAmount.toString(), solOut: solOutNum, sig };
+    const sig = await sendAndConfirmTransaction(this.connection, tx, [keypair], { skipPreflight: true, commitment: "confirmed", maxRetries: 3 });
+    return { ok: true, sig, solOut: parseFloat(solOut.toString()) / 1e9, tokens: sellAmount.toString() };
   }
 
-  // ── Stop trading on a CA ──
-  stop(ca) {
-    const session = this.sessions.get(ca);
-    if (session) {
-      session.running = false;
-      console.log(`[FLEET] Stopping ${ca.slice(0, 8)}...`);
-    }
-  }
-
-  // ── Close a session (sell all tokens + sweep SOL back) ──
+  // ── Close: sell everything + sweep SOL back ──
   async close(ca) {
     const session = this.sessions.get(ca);
     if (!session) throw new Error(`No session for ${ca}`);
-    
+
     session.running = false;
     session.phase = "closing";
-    console.log(`[FLEET] Closing ${ca.slice(0, 8)}... — selling all tokens`);
+    console.log(`[FLEET] Closing ${ca.slice(0, 8)}... — ${session.fleetWallets.length} wallets`);
+    this.emit("phase", { ca, phase: "closing" });
 
-    // Wait for any in-flight trade to finish
     await sleep(3000);
 
-    const { mint, trader } = session;
-    let sellResult = null;
+    let global, feeConfig;
+    try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
 
-    // ── Step 1: Sell all tokens ──
-    try {
-      const global = await this.onlineSdk.fetchGlobal();
-      const feeConfig = await this.onlineSdk.fetchFeeConfig();
-      
-      // Get token balance
-      const ata = getAssociatedTokenAddressSync(mint, trader.publicKey, true);
-      let tokenBalance;
+    // Sell all tokens on every wallet
+    for (const wallet of session.fleetWallets) {
       try {
-        const account = await getAccount(this.connection, ata);
-        tokenBalance = new BN(account.amount.toString());
-      } catch {
-        tokenBalance = new BN(0);
-      }
+        let tokenBalance;
+        try {
+          const ata = getAssociatedTokenAddressSync(session.mint, wallet.keypair.publicKey, true);
+          const account = await getAccount(this.connection, ata);
+          tokenBalance = new BN(account.amount.toString());
+        } catch { tokenBalance = new BN(0); }
 
-      if (!tokenBalance.isZero()) {
-        console.log(`[FLEET] Selling ${tokenBalance.toString()} tokens...`);
-        
-        const sellState = await this.onlineSdk.fetchSellState(mint, trader.publicKey);
-        const { bondingCurveAccountInfo, bondingCurve } = sellState;
-        const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
-
-        const solOut = getSellSolAmountFromTokenAmount({
-          global, feeConfig, mintSupply, bondingCurve,
-          amount: tokenBalance,
-        });
-
-        const instructions = await this.sdk.sellInstructions({
-          global, bondingCurveAccountInfo, bondingCurve,
-          mint, user: trader.publicKey,
-          amount: tokenBalance,
-          solAmount: solOut,
-          slippage: 50, // 50% slippage on close — just get out
-        });
-
-        const tx = new Transaction();
-        tx.add(
-          ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
-          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
-          ...instructions,
-        );
-
-        const sig = await sendAndConfirmTransaction(
-          this.connection, tx, [trader],
-          { skipPreflight: true, commitment: "confirmed", maxRetries: 3 }
-        );
-
-        const solOutNum = parseFloat(solOut.toString()) / 1e9;
-        session.solRecovered += solOutNum;
-        sellResult = { ok: true, sig, solOut: solOutNum, tokens: tokenBalance.toString() };
-        console.log(`[FLEET] Sold all tokens → ${solOutNum.toFixed(4)} SOL | tx: ${sig.slice(0, 12)}...`);
-      } else {
-        console.log(`[FLEET] No tokens to sell`);
-        sellResult = { ok: true, solOut: 0, tokens: "0" };
-      }
-    } catch (e) {
-      console.error(`[FLEET] Sell-all failed:`, e.message);
-      sellResult = { ok: false, error: e.message };
+        if (!tokenBalance.isZero() && global && feeConfig) {
+          console.log(`[FLEET] [${wallet.role}] Selling all tokens...`);
+          const result = await this._executeSell(wallet, session.mint, global, feeConfig, 1.0);
+          if (result.ok) {
+            wallet.solRecovered += result.solOut || 0;
+            session.totalSolRecovered += result.solOut || 0;
+            console.log(`[FLEET] [${wallet.role}] Sold -> ${(result.solOut || 0).toFixed(4)} SOL`);
+          }
+        }
+      } catch (e) { console.error(`[FLEET] [${wallet.role}] Close sell failed:`, e.message); }
+      await sleep(500);
     }
 
-    // ── Step 2: Sweep remaining SOL back (if we know user wallet from session) ──
-    let sweepResult = null;
-    try {
-      const balance = await this.connection.getBalance(trader.publicKey);
-      const sweepAmount = balance - 10000; // leave rent for fees
-      if (sweepAmount > 0) {
-        console.log(`[FLEET] ${(sweepAmount / LAMPORTS_PER_SOL).toFixed(4)} SOL remaining in dev wallet`);
-        // Note: SOL stays in dev wallet — user can withdraw via session endpoint
-        sweepResult = { balanceRemaining: sweepAmount / LAMPORTS_PER_SOL };
-      }
-    } catch {}
+    // Sweep SOL from fleet wallets back to master
+    for (const wallet of session.fleetWallets) {
+      if (wallet.keypair.publicKey.equals(session.masterKp.publicKey)) continue;
+      try {
+        const balance = await this.connection.getBalance(wallet.keypair.publicKey);
+        const sweepAmount = balance - 5000;
+        if (sweepAmount <= 0) continue;
 
-    const netProfit = session.solRecovered - session.solSpent;
+        const tx = new Transaction().add(
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+          SystemProgram.transfer({ fromPubkey: wallet.keypair.publicKey, toPubkey: session.masterKp.publicKey, lamports: sweepAmount })
+        );
+        await sendAndConfirmTransaction(this.connection, tx, [wallet.keypair], { skipPreflight: true, commitment: "confirmed" });
+        console.log(`[FLEET] [${wallet.role}] Swept ${(sweepAmount / LAMPORTS_PER_SOL).toFixed(4)} SOL back`);
+      } catch (e) { console.error(`[FLEET] [${wallet.role}] Sweep failed:`, e.message); }
+      await sleep(300);
+    }
+
+    let masterBalance = 0;
+    try { masterBalance = await this.connection.getBalance(session.masterKp.publicKey) / LAMPORTS_PER_SOL; } catch {}
+
+    const netProfit = session.totalSolRecovered - session.totalSolSpent;
     session.phase = "closed";
     this.sessions.delete(ca);
 
+    console.log(`[FLEET] Closed ${ca.slice(0, 8)} | Spent: ${session.totalSolSpent.toFixed(4)} | Recovered: ${session.totalSolRecovered.toFixed(4)} | Net: ${netProfit.toFixed(4)}`);
+
     return {
-      trades: session.tradeCount,
-      solSpent: session.solSpent,
-      solRecovered: session.solRecovered,
-      netProfit,
-      totalIn: session.totalSol,
-      totalReturn: session.solRecovered,
-      sellResult,
-      sweepResult,
+      trades: session.tradeCount, wallets: session.fleetWallets.length,
+      solSpent: session.totalSolSpent, solRecovered: session.totalSolRecovered,
+      netProfit, totalIn: session.totalSol, totalReturn: session.totalSolRecovered, masterBalance,
     };
   }
 
-  // ── Close all sessions ──
   async closeAll() {
     const results = {};
     let totalNetProfit = 0;
     for (const ca of [...this.sessions.keys()]) {
-      try {
-        results[ca] = await this.close(ca);
-        totalNetProfit += results[ca].netProfit || 0;
-      } catch (e) {
-        results[ca] = { error: e.message };
-      }
+      try { results[ca] = await this.close(ca); totalNetProfit += results[ca].netProfit || 0; }
+      catch (e) { results[ca] = { error: e.message }; }
     }
     return { results, totalNetProfit };
   }
 
-  // ── Get status ──
+  stop(ca) { const s = this.sessions.get(ca); if (s) s.running = false; }
+
   status() {
     const sessions = {};
     for (const [ca, s] of this.sessions) {
       sessions[ca] = {
-        phase: s.phase,
-        running: s.running,
-        tradeCount: s.tradeCount,
-        solSpent: s.solSpent,
-        solRecovered: s.solRecovered,
+        phase: s.phase, running: s.running, tradeCount: s.tradeCount,
+        solSpent: s.totalSolSpent, solRecovered: s.totalSolRecovered,
         elapsed: Date.now() - s.startTime,
-        activeWallets: 1, // single wallet for now
+        activeWallets: s.fleetWallets.filter(w => w.funded).length,
+        walletDetails: s.fleetWallets.map(w => ({
+          role: w.role, pubkey: w.pubkey.slice(0, 8), allocation: w.allocation,
+          spent: w.solSpent, recovered: w.solRecovered, trades: w.trades.length,
+        })),
       };
     }
     return { sessions, activeSessions: this.sessions.size };
   }
 
-  // ── Status for specific CA (or first session) ──
   getSessionStatus(ca) {
-    if (ca) return this.sessions.get(ca);
-    // Return first active session
-    for (const [, s] of this.sessions) return s;
-    return null;
+    const s = ca ? this.sessions.get(ca) : this.sessions.values().next().value;
+    if (!s) return null;
+    return {
+      phase: s.phase, running: s.running, tradeCount: s.tradeCount,
+      solSpent: s.totalSolSpent, solRecovered: s.totalSolRecovered,
+      activeWallets: s.fleetWallets.filter(w => w.funded).length, ca: s.ca,
+    };
   }
 }
-
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 export default FleetTrader;
