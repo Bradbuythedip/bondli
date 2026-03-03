@@ -797,7 +797,21 @@ export default function App() {
               </div>
             )}
             {/* WALLETS */}
-            {tab === "wallets" && (<div><div style={{ marginBottom: mobile ? 16 : 24 }}><h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 20 : 24, color: T.text }}>Wallet Fleet <span style={{ color: T.green }}>({activeRoles.length})</span></h2><p style={{ fontSize: mobile ? 13 : 15, color: T.dim, marginTop: 6 }}>Each wallet thinks independently</p></div>
+            {tab === "wallets" && (<div><div style={{ marginBottom: mobile ? 16 : 24, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><div><h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 20 : 24, color: T.text }}>Wallet Fleet <span style={{ color: T.green }}>({activeRoles.length})</span></h2><p style={{ fontSize: mobile ? 13 : 15, color: T.dim, marginTop: 6 }}>Each wallet thinks independently</p></div>
+              {launched && launchCA && (<button onClick={async () => {
+                if (!confirm("Close all positions? This will sell all tokens and stop trading.")) return;
+                try {
+                  const res = await fetch(API + "/api/close", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey },
+                    body: JSON.stringify({ ca: launchCA, wallet: user?.pubkey }),
+                  });
+                  const data = await res.json();
+                  if (data.error) alert("Close error: " + data.error);
+                  else alert(`Positions closed! Recovered: ${(data.solRecovered || 0).toFixed(4)} SOL | Net: ${(data.netProfit || 0).toFixed(4)} SOL`);
+                } catch (e) { alert("Close failed: " + e.message); }
+              }} style={{ background: "none", border: "2px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 13, fontWeight: 700, padding: "8px 16px", borderRadius: 10, cursor: "pointer", textTransform: "uppercase", letterSpacing: ".05em" }}>☠ Close All</button>)}
+              </div>
               {launchCA && (<div style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 14, padding: mobile ? 14 : 18, marginBottom: mobile ? 14 : 20 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                   <span style={{ fontSize: 10, fontWeight: 800, fontFamily: mono, color: T.bg, background: T.green, padding: "2px 8px", borderRadius: 6, textTransform: "uppercase", letterSpacing: ".1em" }}>LIVE</span>
