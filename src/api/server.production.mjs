@@ -297,19 +297,67 @@ app.get("/api/access/profits", async (req, res) => {
 // ═══════════════════════════════════════
 app.get("/api/status", apiLimiter, optionalAuth, (req, res) => {
   const status = orch.status();
-  // Also include first active session's details for frontend
   const activeSession = orch.getSessionStatus();
   const sessionInfo = activeSession ? {
     phase: activeSession.phase,
     tradeCount: activeSession.tradeCount,
     solSpent: activeSession.solSpent,
     solRecovered: activeSession.solRecovered,
-    activeWallets: 1,
+    activeWallets: activeSession.activeWallets || 1,
     running: activeSession.running,
     ca: activeSession.ca,
   } : {};
   if (!req.user) return res.json({ ok: true, activeSessions: status.activeSessions, ...sessionInfo });
   res.json({ ok: true, ...status, ...sessionInfo });
+});
+
+// Full fleet details with trade history
+app.get("/api/fleet", apiLimiter, (req, res) => {
+  const fullStatus = orch.status();
+  // Get first active session's full wallet details including trades
+  const sessions = fullStatus.sessions || {};
+  const first = Object.values(sessions)[0];
+  if (!first) return res.json({ ok: true, wallets: [], trades: [], phase: "idle" });
+
+  // Collect all trades across wallets with wallet info
+  const allTrades = [];
+  const wallets = (first.walletDetails || []).map(w => {
+    return { role: w.role, pubkey: w.pubkey, allocation: w.allocation, spent: w.spent, recovered: w.recovered, tradeCount: w.trades };
+  });
+
+  // We need trades from the actual session object
+  const ca = Object.keys(sessions)[0];
+  const session = orch.fleetTrader?.sessions?.get(ca);
+  if (session) {
+    for (const w of session.fleetWallets) {
+      for (const t of (w.trades || [])) {
+        allTrades.push({
+          role: w.role,
+          wallet: w.pubkey?.slice(0, 8) || "?",
+          side: t.side,
+          sol: t.sol || t.solOut || 0,
+          sig: t.sig || "",
+          time: t.time || 0,
+        });
+      }
+    }
+  }
+
+  // Sort by time desc
+  allTrades.sort((a, b) => b.time - a.time);
+
+  res.json({
+    ok: true,
+    phase: first.phase,
+    running: first.running,
+    tradeCount: first.tradeCount,
+    solSpent: first.solSpent,
+    solRecovered: first.solRecovered,
+    elapsed: first.elapsed,
+    activeWallets: first.activeWallets,
+    wallets,
+    trades: allTrades.slice(0, 50), // last 50 trades
+  });
 });
 
 app.get("/api/config", apiLimiter, (req, res) => {
