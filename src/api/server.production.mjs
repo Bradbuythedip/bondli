@@ -383,7 +383,7 @@ app.post("/api/session/fund", apiLimiter, async (req, res) => {
 });
 
 // Launch: trigger engine after funding confirmed
-app.post("/api/session/launch", launchLimiter, async (req, res) => {
+app.post("/api/session/launch", apiLimiter, async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
     if (!sessionId) return res.status(400).json({ error: "sessionId required" });
