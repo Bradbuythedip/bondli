@@ -786,7 +786,7 @@ export default function App() {
                     tokenConfig={{ name: tokenName, ticker, description: desc, image, twitter, telegram, website, existingCA }}
                     canLaunch={existingCA || (tokenName && ticker)}
                     launched={launched}
-                    onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); setTab("wallets"); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }}}
+                    onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); setTab("wallets"); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }}
                   />
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: mobile ? 12 : 20 }}>
