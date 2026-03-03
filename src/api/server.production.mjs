@@ -313,20 +313,53 @@ app.get("/api/status", apiLimiter, optionalAuth, (req, res) => {
 });
 
 // Full fleet details with trade history
+// ── Price history for live charting ──
+const priceHistory = new Map(); // ca -> [{time, price, mcap}]
+const PRICE_HISTORY_MAX = 300; // 5 min at 1s intervals
+
+async function pollPrice(ca) {
+  try {
+    const resp = await fetch("https://frontend-api-v2.pump.fun/coins/" + ca, { signal: AbortSignal.timeout(4000) });
+    if (!resp.ok) return null;
+    const coin = await resp.json();
+    const price = coin.usd_market_cap && coin.total_supply ? (coin.usd_market_cap / (coin.total_supply / 1e6)) : 0;
+    const mcap = coin.usd_market_cap || 0;
+    const virtualSolReserves = coin.virtual_sol_reserves ? coin.virtual_sol_reserves / 1e9 : 0;
+    const virtualTokenReserves = coin.virtual_token_reserves ? coin.virtual_token_reserves / 1e6 : 0;
+    const bondingProgress = coin.bonding_curve_progress || (coin.complete ? 100 : 0);
+    return { time: Date.now(), price, mcap, virtualSolReserves, virtualTokenReserves, bondingProgress, complete: coin.complete };
+  } catch { return null; }
+}
+
+// Start price polling when fleet launches
+function startPricePolling(ca) {
+  if (!priceHistory.has(ca)) priceHistory.set(ca, []);
+  const iv = setInterval(async () => {
+    const point = await pollPrice(ca);
+    if (point) {
+      const hist = priceHistory.get(ca) || [];
+      hist.push(point);
+      if (hist.length > PRICE_HISTORY_MAX) hist.shift();
+      priceHistory.set(ca, hist);
+    }
+    // Stop polling if no active session
+    if (!orch.sessions?.has(ca)) { clearInterval(iv); }
+  }, 3000);
+  // Initial fetch
+  pollPrice(ca).then(p => { if (p) { const h = priceHistory.get(ca) || []; h.push(p); priceHistory.set(ca, h); } });
+}
+
 app.get("/api/fleet", apiLimiter, (req, res) => {
   const fullStatus = orch.status();
-  // Get first active session's full wallet details including trades
   const sessions = fullStatus.sessions || {};
   const first = Object.values(sessions)[0];
-  if (!first) return res.json({ ok: true, wallets: [], trades: [], phase: "idle" });
+  if (!first) return res.json({ ok: true, wallets: [], trades: [], phase: "idle", priceHistory: [] });
 
-  // Collect all trades across wallets with wallet info
   const allTrades = [];
   const wallets = (first.walletDetails || []).map(w => {
     return { role: w.role, pubkey: w.pubkey, allocation: w.allocation, spent: w.spent, recovered: w.recovered, tradeCount: w.trades };
   });
 
-  // We need trades from the actual session object
   const ca = Object.keys(sessions)[0];
   const session = orch.sessions?.get(ca);
   if (session) {
@@ -344,8 +377,10 @@ app.get("/api/fleet", apiLimiter, (req, res) => {
     }
   }
 
-  // Sort by time desc
   allTrades.sort((a, b) => b.time - a.time);
+
+  // Start price polling if not already
+  if (ca && !priceHistory.has(ca)) startPricePolling(ca);
 
   res.json({
     ok: true,
@@ -357,7 +392,9 @@ app.get("/api/fleet", apiLimiter, (req, res) => {
     elapsed: first.elapsed,
     activeWallets: first.activeWallets,
     wallets,
-    trades: allTrades.slice(0, 50), // last 50 trades
+    trades: allTrades.slice(0, 50),
+    priceHistory: (priceHistory.get(ca) || []).slice(-120), // last 120 points (~6 min)
+    ca,
   });
 });
 
@@ -638,6 +675,9 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
         fleetConfig: session.fleetConfig || {},
       });
       console.log(`[LAUNCH] Fleet started:`, JSON.stringify(orchResult).slice(0, 300));
+      
+      // Start live price tracking
+      startPricePolling(tokenCA);
 
       // CRITICAL: Save fleet wallet keys for recovery
       if (orchResult.walletKeys) {
