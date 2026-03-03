@@ -389,7 +389,7 @@ function calcDevBuyPreview(totalSol) {
   return { devBuy: +devBuy.toFixed(4), creationFee, fleet: +fleet.toFixed(4), pct: +((devBuy / totalSol) * 100).toFixed(1) };
 }
 
-function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, onLaunched }) {
+function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, onLaunched, masterSeed, fleetConfig }) {
   const T = useTheme();
   const [step, setStep] = useState("idle");
   const [session, setSession] = useState(null);
@@ -412,12 +412,14 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
       const res = await fetch(API + "/api/session/create", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey },
-        body: JSON.stringify({ totalSol, tokenConfig, wallet: user?.pubkey, fleetConfig: { sniperCount, slippage, duration } }),
+        body: JSON.stringify({ totalSol, tokenConfig, wallet: user?.pubkey, fleetConfig: fleetConfig || {}, masterSeed: masterSeed || "" }),
       });
       const data = await res.json();
       if (data.error) { setError(data.error); setStep("idle"); return; }
       setSession(data);
       if (data.devSecret) setDevSecret(data.devSecret);
+      // If master wallet used, skip deposit — go straight to launch
+      if (data.useMaster && data.funded) { setStep("launching"); executeLaunch(data); return; }
       setStep("awaiting");
     } catch (e) { setError("Failed: " + (e.message || "")); setStep("idle"); }
   };
@@ -470,14 +472,14 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
   };
 
   // ── STEP 3: Auto-launch after deposit ──
-  const executeLaunch = async () => {
+  const executeLaunch = async (overrideSession) => {
     setError(""); setStep("launching");
     setLaunchStatus("Uploading metadata to IPFS...");
     try {
       const res = await fetch(API + "/api/session/launch", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey },
-        body: JSON.stringify({ sessionId: session?.sessionId, wallet: user?.pubkey }),
+        body: JSON.stringify({ sessionId: (overrideSession || session)?.sessionId, wallet: user?.pubkey }),
       });
       const data = await res.json();
       if (data.error) { setError(data.error); setStep("awaiting"); return; }
@@ -786,6 +788,20 @@ export default function App() {
                   <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: mobile ? 16 : 24, fontSize: 13, color: T.faint, fontFamily: mono, textTransform: "uppercase", letterSpacing: ".1em" }}><span style={{ flex: 1, height: 1, background: T.border }} />or trade existing<span style={{ flex: 1, height: 1, background: T.border }} /></div>
                   <div style={{ marginBottom: mobile ? 20 : 28 }}><Label>contract address</Label><Input value={existingCA} onChange={setExistingCA} placeholder="paste pump.fun CA..." big /></div>
                   <div style={{ marginBottom: mobile ? 20 : 28 }}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}><Label>total SOL budget</Label><span style={{ fontFamily: mono, fontSize: 18, fontWeight: 800, color: T.green }}>{totalSol} SOL</span></div><input type="range" min={0.5} max={50} step={0.1} value={totalSol} onChange={e => setTotalSol(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /><div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: T.faint, fontFamily: mono, marginTop: 6 }}><span>0.5</span><span>50 SOL</span></div></div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: mobile ? 8 : 14, marginBottom: mobile ? 20 : 28 }}>
+                    <div><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".05em" }}>Snipers</span><span style={{ fontSize: 14, fontFamily: mono, fontWeight: 800, color: T.green }}>{sniperCount}</span></div><input type="range" min={1} max={5} step={1} value={sniperCount} onChange={e => setSniperCount(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>
+                    <div><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".05em" }}>Slippage</span><span style={{ fontSize: 14, fontFamily: mono, fontWeight: 800, color: T.green }}>{slippage}%</span></div><input type="range" min={1} max={50} step={1} value={slippage} onChange={e => setSlippage(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>
+                    <div><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".05em" }}>Duration</span><span style={{ fontSize: 14, fontFamily: mono, fontWeight: 800, color: T.green }}>{duration}m</span></div><input type="range" min={5} max={240} step={5} value={duration} onChange={e => setDuration(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>
+                  </div>
+                  <div style={{ padding: mobile ? 12 : 16, background: T.bg, borderRadius: 12, border: "1px solid " + T.border, marginBottom: mobile ? 20 : 28 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, textAlign: "center" }}>
+                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{walletCount}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>wallets</div></div>
+                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{sniperCount}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>snipers</div></div>
+                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{calcDevBuyPreview(totalSol).devBuy.toFixed(2)}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>dev buy</div></div>
+                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{calcDevBuyPreview(totalSol).fleet.toFixed(2)}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>fleet</div></div>
+                    </div>
+                  </div>
+                  {seed && (<div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: T.greenGhost, borderRadius: 10, marginBottom: mobile ? 16 : 20, border: "1px solid " + T.green + "33" }}><span style={{ fontSize: 14 }}>{"\u{1F511}"}</span><span style={{ fontFamily: mono, fontSize: 12, color: T.green, flex: 1 }}>Master wallet connected — launching direct</span></div>)}
                   {/* LAUNCH FLOW */}
                   <LaunchFlow
                     user={user} mobile={mobile}
@@ -793,6 +809,8 @@ export default function App() {
                     tokenConfig={{ name: tokenName, ticker, description: desc, image, twitter, telegram, website, existingCA }}
                     canLaunch={existingCA || (tokenName && ticker)}
                     launched={launched}
+                    masterSeed={seed}
+                    fleetConfig={{ sniperCount, slippage, duration }}
                     onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); setTab("wallets"); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }}
                   />
                 </div>
@@ -851,8 +869,8 @@ export default function App() {
               {!canLaunch ? (<div style={{ padding: mobile ? 40 : 70, textAlign: "center", background: T.surface, borderRadius: 18, border: "2px dashed " + T.border }}><span style={{ fontSize: mobile ? 40 : 56, display: "block", marginBottom: 16 }}>{"\u{1F916}"}</span><p style={{ fontFamily: mono, fontSize: mobile ? 14 : 16, color: T.dim }}>Configure token + wallet in Create & Config tabs first</p></div>) : (<div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : activeRoles.length <= 5 ? "1fr 1fr" : "1fr 1fr 1fr", gap: mobile ? 12 : 18 }}>{activeRoles.map(role => (<WalletCard key={role.id} role={role} solBudget={+(totalSol * role.weight / 100).toFixed(4)} mobile={mobile} />))}</div>)}</div>)}
             {/* CONFIG */}
             {tab === "config" && (<div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: mobile ? 12 : 24, animation: "fadeUp .4s ease" }}>
-              <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}><h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, marginBottom: 24, display: "flex", alignItems: "center", gap: 10, color: T.text }}><Ic.Wallet /> Network & Wallet</h3><div style={{ display: "flex", flexDirection: "column", gap: 20 }}><div><Label>RPC URL</Label><Input value={rpc} onChange={setRpc} placeholder="https://mainnet.helius-rpc.com/?api-key=..." icon={<Ic.Zap />} big /></div><div><Label>Master Wallet (Private Key)</Label><Input value={seed} onChange={setSeed} placeholder="bs58 encoded private key" type="password" icon={<Ic.Lock />} big /></div><div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", background: T.bg, borderRadius: 12, border: "2px solid " + T.border, cursor: "pointer" }} onClick={() => setUseAtlas(!useAtlas)}><div style={{ width: 46, height: 26, borderRadius: 13, padding: 3, background: useAtlas ? T.green : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", transform: useAtlas ? "translateX(20px)" : "translateX(0)", transition: "transform .2s" }} /></div><div><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: T.text }}>Helius Atlas</div><div style={{ fontSize: 13, color: T.dim }}>Ultra low-latency staked connections</div></div></div></div></div>
-              <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}><h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, marginBottom: 24, display: "flex", alignItems: "center", gap: 10, color: T.text }}><Ic.Zap /> Trading Parameters</h3><div style={{ display: "flex", flexDirection: "column", gap: 24 }}>{[{ label: "Snipers", val: sniperCount, set: setSniperCount, min: 1, max: 5, step: 1, suf: "" }, { label: "Slippage", val: slippage, set: setSlippage, min: 1, max: 50, step: 1, suf: "%" }, { label: "Duration", val: duration, set: setDuration, min: 5, max: 240, step: 5, suf: " min" }, { label: "SOL Budget", val: totalSol, set: setTotalSol, min: 0.5, max: 50, step: 0.1, suf: " SOL" }].map(s => (<div key={s.label}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}><span style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".1em" }}>{s.label}</span><span style={{ fontSize: 18, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.val}{s.suf}</span></div><input type="range" min={s.min} max={s.max} step={s.step} value={s.val} onChange={e => s.set(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>))}<div style={{ padding: mobile ? 16 : 20, background: T.bg, borderRadius: 12, border: "1px solid " + T.border }}><Label>computed strategy</Label><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginTop: 14 }}>{[{ k: "Wallets", v: walletCount }, { k: "Reserve", v: (totalSol * 0.12).toFixed(3) }, { k: "Per Wallet", v: "~" + (totalSol * 0.88 / walletCount).toFixed(3) }].map(s => (<div key={s.k} style={{ textAlign: "center" }}><div style={{ fontSize: mobile ? 20 : 24, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 12, color: T.faint, fontFamily: mono }}>{s.k}</div></div>))}</div></div></div></div>
+              <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}><h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, marginBottom: 24, display: "flex", alignItems: "center", gap: 10, color: T.text }}><Ic.Wallet /> Settings</h3><div style={{ display: "flex", flexDirection: "column", gap: 20 }}><div><Label>RPC URL</Label><Input value={rpc} onChange={setRpc} placeholder="https://mainnet.helius-rpc.com/?api-key=..." icon={<Ic.Zap />} big /></div><div><Label>Master Wallet (Private Key)</Label><Input value={seed} onChange={setSeed} placeholder="bs58 encoded private key" type="password" icon={<Ic.Lock />} big /><p style={{ fontSize: 12, color: T.faint, fontFamily: mono, marginTop: 8, lineHeight: 1.5 }}>Optional. If set, launches directly from this wallet — no deposit step.</p></div><div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", background: T.bg, borderRadius: 12, border: "2px solid " + T.border, cursor: "pointer" }} onClick={() => setUseAtlas(!useAtlas)}><div style={{ width: 46, height: 26, borderRadius: 13, padding: 3, background: useAtlas ? T.green : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", transform: useAtlas ? "translateX(20px)" : "translateX(0)", transition: "transform .2s" }} /></div><div><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: T.text }}>Helius Atlas</div><div style={{ fontSize: 13, color: T.dim }}>Ultra low-latency staked connections</div></div></div></div></div>
+              <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}><h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, marginBottom: 24, display: "flex", alignItems: "center", gap: 10, color: T.text }}><Ic.Zap /> Fleet Preview</h3><div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{activeRoles.map(r => (<div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px solid " + T.border + "22" }}><span style={{ fontSize: 20 }}>{r.emoji}</span><span style={{ flex: 1, fontSize: 14, fontFamily: mono, color: T.mid }}>{r.name}{r.id === "sniper" ? " x" + sniperCount : ""}</span><span style={{ fontSize: 14, fontFamily: mono, color: ROLE_COLORS(T)[r.id], fontWeight: 700 }}>{(totalSol * r.weight / 100).toFixed(3)}</span></div>))}</div><div style={{ padding: 14, background: T.bg, borderRadius: 12, border: "1px solid " + T.border, marginTop: 16 }}><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, textAlign: "center" }}>{[{ k: "Budget", v: totalSol + " SOL" }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Duration", v: duration + "m" }].map(s => (<div key={s.k}><div style={{ fontSize: 18, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 11, color: T.faint, fontFamily: mono }}>{s.k}</div></div>))}</div></div></div>
             </div>)}
           </div>
           {mobile ? <MobileNav tab={tab} setTab={setTab} /> : <footer style={{ padding: "16px 28px", borderTop: "1px solid " + T.border, marginTop: 40, display: "flex", justifyContent: "space-between", fontSize: 13, color: T.faint, fontFamily: mono }}><span>BONDLI v3.1 {"\u00B7"} {PLATFORM_WALLET}</span><span>{launched ? <span style={{ color: T.green }}>{"\u25CF"} ACTIVE</span> : "\u25CF IDLE"}</span></footer>}
