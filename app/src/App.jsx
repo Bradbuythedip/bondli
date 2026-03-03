@@ -587,6 +587,36 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
   // ── STEP 1: Generate dev wallet ──
+  const [batchResults, setBatchResults] = useState([]);
+  const [batchRunning, setBatchRunning] = useState(false);
+
+  const startBatchDeploy = async () => {
+    setError(""); setBatchResults([]); setBatchRunning(true); setStep("launching");
+    setLaunchStatus("Batch deploying " + (fleetConfig?.batchCount || 1) + " tokens...");
+    try {
+      const res = await fetch(API + "/api/batch-deploy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey },
+        body: JSON.stringify({
+          wallet: user?.pubkey,
+          count: fleetConfig?.batchCount || 1,
+          tokenConfig,
+          masterSeed: masterSeed || "",
+          jitoTip: fleetConfig?.jitoTip || 0.003,
+          delayMs: (fleetConfig?.batchDelay || 5) * 1000,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) { setError(data.error); setStep("idle"); setBatchRunning(false); return; }
+      setBatchResults(data.results || []);
+      setStep("batch_done");
+      // Set the first successful CA as the launchCA
+      const firstOk = (data.results || []).find(r => r.ok);
+      if (firstOk) { setTokenCA(firstOk.ca); onLaunched({ tokenCA: firstOk.ca, pumpUrl: firstOk.pumpUrl, sessionId: "" }); }
+    } catch (e) { setError("Batch failed: " + (e.message || "")); setStep("idle"); }
+    setBatchRunning(false);
+  };
+
   const startLaunch = async () => {
     setError(""); setStep("generating");
     try {
@@ -771,6 +801,33 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     );
   }
 
+  // ═══════════════ BATCH DONE — show all deployed tokens ═══════════════
+  if (step === "batch_done" && batchResults.length > 0) {
+    return (
+      <div style={{ background: T.surface, border: "2px solid " + T.green + "44", borderRadius: 16, padding: mobile ? 16 : 24 }}>
+        <div style={{ textAlign: "center", marginBottom: 16 }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>{"\u2705"}</div>
+          <div style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: T.green }}>{batchResults.filter(r => r.ok).length}/{batchResults.length} Deployed</div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 400, overflow: "auto" }}>
+          {batchResults.map((r, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: T.bg, borderRadius: 8, border: "1px solid " + (r.ok ? T.green : T.red) + "22" }}>
+              <span style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, color: r.ok ? T.green : T.red, width: 20 }}>{r.index}</span>
+              {r.ok ? (<>
+                <a href={r.pumpUrl} target="_blank" rel="noopener" style={{ fontFamily: mono, fontSize: 11, color: T.green, flex: 1, textDecoration: "none" }}>{r.ca?.slice(0, 12)}...</a>
+                <button onClick={() => { navigator.clipboard?.writeText(r.ca); }} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 4, padding: "2px 6px", fontFamily: mono, fontSize: 9, color: T.mid, cursor: "pointer" }}>CA</button>
+                <a href={r.pumpUrl} target="_blank" rel="noopener" style={{ fontSize: 10, color: T.green, textDecoration: "none" }}>{"\u2197"}</a>
+              </>) : (
+                <span style={{ fontFamily: mono, fontSize: 10, color: T.red, flex: 1 }}>{r.error?.slice(0, 60)}</span>
+              )}
+            </div>
+          ))}
+        </div>
+        <button onClick={() => { setStep("idle"); setBatchResults([]); }} style={{ width: "100%", marginTop: 12, padding: "12px", background: T.green, color: T.bg, border: "none", borderRadius: 10, fontFamily: mono, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Deploy More</button>
+      </div>
+    );
+  }
+
   // ═══════════════ IDLE + AWAITING ═══════════════
   return (
     <div style={{ marginTop: 8 }}>
@@ -799,9 +856,9 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
       )}
 
       {step === "idle" && (
-        <Btn onClick={startLaunch} full disabled={!canLaunch}
+        <Btn onClick={fleetConfig?.deployOnly && fleetConfig?.batchCount > 1 ? startBatchDeploy : startLaunch} full disabled={!canLaunch}
           style={{ padding: "16px 24px", fontSize: mobile ? 16 : 18, borderRadius: 14, animation: canLaunch ? "glow 3s infinite" : "none" }}>
-          <Ic.Zap /> {isApe ? "Start Trading" : "Launch on pump.fun"}
+          <Ic.Zap /> {isApe ? "Start Trading" : fleetConfig?.deployOnly ? (fleetConfig?.batchCount > 1 ? "Deploy " + fleetConfig.batchCount + " Tokens" : "Deploy on pump.fun") : "Launch on pump.fun"}
         </Btn>
       )}
 
@@ -902,7 +959,7 @@ export default function App() {
   const [twitter, setTwitter] = useState(""); const [telegram, setTelegram] = useState(""); const [website, setWebsite] = useState("");
   const [existingCA, setExistingCA] = useState(""); const [totalSol, setTotalSol] = useState(1);
   const [rpc, setRpc] = useState(""); const [seed, setSeed] = useState("");
-  const [slippage, setSlippage] = useState(25); const [sniperCount, setSniperCount] = useState(2); const [duration, setDuration] = useState(60); const [jitoTip, setJitoTip] = useState(0.001); const [useAtlas, setUseAtlas] = useState(false); const [deployOnly, setDeployOnly] = useState(false);
+  const [slippage, setSlippage] = useState(25); const [sniperCount, setSniperCount] = useState(2); const [duration, setDuration] = useState(60); const [jitoTip, setJitoTip] = useState(0.001); const [useAtlas, setUseAtlas] = useState(false); const [deployOnly, setDeployOnly] = useState(false); const [batchCount, setBatchCount] = useState(1); const [batchDelay, setBatchDelay] = useState(5);
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState(""); const [activeSessionId, setActiveSessionId] = useState("");
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
@@ -1136,8 +1193,14 @@ export default function App() {
                   </div>)}
                   {deployOnly ? (
                     <div style={{ padding: "14px", background: T.yellow + "08", borderRadius: 10, border: "1px solid " + T.yellow + "22" }}>
-                      <div style={{ fontFamily: mono, fontSize: 12, color: T.yellow, marginBottom: 4 }}>{"\u26A0"} Deploy only — 0.02 SOL creation fee</div>
-                      <div style={{ fontFamily: mono, fontSize: 11, color: T.dim }}>Token will be created on pump.fun with metadata. No dev buy, no fleet. You can buy manually after.</div>
+                      <div style={{ fontFamily: mono, fontSize: 12, color: T.yellow, marginBottom: 8 }}>{"\u26A0"} Deploy only — 0.02 SOL creation fee per token</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                        <NumInput label="Batch Count" value={batchCount} onChange={setBatchCount} min={1} max={20} T={T} />
+                        <NumInput label="Delay sec" value={batchDelay} onChange={setBatchDelay} min={2} max={30} T={T} />
+                      </div>
+                      <div style={{ fontFamily: mono, fontSize: 11, color: T.dim }}>
+                        {batchCount > 1 ? `Deploy ${batchCount} tokens over ~${(batchCount * batchDelay).toFixed(0)}s — cost ~${(batchCount * 0.02).toFixed(2)} SOL` : "Single deploy — token will appear on pump.fun immediately"}
+                      </div>
                     </div>
                   ) : (<>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase" }}>SOL Budget</span><span style={{ fontFamily: mono, fontSize: 28, fontWeight: 900, color: T.green }}>{totalSol}</span></div>
@@ -1147,7 +1210,7 @@ export default function App() {
                   </>)}
                 </Section>
                 <Section n={"\u{1F680}"} title={isApe ? "Start Trading" : "Launch"} highlight={canLaunch} T={T} mobile={mobile}>
-                  <LaunchFlow user={user} mobile={mobile} totalSol={deployOnly ? 0 : totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip, deployOnly }} onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); }} />
+                  <LaunchFlow user={user} mobile={mobile} totalSol={deployOnly ? 0 : totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip, deployOnly, batchCount: deployOnly ? batchCount : 1, batchDelay: deployOnly ? batchDelay : 5 }} onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); }} />
                 </Section>
                 {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginTop: 8 }}>
                   <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12 }}>Active Sessions</div>
