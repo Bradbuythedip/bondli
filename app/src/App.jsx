@@ -534,6 +534,8 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
   const [step, setStep] = useState("idle");
   const [session, setSession] = useState(null);
   const [devSecret, setDevSecret] = useState("");
+  const [fleetKeys, setFleetKeys] = useState([]);
+  const [showKeys, setShowKeys] = useState(false);
   const [tokenCA, setTokenCA] = useState("");
   const [launchStatus, setLaunchStatus] = useState("");
   const [txSig, setTxSig] = useState("");
@@ -559,6 +561,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
       if (data.error) { setError(data.error); setStep("idle"); return; }
       setSession(data);
       if (data.devSecret) setDevSecret(data.devSecret);
+      if (data.walletKeys) setFleetKeys(data.walletKeys);
       // If master wallet used, skip deposit — go straight to launch
       if (data.useMaster && data.funded) { setStep("launching"); executeLaunch(data); return; }
       setStep("awaiting");
@@ -627,23 +630,41 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
 
       const ca = data.tokenCA || "";
       setTokenCA(ca);
+      if (data.walletKeys && data.walletKeys.length > 0) setFleetKeys(data.walletKeys);
       setSession(prev => ({ ...prev, tokenCA: ca, pumpUrl: data.pumpUrl }));
       setStep("live");
       if (ca) onLaunched({ ...data, tokenCA: ca });
     } catch (e) { setError("Launch failed: " + (e.message || "")); setStep("awaiting"); }
   };
 
-  const KeyBox = () => devSecret ? (
+  const KeyBox = () => (devSecret || fleetKeys.length > 0) ? (
     <div style={{ padding: "12px 14px", background: T.yellow + "08", borderRadius: 10, border: "1px solid " + T.yellow + "28", marginBottom: 12 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-        <span style={{ fontSize: 14 }}>{"\u{1F511}"}</span>
-        <span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.yellow, textTransform: "uppercase" }}>Creator Private Key</span>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{ flex: 1, fontFamily: mono, fontSize: 10, color: T.mid, wordBreak: "break-all", lineHeight: 1.4, background: T.bg, padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, maxHeight: 44, overflow: "auto" }}>{devSecret}</div>
-        <button onClick={() => copyText(devSecret)} style={{ background: T.yellow, border: "none", borderRadius: 6, padding: "6px 10px", cursor: "pointer", fontFamily: mono, fontSize: 11, fontWeight: 700, color: T.bg, flexShrink: 0 }}>{copied ? "\u2713" : "Copy"}</button>
-      </div>
-      <p style={{ fontSize: 10, color: T.yellow, fontFamily: "system-ui,sans-serif", marginTop: 4, opacity: 0.8 }}>Import into Phantom for creator fees (0.5%)</p>
+      {devSecret && (<>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+          <span style={{ fontSize: 14 }}>{"\u{1F511}"}</span>
+          <span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.yellow, textTransform: "uppercase" }}>Creator Private Key</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+          <div style={{ flex: 1, fontFamily: mono, fontSize: 10, color: T.mid, wordBreak: "break-all", lineHeight: 1.4, background: T.bg, padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, maxHeight: 44, overflow: "auto" }}>{devSecret}</div>
+          <button onClick={() => copyText(devSecret)} style={{ background: T.yellow, border: "none", borderRadius: 6, padding: "6px 10px", cursor: "pointer", fontFamily: mono, fontSize: 11, fontWeight: 700, color: T.bg, flexShrink: 0 }}>{copied ? "\u2713" : "Copy"}</button>
+        </div>
+        <p style={{ fontSize: 10, color: T.yellow, fontFamily: "system-ui,sans-serif", marginTop: 2, marginBottom: 8, opacity: 0.8 }}>Import into Phantom for creator fees (0.5%)</p>
+      </>)}
+      {fleetKeys.length > 0 && (<>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: showKeys ? 8 : 0 }}>
+          <span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.red, textTransform: "uppercase" }}>{"\u26A0"} Fleet Wallet Keys ({fleetKeys.length})</span>
+          <button onClick={() => setShowKeys(!showKeys)} style={{ background: "none", border: "1px solid " + T.red + "44", borderRadius: 6, padding: "3px 8px", color: T.red, fontFamily: mono, fontSize: 10, fontWeight: 700, cursor: "pointer" }}>{showKeys ? "Hide" : "Show Keys"}</button>
+        </div>
+        {showKeys && (<div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {fleetKeys.map((k, i) => (<div key={i} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: T.bg, borderRadius: 6, border: "1px solid " + T.border }}>
+            <span style={{ fontFamily: mono, fontSize: 10, color: T.faint, width: 65, textTransform: "capitalize", flexShrink: 0 }}>{k.role}</span>
+            <span style={{ fontFamily: mono, fontSize: 9, color: T.mid, flex: 1, wordBreak: "break-all", lineHeight: 1.3 }}>{k.secret}</span>
+            <button onClick={() => { navigator.clipboard?.writeText(k.secret); setCopied(k.role); }} style={{ background: T.red + "20", border: "none", borderRadius: 4, padding: "2px 6px", color: T.red, fontFamily: mono, fontSize: 9, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>Copy</button>
+          </div>))}
+          <button onClick={() => { const all = fleetKeys.map(k => k.role + ": " + k.secret).join("\n"); navigator.clipboard?.writeText(all); setCopied("all"); }} style={{ background: T.red + "15", border: "1px solid " + T.red + "33", borderRadius: 6, padding: "6px", color: T.red, fontFamily: mono, fontSize: 11, fontWeight: 700, cursor: "pointer", marginTop: 4 }}>Copy All Keys</button>
+          <p style={{ fontSize: 9, color: T.red, fontFamily: "system-ui,sans-serif", opacity: 0.8, marginTop: 2 }}>SAVE THESE — import into Phantom to manually recover SOL if anything goes wrong</p>
+        </div>)}
+      </>)}
     </div>
   ) : null;
 
