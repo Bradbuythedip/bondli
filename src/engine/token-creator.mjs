@@ -1,16 +1,23 @@
 /**
- * PUMP.FUN TOKEN CREATOR — via PumpPortal API
- * Matches pumpportal.fun/creation/ docs EXACTLY
+ * PUMP.FUN TOKEN CREATOR — via Official @pump-fun/pump-sdk
+ * No PumpPortal middleman. Direct on-chain via pump.fun's own SDK.
+ *
+ * npm install @pump-fun/pump-sdk
  */
 
 import {
   Connection,
   Keypair,
-  VersionedTransaction,
+  PublicKey,
+  Transaction,
+  sendAndConfirmTransaction,
+  ComputeBudgetProgram,
 } from "@solana/web3.js";
+import BN from "bn.js";
+import { PumpSdk, getBuyTokenAmountFromSolAmount } from "@pump-fun/pump-sdk";
 
 // ═══════════════════════════════════════
-// IPFS UPLOAD
+// IPFS UPLOAD (unchanged, with retries)
 // ═══════════════════════════════════════
 
 async function uploadMetadata(config, maxRetries = 5) {
@@ -60,7 +67,7 @@ async function uploadMetadata(config, maxRetries = 5) {
       if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
 
       const data = await resp.json();
-      console.log(`[IPFS] Full response: ${JSON.stringify(data).slice(0, 500)}`);
+      console.log(`[IPFS] Response: ${JSON.stringify(data).slice(0, 300)}`);
 
       const uri = data.metadataUri || data.uri;
       if (!uri) throw new Error("No metadataUri in response");
@@ -78,11 +85,11 @@ async function uploadMetadata(config, maxRetries = 5) {
 }
 
 // ═══════════════════════════════════════
-// CREATE TOKEN
+// CREATE TOKEN — Official SDK
 // ═══════════════════════════════════════
 
 export async function createToken(connection, creator, tokenConfig, options = {}) {
-  const { devBuySol = 0.01 } = options;
+  const { devBuySol = 0 } = options;
 
   console.log(`\n${"═".repeat(50)}`);
   console.log(`[CREATE] ${tokenConfig.name} ($${tokenConfig.ticker})`);
@@ -90,203 +97,121 @@ export async function createToken(connection, creator, tokenConfig, options = {}
   console.log(`[CREATE] Dev buy: ${devBuySol} SOL`);
 
   // Check balance
-  try {
-    const bal = await connection.getBalance(creator.publicKey);
-    console.log(`[CREATE] Creator balance: ${bal / 1e9} SOL`);
-    if (bal < 0.01 * 1e9) throw new Error(`Wallet balance too low: ${(bal / 1e9).toFixed(4)} SOL`);
-  } catch (e) {
-    if (e.message.includes("balance")) throw e;
-    console.warn(`[CREATE] Balance check skipped: ${e.message}`);
+  const bal = await connection.getBalance(creator.publicKey);
+  console.log(`[CREATE] Balance: ${bal / 1e9} SOL`);
+  if (bal < 0.01 * 1e9) {
+    throw new Error(`Balance too low: ${(bal / 1e9).toFixed(4)} SOL (need 0.01+)`);
   }
 
-  // Step 1: IPFS
-  const { metadataUri, metadata } = await uploadMetadata(tokenConfig);
+  // Step 1: Upload metadata to IPFS
+  const { metadataUri } = await uploadMetadata(tokenConfig);
 
-  // Step 2: Mint
+  // Step 2: Initialize SDK
+  const sdk = new PumpSdk(connection);
+  console.log(`[CREATE] SDK initialized`);
+
+  // Step 3: Generate mint keypair
   const mintKeypair = Keypair.generate();
-  const mintPub = mintKeypair.publicKey.toBase58();
-  console.log(`[CREATE] Mint: ${mintPub}`);
+  const mint = mintKeypair.publicKey;
+  console.log(`[CREATE] Mint: ${mint.toBase58()}`);
 
-  // Step 3: Try multiple PumpPortal configs
-  // Pump.fun migrated to PumpSwap (March 2025), so pool param may need updating
-  const configs = [
-    { pool: "pump", label: "pump (classic)" },
-    { pool: "auto", label: "auto (let API decide)" },
-    { pool: "pump-amm", label: "pump-amm (PumpSwap)" },
-  ];
+  // Step 4: Build instructions
+  let instructions;
 
-  const amount = Math.max(devBuySol, 0.001);
+  if (devBuySol > 0) {
+    // Create + initial buy in same transaction
+    const global = await sdk.fetchGlobal();
+    console.log(`[CREATE] Fetched global config`);
+
+    const solAmount = new BN(Math.floor(devBuySol * 1e9));
+    const tokenAmount = getBuyTokenAmountFromSolAmount(global, null, solAmount);
+    console.log(`[CREATE] Dev buy: ${devBuySol} SOL → ~${tokenAmount.toString()} tokens`);
+
+    instructions = await sdk.createAndBuyInstructions({
+      global,
+      mint,
+      name: tokenConfig.name || "Token",
+      symbol: tokenConfig.ticker || "TKN",
+      uri: metadataUri,
+      creator: creator.publicKey,
+      user: creator.publicKey,
+      solAmount,
+      amount: tokenAmount,
+    });
+  } else {
+    // Create only (no dev buy)
+    const ix = await sdk.createInstruction({
+      mint,
+      name: tokenConfig.name || "Token",
+      symbol: tokenConfig.ticker || "TKN",
+      uri: metadataUri,
+      creator: creator.publicKey,
+      user: creator.publicKey,
+    });
+    instructions = [ix];
+  }
+
+  console.log(`[CREATE] Built ${instructions.length} instruction(s)`);
+
+  // Step 5: Build transaction with priority fee
+  const tx = new Transaction();
+
+  // Add compute budget for priority
+  tx.add(
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 }),
+  );
+
+  // Add SDK instructions
+  for (const ix of instructions) {
+    tx.add(ix);
+  }
+
+  // Step 6: Send with retries
   let txSig;
-  let lastErr;
+  const maxRetries = 3;
 
-  for (const cfg of configs) {
-    const body = {
-      publicKey: creator.publicKey.toBase58(),
-      action: "create",
-      tokenMetadata: {
-        name: metadata?.name || tokenConfig.name || "Token",
-        symbol: metadata?.symbol || tokenConfig.ticker || "TKN",
-        uri: metadataUri,
-      },
-      mint: mintPub,
-      denominatedInSol: "true",
-      amount: amount,
-      slippage: 10,
-      priorityFee: 0.0005,
-      pool: cfg.pool,
-    };
-
-    console.log(`\n[CREATE] Trying pool="${cfg.pool}" (${cfg.label})...`);
-    console.log(`[CREATE] Body: ${JSON.stringify(body)}`);
-
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const resp = await fetch("https://pumpportal.fun/api/trade-local", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      console.log(`[CREATE] Send attempt ${attempt}/${maxRetries}...`);
 
-      console.log(`[CREATE] Response: ${resp.status} ${resp.statusText}`);
-
-      if (resp.status !== 200) {
-        const errBody = await resp.text();
-        console.error(`[CREATE] Error with pool="${cfg.pool}": ${errBody}`);
-        lastErr = `pool=${cfg.pool}: ${resp.status} ${errBody}`;
-        continue; // try next pool config
-      }
-
-      // SUCCESS — got a transaction back
-      console.log(`[CREATE] ✅ pool="${cfg.pool}" worked!`);
-      
-      const txData = await resp.arrayBuffer();
-      console.log(`[CREATE] TX bytes: ${txData.byteLength}`);
-
-      const tx = VersionedTransaction.deserialize(new Uint8Array(txData));
-      tx.sign([mintKeypair, creator]);
-
-      txSig = await connection.sendRawTransaction(tx.serialize(), {
-        skipPreflight: true,
-        maxRetries: 3,
-      });
-      console.log(`[CREATE] Sent: ${txSig}`);
-
-      // Confirm with generous timeout
-      const bh = await connection.getLatestBlockhash("confirmed");
-      const conf = await connection.confirmTransaction(
-        { signature: txSig, blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight },
-        "confirmed"
+      txSig = await sendAndConfirmTransaction(
+        connection,
+        tx,
+        [creator, mintKeypair],
+        {
+          skipPreflight: true,
+          commitment: "confirmed",
+          maxRetries: 3,
+        }
       );
 
-      if (conf.value?.err) {
-        throw new Error(`TX failed: ${JSON.stringify(conf.value.err)}`);
-      }
-
-      console.log(`[CREATE] ✅ CONFIRMED! Mint: ${mintPub}`);
-      console.log(`[CREATE] https://pump.fun/coin/${mintPub}\n`);
-
-      return {
-        mint: mintPub,
-        txSig,
-        metadataUri,
-        pumpUrl: `https://pump.fun/coin/${mintPub}`,
-      };
+      console.log(`\n[CREATE] ✅ SUCCESS!`);
+      console.log(`[CREATE] Mint: ${mint.toBase58()}`);
+      console.log(`[CREATE] TX: ${txSig}`);
+      console.log(`[CREATE] https://pump.fun/coin/${mint.toBase58()}\n`);
+      break;
 
     } catch (e) {
-      console.error(`[CREATE] pool="${cfg.pool}" failed: ${e.message}`);
-      lastErr = `pool=${cfg.pool}: ${e.message}`;
-      // If we got a tx sig but confirmation failed, still return it
-      if (txSig) {
-        console.log(`[CREATE] TX was sent but confirmation failed. Returning anyway.`);
-        return {
-          mint: mintPub,
-          txSig,
-          metadataUri,
-          pumpUrl: `https://pump.fun/coin/${mintPub}`,
-        };
+      console.error(`[CREATE] Attempt ${attempt} failed: ${e.message}`);
+
+      // Try to get logs
+      if (e.logs) {
+        console.error(`[CREATE] Logs:`);
+        e.logs.forEach(l => console.error(`  ${l}`));
       }
+
+      if (attempt === maxRetries) throw e;
+      await new Promise(r => setTimeout(r, 3000 * attempt));
     }
   }
 
-  // All pool configs failed
-  throw new Error(`All PumpPortal configs failed. Last: ${lastErr}`);
-}
-
-/**
- * Diagnostic function — call from a test endpoint to debug PumpPortal
- */
-export async function testPumpPortal(publicKey) {
-  const results = {};
-
-  // Test 1: Can we reach PumpPortal?
-  try {
-    const resp = await fetch("https://pumpportal.fun/api/trade-local", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        publicKey: publicKey,
-        action: "create",
-        tokenMetadata: { name: "Test", symbol: "TST", uri: "https://example.com/test.json" },
-        mint: Keypair.generate().publicKey.toBase58(),
-        denominatedInSol: "true",
-        amount: 0.001,
-        slippage: 10,
-        priorityFee: 0.0005,
-        pool: "pump",
-      }),
-    });
-    const body = await resp.text();
-    results.pump = { status: resp.status, body: body.slice(0, 200) };
-  } catch (e) {
-    results.pump = { error: e.message };
-  }
-
-  // Test 2: Try "auto" pool
-  try {
-    const resp = await fetch("https://pumpportal.fun/api/trade-local", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        publicKey: publicKey,
-        action: "create",
-        tokenMetadata: { name: "Test", symbol: "TST", uri: "https://example.com/test.json" },
-        mint: Keypair.generate().publicKey.toBase58(),
-        denominatedInSol: "true",
-        amount: 0.001,
-        slippage: 10,
-        priorityFee: 0.0005,
-        pool: "auto",
-      }),
-    });
-    const body = await resp.text();
-    results.auto = { status: resp.status, body: body.slice(0, 200) };
-  } catch (e) {
-    results.auto = { error: e.message };
-  }
-
-  // Test 3: Try with larger amount
-  try {
-    const resp = await fetch("https://pumpportal.fun/api/trade-local", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        publicKey: publicKey,
-        action: "create",
-        tokenMetadata: { name: "Test", symbol: "TST", uri: "https://example.com/test.json" },
-        mint: Keypair.generate().publicKey.toBase58(),
-        denominatedInSol: "true",
-        amount: 1,
-        slippage: 10,
-        priorityFee: 0.0005,
-        pool: "pump",
-      }),
-    });
-    const body = await resp.text();
-    results.largeAmount = { status: resp.status, body: body.slice(0, 200) };
-  } catch (e) {
-    results.largeAmount = { error: e.message };
-  }
-
-  return results;
+  return {
+    mint: mint.toBase58(),
+    txSig,
+    metadataUri,
+    pumpUrl: `https://pump.fun/coin/${mint.toBase58()}`,
+  };
 }
 
 export { uploadMetadata };
