@@ -442,6 +442,39 @@ app.post("/api/session/launch", launchLimiter, async (req, res) => {
   }
 });
 
+// Check session balance (for auto-detect polling)
+app.get("/api/session/balance", apiLimiter, async (req, res) => {
+  const { sessionId, wallet } = req.query;
+  if (!sessionId) return res.status(400).json({ error: "sessionId required" });
+
+  const session = await sessionManager.get(sessionId);
+  if (!session) return res.status(404).json({ error: "Session not found" });
+  if (session.funded) return res.json({ funded: true, balance: session.actualDeposit || session.totalSol });
+
+  try {
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const balance = await connection.getBalance(new PublicKey(session.devWallet));
+    const balanceSol = balance / LAMPORTS_PER_SOL;
+    const expectedMin = session.totalSol * 0.95;
+
+    if (balanceSol >= expectedMin) {
+      // Auto-mark funded
+      await sessionManager.update(sessionId, {
+        funded: true,
+        fundedAt: new Date().toISOString(),
+        status: "funded",
+        actualDeposit: balanceSol,
+      });
+      console.log(`[SESSION] ${sessionId} auto-funded | ${balanceSol.toFixed(4)} SOL detected`);
+      return res.json({ funded: true, balance: balanceSol });
+    }
+
+    res.json({ funded: false, balance: balanceSol, expected: session.totalSol });
+  } catch (e) {
+    res.json({ funded: false, balance: 0, error: e.message });
+  }
+});
+
 // Get session status
 app.get("/api/session/:id", apiLimiter, async (req, res) => {
   const wallet = req.query.wallet;
