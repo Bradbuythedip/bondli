@@ -347,7 +347,7 @@ app.get("/api/session/preview", apiLimiter, (req, res) => {
 app.post("/api/session/create", apiLimiter, async (req, res) => {
   try {
     if (!sessionManager) return res.status(503).json({ error: "Server still starting up. Try again in a few seconds." });
-    const { totalSol, tokenConfig, wallet } = req.body;
+    const { totalSol, tokenConfig, wallet, fleetConfig } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
     if (!totalSol || totalSol < 0.1 || totalSol > 100) {
       return res.status(400).json({ error: "totalSol must be between 0.1 and 100" });
@@ -364,6 +364,7 @@ app.post("/api/session/create", apiLimiter, async (req, res) => {
       totalSol: Math.min(100, totalSol),
       tokenConfig,
       tier: walletInfo.tier,
+      fleetConfig: fleetConfig || {},
     });
 
     res.json(session);
@@ -458,6 +459,7 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
         devKeypair,
         sessionId: session.id,
         force: true,
+        fleetConfig: session.fleetConfig || {},
       });
       console.log(`[LAUNCH] Fleet started:`, JSON.stringify(orchResult).slice(0, 300));
     } catch (orchErr) {
@@ -536,6 +538,58 @@ app.get("/api/sessions", apiLimiter, async (req, res) => {
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const sessions = await sessionManager.listForUser(wallet);
   res.json({ sessions, count: sessions.length });
+});
+
+// Resume trading on a previously launched session (VIP only)
+app.post("/api/session/resume", apiLimiter, async (req, res) => {
+  try {
+    const { sessionId, wallet } = req.body;
+    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
+
+    const walletInfo = await getWalletTier(wallet);
+    if (walletInfo.tier !== "pro" && !walletInfo.whitelisted) {
+      return res.status(403).json({ error: "Resume is VIP/Pro only" });
+    }
+
+    const session = await sessionManager.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
+    if (!session.tokenCA) return res.status(400).json({ error: "No token CA — session was never launched" });
+
+    // Check if already running
+    const orchStatus = orch.getSessionStatus(session.tokenCA);
+    if (orchStatus && orchStatus.running) {
+      return res.json({ ok: true, already_running: true, ...orchStatus });
+    }
+
+    // Reconstruct devKeypair from stored secret
+    const devKeypair = await sessionManager.getDevKeypair(sessionId);
+    if (!devKeypair) return res.status(500).json({ error: "Cannot recover dev wallet" });
+
+    // Check remaining balance in dev wallet
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const balance = await connection.getBalance(devKeypair.publicKey);
+    const balanceSol = balance / LAMPORTS_PER_SOL;
+
+    if (balanceSol < 0.01) return res.status(400).json({ error: "Dev wallet empty (" + balanceSol.toFixed(4) + " SOL)" });
+
+    // Resume fleet trading
+    const result = await orch.launch(session.tokenCA, {
+      totalSol: balanceSol * 0.9,
+      devKeypair,
+      sessionId: session.id,
+      force: true,
+      fleetConfig: session.fleetConfig || {},
+    });
+
+    await sessionManager.update(sessionId, { status: "resumed", resumedAt: new Date().toISOString() });
+    console.log("[RESUME] " + sessionId + " resumed on " + session.tokenCA + " with " + balanceSol.toFixed(4) + " SOL");
+
+    res.json({ ok: true, ...result, balance: balanceSol, tokenCA: session.tokenCA });
+  } catch (e) {
+    console.error("[RESUME] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ═══════════════════════════════════════
