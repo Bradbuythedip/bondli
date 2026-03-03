@@ -775,104 +775,170 @@ export default function App() {
             </div>
           )}
 
-          <div style={{ maxWidth: 1140, margin: "0 auto", padding: mobile ? "16px 12px" : "28px 24px", position: "relative", zIndex: 1 }}>
-            {/* CREATE */}
-            {tab === "create" && (
-              <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 400px", gap: mobile ? 16 : 28 }}>
-                <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 32, animation: "fadeUp .4s ease" }}>
-                  <h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 20 : 26, marginBottom: 6, color: T.text }}>launch a coin on <span style={{ color: T.green }}>pump.fun</span></h2>
-                  <p style={{ fontSize: mobile ? 14 : 16, color: T.dim, marginBottom: mobile ? 20 : 32, lineHeight: 1.5 }}>create a new token or paste a CA to run the engine</p>
-                  <div style={{ display: "flex", gap: mobile ? 16 : 28, marginBottom: mobile ? 20 : 28 }}><ImageUpload image={image} onChange={setImage} mobile={mobile} /><div style={{ flex: 1, display: "flex", flexDirection: "column", gap: mobile ? 12 : 18 }}><div><Label>name</Label><Input value={tokenName} onChange={setTokenName} placeholder="e.g. PepeCoin" big /></div><div><Label>ticker</Label><Input value={ticker} onChange={v => setTicker(v.toUpperCase())} placeholder="e.g. $PEPE" maxLength={10} big /></div></div></div>
-                  <div style={{ marginBottom: mobile ? 16 : 24 }}><Label>description</Label><textarea value={desc} onChange={e => setDesc(e.target.value)} rows={3} placeholder="describe your token..." style={{ width: "100%", padding: "14px 16px", background: T.bg, border: "2px solid " + T.border, borderRadius: 12, color: T.text, fontFamily: sans, fontSize: 16, outline: "none", resize: "vertical", lineHeight: 1.6 }} /></div>
-                  <div style={{ marginBottom: mobile ? 20 : 28 }}><Label>links <span style={{ fontWeight: 400, textTransform: "none" }}>(optional)</span></Label><div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr", gap: 12 }}><Input value={twitter} onChange={setTwitter} placeholder="twitter" /><Input value={telegram} onChange={setTelegram} placeholder="telegram" /><Input value={website} onChange={setWebsite} placeholder="website" /></div></div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: mobile ? 16 : 24, fontSize: 13, color: T.faint, fontFamily: mono, textTransform: "uppercase", letterSpacing: ".1em" }}><span style={{ flex: 1, height: 1, background: T.border }} />or trade existing<span style={{ flex: 1, height: 1, background: T.border }} /></div>
-                  <div style={{ marginBottom: mobile ? 20 : 28 }}><Label>contract address</Label><Input value={existingCA} onChange={setExistingCA} placeholder="paste pump.fun CA..." big /></div>
-                  <div style={{ marginBottom: mobile ? 20 : 28 }}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}><Label>total SOL budget</Label><span style={{ fontFamily: mono, fontSize: 18, fontWeight: 800, color: T.green }}>{totalSol} SOL</span></div><input type="range" min={0.5} max={50} step={0.1} value={totalSol} onChange={e => setTotalSol(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /><div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: T.faint, fontFamily: mono, marginTop: 6 }}><span>0.5</span><span>50 SOL</span></div></div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: mobile ? 8 : 14, marginBottom: mobile ? 20 : 28 }}>
-                    <div><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".05em" }}>Snipers</span><span style={{ fontSize: 14, fontFamily: mono, fontWeight: 800, color: T.green }}>{sniperCount}</span></div><input type="range" min={1} max={5} step={1} value={sniperCount} onChange={e => setSniperCount(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>
-                    <div><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".05em" }}>Slippage</span><span style={{ fontSize: 14, fontFamily: mono, fontWeight: 800, color: T.green }}>{slippage}%</span></div><input type="range" min={1} max={50} step={1} value={slippage} onChange={e => setSlippage(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>
-                    <div><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".05em" }}>Duration</span><span style={{ fontSize: 14, fontFamily: mono, fontWeight: 800, color: T.green }}>{duration}m</span></div><input type="range" min={5} max={240} step={5} value={duration} onChange={e => setDuration(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>
+           {/* ═══════ LIVE DASHBOARD — after launch ═══════ */}
+            {launched && launchCA ? (
+              <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 320px", gap: mobile ? 12 : 20 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: mobile ? 12 : 16 }}>
+                  {/* CHART */}
+                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 14, overflow: "hidden" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: "1px solid " + T.border }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 10, fontWeight: 800, fontFamily: mono, color: T.bg, background: T.green, padding: "2px 8px", borderRadius: 6, textTransform: "uppercase" }}>LIVE</span>
+                        <span style={{ fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.text }}>{tokenName || ticker || "Token"}</span>
+                      </div>
+                      <span style={{ fontFamily: mono, fontSize: 11, color: T.mid, cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(launchCA); }}>{launchCA.slice(0, 8)}...{launchCA.slice(-6)}</span>
+                    </div>
+                    <iframe src={"https://pump.fun/coin/" + launchCA} style={{ width: "100%", height: mobile ? 400 : 520, border: "none", display: "block" }} title="Chart" />
                   </div>
-                  <div style={{ padding: mobile ? 12 : 16, background: T.bg, borderRadius: 12, border: "1px solid " + T.border, marginBottom: mobile ? 20 : 28 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, textAlign: "center" }}>
-                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{walletCount}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>wallets</div></div>
-                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{sniperCount}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>snipers</div></div>
-                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{calcDevBuyPreview(totalSol).devBuy.toFixed(2)}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>dev buy</div></div>
-                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{calcDevBuyPreview(totalSol).fleet.toFixed(2)}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>fleet</div></div>
+                  {/* LINKS */}
+                  <div style={{ display: "flex", gap: 8 }}>
+                    {[{ label: "pump.fun", url: "https://pump.fun/coin/" + launchCA, c: T.green }, { label: "Solscan", url: "https://solscan.io/token/" + launchCA }, { label: "DexScreener", url: "https://dexscreener.com/solana/" + launchCA }, { label: "Photon", url: "https://photon-sol.tinyastro.io/en/lp/" + launchCA }].map(l => (
+                      <a key={l.label} href={l.url} target="_blank" rel="noopener noreferrer" style={{ flex: 1, textAlign: "center", padding: "10px 4px", background: T.surface, borderRadius: 10, border: "1px solid " + T.border, color: l.c || T.mid, fontFamily: mono, fontSize: 11, fontWeight: 700, textDecoration: "none" }}>{l.label}</a>
+                    ))}
+                  </div>
+                </div>
+                {/* RIGHT — fleet status */}
+                <div style={{ display: "flex", flexDirection: "column", gap: mobile ? 12 : 14 }}>
+                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18 }}>
+                    <div style={{ fontFamily: mono, fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 14 }}>Fleet Status</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+                      {[{ k: "Phase", v: fleetStatus?.phase || "starting", c: T.green }, { k: "Trades", v: fleetStatus?.tradeCount || 0, c: T.green }, { k: "Spent", v: (fleetStatus?.solSpent || 0).toFixed(3), c: T.red }, { k: "Recovered", v: (fleetStatus?.solRecovered || 0).toFixed(3), c: T.green }].map(s => (
+                        <div key={s.k} style={{ background: T.bg, borderRadius: 8, padding: "10px 12px", border: "1px solid " + T.border }}>
+                          <div style={{ fontSize: 10, fontFamily: mono, color: T.faint, textTransform: "uppercase", marginBottom: 4 }}>{s.k}</div>
+                          <div style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: s.c }}>{s.v}</div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ fontSize: 11, fontFamily: mono, color: T.dim }}>Wallets: {fleetStatus?.activeWallets || walletCount} | Snipers: {sniperCount}</div>
+                  </div>
+                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18 }}>
+                    <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 10 }}>Bonding Curve</div>
+                    <BondingCurve progress={curveProgress} />
+                  </div>
+                  <button onClick={async () => {
+                    if (!confirm("Close all positions? This sells all tokens and stops trading.")) return;
+                    try {
+                      const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca: launchCA, wallet: user?.pubkey }) });
+                      const data = await res.json();
+                      if (data.error) alert("Close error: " + data.error);
+                      else alert("Closed! Recovered: " + (data.solRecovered || 0).toFixed(4) + " SOL | Net: " + (data.netProfit || 0).toFixed(4) + " SOL");
+                    } catch (e) { alert("Failed: " + e.message); }
+                  }} style={{ width: "100%", padding: "14px", background: "none", border: "2px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 12, cursor: "pointer", textTransform: "uppercase", letterSpacing: ".05em" }}>{"\u2620"} Close All Positions</button>
+                  <button onClick={() => { setLaunched(false); setLaunchCA(""); }} style={{ width: "100%", padding: "10px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 12, fontWeight: 700, borderRadius: 10, cursor: "pointer" }}>Back to Setup</button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                {/* ═══════ SETUP WIZARD — before launch ═══════ */}
+                {/* Step 1: Wallet Connection */}
+                <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 16, padding: mobile ? 20 : 28, marginBottom: mobile ? 14 : 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: mobile ? 14 : 20 }}>
+                    <span style={{ width: 28, height: 28, borderRadius: "50%", background: seed ? T.green : T.border, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.bg }}>{seed ? "\u2713" : "1"}</span>
+                    <span style={{ fontFamily: sans, fontWeight: 800, fontSize: mobile ? 17 : 20, color: T.text }}>Wallet</span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: mobile ? 10 : 14 }}>
+                    <div onClick={() => setSeed("")} style={{ padding: mobile ? 16 : 20, background: !seed ? T.greenGhost : T.bg, border: "2px solid " + (!seed ? T.green : T.border), borderRadius: 12, cursor: "pointer", textAlign: "center" }}>
+                      <div style={{ fontSize: 24, marginBottom: 6 }}>{"\u{1F47B}"}</div>
+                      <div style={{ fontFamily: mono, fontSize: 14, fontWeight: 700, color: !seed ? T.green : T.text }}>Generate Fresh</div>
+                      <div style={{ fontSize: 12, color: T.dim, fontFamily: mono, marginTop: 4 }}>New wallet created per launch. You send SOL to fund it.</div>
+                    </div>
+                    <div style={{ padding: mobile ? 16 : 20, background: seed ? T.greenGhost : T.bg, border: "2px solid " + (seed ? T.green : T.border), borderRadius: 12 }}>
+                      <div style={{ fontSize: 24, marginBottom: 6, textAlign: "center" }}>{"\u{1F511}"}</div>
+                      <div style={{ fontFamily: mono, fontSize: 14, fontWeight: 700, color: seed ? T.green : T.text, textAlign: "center", marginBottom: 8 }}>Master Wallet</div>
+                      <Input value={seed} onChange={setSeed} placeholder="paste bs58 private key" type="password" big />
+                      <div style={{ fontSize: 11, color: T.dim, fontFamily: mono, marginTop: 6, textAlign: "center" }}>Launches directly. No deposit step.</div>
                     </div>
                   </div>
-                  {seed && (<div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: T.greenGhost, borderRadius: 10, marginBottom: mobile ? 16 : 20, border: "1px solid " + T.green + "33" }}><span style={{ fontSize: 14 }}>{"\u{1F511}"}</span><span style={{ fontFamily: mono, fontSize: 12, color: T.green, flex: 1 }}>Master wallet connected — launching direct</span></div>)}
-                  {/* LAUNCH FLOW */}
+                </div>
+
+                {/* Step 2: Token or CA */}
+                <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 16, padding: mobile ? 20 : 28, marginBottom: mobile ? 14 : 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: mobile ? 14 : 20 }}>
+                    <span style={{ width: 28, height: 28, borderRadius: "50%", background: canLaunch ? T.green : T.border, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.bg }}>{canLaunch ? "\u2713" : "2"}</span>
+                    <span style={{ fontFamily: sans, fontWeight: 800, fontSize: mobile ? 17 : 20, color: T.text }}>Token</span>
+                    <span style={{ fontSize: 12, color: T.faint, fontFamily: mono, marginLeft: "auto" }}>create new or ape existing</span>
+                  </div>
+                  <div style={{ marginBottom: 16 }}><Label>contract address <span style={{ fontWeight: 400, textTransform: "none", color: T.green }}>(ape existing)</span></Label><Input value={existingCA} onChange={setExistingCA} placeholder="paste pump.fun CA to trade..." big /></div>
+                  {!existingCA && (<>
+                    <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 16, fontSize: 12, color: T.faint, fontFamily: mono, textTransform: "uppercase", letterSpacing: ".1em" }}><span style={{ flex: 1, height: 1, background: T.border }} />or create new<span style={{ flex: 1, height: 1, background: T.border }} /></div>
+                    <div style={{ display: "flex", gap: mobile ? 14 : 20, marginBottom: 14 }}>
+                      <ImageUpload image={image} onChange={setImage} mobile={mobile} />
+                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
+                        <div><Label>name</Label><Input value={tokenName} onChange={setTokenName} placeholder="e.g. PepeCoin" big /></div>
+                        <div><Label>ticker</Label><Input value={ticker} onChange={v => setTicker(v.toUpperCase())} placeholder="e.g. $PEPE" maxLength={10} big /></div>
+                      </div>
+                    </div>
+                    <div style={{ marginBottom: 12 }}><Label>description</Label><textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2} placeholder="describe your token..." style={{ width: "100%", padding: "12px 14px", background: T.bg, border: "2px solid " + T.border, borderRadius: 12, color: T.text, fontFamily: sans, fontSize: 15, outline: "none", resize: "vertical", lineHeight: 1.5 }} /></div>
+                    <div><Label>links <span style={{ fontWeight: 400, textTransform: "none" }}>(optional)</span></Label><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}><Input value={twitter} onChange={setTwitter} placeholder="twitter" /><Input value={telegram} onChange={setTelegram} placeholder="telegram" /><Input value={website} onChange={setWebsite} placeholder="website" /></div></div>
+                  </>)}
+                </div>
+
+                {/* Step 3: Fleet Config */}
+                <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 16, padding: mobile ? 20 : 28, marginBottom: mobile ? 14 : 20 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: mobile ? 14 : 20 }}>
+                    <span style={{ width: 28, height: 28, borderRadius: "50%", background: T.border, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.bg }}>3</span>
+                    <span style={{ fontFamily: sans, fontWeight: 800, fontSize: mobile ? 17 : 20, color: T.text }}>Configure</span>
+                  </div>
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><Label>SOL budget</Label><span style={{ fontFamily: mono, fontSize: 22, fontWeight: 800, color: T.green }}>{totalSol} SOL</span></div>
+                    <input type="range" min={0.5} max={50} step={0.1} value={totalSol} onChange={e => setTotalSol(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} />
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: mobile ? 10 : 14, marginBottom: 16 }}>
+                    <div style={{ background: T.bg, borderRadius: 12, padding: "12px", border: "1px solid " + T.border }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase" }}>Snipers</span><span style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: T.green }}>{sniperCount}</span></div>
+                      <input type="range" min={1} max={5} step={1} value={sniperCount} onChange={e => setSniperCount(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} />
+                    </div>
+                    <div style={{ background: T.bg, borderRadius: 12, padding: "12px", border: "1px solid " + T.border }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase" }}>Slippage</span><span style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: T.green }}>{slippage}%</span></div>
+                      <input type="range" min={1} max={50} step={1} value={slippage} onChange={e => setSlippage(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} />
+                    </div>
+                    <div style={{ background: T.bg, borderRadius: 12, padding: "12px", border: "1px solid " + T.border }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase" }}>Duration</span><span style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: T.green }}>{duration}m</span></div>
+                      <input type="range" min={5} max={240} step={5} value={duration} onChange={e => setDuration(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} />
+                    </div>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 2, background: T.border + "44", borderRadius: 10, overflow: "hidden" }}>
+                    {[{ k: "Dev Buy", v: calcDevBuyPreview(totalSol).devBuy.toFixed(2) }, { k: "Fleet", v: calcDevBuyPreview(totalSol).fleet.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }, { k: "Fee", v: calcDevBuyPreview(totalSol).fee.toFixed(3) }].map(s => (
+                      <div key={s.k} style={{ background: T.bg, padding: "10px 4px", textAlign: "center" }}><div style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 9, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.k}</div></div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Step 4: Launch */}
+                <div style={{ background: T.surface, border: "2px solid " + (canLaunch ? T.green + "44" : T.border), borderRadius: 16, padding: mobile ? 20 : 28 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: mobile ? 14 : 20 }}>
+                    <span style={{ width: 28, height: 28, borderRadius: "50%", background: canLaunch ? T.green : T.border, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.bg }}>{"\u{1F680}"}</span>
+                    <span style={{ fontFamily: sans, fontWeight: 800, fontSize: mobile ? 17 : 20, color: T.text }}>{existingCA ? "Start Trading" : "Launch"}</span>
+                    {seed && <span style={{ fontFamily: mono, fontSize: 11, color: T.green, padding: "3px 10px", background: T.greenGhost, borderRadius: 6, marginLeft: "auto" }}>{"\u{1F511}"} direct</span>}
+                  </div>
                   <LaunchFlow
-                    user={user} mobile={mobile}
-                    totalSol={totalSol}
+                    user={user} mobile={mobile} totalSol={totalSol}
                     tokenConfig={{ name: tokenName, ticker, description: desc, image, twitter, telegram, website, existingCA }}
                     canLaunch={existingCA || (tokenName && ticker)}
-                    launched={launched}
-                    masterSeed={seed}
+                    launched={launched} masterSeed={seed}
                     fleetConfig={{ sniperCount, slippage, duration }}
-                    onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); setTab("wallets"); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }}
+                    onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }}
                   />
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: mobile ? 12 : 20 }}>
-                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, overflow: "hidden" }}><div style={{ height: mobile ? 140 : 180, background: image ? "url(" + image + ") center/cover" : "linear-gradient(135deg, " + T.surface2 + ", " + T.bg + ")", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>{!image && <span style={{ fontSize: mobile ? 40 : 56, opacity: 0.3 }}>{"\u{1FA99}"}</span>}{(tokenName || ticker) && <div style={{ position: "absolute", bottom: 14, left: 14, right: 14, background: "rgba(0,0,0,.75)", backdropFilter: "blur(8px)", borderRadius: 12, padding: "10px 14px" }}><div style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 16 : 20, color: "#eaeaf2" }}>{tokenName || "Token Name"}</div><div style={{ fontFamily: mono, fontSize: 14, color: "#00e676", fontWeight: 700 }}>${ticker || "TICK"}</div></div>}</div>{desc && <div style={{ padding: "12px 16px", fontSize: 14, color: T.mid, lineHeight: 1.5, borderTop: "1px solid " + T.border }}>{desc.slice(0, 120)}{desc.length > 120 ? "..." : ""}</div>}</div>
-                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 16 : 22 }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>Fleet Strategy</span><span style={{ fontFamily: mono, fontSize: 14, color: T.green, fontWeight: 700, padding: "4px 12px", background: T.greenGhost, borderRadius: 8 }}>{walletCount} wallets</span></div>{activeRoles.map(r => (<div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px solid " + T.border + "22" }}><span style={{ fontSize: 20 }}>{r.emoji}</span><span style={{ flex: 1, fontSize: 14, fontFamily: mono, color: T.mid }}>{r.name}</span><span style={{ fontSize: 14, fontFamily: mono, color: ROLE_COLORS(T)[r.id], fontWeight: 700 }}>{(totalSol * r.weight / 100).toFixed(3)}</span></div>))}</div>
-                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 16 : 22 }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}><span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>Bonding Curve</span><span style={{ fontFamily: mono, fontSize: 15, color: T.green, fontWeight: 800 }}>{(curveProgress * 100).toFixed(1)}%</span></div><BondingCurve progress={curveProgress} /></div>
-                </div>
+
+                {/* Past sessions for VIP */}
+                {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 16, padding: mobile ? 16 : 22, marginTop: mobile ? 14 : 20 }}>
+                  <div style={{ fontFamily: mono, fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 12 }}>Resume Past Session</div>
+                  {pastSessions.map(s => (<div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: "1px solid " + T.border + "22" }}>
+                    <span style={{ fontFamily: mono, fontSize: 13, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || "?"} — {s.tokenCA?.slice(0, 8)}...</span>
+                    <span style={{ fontSize: 11, fontFamily: mono, color: T.dim }}>{s.status}</span>
+                    <button onClick={async () => {
+                      try {
+                        const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) });
+                        const data = await res.json();
+                        if (data.ok) { setLaunchCA(data.tokenCA); setLaunched(true); }
+                        else alert(data.error || "Resume failed");
+                      } catch (e) { alert("Error: " + e.message); }
+                    }} style={{ background: T.green, color: T.bg, border: "none", fontFamily: mono, fontSize: 12, fontWeight: 700, padding: "6px 14px", borderRadius: 8, cursor: "pointer" }}>Resume</button>
+                  </div>))}
+                </div>)}
               </div>
             )}
-            {/* WALLETS */}
-            {tab === "wallets" && (<div><div style={{ marginBottom: mobile ? 16 : 24, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><div><h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 20 : 24, color: T.text }}>Wallet Fleet <span style={{ color: T.green }}>({activeRoles.length})</span></h2><p style={{ fontSize: mobile ? 13 : 15, color: T.dim, marginTop: 6 }}>Each wallet thinks independently</p></div>
-              {launched && launchCA && (<button onClick={async () => {
-                if (!confirm("Close all positions? This will sell all tokens and stop trading.")) return;
-                try {
-                  const res = await fetch(API + "/api/close", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey },
-                    body: JSON.stringify({ ca: launchCA, wallet: user?.pubkey }),
-                  });
-                  const data = await res.json();
-                  if (data.error) alert("Close error: " + data.error);
-                  else alert(`Positions closed! Recovered: ${(data.solRecovered || 0).toFixed(4)} SOL | Net: ${(data.netProfit || 0).toFixed(4)} SOL`);
-                } catch (e) { alert("Close failed: " + e.message); }
-              }} style={{ background: "none", border: "2px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 13, fontWeight: 700, padding: "8px 16px", borderRadius: 10, cursor: "pointer", textTransform: "uppercase", letterSpacing: ".05em" }}>☠ Close All</button>)}
-              </div>
-              {launchCA && (<div style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 14, padding: mobile ? 14 : 18, marginBottom: mobile ? 14 : 20 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                  <span style={{ fontSize: 10, fontWeight: 800, fontFamily: mono, color: T.bg, background: T.green, padding: "2px 8px", borderRadius: 6, textTransform: "uppercase", letterSpacing: ".1em" }}>LIVE</span>
-                  <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(launchCA); }}>{launchCA}</span>
-                </div>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  <a href={"https://pump.fun/coin/" + launchCA} target="_blank" rel="noopener" style={{ fontFamily: mono, fontSize: 12, color: T.green, textDecoration: "none" }}>pump.fun ↗</a>
-                  <a href={"https://solscan.io/token/" + launchCA} target="_blank" rel="noopener" style={{ fontFamily: mono, fontSize: 12, color: T.dim, textDecoration: "none" }}>solscan ↗</a>
-                  <a href={"https://dexscreener.com/solana/" + launchCA} target="_blank" rel="noopener" style={{ fontFamily: mono, fontSize: 12, color: T.dim, textDecoration: "none" }}>dexscreener ↗</a>
-                </div>
-                {fleetStatus && (<div style={{ marginTop: 10, fontSize: 12, fontFamily: mono, color: T.dim }}>
-                  Fleet: {fleetStatus.phase || "initializing"} | Wallets: {fleetStatus.activeWallets || 0} | Trades: {fleetStatus.tradeCount || 0}
-                </div>)}
-              </div>)}
-              {pastSessions.length > 0 && !launchCA && (<div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginBottom: mobile ? 14 : 20 }}>
-                <div style={{ fontFamily: mono, fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 12 }}>Past Sessions (VIP)</div>
-                {pastSessions.map(s => (<div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid " + T.border + "22" }}>
-                  <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || "?"} — {s.tokenCA?.slice(0, 8)}...</span>
-                  <span style={{ fontSize: 11, fontFamily: mono, color: T.dim }}>{s.status}</span>
-                  <button onClick={async () => {
-                    try {
-                      const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) });
-                      const data = await res.json();
-                      if (data.ok) { setLaunchCA(data.tokenCA); setLaunched(true); }
-                      else alert(data.error || "Resume failed");
-                    } catch (e) { alert("Error: " + e.message); }
-                  }} style={{ background: T.green, color: T.bg, border: "none", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 6, cursor: "pointer" }}>Resume</button>
-                </div>))}
-              </div>)}
-              {!canLaunch ? (<div style={{ padding: mobile ? 40 : 70, textAlign: "center", background: T.surface, borderRadius: 18, border: "2px dashed " + T.border }}><span style={{ fontSize: mobile ? 40 : 56, display: "block", marginBottom: 16 }}>{"\u{1F916}"}</span><p style={{ fontFamily: mono, fontSize: mobile ? 14 : 16, color: T.dim }}>Configure token + wallet in Create & Config tabs first</p></div>) : (<div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : activeRoles.length <= 5 ? "1fr 1fr" : "1fr 1fr 1fr", gap: mobile ? 12 : 18 }}>{activeRoles.map(role => (<WalletCard key={role.id} role={role} solBudget={+(totalSol * role.weight / 100).toFixed(4)} mobile={mobile} />))}</div>)}</div>)}
-            {/* CONFIG */}
-            {tab === "config" && (<div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: mobile ? 12 : 24, animation: "fadeUp .4s ease" }}>
-              <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}><h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, marginBottom: 24, display: "flex", alignItems: "center", gap: 10, color: T.text }}><Ic.Wallet /> Settings</h3><div style={{ display: "flex", flexDirection: "column", gap: 20 }}><div><Label>RPC URL</Label><Input value={rpc} onChange={setRpc} placeholder="https://mainnet.helius-rpc.com/?api-key=..." icon={<Ic.Zap />} big /></div><div><Label>Master Wallet (Private Key)</Label><Input value={seed} onChange={setSeed} placeholder="bs58 encoded private key" type="password" icon={<Ic.Lock />} big /><p style={{ fontSize: 12, color: T.faint, fontFamily: mono, marginTop: 8, lineHeight: 1.5 }}>Optional. If set, launches directly from this wallet — no deposit step.</p></div><div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", background: T.bg, borderRadius: 12, border: "2px solid " + T.border, cursor: "pointer" }} onClick={() => setUseAtlas(!useAtlas)}><div style={{ width: 46, height: 26, borderRadius: 13, padding: 3, background: useAtlas ? T.green : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", transform: useAtlas ? "translateX(20px)" : "translateX(0)", transition: "transform .2s" }} /></div><div><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: T.text }}>Helius Atlas</div><div style={{ fontSize: 13, color: T.dim }}>Ultra low-latency staked connections</div></div></div></div></div>
-              <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}><h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, marginBottom: 24, display: "flex", alignItems: "center", gap: 10, color: T.text }}><Ic.Zap /> Fleet Preview</h3><div style={{ display: "flex", flexDirection: "column", gap: 10 }}>{activeRoles.map(r => (<div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px solid " + T.border + "22" }}><span style={{ fontSize: 20 }}>{r.emoji}</span><span style={{ flex: 1, fontSize: 14, fontFamily: mono, color: T.mid }}>{r.name}{r.id === "sniper" ? " x" + sniperCount : ""}</span><span style={{ fontSize: 14, fontFamily: mono, color: ROLE_COLORS(T)[r.id], fontWeight: 700 }}>{(totalSol * r.weight / 100).toFixed(3)}</span></div>))}</div><div style={{ padding: 14, background: T.bg, borderRadius: 12, border: "1px solid " + T.border, marginTop: 16 }}><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, textAlign: "center" }}>{[{ k: "Budget", v: totalSol + " SOL" }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Duration", v: duration + "m" }].map(s => (<div key={s.k}><div style={{ fontSize: 18, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 11, color: T.faint, fontFamily: mono }}>{s.k}</div></div>))}</div></div></div>
-            </div>)}
-          </div>
           {mobile ? <MobileNav tab={tab} setTab={setTab} /> : <footer style={{ padding: "16px 28px", borderTop: "1px solid " + T.border, marginTop: 40, display: "flex", justifyContent: "space-between", fontSize: 13, color: T.faint, fontFamily: mono }}><span>BONDLI v3.1 {"\u00B7"} {PLATFORM_WALLET}</span><span>{launched ? <span style={{ color: T.green }}>{"\u25CF"} ACTIVE</span> : "\u25CF IDLE"}</span></footer>}
         </div>
       )}
