@@ -312,7 +312,7 @@ function TierGate({ user, onSelect, onDisconnect }) {
         <div style={{ textAlign: "center", marginBottom: 24 }}>
           <RedPill size={40} />
           <h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 22 : 28, marginTop: 12, color: T.text }}>Choose your path</h2>
-          <p style={{ fontSize: 14, color: T.dim, marginTop: 6 }}>Connected as <span style={{ fontFamily: mono, color: T.green }}>{user.pubkey.slice(0, 6)}...{user.pubkey.slice(-4)}</span></p>
+          <p style={{ fontSize: 14, color: T.dim, marginTop: 6 }}>Connected as <span style={{ fontFamily: mono, color: T.green }}>{(user.pubkey || "").slice(0, 6)}...{(user.pubkey || "").slice(-4)}</span></p>
         </div>
 
         {error && <p style={{ fontSize: 14, color: T.red, marginBottom: 14, fontFamily: mono, textAlign: "center" }}>{error}</p>}
@@ -754,7 +754,7 @@ export default function App() {
               {tierLabel && <span style={{ padding: "4px 10px", borderRadius: 8, fontFamily: mono, fontSize: 11, fontWeight: 700, background: tierColor + "18", color: tierColor, border: "1px solid " + tierColor + "33" }}>{tierLabel === "FREE" ? "\u{1F30D}" : tierLabel === "VIP" ? "\u2B50" : tierLabel === "PRO" ? "\u{1F451}" : ""} {tierLabel}</span>}
               <div style={{ display: "flex", alignItems: "center", gap: mobile ? 6 : 10, padding: mobile ? "6px 10px" : "8px 16px", background: T.bg, borderRadius: 12, border: "1px solid " + T.border }}>
                 {!mobile && <Ic.Phantom />}
-                <span style={{ fontFamily: mono, fontSize: mobile ? 12 : 13, color: T.mid }}>{user.demo ? "demo" : user.pubkey.slice(0, 4) + ".." + user.pubkey.slice(-4)}</span>
+                <span style={{ fontFamily: mono, fontSize: mobile ? 12 : 13, color: T.mid }}>{user.demo ? "demo" : (user.pubkey || "").slice(0, 4) + ".." + (user.pubkey || "").slice(-4)}</span>
                 <button onClick={disconnect} style={{ background: "none", border: "none", cursor: "pointer", color: T.dim, display: "flex", padding: 0 }}><Ic.Disconnect /></button>
               </div>
             </div>
