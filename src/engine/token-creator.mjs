@@ -56,48 +56,101 @@ const BUY_DISCRIMINATOR = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
  * @param {Object} config - { name, ticker, description, image (base64 or URL), twitter, telegram, website }
  * @returns {{ metadataUri: string }}
  */
-async function uploadMetadata(config) {
-  const form = new FormData();
+async function uploadMetadata(config, maxRetries = 5) {
+  let lastError;
 
-  // Handle image — base64 data URI or URL
-  if (config.image && config.image.startsWith("data:")) {
-    const matches = config.image.match(/^data:(.+);base64,(.+)$/);
-    if (matches) {
-      const mimeType = matches[1];
-      const buffer = Buffer.from(matches[2], "base64");
-      const ext = mimeType.includes("png") ? "png" : mimeType.includes("gif") ? "gif" : "jpg";
-      const blob = new Blob([buffer], { type: mimeType });
-      form.append("file", blob, `token.${ext}`);
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const form = new FormData();
+
+      let hasImage = false;
+
+      if (config.image && config.image.startsWith("data:")) {
+        const matches = config.image.match(/^data:(.+);base64,(.+)$/);
+        if (matches) {
+          const mimeType = matches[1];
+          const buffer = Buffer.from(matches[2], "base64");
+          const ext = mimeType.includes("png") ? "png" : mimeType.includes("gif") ? "gif" : "jpg";
+          const blob = new Blob([buffer], { type: mimeType });
+          form.append("file", blob, `token.${ext}`);
+          hasImage = true;
+        }
+      } else if (config.image && (config.image.startsWith("http://") || config.image.startsWith("https://"))) {
+        const imgResp = await fetch(config.image);
+        const imgBlob = await imgResp.blob();
+        form.append("file", imgBlob, "token.png");
+        hasImage = true;
+      }
+
+      // Pump.fun REQUIRES an image — generate a default if none provided
+      if (!hasImage) {
+        console.log("[IPFS] No image provided, generating default...");
+        const defaultImg = generateDefaultImage(config.name || "T", config.ticker || "TKN");
+        const blob = new Blob([defaultImg], { type: "image/png" });
+        form.append("file", blob, "token.png");
+      }
+
+      form.append("name", config.name || "Token");
+      form.append("symbol", config.ticker || "TKN");
+      form.append("description", config.description || "");
+      form.append("twitter", config.twitter || "");
+      form.append("telegram", config.telegram || "");
+      form.append("website", config.website || "");
+      form.append("showName", "true");
+
+      const endpoints = [
+        "https://pump.fun/api/ipfs",
+        "https://client.pump.fun/api/ipfs",
+      ];
+      const url = endpoints[(attempt - 1) % endpoints.length];
+      
+      console.log(`[IPFS] Attempt ${attempt}/${maxRetries} → ${url}`);
+
+      const resp = await fetch(url, {
+        method: "POST",
+        body: form,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          "Accept": "*/*",
+          "Origin": "https://pump.fun",
+          "Referer": "https://pump.fun/",
+        },
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(`IPFS ${resp.status}: ${text.slice(0, 200)}`);
+      }
+
+      const data = await resp.json();
+      console.log(`[IPFS] ✅ Uploaded on attempt ${attempt}: ${data.metadataUri || data.uri}`);
+      return {
+        metadataUri: data.metadataUri || data.uri,
+        metadata: data.metadata || data,
+      };
+
+    } catch (e) {
+      lastError = e;
+      console.warn(`[IPFS] Attempt ${attempt}/${maxRetries} failed: ${e.message}`);
+      if (attempt < maxRetries) {
+        const delay = 2000 * attempt;
+        console.log(`[IPFS] Retrying in ${delay / 1000}s...`);
+        await new Promise(r => setTimeout(r, delay));
+      }
     }
-  } else if (config.image && (config.image.startsWith("http://") || config.image.startsWith("https://"))) {
-    const imgResp = await fetch(config.image);
-    const imgBlob = await imgResp.blob();
-    form.append("file", imgBlob, "token.png");
   }
 
-  form.append("name", config.name || "Token");
-  form.append("symbol", config.ticker || "TKN");
-  form.append("description", config.description || "");
-  form.append("twitter", config.twitter || "");
-  form.append("telegram", config.telegram || "");
-  form.append("website", config.website || "");
-  form.append("showName", "true");
+  throw new Error(`IPFS upload failed after ${maxRetries} attempts: ${lastError?.message}`);
+}
 
-  const resp = await fetch("https://pump.fun/api/ipfs", {
-    method: "POST",
-    body: form,
-  });
-
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`IPFS upload failed (${resp.status}): ${text}`);
-  }
-
-  const data = await resp.json();
-  return {
-    metadataUri: data.metadataUri || data.uri,
-    metadata: data.metadata || data,
-  };
+/**
+ * Generate a minimal valid PNG as default token icon.
+ * Known-good 1x1 green pixel PNG.
+ */
+function generateDefaultImage() {
+  // Valid 1x1 green (#00e676) PNG, base64-encoded
+  const b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mMU+M9QDwADgQF/Nnl5XgAAAABJRU5ErkJggg==";
+  return Buffer.from(b64, "base64");
 }
 
 // ═══════════════════════════════════════
@@ -272,49 +325,59 @@ export async function createToken(connection, creator, tokenConfig, options = {}
     tx.add(buyIx);
   }
 
-  // 7. Sign and send
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-  tx.recentBlockhash = blockhash;
-  tx.lastValidBlockHeight = lastValidBlockHeight;
-  tx.feePayer = creator.publicKey;
-
-  const signers = [creator, mintKeypair];
-
+  // 7. Sign and send (with retries)
   let txSig;
-  if (sendUrl) {
-    // Use custom RPC (Helius Atlas etc)
-    tx.sign(...signers);
-    const rawTx = tx.serialize();
-    const resp = await fetch(sendUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: Date.now(),
-        method: "sendTransaction",
-        params: [rawTx.toString("base64"), { encoding: "base64", skipPreflight: true, maxRetries: 3 }],
-      }),
-    });
-    const result = await resp.json();
-    if (result.error) throw new Error(result.error.message);
-    txSig = result.result;
+  const maxSendRetries = 3;
 
-    // Wait for confirmation
+  for (let attempt = 1; attempt <= maxSendRetries; attempt++) {
     try {
-      await connection.confirmTransaction({ signature: txSig, blockhash, lastValidBlockHeight }, "confirmed");
-    } catch (e) {
-      console.warn(`[CREATE] Confirmation timeout, tx may still land: ${txSig}`);
-    }
-  } else {
-    txSig = await sendAndConfirmTransaction(connection, tx, signers, {
-      commitment: "confirmed",
-      maxRetries: 3,
-      skipPreflight: true,
-      preflightCommitment: "processed",
-    });
-  }
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+      tx.recentBlockhash = blockhash;
+      tx.lastValidBlockHeight = lastValidBlockHeight;
+      tx.feePayer = creator.publicKey;
 
-  console.log(`[CREATE] ✅ Token created! Mint: ${mint.toBase58()} | TX: ${txSig}`);
+      const signers = [creator, mintKeypair];
+
+      if (sendUrl) {
+        tx.sign(...signers);
+        const rawTx = tx.serialize();
+        const resp = await fetch(sendUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: Date.now(),
+            method: "sendTransaction",
+            params: [rawTx.toString("base64"), { encoding: "base64", skipPreflight: true, maxRetries: 3 }],
+          }),
+        });
+        const result = await resp.json();
+        if (result.error) throw new Error(result.error.message);
+        txSig = result.result;
+
+        try {
+          await connection.confirmTransaction({ signature: txSig, blockhash, lastValidBlockHeight }, "confirmed");
+        } catch (e) {
+          console.warn(`[CREATE] Confirmation timeout, tx may still land: ${txSig}`);
+        }
+      } else {
+        txSig = await sendAndConfirmTransaction(connection, tx, signers, {
+          commitment: "confirmed",
+          maxRetries: 3,
+          skipPreflight: true,
+          preflightCommitment: "processed",
+        });
+      }
+
+      console.log(`[CREATE] \u2705 Token created on attempt ${attempt}! Mint: ${mint.toBase58()} | TX: ${txSig}`);
+      break; // success
+
+    } catch (e) {
+      console.warn(`[CREATE] Send attempt ${attempt}/${maxSendRetries} failed: ${e.message}`);
+      if (attempt === maxSendRetries) throw e;
+      await new Promise(r => setTimeout(r, 2000 * attempt));
+    }
+  }
 
   return {
     mint: mint.toBase58(),
