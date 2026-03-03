@@ -379,28 +379,26 @@ function TierGate({ user, onSelect, onDisconnect }) {
 // ══════════════════════════════════════════
 function mcapFmt(n) { return n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "k" : Math.round(n).toString(); }
 
-// ── Live Price Chart (canvas-based, uses fleet priceHistory + trades) ──
-function PriceChart({ priceHistory, trades, mobile, T }) {
+// ── Live Price Chart — uses server priceHistory, falls back to DexScreener embed ──
+function PriceChart({ priceHistory, trades, mobile, T, ca }) {
   const canvasRef = useRef(null);
-  const [hoveredPoint, setHoveredPoint] = useState(null);
+  const hasData = priceHistory && priceHistory.length >= 2;
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !priceHistory || priceHistory.length < 2) return;
+    if (!canvas || !hasData) return;
     const ctx = canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
+    canvas.width = canvas.offsetWidth * dpr;
+    canvas.height = canvas.offsetHeight * dpr;
     ctx.scale(dpr, dpr);
-    const W = rect.width, H = rect.height;
-    const pad = { top: 30, right: 60, bottom: 25, left: 10 };
+    const W = canvas.offsetWidth, H = canvas.offsetHeight;
+    const pad = { top: 28, right: 55, bottom: 22, left: 8 };
 
-    // Data
     const points = priceHistory;
     const mcaps = points.map(p => p.mcap);
-    const minMcap = Math.min(...mcaps);
-    const maxMcap = Math.max(...mcaps);
+    const minMcap = Math.min(...mcaps) * 0.95;
+    const maxMcap = Math.max(...mcaps) * 1.05;
     const range = maxMcap - minMcap || 1;
     const minTime = points[0].time;
     const maxTime = points[points.length - 1].time;
@@ -409,111 +407,67 @@ function PriceChart({ priceHistory, trades, mobile, T }) {
     const toX = (t) => pad.left + ((t - minTime) / timeRange) * (W - pad.left - pad.right);
     const toY = (m) => pad.top + (1 - (m - minMcap) / range) * (H - pad.top - pad.bottom);
 
-    // Clear
     ctx.clearRect(0, 0, W, H);
 
-    // Grid lines
-    ctx.strokeStyle = (T.border || "#333") + "33";
-    ctx.lineWidth = 0.5;
+    // Grid
+    ctx.strokeStyle = "#ffffff08"; ctx.lineWidth = 0.5;
     for (let i = 0; i <= 4; i++) {
       const y = pad.top + (i / 4) * (H - pad.top - pad.bottom);
       ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
-      const val = maxMcap - (i / 4) * range;
-      ctx.fillStyle = T.faint || "#666";
-      ctx.font = "10px monospace";
-      ctx.textAlign = "right";
-      ctx.fillText("$" + mcapFmt(val), W - 6, y + 3);
+      ctx.fillStyle = "#555"; ctx.font = "9px monospace"; ctx.textAlign = "right";
+      ctx.fillText("$" + mcapFmt(maxMcap - (i / 4) * range), W - 4, y + 3);
     }
 
-    // Gradient fill under line
+    // Area fill
+    const isUp = mcaps[mcaps.length - 1] >= mcaps[0];
+    const color = isUp ? "#00ff88" : "#ff4444";
     const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
-    const lastMcap = mcaps[mcaps.length - 1];
-    const firstMcap = mcaps[0];
-    const isUp = lastMcap >= firstMcap;
-    const lineColor = isUp ? (T.green || "#00ff88") : (T.red || "#ff4444");
-    grad.addColorStop(0, lineColor + "30");
-    grad.addColorStop(1, lineColor + "00");
-
-    // Fill area
-    ctx.beginPath();
-    ctx.moveTo(toX(points[0].time), H - pad.bottom);
+    grad.addColorStop(0, color + "25"); grad.addColorStop(1, color + "02");
+    ctx.beginPath(); ctx.moveTo(toX(points[0].time), H - pad.bottom);
     for (const p of points) ctx.lineTo(toX(p.time), toY(p.mcap));
     ctx.lineTo(toX(points[points.length - 1].time), H - pad.bottom);
-    ctx.closePath();
-    ctx.fillStyle = grad;
-    ctx.fill();
+    ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
 
-    // Price line
-    ctx.beginPath();
-    ctx.moveTo(toX(points[0].time), toY(points[0].mcap));
+    // Line
+    ctx.beginPath(); ctx.moveTo(toX(points[0].time), toY(points[0].mcap));
     for (let i = 1; i < points.length; i++) ctx.lineTo(toX(points[i].time), toY(points[i].mcap));
-    ctx.strokeStyle = lineColor;
-    ctx.lineWidth = 2;
-    ctx.stroke();
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
 
-    // Trade markers (our buys/sells)
-    if (trades && trades.length > 0) {
-      for (const t of trades) {
-        if (t.time < minTime || t.time > maxTime) continue;
-        const closest = points.reduce((a, b) => Math.abs(b.time - t.time) < Math.abs(a.time - t.time) ? b : a);
-        const x = toX(t.time), y = toY(closest.mcap);
-        ctx.beginPath();
-        ctx.arc(x, y, 4, 0, Math.PI * 2);
-        ctx.fillStyle = t.side === "buy" ? (T.green || "#00ff88") : (T.red || "#ff4444");
-        ctx.fill();
-        ctx.strokeStyle = "#000";
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-    }
-
-    // Current price label
-    const lastPoint = points[points.length - 1];
-    const lastY = toY(lastPoint.mcap);
-    ctx.fillStyle = lineColor;
-    ctx.font = "bold 12px monospace";
-    ctx.textAlign = "right";
-    ctx.fillText("$" + mcapFmt(lastPoint.mcap), W - 6, lastY - 8);
-
-    // Bonding progress bar
-    if (lastPoint.bondingProgress != null) {
-      const bp = Math.min(100, lastPoint.bondingProgress);
-      const barW = W - pad.left - pad.right;
-      const barH = 4;
-      const barY = H - 6;
-      ctx.fillStyle = (T.border || "#333") + "44";
-      ctx.fillRect(pad.left, barY, barW, barH);
-      ctx.fillStyle = lineColor;
-      ctx.fillRect(pad.left, barY, barW * (bp / 100), barH);
-      ctx.fillStyle = T.faint || "#666";
-      ctx.font = "9px monospace";
-      ctx.textAlign = "left";
-      ctx.fillText(bp.toFixed(1) + "% bonded", pad.left, barY - 2);
+    // Trade dots
+    if (trades) for (const t of trades) {
+      if (t.time < minTime || t.time > maxTime) continue;
+      const closest = points.reduce((a, b) => Math.abs(b.time - t.time) < Math.abs(a.time - t.time) ? b : a);
+      ctx.beginPath(); ctx.arc(toX(t.time), toY(closest.mcap), 3, 0, Math.PI * 2);
+      ctx.fillStyle = t.side === "buy" ? "#00ff88" : "#ff4444"; ctx.fill();
     }
 
     // Header
-    ctx.fillStyle = T.text || "#fff";
-    ctx.font = "bold 13px monospace";
-    ctx.textAlign = "left";
-    const pctChange = firstMcap > 0 ? ((lastMcap - firstMcap) / firstMcap * 100) : 0;
-    ctx.fillText("MCap $" + mcapFmt(lastMcap), pad.left, 16);
-    ctx.fillStyle = isUp ? (T.green || "#00ff88") : (T.red || "#ff4444");
-    ctx.fillText((pctChange >= 0 ? "+" : "") + pctChange.toFixed(1) + "%", pad.left + 140, 16);
-  }, [priceHistory, trades, T, mobile]);
+    const last = mcaps[mcaps.length - 1], first = mcaps[0];
+    const pct = first > 0 ? ((last - first) / first * 100) : 0;
+    ctx.fillStyle = "#fff"; ctx.font = "bold 12px monospace"; ctx.textAlign = "left";
+    ctx.fillText("MCap $" + mcapFmt(last), pad.left, 16);
+    ctx.fillStyle = color; ctx.fillText((pct >= 0 ? "+" : "") + pct.toFixed(1) + "%", 130, 16);
 
-  const hasData = priceHistory && priceHistory.length >= 2;
+    // Bonding bar
+    const bp = points[points.length - 1]?.bondingProgress || 0;
+    if (bp > 0) {
+      const bW = W - pad.left - pad.right;
+      ctx.fillStyle = "#ffffff0a"; ctx.fillRect(pad.left, H - 8, bW, 3);
+      ctx.fillStyle = color; ctx.fillRect(pad.left, H - 8, bW * (bp / 100), 3);
+      ctx.fillStyle = "#666"; ctx.font = "8px monospace"; ctx.textAlign = "left";
+      ctx.fillText(bp.toFixed(0) + "%", pad.left, H - 11);
+    }
+  }, [priceHistory, trades, hasData]);
 
-  return (
-    <div style={{ position: "relative", width: "100%", height: mobile ? 240 : 360, background: "#0a0a0a", borderRadius: 0 }}>
-      {hasData ? (
-        <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
-      ) : (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", fontFamily: "monospace", fontSize: 13, color: T.faint }}>
-          Waiting for price data...
-        </div>
-      )}
-    </div>
-  );
+  // Show canvas if we have price data, otherwise DexScreener embed
+  if (hasData) {
+    return <canvas ref={canvasRef} style={{ width: "100%", height: mobile ? 220 : 320, display: "block", background: "#080808" }} />;
+  }
+  // Fallback: DexScreener embed (works once pair is indexed)
+  if (ca) {
+    return <iframe src={"https://dexscreener.com/solana/" + ca + "?embed=1&theme=dark&trades=0&info=0"} style={{ width: "100%", height: mobile ? 220 : 320, border: "none", display: "block", background: "#080808" }} title="Chart" />;
+  }
+  return <div style={{ height: mobile ? 220 : 320, display: "flex", alignItems: "center", justifyContent: "center", background: "#080808", fontFamily: "monospace", fontSize: 12, color: "#555" }}>Waiting for data...</div>;
 }
 
 function calcDevBuyPreview(totalSol, isApe) {
@@ -864,7 +818,7 @@ export default function App() {
   const [rpc, setRpc] = useState(""); const [seed, setSeed] = useState("");
   const [slippage, setSlippage] = useState(25); const [sniperCount, setSniperCount] = useState(2); const [duration, setDuration] = useState(60); const [jitoTip, setJitoTip] = useState(0.001); const [useAtlas, setUseAtlas] = useState(false);
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
-  const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState("");
+  const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState(""); const [activeSessionId, setActiveSessionId] = useState("");
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
   const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false);
   const [toasts, setToasts] = useState([]);
@@ -877,7 +831,7 @@ export default function App() {
   useEffect(() => { if (user?.tier === "free" && !desc) setDesc("bondli.fun deployed"); }, [user?.tier]);
   useEffect(() => { const p = window?.phantom?.solana || window?.solana; if (p?.isPhantom && p?.isConnected && !user) { p.connect({ onlyIfTrusted: true }).then(async (r) => { const pubkey = r.publicKey.toString(); let whitelisted = false, paid = false, tier = "free"; try { const res = await fetch(API + "/api/access/check?wallet=" + pubkey); const data = await res.json(); whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "free"; } catch { tier = "free"; } setUser({ pubkey, whitelisted, paid, tier, demo: false }); }).catch(() => {}); } }, []);
   useEffect(() => { if (!hasAccess) return; let ws, dead = false; const connect = () => { if (dead) return; try { ws = new WebSocket(WS_URL); ws.onopen = () => setWsConnected(true); ws.onclose = () => { setWsConnected(false); if (!dead) setTimeout(connect, 3000); }; ws.onerror = () => {}; } catch {} }; connect(); return () => { dead = true; if (ws) ws.close(); }; }, [hasAccess]);
-  useEffect(() => { if (!user?.pubkey) return; fetch(API + "/api/sessions?wallet=" + user.pubkey).then(r => r.json()).then(d => { if (d.sessions) { const active = d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5); setPastSessions(active); if (!launched && active.length > 0 && active[0].status === "live") { setLaunchCA(active[0].tokenCA); setLaunched(true); if (active[0].tokenConfig?.name) setTokenName(active[0].tokenConfig.name); if (active[0].tokenConfig?.ticker) setTicker(active[0].tokenConfig.ticker); } } }).catch(() => {}); }, [user]);
+  useEffect(() => { if (!user?.pubkey) return; fetch(API + "/api/sessions?wallet=" + user.pubkey).then(r => r.json()).then(d => { if (d.sessions) { const active = d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5); setPastSessions(active); if (!launched && active.length > 0 && active[0].status === "live") { setLaunchCA(active[0].tokenCA); setLaunched(true); setActiveSessionId(active[0].id); if (active[0].tokenConfig?.name) setTokenName(active[0].tokenConfig.name); if (active[0].tokenConfig?.ticker) setTicker(active[0].tokenConfig.ticker); } } }).catch(() => {}); }, [user]);
   useEffect(() => { if (!launched || !launchCA) return; const iv = setInterval(async () => { try { const res = await fetch(API + "/api/fleet", { headers: { "X-Wallet": user?.pubkey } }); if (res.ok) { const data = await res.json(); setFleetStatus(data); if (data.curveProgress) setCurveProgress(data.curveProgress); } } catch {} }, 3000); return () => clearInterval(iv); }, [launched, launchCA]);
   useEffect(() => { if (!launched) return; const iv = setInterval(() => setCurveProgress(p => Math.min(1, p + Math.random() * 0.004)), 2000); return () => clearInterval(iv); }, [launched]);
   const walletCount = totalSol < 0.5 ? 3 : totalSol < 1 ? 5 : totalSol < 5 ? 9 : totalSol < 10 ? 11 : totalSol < 25 ? 15 : 20;
@@ -911,6 +865,20 @@ export default function App() {
       else { toast("Recovered " + (data.totalRecovered || 0).toFixed(4) + " SOL!", "success"); setSessionDetail(null); }
     } catch (e) { toast(e.message, "error"); }
     setIsRecovering(false);
+  };
+  const [isSweeping, setIsSweeping] = useState(false);
+  const sellAndSweep = async (sessionId) => {
+    if (!sessionId) { toast("No session ID", "error"); return; }
+    if (isSweeping) { toast("Already sweeping", "error"); return; }
+    if (!confirm("Sell all tokens in every fleet wallet and sweep SOL back to master?")) return;
+    setIsSweeping(true);
+    try {
+      const res = await fetch(API + "/api/session/sell-sweep", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId, wallet: user?.pubkey }) });
+      const data = await res.json();
+      if (data.error) toast(data.error, "error");
+      else toast("Sold " + (data.totalSold || 0).toFixed(4) + " + Swept " + (data.totalSwept || 0).toFixed(4) + " SOL back | Master: " + (data.masterBalance || 0).toFixed(4), "success");
+    } catch (e) { toast(e.message, "error"); }
+    setIsSweeping(false);
   };
   const handleCAKeyDown = (e) => { if (e.key === "Enter" && existingCA.length >= 32) { e.preventDefault(); analyzeCA(existingCA); } };
   return (
@@ -953,7 +921,7 @@ export default function App() {
                     </div>
                     <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(launchCA); toast("CA copied", "success"); }}>{launchCA.slice(0, 6)}...{launchCA.slice(-4)} {"\u{1F4CB}"}</span>
                   </div>
-                  <PriceChart priceHistory={fleetStatus?.priceHistory || []} trades={(fleetStatus?.trades || []).slice(0, 30)} mobile={mobile} T={T} />
+                  <PriceChart priceHistory={fleetStatus?.priceHistory || []} trades={(fleetStatus?.trades || []).slice(0, 30)} mobile={mobile} T={T} ca={launchCA} />
                   <div style={{ padding: "6px 12px", background: T.bg, borderTop: "1px solid " + T.border, display: "flex", gap: 8, justifyContent: "center" }}>
                     <span style={{ fontSize: 11, fontFamily: mono, color: T.faint }}>Live from bonding curve</span>
                     <a href={"https://pump.fun/coin/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.green, textDecoration: "none" }}>pump.fun {"\u2197"}</a>
@@ -1023,6 +991,7 @@ export default function App() {
                 {/* ═══ CONTROLS ═══ */}
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={() => closeSession(launchCA)} disabled={isClosing} style={{ flex: 1, padding: "14px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Closing..." : "\u2620 Close All"}</button>
+                  <button onClick={() => sellAndSweep(activeSessionId || pastSessions[0]?.id)} disabled={isSweeping} style={{ flex: 1, padding: "14px", background: T.yellow + "10", border: "1px solid " + T.yellow, color: T.yellow, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isSweeping ? "wait" : "pointer", opacity: isSweeping ? 0.5 : 1 }}>{isSweeping ? "Sweeping..." : "\u21BB Sell & Sweep"}</button>
                   <button onClick={() => { setLaunched(false); setLaunchCA(""); setCaAnalysis(null); setFleetStatus(null); }} style={{ padding: "14px 20px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 13, borderRadius: 10, cursor: "pointer" }}>New</button>
                 </div>
               </div>
@@ -1081,7 +1050,7 @@ export default function App() {
                   <div style={{ display: "grid", gridTemplateColumns: isApe ? "repeat(3, 1fr)" : "repeat(4, 1fr)", gap: 2, background: T.border + "44", borderRadius: 8, overflow: "hidden" }}>{(isApe ? [{ k: "Fleet", v: totalSol.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }] : [{ k: "Dev Buy", v: preview.devBuy.toFixed(2) }, { k: "Fleet", v: preview.fleet.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }]).map(s => (<div key={s.k} style={{ background: T.bg, padding: "8px 4px", textAlign: "center" }}><div style={{ fontSize: 18, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.k}</div></div>))}</div>
                 </Section>
                 <Section n={"\u{1F680}"} title={isApe ? "Start Trading" : "Launch"} highlight={canLaunch} T={T} mobile={mobile}>
-                  <LaunchFlow user={user} mobile={mobile} totalSol={totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip }} onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }} />
+                  <LaunchFlow user={user} mobile={mobile} totalSol={totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip }} onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); }} />
                 </Section>
                 {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginTop: 8 }}>
                   <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12 }}>Active Sessions</div>
@@ -1089,6 +1058,7 @@ export default function App() {
                     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid " + T.border + "22" }}>
                       <span style={{ fontFamily: mono, fontSize: 13, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || s.tokenConfig?.name || "?"} {"\u2014"} <span style={{ color: T.faint, fontSize: 11 }}>{s.tokenCA?.slice(0, 8)}...</span></span>
                       <button onClick={() => closeSession(s.tokenCA)} disabled={isClosing} style={{ background: T.red + "15", color: T.red, border: "1px solid " + T.red + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{"\u2620"} Close</button>
+                      <button onClick={() => sellAndSweep(s.id)} disabled={isSweeping} style={{ background: T.yellow + "15", color: T.yellow, border: "1px solid " + T.yellow + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: isSweeping ? "wait" : "pointer", opacity: isSweeping ? 0.5 : 1 }}>{isSweeping ? "..." : "\u21BB Sweep"}</button>
                       <button onClick={async () => { try { const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) }); const data = await res.json(); if (data.ok && data.status === "running") { setLaunchCA(data.tokenCA); setLaunched(true); } else if (data.ok) { setSessionDetail(data); } else toast(data.error || "Failed", "error"); } catch (e) { toast(e.message, "error"); } }} style={{ background: T.green + "15", color: T.green, border: "1px solid " + T.green + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: "pointer" }}>View</button>
                       <button onClick={() => recoverSession(s.id)} disabled={isRecovering} style={{ background: T.yellow + "15", color: T.yellow, border: "1px solid " + T.yellow + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: isRecovering ? "wait" : "pointer", opacity: isRecovering ? 0.5 : 1 }}>{isRecovering ? "..." : "\u21BB Recover"}</button>
                     </div>
