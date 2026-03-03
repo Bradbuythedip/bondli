@@ -580,19 +580,12 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
       )}
 
       {/* BUDGET */}
-      <div style={{ padding: mobile ? 10 : 14, background: T.bg, borderRadius: 10, border: "1px solid " + T.border, marginBottom: 12 }}>
-        <div style={{ display: "flex", gap: 8 }}>
-          {[
-            { label: "Dev Buy", val: preview.devBuy + " SOL", c: T.yellow },
-            { label: "Fee", val: preview.creationFee + "", c: T.dim },
-            { label: "Fleet", val: preview.fleet + " SOL", c: T.green },
-          ].map(s => (
-            <div key={s.label} style={{ flex: 1, textAlign: "center", padding: "6px 4px", background: T.surface, borderRadius: 8 }}>
-              <div style={{ fontSize: mobile ? 13 : 15, fontFamily: mono, fontWeight: 800, color: s.c }}>{s.val}</div>
-              <div style={{ fontSize: 9, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
+      <div style={{ padding: "8px 0", marginBottom: 12, display: "flex", justifyContent: "center", gap: mobile ? 12 : 20, fontFamily: mono, fontSize: 12, color: T.dim }}>
+        <span><span style={{ color: T.yellow, fontWeight: 700 }}>{preview.devBuy}</span> dev buy</span>
+        <span style={{ color: T.border }}>{"\u00B7"}</span>
+        <span><span style={{ color: T.dim, fontWeight: 700 }}>{preview.creationFee}</span> fee</span>
+        <span style={{ color: T.border }}>{"\u00B7"}</span>
+        <span><span style={{ color: T.green, fontWeight: 700 }}>{preview.fleet}</span> fleet</span>
       </div>
 
       {step === "idle" && (
