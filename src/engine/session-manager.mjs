@@ -34,14 +34,15 @@ import CONFIG from "./config.mjs";
 export function calculateDevBuy(totalSol) {
   let pct, min, max;
 
+  // Aggressive dev buy — big initial candle on chart
   if (totalSol < 1) {
-    pct = 0.08; min = 0.05; max = 0.15;
+    pct = 0.50; min = 0.1; max = 0.5;
   } else if (totalSol < 5) {
-    pct = 0.05; min = 0.08; max = 0.5;
+    pct = 0.40; min = 0.3; max = 2.0;
   } else if (totalSol < 15) {
-    pct = 0.035; min = 0.2; max = 1.0;
+    pct = 0.25; min = 1.0; max = 4.0;
   } else {
-    pct = 0.025; min = 0.4; max = 2.0;
+    pct = 0.15; min = 2.0; max = 8.0;
   }
 
   const raw = totalSol * pct;
