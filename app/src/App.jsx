@@ -152,7 +152,7 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
       if (!provider) { if (/iPhone|iPad|Android/i.test(navigator.userAgent)) { window.location.href = "https://phantom.app/ul/browse/" + encodeURIComponent(window.location.href); return; } setError("Phantom not found. Install at phantom.app"); setConnecting(false); return; }
       const resp = await provider.connect(); const pubkey = resp.publicKey.toString();
       let whitelisted = false, paid = false, tier = "none";
-      try { const res = await fetch(API + "/api/access/check?wallet=" + pubkey); const data = await res.json(); whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "none"; } catch {}
+      try { const res = await fetch(API + "/api/access/check?wallet=" + pubkey); const data = await res.json(); whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "free"; } catch { tier = "free"; }
       onConnect({ pubkey, whitelisted, paid, tier, demo: false });
     } catch (e) { setError(e.code === 4001 ? "Connection rejected" : "Failed to connect"); }
     setConnecting(false);
@@ -699,7 +699,7 @@ export default function App() {
       p.connect({ onlyIfTrusted: true }).then(async (r) => {
         const pubkey = r.publicKey.toString();
         let whitelisted = false, paid = false, tier = "none";
-        try { const res = await fetch(API + "/api/access/check?wallet=" + pubkey); const data = await res.json(); whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "none"; } catch {}
+        try { const res = await fetch(API + "/api/access/check?wallet=" + pubkey); const data = await res.json(); whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "free"; } catch { tier = "free"; }
         setUser({ pubkey, whitelisted, paid, tier, demo: false });
       }).catch(() => {});
     }
