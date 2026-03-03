@@ -573,9 +573,9 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
   return (
     <div style={{ marginTop: 8 }}>
       {error && (
-        <div style={{ fontSize: 13, color: T.red, fontFamily: mono, marginBottom: 12, padding: "10px 14px", background: T.redGhost, borderRadius: 10, border: "1px solid " + T.red + "22", display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ flex: 1 }}>{error}</span>
-          <button onClick={() => setError("")} style={{ background: "none", border: "none", color: T.red, cursor: "pointer", fontSize: 14, padding: 0 }}>{"\u2715"}</button>
+        <div style={{ fontSize: 12, color: T.red, fontFamily: mono, marginBottom: 12, padding: "10px 14px", background: T.redGhost, borderRadius: 10, border: "1px solid " + T.red + "22", display: "flex", alignItems: "flex-start", gap: 8, maxHeight: 200, overflow: "auto" }}>
+          <span style={{ flex: 1, wordBreak: "break-all", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{error}</span>
+          <button onClick={() => setError("")} style={{ background: "none", border: "none", color: T.red, cursor: "pointer", fontSize: 14, padding: 0, flexShrink: 0 }}>{"\u2715"}</button>
         </div>
       )}
 
