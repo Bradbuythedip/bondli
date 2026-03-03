@@ -164,10 +164,11 @@ export async function createToken(connection, creator, tokenConfig, options = {}
   // Step 5: Build transaction with priority fee
   const tx = new Transaction();
 
-  // Add compute budget for priority
+  // Add compute budget — createAndBuy needs significant compute
+  const computeUnits = devBuySol > 0 ? 600_000 : 300_000;
   tx.add(
-    ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }),
-    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 }),
+    ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnits }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 150_000 }),
   );
 
   // Add SDK instructions
@@ -203,10 +204,34 @@ export async function createToken(connection, creator, tokenConfig, options = {}
     } catch (e) {
       console.error(`[CREATE] Attempt ${attempt} failed: ${e.message}`);
 
-      // Try to get logs
-      if (e.logs) {
+      // Extract logs from SendTransactionError
+      if (e.getLogs) {
+        try {
+          const logs = await e.getLogs();
+          console.error(`[CREATE] Transaction logs:`);
+          logs.forEach(l => console.error(`  ${l}`));
+        } catch (logErr) {
+          console.error(`[CREATE] Could not get logs: ${logErr.message}`);
+        }
+      } else if (e.logs) {
         console.error(`[CREATE] Logs:`);
         e.logs.forEach(l => console.error(`  ${l}`));
+      }
+
+      // Also try to fetch logs from the signature
+      if (e.signature || (e.message && e.message.includes("Transaction "))) {
+        try {
+          const sig = e.signature || e.message.match(/Transaction (\w+)/)?.[1];
+          if (sig) {
+            const txInfo = await connection.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+            if (txInfo?.meta?.logMessages) {
+              console.error(`[CREATE] Fetched tx logs:`);
+              txInfo.meta.logMessages.forEach(l => console.error(`  ${l}`));
+            }
+          }
+        } catch (fetchErr) {
+          // ignore
+        }
       }
 
       if (attempt === maxRetries) throw e;
