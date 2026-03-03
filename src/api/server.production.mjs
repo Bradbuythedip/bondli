@@ -920,6 +920,75 @@ app.post("/api/session/recover", apiLimiter, async (req, res) => {
   }
 });
 
+// Batch deploy — create multiple tokens rapidly (VIP only)
+app.post("/api/batch-deploy", apiLimiter, async (req, res) => {
+  try {
+    const { wallet, count, tokenConfig, masterSeed, jitoTip, delayMs } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+    if (!count || count < 1 || count > 20) return res.status(400).json({ error: "count must be 1-20" });
+    if (!tokenConfig?.name || !tokenConfig?.ticker) return res.status(400).json({ error: "name and ticker required" });
+
+    const walletInfo = await getWalletTier(wallet);
+    if (walletInfo.tier !== "pro" && !walletInfo.whitelisted) {
+      return res.status(403).json({ error: "Batch deploy is VIP/Pro only" });
+    }
+
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const delay = Math.max(2000, delayMs || 5000); // min 2s between deploys
+
+    // Resolve master keypair
+    let masterKp;
+    if (masterSeed) {
+      try { masterKp = Keypair.fromSecretKey(bs58.decode(masterSeed)); } catch {}
+    }
+    if (!masterKp) return res.status(400).json({ error: "Master wallet private key required for batch deploy" });
+
+    // Upload metadata ONCE (reuse for all)
+    console.log(`[BATCH] Starting ${count} deploys for ${tokenConfig.name} ($${tokenConfig.ticker})`);
+
+    // SSE-style: send results as they come via JSON array
+    const results = [];
+    let metadataUri = null;
+
+    for (let i = 0; i < count; i++) {
+      try {
+        // Generate fresh mint keypair for each token
+        const mintKp = Keypair.generate();
+        
+        const result = await createToken(connection, masterKp, {
+          ...tokenConfig,
+          // Vary name slightly to avoid exact duplicates
+          name: count > 1 ? `${tokenConfig.name} ${String.fromCharCode(65 + (i % 26))}` : tokenConfig.name,
+        }, {
+          devBuySol: 0,
+          jitoTip: jitoTip || 0.003, // higher tip for batch speed
+        });
+
+        results.push({
+          index: i + 1,
+          ok: true,
+          ca: result.tokenCA || result.mintAddress || mintKp.publicKey.toBase58(),
+          txSig: result.txSig,
+          pumpUrl: "https://pump.fun/coin/" + (result.tokenCA || result.mintAddress || mintKp.publicKey.toBase58()),
+        });
+        console.log(`[BATCH] ${i + 1}/${count} deployed: ${results[results.length - 1].ca?.slice(0, 8)}...`);
+      } catch (e) {
+        results.push({ index: i + 1, ok: false, error: e.message });
+        console.error(`[BATCH] ${i + 1}/${count} failed: ${e.message}`);
+      }
+
+      // Delay between deploys (avoid rate limit)
+      if (i < count - 1) await new Promise(r => setTimeout(r, delay));
+    }
+
+    console.log(`[BATCH] Complete: ${results.filter(r => r.ok).length}/${count} succeeded`);
+    res.json({ ok: true, total: count, succeeded: results.filter(r => r.ok).length, results });
+  } catch (e) {
+    console.error("[BATCH] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Sell all tokens in fleet wallets and sweep SOL back to master
 app.post("/api/session/sell-sweep", apiLimiter, async (req, res) => {
   try {
