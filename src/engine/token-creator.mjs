@@ -1,93 +1,57 @@
 /**
  * ═══════════════════════════════════════════════════
- * PUMP.FUN TOKEN CREATOR
+ * PUMP.FUN TOKEN CREATOR — via PumpPortal API
  * ═══════════════════════════════════════════════════
  *
- * Creates new tokens on pump.fun bonding curve:
+ * Uses pumpportal.fun API to create tokens:
  *   1. Upload image + metadata to pump.fun IPFS
- *   2. Generate mint keypair
- *   3. Build create instruction (+ optional dev buy)
- *   4. Sign with dev wallet + mint keypair
- *   5. Send transaction
+ *   2. POST to pumpportal /api/trade-local (returns unsigned tx)
+ *   3. Sign with creator + mint keypair
+ *   4. Send to Solana
  *
- * Returns: { mint, txSig, metadataUri }
+ * This avoids building raw instructions — the API handles
+ * program changes, account layouts, and fee recipients.
  */
 
 import {
   Connection,
   Keypair,
   PublicKey,
-  Transaction,
-  TransactionInstruction,
-  SystemProgram,
+  VersionedTransaction,
   LAMPORTS_PER_SOL,
-  ComputeBudgetProgram,
-  sendAndConfirmTransaction,
 } from "@solana/web3.js";
-import {
-  getAssociatedTokenAddress,
-  createAssociatedTokenAccountInstruction,
-  TOKEN_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-} from "@solana/spl-token";
-import BN from "bn.js";
-
-// Node 20+ has built-in fetch — no external deps needed
-
-// Pump.fun program addresses
-const PUMP_PROGRAM = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
-const PUMP_GLOBAL = new PublicKey("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf");
-const PUMP_FEE_RECIPIENT = new PublicKey("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbCfay65R3jCVi");
-const PUMP_EVENT_AUTHORITY = new PublicKey("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1");
-const MPL_TOKEN_METADATA = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
-const SYSTEM_PROGRAM = SystemProgram.programId;
-const RENT_PROGRAM = new PublicKey("SysvarRent111111111111111111111111111111111");
-
-// Instruction discriminators
-const CREATE_DISCRIMINATOR = Buffer.from([24, 30, 200, 40, 5, 28, 7, 119]);
-const BUY_DISCRIMINATOR = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
 
 // ═══════════════════════════════════════
-// IPFS METADATA UPLOAD
+// IPFS METADATA UPLOAD (with retries)
 // ═══════════════════════════════════════
 
-/**
- * Upload token metadata + image to pump.fun IPFS.
- * @param {Object} config - { name, ticker, description, image (base64 or URL), twitter, telegram, website }
- * @returns {{ metadataUri: string }}
- */
 async function uploadMetadata(config, maxRetries = 5) {
   let lastError;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const form = new FormData();
-
       let hasImage = false;
 
       if (config.image && config.image.startsWith("data:")) {
         const matches = config.image.match(/^data:(.+);base64,(.+)$/);
         if (matches) {
-          const mimeType = matches[1];
           const buffer = Buffer.from(matches[2], "base64");
-          const ext = mimeType.includes("png") ? "png" : mimeType.includes("gif") ? "gif" : "jpg";
-          const blob = new Blob([buffer], { type: mimeType });
-          form.append("file", blob, `token.${ext}`);
+          const ext = matches[1].includes("png") ? "png" : "jpg";
+          form.append("file", new Blob([buffer], { type: matches[1] }), `token.${ext}`);
           hasImage = true;
         }
-      } else if (config.image && (config.image.startsWith("http://") || config.image.startsWith("https://"))) {
-        const imgResp = await fetch(config.image);
-        const imgBlob = await imgResp.blob();
-        form.append("file", imgBlob, "token.png");
+      } else if (config.image && config.image.startsWith("http")) {
+        const resp = await fetch(config.image);
+        form.append("file", await resp.blob(), "token.png");
         hasImage = true;
       }
 
-      // Pump.fun REQUIRES an image — generate a default if none provided
+      // pump.fun requires an image
       if (!hasImage) {
-        console.log("[IPFS] No image provided, generating default...");
-        const defaultImg = generateDefaultImage(config.name || "T", config.ticker || "TKN");
-        const blob = new Blob([defaultImg], { type: "image/png" });
-        form.append("file", blob, "token.png");
+        console.log("[IPFS] No image — using default green pixel");
+        const px = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mMU+M9QDwADgQF/Nnl5XgAAAABJRU5ErkJggg==", "base64");
+        form.append("file", new Blob([px], { type: "image/png" }), "token.png");
       }
 
       form.append("name", config.name || "Token");
@@ -98,20 +62,13 @@ async function uploadMetadata(config, maxRetries = 5) {
       form.append("website", config.website || "");
       form.append("showName", "true");
 
-      const endpoints = [
-        "https://pump.fun/api/ipfs",
-        "https://client.pump.fun/api/ipfs",
-      ];
-      const url = endpoints[(attempt - 1) % endpoints.length];
-      
-      console.log(`[IPFS] Attempt ${attempt}/${maxRetries} → ${url}`);
+      console.log(`[IPFS] Attempt ${attempt}/${maxRetries}...`);
 
-      const resp = await fetch(url, {
+      const resp = await fetch("https://pump.fun/api/ipfs", {
         method: "POST",
         body: form,
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-          "Accept": "*/*",
           "Origin": "https://pump.fun",
           "Referer": "https://pump.fun/",
         },
@@ -123,269 +80,140 @@ async function uploadMetadata(config, maxRetries = 5) {
       }
 
       const data = await resp.json();
-      console.log(`[IPFS] ✅ Uploaded on attempt ${attempt}: ${data.metadataUri || data.uri}`);
-      return {
-        metadataUri: data.metadataUri || data.uri,
-        metadata: data.metadata || data,
-      };
+      const uri = data.metadataUri || data.uri;
+      console.log(`[IPFS] ✅ Success: ${uri}`);
+      return { metadataUri: uri, metadata: data.metadata || data };
 
     } catch (e) {
       lastError = e;
-      console.warn(`[IPFS] Attempt ${attempt}/${maxRetries} failed: ${e.message}`);
+      console.warn(`[IPFS] Attempt ${attempt} failed: ${e.message}`);
       if (attempt < maxRetries) {
         const delay = 2000 * attempt;
-        console.log(`[IPFS] Retrying in ${delay / 1000}s...`);
         await new Promise(r => setTimeout(r, delay));
       }
     }
   }
-
-  throw new Error(`IPFS upload failed after ${maxRetries} attempts: ${lastError?.message}`);
-}
-
-/**
- * Generate a minimal valid PNG as default token icon.
- * Known-good 1x1 green pixel PNG.
- */
-function generateDefaultImage() {
-  // Valid 1x1 green (#00e676) PNG, base64-encoded
-  const b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mMU+M9QDwADgQF/Nnl5XgAAAABJRU5ErkJggg==";
-  return Buffer.from(b64, "base64");
+  throw new Error(`IPFS failed after ${maxRetries} tries: ${lastError?.message}`);
 }
 
 // ═══════════════════════════════════════
-// PDA DERIVATIONS
-// ═══════════════════════════════════════
-
-function deriveBondingCurve(mint) {
-  const [pda] = PublicKey.findProgramAddressSync(
-    [Buffer.from("bonding-curve"), mint.toBuffer()],
-    PUMP_PROGRAM
-  );
-  return pda;
-}
-
-function deriveMintAuthority() {
-  const [pda] = PublicKey.findProgramAddressSync(
-    [Buffer.from("mint-authority")],
-    PUMP_PROGRAM
-  );
-  return pda;
-}
-
-function deriveMetadata(mint) {
-  const [pda] = PublicKey.findProgramAddressSync(
-    [
-      Buffer.from("metadata"),
-      MPL_TOKEN_METADATA.toBuffer(),
-      mint.toBuffer(),
-    ],
-    MPL_TOKEN_METADATA
-  );
-  return pda;
-}
-
-// ═══════════════════════════════════════
-// ENCODE STRING FOR INSTRUCTION DATA
-// ═══════════════════════════════════════
-
-function encodeString(str) {
-  const bytes = Buffer.from(str, "utf8");
-  const len = Buffer.alloc(4);
-  len.writeUInt32LE(bytes.length);
-  return Buffer.concat([len, bytes]);
-}
-
-// ═══════════════════════════════════════
-// CREATE TOKEN
+// CREATE TOKEN via PumpPortal API
 // ═══════════════════════════════════════
 
 /**
- * Create a new token on pump.fun.
+ * Create a token on pump.fun using pumpportal.fun API.
  *
- * @param {Connection} connection - Solana RPC connection
- * @param {Keypair} creator - Dev wallet keypair (pays for everything)
- * @param {Object} tokenConfig - { name, ticker, description, image, twitter, telegram, website }
- * @param {Object} options - { devBuySol, slippageBps, priorityFee, sendUrl }
- * @returns {{ mint: string, txSig: string, metadataUri: string, bondingCurve: string }}
+ * @param {Connection} connection
+ * @param {Keypair} creator — dev wallet (pays for everything)
+ * @param {Object} tokenConfig — { name, ticker, description, image, twitter, telegram, website }
+ * @param {Object} options — { devBuySol, slippageBps, priorityFee }
+ * @returns {{ mint, txSig, metadataUri, pumpUrl }}
  */
 export async function createToken(connection, creator, tokenConfig, options = {}) {
   const {
     devBuySol = 0,
     slippageBps = 2500,
-    priorityFee = 100_000, // microlamports
-    sendUrl = null,
+    priorityFee = 200_000,
   } = options;
 
-  console.log(`[CREATE] Uploading metadata for ${tokenConfig.name} ($${tokenConfig.ticker})...`);
-
-  // 1. Upload metadata to IPFS
+  // 1. Upload metadata
+  console.log(`[CREATE] Starting: ${tokenConfig.name} ($${tokenConfig.ticker})`);
   const { metadataUri } = await uploadMetadata(tokenConfig);
-  console.log(`[CREATE] Metadata URI: ${metadataUri}`);
 
   // 2. Generate mint keypair
   const mintKeypair = Keypair.generate();
   const mint = mintKeypair.publicKey;
   console.log(`[CREATE] Mint: ${mint.toBase58()}`);
+  console.log(`[CREATE] Metadata: ${metadataUri}`);
 
-  // 3. Derive PDAs
-  const bondingCurve = deriveBondingCurve(mint);
-  const bondingCurveAta = await getAssociatedTokenAddress(mint, bondingCurve, true);
-  const mintAuthority = deriveMintAuthority();
-  const metadata = deriveMetadata(mint);
-
-  // 4. Build create instruction
-  const createData = Buffer.concat([
-    CREATE_DISCRIMINATOR,
-    encodeString(tokenConfig.name || "Token"),
-    encodeString(tokenConfig.ticker || "TKN"),
-    encodeString(metadataUri),
-  ]);
-
-  const createIx = new TransactionInstruction({
-    programId: PUMP_PROGRAM,
-    keys: [
-      { pubkey: mint, isSigner: true, isWritable: true },
-      { pubkey: mintAuthority, isSigner: false, isWritable: false },
-      { pubkey: bondingCurve, isSigner: false, isWritable: true },
-      { pubkey: bondingCurveAta, isSigner: false, isWritable: true },
-      { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
-      { pubkey: MPL_TOKEN_METADATA, isSigner: false, isWritable: false },
-      { pubkey: metadata, isSigner: false, isWritable: true },
-      { pubkey: creator.publicKey, isSigner: true, isWritable: true },
-      { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-      { pubkey: RENT_PROGRAM, isSigner: false, isWritable: false },
-      { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
-      { pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false },
-    ],
-    data: createData,
-  });
-
-  // 5. Build transaction
-  const tx = new Transaction();
-
-  // Priority fee
-  tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 250_000 }));
-  tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }));
-
-  // Create instruction
-  tx.add(createIx);
-
-  // 6. Optional dev buy in same tx
-  if (devBuySol > 0) {
-    console.log(`[CREATE] Adding dev buy: ${devBuySol} SOL`);
-
-    const buyerAta = await getAssociatedTokenAddress(mint, creator.publicKey);
-
-    // Create ATA for buyer
-    tx.add(
-      createAssociatedTokenAccountInstruction(
-        creator.publicKey, buyerAta, creator.publicKey, mint
-      )
-    );
-
-    // Buy instruction
-    // Amount = SOL in lamports, maxSolCost = amount * (1 + slippage)
-    const solLamports = Math.floor(devBuySol * LAMPORTS_PER_SOL);
-    const maxSolCost = Math.floor(solLamports * (1 + slippageBps / 10000));
-
-    // For a brand new token, we can estimate tokens from the initial curve
-    // Initial virtual reserves: ~30 SOL virtual, 1B tokens virtual
-    // Price at start: ~30 / 1B = 0.00000003 SOL per token
-    // Tokens for devBuySol: devBuySol / 0.00000003 ≈ devBuySol * 33_333_333
-    const estimatedTokens = new BN(Math.floor(devBuySol * 30_000_000));
-
-    const buyData = Buffer.concat([
-      BUY_DISCRIMINATOR,
-      estimatedTokens.toArrayLike(Buffer, "le", 8),
-      new BN(maxSolCost).toArrayLike(Buffer, "le", 8),
-    ]);
-
-    const buyIx = new TransactionInstruction({
-      programId: PUMP_PROGRAM,
-      keys: [
-        { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
-        { pubkey: PUMP_FEE_RECIPIENT, isSigner: false, isWritable: true },
-        { pubkey: mint, isSigner: false, isWritable: false },
-        { pubkey: bondingCurve, isSigner: false, isWritable: true },
-        { pubkey: bondingCurveAta, isSigner: false, isWritable: true },
-        { pubkey: buyerAta, isSigner: false, isWritable: true },
-        { pubkey: creator.publicKey, isSigner: true, isWritable: true },
-        { pubkey: SYSTEM_PROGRAM, isSigner: false, isWritable: false },
-        { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: RENT_PROGRAM, isSigner: false, isWritable: false },
-        { pubkey: PUMP_EVENT_AUTHORITY, isSigner: false, isWritable: false },
-        { pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false },
-      ],
-      data: buyData,
-    });
-
-    tx.add(buyIx);
-  }
-
-  // 7. Sign and send (with retries)
+  // 3. Request pre-built transaction from PumpPortal
+  const maxRetries = 3;
   let txSig;
-  const maxSendRetries = 3;
 
-  for (let attempt = 1; attempt <= maxSendRetries; attempt++) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
-      tx.recentBlockhash = blockhash;
-      tx.lastValidBlockHeight = lastValidBlockHeight;
-      tx.feePayer = creator.publicKey;
+      console.log(`[CREATE] Building tx via PumpPortal (attempt ${attempt})...`);
 
-      const signers = [creator, mintKeypair];
+      const portalBody = {
+        publicKey: creator.publicKey.toBase58(),
+        action: "create",
+        tokenMetadata: {
+          name: tokenConfig.name || "Token",
+          symbol: tokenConfig.ticker || "TKN",
+          uri: metadataUri,
+        },
+        mint: mint.toBase58(),
+        denominatedInSol: "true",
+        amount: devBuySol,
+        slippage: Math.floor(slippageBps / 100), // API expects percentage
+        priorityFee: priorityFee / 1_000_000, // API expects SOL
+        pool: "pump",
+      };
 
-      if (sendUrl) {
-        tx.sign(...signers);
-        const rawTx = tx.serialize();
-        const resp = await fetch(sendUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: Date.now(),
-            method: "sendTransaction",
-            params: [rawTx.toString("base64"), { encoding: "base64", skipPreflight: true, maxRetries: 3 }],
-          }),
-        });
-        const result = await resp.json();
-        if (result.error) throw new Error(result.error.message);
-        txSig = result.result;
+      console.log(`[CREATE] Dev buy: ${devBuySol} SOL | Slippage: ${portalBody.slippage}% | Priority: ${portalBody.priorityFee} SOL`);
 
-        try {
-          await connection.confirmTransaction({ signature: txSig, blockhash, lastValidBlockHeight }, "confirmed");
-        } catch (e) {
-          console.warn(`[CREATE] Confirmation timeout, tx may still land: ${txSig}`);
-        }
-      } else {
-        txSig = await sendAndConfirmTransaction(connection, tx, signers, {
-          commitment: "confirmed",
-          maxRetries: 3,
-          skipPreflight: true,
-          preflightCommitment: "processed",
-        });
+      const portalResp = await fetch("https://pumpportal.fun/api/trade-local", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(portalBody),
+      });
+
+      if (!portalResp.ok) {
+        const errText = await portalResp.text();
+        throw new Error(`PumpPortal ${portalResp.status}: ${errText.slice(0, 300)}`);
       }
 
-      console.log(`[CREATE] \u2705 Token created on attempt ${attempt}! Mint: ${mint.toBase58()} | TX: ${txSig}`);
-      break; // success
+      // 4. Deserialize the transaction
+      const txData = await portalResp.arrayBuffer();
+      const tx = VersionedTransaction.deserialize(new Uint8Array(txData));
+
+      // 5. Sign with creator + mint keypair
+      tx.sign([mintKeypair, creator]);
+
+      // 6. Send raw transaction
+      console.log(`[CREATE] Sending transaction...`);
+
+      const rawTx = tx.serialize();
+
+      // Try via connection.sendRawTransaction first
+      txSig = await connection.sendRawTransaction(rawTx, {
+        skipPreflight: true,
+        maxRetries: 2,
+        preflightCommitment: "processed",
+      });
+
+      console.log(`[CREATE] Sent: ${txSig}`);
+
+      // 7. Wait for confirmation
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+
+      const confirmation = await connection.confirmTransaction(
+        { signature: txSig, blockhash, lastValidBlockHeight },
+        "confirmed"
+      );
+
+      if (confirmation.value?.err) {
+        throw new Error(`TX failed: ${JSON.stringify(confirmation.value.err)}`);
+      }
+
+      console.log(`[CREATE] ✅ Confirmed! Mint: ${mint.toBase58()}`);
+      break;
 
     } catch (e) {
-      console.warn(`[CREATE] Send attempt ${attempt}/${maxSendRetries} failed: ${e.message}`);
-      if (attempt === maxSendRetries) throw e;
-      await new Promise(r => setTimeout(r, 2000 * attempt));
+      console.error(`[CREATE] Attempt ${attempt} failed: ${e.message}`);
+      if (attempt === maxRetries) {
+        throw new Error(`Token creation failed after ${maxRetries} attempts: ${e.message}`);
+      }
+      await new Promise(r => setTimeout(r, 3000 * attempt));
     }
   }
 
   return {
     mint: mint.toBase58(),
-    bondingCurve: bondingCurve.toBase58(),
     txSig,
     metadataUri,
     pumpUrl: `https://pump.fun/coin/${mint.toBase58()}`,
   };
 }
 
-export { uploadMetadata, deriveBondingCurve };
+export { uploadMetadata };
