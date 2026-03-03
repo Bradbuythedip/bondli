@@ -86,30 +86,20 @@ input,textarea,button{font-size:16px}
 
 // === RED PILL ===
 const BondliLogo = ({ size = 34 }) => (
-  <svg width={size} height={size} viewBox="0 0 40 40" style={{ filter: "drop-shadow(0 2px 8px rgba(0,255,136,.3))" }}>
+  <svg width={size} height={size * 1.4} viewBox="0 0 30 42" style={{ filter: "drop-shadow(0 2px 8px rgba(220,20,20,.45))" }}>
     <defs>
-      <linearGradient id="crystalA" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#00ff88"/><stop offset="100%" stopColor="#006644"/></linearGradient>
-      <linearGradient id="crystalB" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#00cc66" stopOpacity="0.9"/><stop offset="100%" stopColor="#004422" stopOpacity="0.8"/></linearGradient>
-      <linearGradient id="crystalC" x1="1" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#00ffaa" stopOpacity="0.7"/><stop offset="100%" stopColor="#008855" stopOpacity="0.5"/></linearGradient>
-      <linearGradient id="crystalGlow" x1="0.5" y1="0" x2="0.5" y2="1"><stop offset="0%" stopColor="#00ff88" stopOpacity="0.4"/><stop offset="100%" stopColor="#00ff88" stopOpacity="0"/></linearGradient>
+      <linearGradient id="bL1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#ff5555"/><stop offset="50%" stopColor="#dd1818"/><stop offset="100%" stopColor="#881010"/></linearGradient>
+      <linearGradient id="bL2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#ff4040" stopOpacity="0.95"/><stop offset="100%" stopColor="#771010" stopOpacity="0.9"/></linearGradient>
+      <linearGradient id="bLs" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#ff9999" stopOpacity="0.4"/><stop offset="100%" stopColor="#ff4444" stopOpacity="0"/></linearGradient>
     </defs>
-    {/* Diamond/crystal shape — 4 facets */}
-    <polygon points="20,2 33,16 20,38 7,16" fill="none" stroke="#00ff8822" strokeWidth="0.5"/>
-    {/* Left facet */}
-    <polygon points="20,2 7,16 20,22" fill="url(#crystalB)"/>
-    {/* Right facet */}
-    <polygon points="20,2 33,16 20,22" fill="url(#crystalA)"/>
-    {/* Bottom-left */}
-    <polygon points="7,16 20,38 20,22" fill="url(#crystalC)"/>
-    {/* Bottom-right */}
-    <polygon points="33,16 20,38 20,22" fill="#005533"/>
-    {/* Center shine line */}
-    <line x1="20" y1="2" x2="20" y2="38" stroke="#00ffaa" strokeWidth="0.4" opacity="0.5"/>
-    {/* Top highlight */}
-    <polygon points="20,2 14,12 20,16 26,12" fill="url(#crystalGlow)"/>
-    {/* Edge highlights */}
-    <line x1="20" y1="2" x2="7" y2="16" stroke="#00ffbb" strokeWidth="0.5" opacity="0.4"/>
-    <line x1="20" y1="2" x2="33" y2="16" stroke="#00ffbb" strokeWidth="0.3" opacity="0.3"/>
+    {/* Right half — main red */}
+    <path d="M15,2 Q23,2 26,8 L27,20 L27,22 L26,34 Q23,40 15,40 L15,2 Z" fill="url(#bL1)"/>
+    {/* Left half — slightly lighter for depth */}
+    <path d="M15,2 Q7,2 4,8 L3,20 L3,22 L4,34 Q7,40 15,40 L15,2 Z" fill="url(#bL2)"/>
+    {/* Shine highlight */}
+    <path d="M10,4 Q7,6 6,12 L8,10 Q10,5 14,4 Z" fill="url(#bLs)"/>
+    {/* Subtle edge */}
+    <path d="M15,2 Q7,2 4,8 L3,20" stroke="#ff999933" strokeWidth="0.5" fill="none"/>
   </svg>
 );
 const RedPill = BondliLogo; // backward compat
@@ -186,7 +176,7 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
 
       {/* Top bar */}
       <header style={{ padding: mobile ? "12px 16px" : "14px 40px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 40, background: T.surface + (T.mode === "dark" ? "ee" : "e8"), backdropFilter: "blur(12px)", borderBottom: "1px solid " + T.border }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}><RedPill size={mobile ? 24 : 30} /><span style={{ fontFamily: mono, fontWeight: 800, fontSize: mobile ? 16 : 20 }}>BOND<span style={{ color: T.green }}>LI</span></span></div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}><RedPill size={mobile ? 24 : 30} /><span style={{ fontFamily: mono, fontWeight: 800, fontSize: mobile ? 16 : 20 }}>BOND<span style={{ color: T.red }}>LI</span></span></div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <ThemeToggle isDark={isDark} toggle={toggleTheme} mobile={mobile} />
           <Btn onClick={connectPhantom} small disabled={connecting} style={{ background: "linear-gradient(135deg, #534bb1, #551bf9)", borderRadius: 10 }}><Ic.Phantom /> {mobile ? "Connect" : "Connect Phantom"}</Btn>
@@ -195,7 +185,7 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
 
       {/* HERO */}
       <section style={{ maxWidth: 900, margin: "0 auto", padding: mobile ? "48px 20px 40px" : "80px 40px 60px", textAlign: "center", position: "relative", zIndex: 1 }}>
-        <div style={{ animation: "pillFloat 3s ease infinite", marginBottom: 28 }}><RedPill size={mobile ? 56 : 72} /></div>
+        <div style={{ animation: "pillFloat 3s ease infinite", marginBottom: 28, display: "flex", justifyContent: "center" }}><RedPill size={mobile ? 56 : 72} /></div>
         <h1 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 32 : 56, lineHeight: 1.1, letterSpacing: "-.03em", marginBottom: 20 }}>
           Take the <span style={{ color: T.red }}>red pill</span>.<br /><span style={{ color: T.green }}>Trade pump.fun</span> with game theory.
         </h1>
@@ -266,7 +256,7 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
 
       {/* BOTTOM CTA */}
       <section style={{ maxWidth: 800, margin: "0 auto", padding: mobile ? "20px 20px 80px" : "20px 40px 80px", textAlign: "center", position: "relative", zIndex: 1 }}>
-        <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 24, padding: mobile ? 28 : 44, boxShadow: T.mode === "dark" ? "0 20px 60px rgba(0,0,0,.4)" : "0 10px 40px rgba(0,0,0,.08)", transition: "all .3s" }}>
+        <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 24, padding: mobile ? 28 : 44, boxShadow: T.mode === "dark" ? "0 20px 60px rgba(0,0,0,.4)" : "0 10px 40px rgba(0,0,0,.08)", transition: "all .3s", display: "flex", flexDirection: "column", alignItems: "center" }}>
           <RedPill size={40} />
           <h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 22 : 30, marginTop: 16, marginBottom: 12, color: T.text }}>Ready to trade smarter?</h2>
           <p style={{ fontSize: mobile ? 15 : 17, color: T.dim, marginBottom: 28, lineHeight: 1.6 }}>Start free with {FREE_PROFIT_CUT}% profit share, or pay <span style={{ color: T.green, fontWeight: 800 }}>{PRO_FEE_SOL} SOL</span> once to keep everything.</p>
@@ -322,7 +312,7 @@ function TierGate({ user, onSelect, onDisconnect }) {
     <div style={{ minHeight: "100dvh", background: T.bg, display: "flex", alignItems: "center", justifyContent: "center", padding: mobile ? 16 : 0, position: "relative" }}>
       <div style={{ position: "absolute", inset: 0, opacity: T.mode === "dark" ? 0.03 : 0.04, backgroundImage: T.gridLines, backgroundSize: "60px 60px" }} />
       <div style={{ width: "100%", maxWidth: mode ? 480 : 700, padding: mobile ? 24 : 40, background: T.surface, border: "2px solid " + T.border, borderRadius: 24, position: "relative", animation: "fadeUp .5s ease", boxShadow: T.mode === "dark" ? "0 40px 80px rgba(0,0,0,.5)" : "0 20px 60px rgba(0,0,0,.1)", transition: "all .3s" }}>
-        <div style={{ textAlign: "center", marginBottom: 24 }}>
+        <div style={{ textAlign: "center", marginBottom: 24, display: "flex", flexDirection: "column", alignItems: "center" }}>
           <RedPill size={40} />
           <h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 22 : 28, marginTop: 12, color: T.text }}>Choose your path</h2>
           <p style={{ fontSize: 14, color: T.dim, marginTop: 6 }}>Connected as <span style={{ fontFamily: mono, color: T.green }}>{(user?.pubkey || "").slice(0, 6)}...{(user?.pubkey || "").slice(-4)}</span></p>
@@ -1048,7 +1038,7 @@ export default function App() {
           <header style={{ padding: mobile ? "10px 14px" : "12px 28px", borderBottom: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "space-between", position: "relative", zIndex: 10, background: T.bg + "ee", backdropFilter: "blur(10px)" }}>
             <div onClick={() => { setLaunched(false); setLaunchCA(""); setActiveSessionId(""); setCaAnalysis(null); setShowSettings(false); setFleetStatus(null); setSessionDetail(null); }} style={{ display: "flex", alignItems: "center", gap: mobile ? 8 : 12, cursor: "pointer", userSelect: "none" }}>
               <RedPill size={mobile ? 26 : 34} />
-              <span style={{ fontFamily: mono, fontWeight: 800, fontSize: mobile ? 17 : 22, color: T.text }}>BOND<span style={{ color: T.green }}>LI</span></span>
+              <span style={{ fontFamily: mono, fontWeight: 800, fontSize: mobile ? 17 : 22, color: T.text }}>BOND<span style={{ color: T.red }}>LI</span></span>
               {wsConnected && <span style={{ fontSize: 10, fontFamily: mono, color: T.green, opacity: 0.8 }}>{"\u25CF"} live</span>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: mobile ? 6 : 10 }}>
