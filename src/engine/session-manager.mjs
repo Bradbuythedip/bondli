@@ -92,7 +92,10 @@ export class SessionManager {
       devSecret = bs58.encode(devKeypair.secretKey);
     }
 
-    const devBuyInfo = calculateDevBuy(totalSol);
+    const isApe = !!(tokenConfig?.existingCA);
+    const devBuyInfo = isApe
+      ? { devBuy: 0, creationFee: 0, fleetBudget: totalSol }
+      : calculateDevBuy(totalSol);
 
     const session = {
       id: "sess_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8),
@@ -101,6 +104,7 @@ export class SessionManager {
       devSecret, // stored encrypted in prod — plaintext for now
       totalSol,
       tier: tier || "free",
+      isApe,
       devBuy: devBuyInfo.devBuy,
       creationFee: devBuyInfo.creationFee,
       fleetBudget: devBuyInfo.fleetBudget,
