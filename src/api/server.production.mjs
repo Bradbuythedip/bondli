@@ -350,46 +350,119 @@ app.get("/api/analyze/:ca", async (req, res) => {
     const ca = req.params.ca;
     if (!ca || ca.length < 32) return res.status(400).json({ error: "Invalid CA" });
 
-    // Try pump.fun first with 8s timeout
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    try {
-      const resp = await fetch("https://frontend-api-v2.pump.fun/coins/" + ca, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (resp.ok) {
-        const coin = await resp.json();
-        return res.json({ ...coin, source: "pumpfun" });
-      }
-    } catch (e) {
-      clearTimeout(timeout);
-      console.log("[ANALYZE] pump.fun failed:", e.message);
+    let pumpData = null, dexData = null;
+
+    // Fetch pump.fun + DexScreener in parallel
+    const [pumpRes, dexRes] = await Promise.allSettled([
+      fetch("https://frontend-api-v2.pump.fun/coins/" + ca, { signal: AbortSignal.timeout(6000) }).then(r => r.ok ? r.json() : null),
+      fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca, { signal: AbortSignal.timeout(6000) }).then(r => r.ok ? r.json() : null),
+    ]);
+
+    pumpData = pumpRes.status === "fulfilled" ? pumpRes.value : null;
+    const dexPairs = dexRes.status === "fulfilled" ? dexRes.value : null;
+    dexData = dexPairs?.pairs?.[0] || null;
+
+    if (!pumpData && !dexData) return res.status(404).json({ error: "Token not found" });
+
+    // Build unified analysis
+    const name = pumpData?.name || dexData?.baseToken?.name || "?";
+    const symbol = pumpData?.symbol || dexData?.baseToken?.symbol || "?";
+    const mcap = dexData?.marketCap || dexData?.fdv || pumpData?.usd_market_cap || 0;
+    const created = pumpData?.created_timestamp || dexData?.pairCreatedAt || Date.now();
+    const age = (Date.now() - new Date(created).getTime()) / 60000; // minutes
+    const replies = pumpData?.reply_count || 0;
+    const complete = pumpData?.complete || (dexData?.dexId !== "pumpfun");
+    const imageUri = pumpData?.image_uri || dexData?.info?.imageUrl || null;
+    const description = pumpData?.description || "";
+
+    // DexScreener real trading data
+    const vol24h = dexData?.volume?.h24 || 0;
+    const vol1h = dexData?.volume?.h1 || 0;
+    const txns24h = dexData?.txns?.h24 || { buys: 0, sells: 0 };
+    const txns1h = dexData?.txns?.h1 || { buys: 0, sells: 0 };
+    const priceChange5m = dexData?.priceChange?.m5 || 0;
+    const priceChange1h = dexData?.priceChange?.h1 || 0;
+    const priceChange24h = dexData?.priceChange?.h24 || 0;
+    const liquidity = dexData?.liquidity?.usd || 0;
+    const priceUsd = parseFloat(dexData?.priceUsd || 0);
+
+    // ── SCORING ENGINE ──
+    // 6 factors, each 0-20 pts, total 0-120 normalized to 0-100
+    let factors = [];
+
+    // 1. Momentum (price action) — is it moving?
+    let momentumScore = 10; // neutral
+    if (priceChange1h > 50) momentumScore = 20;
+    else if (priceChange1h > 20) momentumScore = 17;
+    else if (priceChange1h > 5) momentumScore = 14;
+    else if (priceChange1h > 0) momentumScore = 12;
+    else if (priceChange1h > -10) momentumScore = 8;
+    else if (priceChange1h > -30) momentumScore = 5;
+    else momentumScore = 2;
+    factors.push({ name: "Momentum", score: momentumScore, detail: (priceChange1h > 0 ? "+" : "") + priceChange1h.toFixed(1) + "% 1h" });
+
+    // 2. Volume — is there activity?
+    let volumeScore = 5;
+    if (vol1h > 50000) volumeScore = 20;
+    else if (vol1h > 10000) volumeScore = 16;
+    else if (vol1h > 2000) volumeScore = 12;
+    else if (vol1h > 500) volumeScore = 8;
+    factors.push({ name: "Volume", score: volumeScore, detail: "$" + (vol1h > 1000 ? (vol1h / 1000).toFixed(1) + "k" : Math.round(vol1h)) + " 1h" });
+
+    // 3. Buy pressure — buys vs sells ratio
+    const totalTxns1h = (txns1h.buys || 0) + (txns1h.sells || 0);
+    const buyRatio = totalTxns1h > 0 ? (txns1h.buys / totalTxns1h) : 0.5;
+    let pressureScore = Math.round(buyRatio * 20);
+    factors.push({ name: "Buy Pressure", score: pressureScore, detail: txns1h.buys + "B/" + txns1h.sells + "S 1h" });
+
+    // 4. Liquidity — can we trade without slippage?
+    let liqScore = 5;
+    if (liquidity > 50000) liqScore = 20;
+    else if (liquidity > 20000) liqScore = 16;
+    else if (liquidity > 5000) liqScore = 12;
+    else if (liquidity > 1000) liqScore = 8;
+    factors.push({ name: "Liquidity", score: liqScore, detail: "$" + (liquidity > 1000 ? (liquidity / 1000).toFixed(1) + "k" : Math.round(liquidity)) });
+
+    // 5. Market cap — sweet spot for pump potential
+    let mcapScore = 10;
+    if (mcap >= 5000 && mcap < 50000) mcapScore = 18; // early, room to grow
+    else if (mcap >= 50000 && mcap < 200000) mcapScore = 15; // confirmed interest
+    else if (mcap >= 200000 && mcap < 1000000) mcapScore = 12; // mid, ok
+    else if (mcap >= 1000000) mcapScore = 6; // high cap, less upside
+    else if (mcap < 5000) mcapScore = 8; // too early, risky
+    factors.push({ name: "MCap", score: mcapScore, detail: "$" + (mcap > 1000 ? (mcap / 1000).toFixed(1) + "k" : Math.round(mcap)) });
+
+    // 6. Freshness — newer = more potential
+    let freshScore = 10;
+    if (age < 5) freshScore = 20; // brand new
+    else if (age < 30) freshScore = 17;
+    else if (age < 120) freshScore = 14;
+    else if (age < 720) freshScore = 10;
+    else if (age < 1440) freshScore = 6;
+    else freshScore = 3; // old
+    factors.push({ name: "Freshness", score: freshScore, detail: age < 60 ? Math.round(age) + "m" : Math.round(age / 60) + "h old" });
+
+    // Bonded penalty — already graduated means less pump potential
+    if (complete) {
+      factors.push({ name: "Bonded", score: 0, detail: "graduated — limited upside" });
     }
 
-    // Fallback: DexScreener
-    try {
-      const dexRes = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca);
-      if (dexRes.ok) {
-        const dex = await dexRes.json();
-        const pair = dex.pairs?.[0];
-        if (pair) {
-          return res.json({
-            name: pair.baseToken?.name || "?",
-            symbol: pair.baseToken?.symbol || "?",
-            usd_market_cap: pair.marketCap || pair.fdv || 0,
-            created_timestamp: pair.pairCreatedAt || Date.now(),
-            reply_count: 0,
-            complete: pair.dexId !== "pumpfun",
-            image_uri: pair.info?.imageUrl || null,
-            description: pair.info?.description || "",
-            source: "dexscreener",
-          });
-        }
-      }
-    } catch (e) {
-      console.log("[ANALYZE] DexScreener fallback failed:", e.message);
-    }
+    const rawTotal = factors.reduce((a, f) => a + f.score, 0);
+    const maxPossible = complete ? 140 : 120; // extra factor if bonded
+    const score = Math.round((rawTotal / maxPossible) * 100);
+    const verdict = score >= 70 ? "APE" : score >= 45 ? "RISKY" : "AVOID";
 
-    res.status(404).json({ error: "Token not found on pump.fun or DexScreener" });
+    res.json({
+      name, symbol, usd_market_cap: mcap, created_timestamp: created,
+      reply_count: replies, complete, image_uri: imageUri, description,
+      source: pumpData ? "pumpfun" : "dexscreener",
+      // Trading data
+      vol24h, vol1h, txns24h, txns1h,
+      priceChange5m, priceChange1h, priceChange24h,
+      liquidity, priceUsd,
+      // Analysis
+      score, verdict, factors,
+    });
   } catch (e) {
     console.error("[ANALYZE]", e.message);
     res.status(500).json({ error: "Analysis failed: " + e.message });
