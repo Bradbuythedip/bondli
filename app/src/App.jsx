@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
 
 const API = "https://bondli-production.up.railway.app";
+window.__BONDLI_API = API;
 const WS_URL = "wss://bondli-production.up.railway.app/ws";
 const PLATFORM_WALLET = "anal.sol";
 const PRO_FEE_SOL = 10;
@@ -379,95 +380,178 @@ function TierGate({ user, onSelect, onDisconnect }) {
 // ══════════════════════════════════════════
 function mcapFmt(n) { return n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "k" : Math.round(n).toString(); }
 
-// ── Live Price Chart — uses server priceHistory, falls back to DexScreener embed ──
-function PriceChart({ priceHistory, trades, mobile, T, ca }) {
+// ── Heartbeat MCap Monitor — polls pump.fun from browser, no server dependency ──
+function PriceChart({ trades, mobile, T, ca }) {
   const canvasRef = useRef(null);
-  const hasData = priceHistory && priceHistory.length >= 2;
+  const historyRef = useRef([]);
+  const [status, setStatus] = useState("connecting...");
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !hasData) return;
-    const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = canvas.offsetWidth * dpr;
-    canvas.height = canvas.offsetHeight * dpr;
-    ctx.scale(dpr, dpr);
-    const W = canvas.offsetWidth, H = canvas.offsetHeight;
-    const pad = { top: 28, right: 55, bottom: 22, left: 8 };
+    if (!ca) return;
+    const hist = historyRef.current;
+    let alive = true;
 
-    const points = priceHistory;
-    const mcaps = points.map(p => p.mcap);
-    const minMcap = Math.min(...mcaps) * 0.95;
-    const maxMcap = Math.max(...mcaps) * 1.05;
-    const range = maxMcap - minMcap || 1;
-    const minTime = points[0].time;
-    const maxTime = points[points.length - 1].time;
-    const timeRange = maxTime - minTime || 1;
+    const poll = async () => {
+      while (alive) {
+        try {
+          const r = await fetch("https://frontend-api-v2.pump.fun/coins/" + ca);
+          if (r.ok) {
+            const coin = await r.json();
+            const mcap = coin.usd_market_cap || 0;
+            const bp = coin.bonding_curve_progress || 0;
+            const price = coin.market_cap ? (coin.market_cap / 1e9) : 0; // SOL price
+            hist.push({ time: Date.now(), mcap, bp, price });
+            if (hist.length > 200) hist.shift();
+            setStatus(hist.length < 2 ? "collecting..." : "live");
+            draw();
+          }
+        } catch { /* pump.fun might CORS block — try proxy */ 
+          try {
+            const r2 = await fetch(window.__BONDLI_API + "/api/price/" + ca);
+            if (r2.ok) {
+              const d = await r2.json();
+              if (d.mcap) { hist.push({ time: Date.now(), mcap: d.mcap, bp: d.bp || 0, price: d.price || 0 }); if (hist.length > 200) hist.shift(); setStatus("live"); draw(); }
+            }
+          } catch {}
+        }
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    };
 
-    const toX = (t) => pad.left + ((t - minTime) / timeRange) * (W - pad.left - pad.right);
-    const toY = (m) => pad.top + (1 - (m - minMcap) / range) * (H - pad.top - pad.bottom);
+    const draw = () => {
+      const canvas = canvasRef.current;
+      if (!canvas || hist.length < 2) return;
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const W = canvas.offsetWidth, H = canvas.offsetHeight;
+      canvas.width = W * dpr; canvas.height = H * dpr;
+      ctx.scale(dpr, dpr);
 
-    ctx.clearRect(0, 0, W, H);
+      const pad = { top: 32, right: 52, bottom: 24, left: 6 };
+      const mcaps = hist.map(p => p.mcap);
+      const min = Math.min(...mcaps) * 0.92;
+      const max = Math.max(...mcaps) * 1.08;
+      const range = max - min || 1;
+      const tMin = hist[0].time, tMax = hist[hist.length - 1].time, tRange = tMax - tMin || 1;
 
-    // Grid
-    ctx.strokeStyle = "#ffffff08"; ctx.lineWidth = 0.5;
-    for (let i = 0; i <= 4; i++) {
-      const y = pad.top + (i / 4) * (H - pad.top - pad.bottom);
-      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
-      ctx.fillStyle = "#555"; ctx.font = "9px monospace"; ctx.textAlign = "right";
-      ctx.fillText("$" + mcapFmt(maxMcap - (i / 4) * range), W - 4, y + 3);
-    }
+      const toX = t => pad.left + ((t - tMin) / tRange) * (W - pad.left - pad.right);
+      const toY = m => pad.top + (1 - (m - min) / range) * (H - pad.top - pad.bottom);
 
-    // Area fill
-    const isUp = mcaps[mcaps.length - 1] >= mcaps[0];
-    const color = isUp ? "#00ff88" : "#ff4444";
-    const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
-    grad.addColorStop(0, color + "25"); grad.addColorStop(1, color + "02");
-    ctx.beginPath(); ctx.moveTo(toX(points[0].time), H - pad.bottom);
-    for (const p of points) ctx.lineTo(toX(p.time), toY(p.mcap));
-    ctx.lineTo(toX(points[points.length - 1].time), H - pad.bottom);
-    ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+      ctx.clearRect(0, 0, W, H);
 
-    // Line
-    ctx.beginPath(); ctx.moveTo(toX(points[0].time), toY(points[0].mcap));
-    for (let i = 1; i < points.length; i++) ctx.lineTo(toX(points[i].time), toY(points[i].mcap));
-    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
+      // Background grid
+      ctx.save();
+      ctx.strokeStyle = "#ffffff06"; ctx.lineWidth = 0.5;
+      for (let i = 0; i <= 3; i++) {
+        const y = pad.top + (i / 3) * (H - pad.top - pad.bottom);
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+        ctx.fillStyle = "#444"; ctx.font = "9px monospace"; ctx.textAlign = "right";
+        ctx.fillText("$" + mcapFmt(max - (i / 3) * range), W - 2, y + 3);
+      }
+      ctx.restore();
 
-    // Trade dots
-    if (trades) for (const t of trades) {
-      if (t.time < minTime || t.time > maxTime) continue;
-      const closest = points.reduce((a, b) => Math.abs(b.time - t.time) < Math.abs(a.time - t.time) ? b : a);
-      ctx.beginPath(); ctx.arc(toX(t.time), toY(closest.mcap), 3, 0, Math.PI * 2);
-      ctx.fillStyle = t.side === "buy" ? "#00ff88" : "#ff4444"; ctx.fill();
-    }
+      // Heartbeat line
+      const lastMcap = mcaps[mcaps.length - 1], firstMcap = mcaps[0];
+      const up = lastMcap >= firstMcap;
+      const color = up ? "#00ff88" : "#ff4444";
 
-    // Header
-    const last = mcaps[mcaps.length - 1], first = mcaps[0];
-    const pct = first > 0 ? ((last - first) / first * 100) : 0;
-    ctx.fillStyle = "#fff"; ctx.font = "bold 12px monospace"; ctx.textAlign = "left";
-    ctx.fillText("MCap $" + mcapFmt(last), pad.left, 16);
-    ctx.fillStyle = color; ctx.fillText((pct >= 0 ? "+" : "") + pct.toFixed(1) + "%", 130, 16);
+      // Glow effect
+      ctx.save();
+      ctx.shadowColor = color; ctx.shadowBlur = 8;
+      ctx.beginPath();
+      ctx.moveTo(toX(hist[0].time), toY(hist[0].mcap));
+      for (let i = 1; i < hist.length; i++) ctx.lineTo(toX(hist[i].time), toY(hist[i].mcap));
+      ctx.strokeStyle = color + "60"; ctx.lineWidth = 4; ctx.stroke();
+      ctx.restore();
 
-    // Bonding bar
-    const bp = points[points.length - 1]?.bondingProgress || 0;
-    if (bp > 0) {
-      const bW = W - pad.left - pad.right;
-      ctx.fillStyle = "#ffffff0a"; ctx.fillRect(pad.left, H - 8, bW, 3);
-      ctx.fillStyle = color; ctx.fillRect(pad.left, H - 8, bW * (bp / 100), 3);
-      ctx.fillStyle = "#666"; ctx.font = "8px monospace"; ctx.textAlign = "left";
-      ctx.fillText(bp.toFixed(0) + "%", pad.left, H - 11);
-    }
-  }, [priceHistory, trades, hasData]);
+      // Sharp line
+      ctx.beginPath();
+      ctx.moveTo(toX(hist[0].time), toY(hist[0].mcap));
+      for (let i = 1; i < hist.length; i++) ctx.lineTo(toX(hist[i].time), toY(hist[i].mcap));
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
 
-  // Show canvas if we have price data, otherwise DexScreener embed
-  if (hasData) {
-    return <canvas ref={canvasRef} style={{ width: "100%", height: mobile ? 220 : 320, display: "block", background: "#080808" }} />;
-  }
-  // Fallback: DexScreener embed (works once pair is indexed)
-  if (ca) {
-    return <iframe src={"https://dexscreener.com/solana/" + ca + "?embed=1&theme=dark&trades=0&info=0"} style={{ width: "100%", height: mobile ? 220 : 320, border: "none", display: "block", background: "#080808" }} title="Chart" />;
-  }
-  return <div style={{ height: mobile ? 220 : 320, display: "flex", alignItems: "center", justifyContent: "center", background: "#080808", fontFamily: "monospace", fontSize: 12, color: "#555" }}>Waiting for data...</div>;
+      // Gradient fill
+      const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
+      grad.addColorStop(0, color + "18"); grad.addColorStop(1, color + "00");
+      ctx.beginPath();
+      ctx.moveTo(toX(hist[0].time), H - pad.bottom);
+      for (const p of hist) ctx.lineTo(toX(p.time), toY(p.mcap));
+      ctx.lineTo(toX(hist[hist.length - 1].time), H - pad.bottom);
+      ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+
+      // Trade markers from fleet
+      if (trades && trades.length > 0) {
+        for (const t of trades) {
+          if (t.time < tMin || t.time > tMax) continue;
+          const near = hist.reduce((a, b) => Math.abs(b.time - t.time) < Math.abs(a.time - t.time) ? b : a);
+          const x = toX(t.time), y = toY(near.mcap);
+          // Triangle markers
+          ctx.save();
+          ctx.fillStyle = t.side === "buy" ? "#00ff88" : "#ff4444";
+          ctx.beginPath();
+          if (t.side === "buy") { ctx.moveTo(x, y - 6); ctx.lineTo(x - 4, y + 2); ctx.lineTo(x + 4, y + 2); }
+          else { ctx.moveTo(x, y + 6); ctx.lineTo(x - 4, y - 2); ctx.lineTo(x + 4, y - 2); }
+          ctx.closePath(); ctx.fill();
+          ctx.restore();
+          // SOL amount label
+          if (t.sol > 0.01) {
+            ctx.fillStyle = t.side === "buy" ? "#00ff8888" : "#ff444488";
+            ctx.font = "8px monospace"; ctx.textAlign = "center";
+            ctx.fillText((t.sol).toFixed(2), x, t.side === "buy" ? y - 9 : y + 14);
+          }
+        }
+      }
+
+      // Pulse dot at current price
+      const lastX = toX(hist[hist.length - 1].time), lastY = toY(lastMcap);
+      ctx.beginPath(); ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
+      ctx.fillStyle = color; ctx.fill();
+      ctx.beginPath(); ctx.arc(lastX, lastY, 7, 0, Math.PI * 2);
+      ctx.strokeStyle = color + "44"; ctx.lineWidth = 1.5; ctx.stroke();
+
+      // Current price label
+      ctx.fillStyle = color; ctx.font = "bold 11px monospace"; ctx.textAlign = "right";
+      ctx.fillText("$" + mcapFmt(lastMcap), W - 2, lastY - 10);
+
+      // Header: MCap + change
+      const pct = firstMcap > 0 ? ((lastMcap - firstMcap) / firstMcap * 100) : 0;
+      ctx.fillStyle = "#ccc"; ctx.font = "bold 13px monospace"; ctx.textAlign = "left";
+      ctx.fillText("MCap $" + mcapFmt(lastMcap), pad.left + 2, 16);
+      ctx.fillStyle = color; ctx.font = "bold 12px monospace";
+      ctx.fillText((pct >= 0 ? "\u25B2" : "\u25BC") + " " + Math.abs(pct).toFixed(1) + "%", pad.left + 150, 16);
+
+      // Bonding progress
+      const bp = hist[hist.length - 1]?.bp || 0;
+      if (bp > 0) {
+        const bW = W - pad.left - pad.right;
+        ctx.fillStyle = "#ffffff08"; ctx.fillRect(pad.left, H - 6, bW, 3);
+        ctx.fillStyle = color + "88"; ctx.fillRect(pad.left, H - 6, bW * Math.min(1, bp / 100), 3);
+        ctx.fillStyle = "#555"; ctx.font = "8px monospace"; ctx.textAlign = "left";
+        ctx.fillText(bp.toFixed(1) + "% bonded", pad.left, H - 9);
+      }
+
+      // Time labels
+      ctx.fillStyle = "#333"; ctx.font = "8px monospace"; ctx.textAlign = "left";
+      const ago = Math.round((tMax - tMin) / 1000);
+      ctx.fillText(ago + "s ago", pad.left, H - pad.bottom + 14);
+      ctx.textAlign = "right";
+      ctx.fillText("now", W - pad.right, H - pad.bottom + 14);
+    };
+
+    poll();
+    return () => { alive = false; };
+  }, [ca]);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <canvas ref={canvasRef} style={{ width: "100%", height: mobile ? 200 : 280, display: "block", background: "#050505", borderRadius: 0 }} />
+      {status !== "live" && (
+        <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", fontFamily: "monospace", fontSize: 12, color: "#444" }}>
+          {status === "connecting..." ? "\u23F3 Connecting to pump.fun..." : "\u2764 Collecting heartbeat..."}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function calcDevBuyPreview(totalSol, isApe) {
@@ -704,11 +788,13 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
         </div>
       ) : (
         <div style={{ padding: "8px 0", marginBottom: 12, display: "flex", justifyContent: "center", gap: mobile ? 12 : 20, fontFamily: mono, fontSize: 12, color: T.dim }}>
+          {fleetConfig?.deployOnly ? (<span style={{ color: T.yellow }}>{"\u26A0"} Deploy only — <span style={{ fontWeight: 700 }}>0.02 SOL</span> creation fee, no buy</span>) : (<>
           <span><span style={{ color: T.yellow, fontWeight: 700 }}>{preview.devBuy}</span> dev buy</span>
           <span style={{ color: T.border }}>{"\u00B7"}</span>
           <span><span style={{ color: T.dim, fontWeight: 700 }}>{preview.creationFee}</span> fee</span>
           <span style={{ color: T.border }}>{"\u00B7"}</span>
           <span><span style={{ color: T.green, fontWeight: 700 }}>{preview.fleet}</span> fleet</span>
+          </>)}
         </div>
       )}
 
@@ -816,7 +902,7 @@ export default function App() {
   const [twitter, setTwitter] = useState(""); const [telegram, setTelegram] = useState(""); const [website, setWebsite] = useState("");
   const [existingCA, setExistingCA] = useState(""); const [totalSol, setTotalSol] = useState(1);
   const [rpc, setRpc] = useState(""); const [seed, setSeed] = useState("");
-  const [slippage, setSlippage] = useState(25); const [sniperCount, setSniperCount] = useState(2); const [duration, setDuration] = useState(60); const [jitoTip, setJitoTip] = useState(0.001); const [useAtlas, setUseAtlas] = useState(false);
+  const [slippage, setSlippage] = useState(25); const [sniperCount, setSniperCount] = useState(2); const [duration, setDuration] = useState(60); const [jitoTip, setJitoTip] = useState(0.001); const [useAtlas, setUseAtlas] = useState(false); const [deployOnly, setDeployOnly] = useState(false);
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState(""); const [activeSessionId, setActiveSessionId] = useState("");
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
@@ -921,7 +1007,7 @@ export default function App() {
                     </div>
                     <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(launchCA); toast("CA copied", "success"); }}>{launchCA.slice(0, 6)}...{launchCA.slice(-4)} {"\u{1F4CB}"}</span>
                   </div>
-                  <PriceChart priceHistory={fleetStatus?.priceHistory || []} trades={(fleetStatus?.trades || []).slice(0, 30)} mobile={mobile} T={T} ca={launchCA} />
+                  <PriceChart trades={(fleetStatus?.trades || []).slice(0, 30)} mobile={mobile} T={T} ca={launchCA} />
                   <div style={{ padding: "6px 12px", background: T.bg, borderTop: "1px solid " + T.border, display: "flex", gap: 8, justifyContent: "center" }}>
                     <span style={{ fontSize: 11, fontFamily: mono, color: T.faint }}>Live from bonding curve</span>
                     <a href={"https://pump.fun/coin/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.green, textDecoration: "none" }}>pump.fun {"\u2197"}</a>
@@ -1044,13 +1130,24 @@ export default function App() {
                   {!existingCA && (<><div style={{ display: "flex", alignItems: "center", gap: 12, margin: "4px 0 10px", fontSize: 11, color: T.faint, fontFamily: mono, textTransform: "uppercase", letterSpacing: ".08em" }}><span style={{ flex: 1, height: 1, background: T.border }} />or create new<span style={{ flex: 1, height: 1, background: T.border }} /></div><div style={{ display: "flex", gap: mobile ? 10 : 14, marginBottom: 10 }}><ImageUpload image={image} onChange={setImage} mobile={mobile} /><div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, minWidth: 0, overflow: "hidden" }}><Input value={tokenName} onChange={setTokenName} placeholder="Token Name" big /><Input value={ticker} onChange={v => setTicker(v.toUpperCase())} placeholder="$TICKER" maxLength={10} big /></div></div><div style={{ marginBottom: 8 }}><textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2} placeholder="Description..." style={{ width: "100%", padding: "10px 12px", background: T.bg, border: "1px solid " + T.border, borderRadius: 10, color: T.text, fontFamily: sans, fontSize: 14, outline: "none", resize: "vertical", lineHeight: 1.5, boxSizing: "border-box" }} /></div><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, overflow: "hidden" }}><Input value={twitter} onChange={setTwitter} placeholder="Twitter" /><Input value={telegram} onChange={setTelegram} placeholder="Telegram" /><Input value={website} onChange={setWebsite} placeholder="Website" /></div></>)}
                 </Section>
                 <Section n="3" title="Configure" T={T} mobile={mobile}>
+                  {!isApe && (<div style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 14px", background: T.bg, borderRadius: 10, border: "1px solid " + T.border, cursor: "pointer", marginBottom: 12 }} onClick={() => setDeployOnly(!deployOnly)}>
+                    <div style={{ width: 40, height: 22, borderRadius: 11, padding: 2, background: deployOnly ? T.yellow : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", transform: deployOnly ? "translateX(18px)" : "translateX(0)", transition: "transform .2s" }} /></div>
+                    <div><div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: deployOnly ? T.yellow : T.text }}>Deploy Only</div><div style={{ fontSize: 11, color: T.dim }}>Create token on pump.fun — no buy, no fleet</div></div>
+                  </div>)}
+                  {deployOnly ? (
+                    <div style={{ padding: "14px", background: T.yellow + "08", borderRadius: 10, border: "1px solid " + T.yellow + "22" }}>
+                      <div style={{ fontFamily: mono, fontSize: 12, color: T.yellow, marginBottom: 4 }}>{"\u26A0"} Deploy only — 0.02 SOL creation fee</div>
+                      <div style={{ fontFamily: mono, fontSize: 11, color: T.dim }}>Token will be created on pump.fun with metadata. No dev buy, no fleet. You can buy manually after.</div>
+                    </div>
+                  ) : (<>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase" }}>SOL Budget</span><span style={{ fontFamily: mono, fontSize: 28, fontWeight: 900, color: T.green }}>{totalSol}</span></div>
                   <input type="range" min={0.5} max={50} step={0.1} value={totalSol} onChange={e => setTotalSol(Number(e.target.value))} style={{ width: "100%", accentColor: T.green, marginBottom: 12 }} />
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 12, overflow: "hidden" }}><NumInput label="Snipers" value={sniperCount} onChange={setSniperCount} min={1} max={5} T={T} /><NumInput label="Slippage %" value={slippage} onChange={setSlippage} min={1} max={50} T={T} /><NumInput label="Duration m" value={duration} onChange={setDuration} min={5} max={240} step={5} T={T} /><div style={{ background: T.bg, borderRadius: 12, border: "1px solid " + T.border, padding: "10px 10px", minWidth: 0 }}><div style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>Jito Tip</div><input type="number" value={jitoTip} onChange={e => setJitoTip(Math.max(0.0001, Math.min(0.1, Number(e.target.value))))} step={0.0005} min={0.0001} max={0.1} style={{ width: "100%", height: 34, background: T.surface, border: "1px solid " + T.border, borderRadius: 8, color: T.green, fontFamily: mono, fontSize: 15, fontWeight: 800, textAlign: "center", outline: "none", boxSizing: "border-box" }} /></div></div>
                   <div style={{ display: "grid", gridTemplateColumns: isApe ? "repeat(3, 1fr)" : "repeat(4, 1fr)", gap: 2, background: T.border + "44", borderRadius: 8, overflow: "hidden" }}>{(isApe ? [{ k: "Fleet", v: totalSol.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }] : [{ k: "Dev Buy", v: preview.devBuy.toFixed(2) }, { k: "Fleet", v: preview.fleet.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }]).map(s => (<div key={s.k} style={{ background: T.bg, padding: "8px 4px", textAlign: "center" }}><div style={{ fontSize: 18, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.k}</div></div>))}</div>
+                  </>)}
                 </Section>
                 <Section n={"\u{1F680}"} title={isApe ? "Start Trading" : "Launch"} highlight={canLaunch} T={T} mobile={mobile}>
-                  <LaunchFlow user={user} mobile={mobile} totalSol={totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip }} onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); }} />
+                  <LaunchFlow user={user} mobile={mobile} totalSol={deployOnly ? 0 : totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip, deployOnly }} onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); }} />
                 </Section>
                 {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginTop: 8 }}>
                   <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12 }}>Active Sessions</div>
