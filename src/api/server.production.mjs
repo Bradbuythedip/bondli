@@ -25,6 +25,12 @@ import createPaymentRoutes from "../payments/payment-routes.mjs";
 // Sessions
 import SessionStore from "../db/session-store.mjs";
 
+// User tracking (persistent)
+import UserStore from "../db/user-store.mjs";
+
+// Wallet signature auth
+import { generateChallenge, verifySolanaSignature, issueAuthToken, requireVerifiedWallet, requireStrictAuth, nonces } from "../middleware/wallet-auth.mjs";
+
 // Launch Sessions (dev wallet generation + funding)
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
 import { createToken } from "../engine/token-creator.mjs";
@@ -123,17 +129,18 @@ app.use((req, res, next) => {
 // ═══════════════════════════════════════
 // SERVICES
 // ═══════════════════════════════════════
-let sessionStore, paymentVerifier, sessionManager;
+let sessionStore, paymentVerifier, sessionManager, userStore;
 const orch = new FleetTrader();
 
 async function initServices() {
   const redis = await initRedis(process.env.REDIS_URL);
   sessionStore = new SessionStore(redis);
   sessionManager = new SessionManager(redis);
+  userStore = new UserStore(redis);
   const connection = new Connection(CONFIG.RPC_URL, "confirmed");
   paymentVerifier = new PaymentVerifier(connection);
   await paymentVerifier.init();
-  console.log("[INIT] All services ready");
+  console.log("[INIT] All services ready (userStore, sessionStore, sessionManager)");
 }
 
 // Simple wallet auth — checks X-Wallet header + tier access
@@ -154,6 +161,91 @@ async function walletIdentify(req, res, next) {
   req.user = { wallet, tier: info.tier, whitelisted: info.whitelisted, profitCut: info.profitCut };
   next();
 }
+
+// ═══════════════════════════════════════
+// ROUTES — Auth (wallet signature verification)
+// ═══════════════════════════════════════
+
+// Step 1: Get challenge message to sign
+app.post("/api/auth/challenge", apiLimiter, (req, res) => {
+  const { wallet } = req.body;
+  if (!wallet) return res.status(400).json({ error: "wallet required" });
+  const challenge = generateChallenge(wallet);
+  res.json({ ok: true, ...challenge });
+});
+
+// Step 2: Verify signed challenge → issue JWT
+app.post("/api/auth/verify", apiLimiter, async (req, res) => {
+  const { wallet, signature, message } = req.body;
+  if (!wallet || !signature || !message) return res.status(400).json({ error: "wallet, signature, and message required" });
+
+  // Check nonce exists
+  const stored = nonces.get(wallet);
+  if (!stored || stored.message !== message) return res.status(400).json({ error: "Invalid or expired challenge. Request a new one." });
+
+  // Verify signature
+  const valid = verifySolanaSignature(wallet, signature, message);
+  if (!valid) return res.status(401).json({ error: "Signature verification failed" });
+
+  // Clean up nonce
+  nonces.delete(wallet);
+
+  // Get or create user record
+  const user = userStore ? await userStore.getOrCreate(wallet) : { tier: "free" };
+  const walletInfo = await getWalletTier(wallet);
+
+  // Issue token
+  const token = issueAuthToken(wallet, walletInfo.tier);
+
+  res.json({
+    ok: true,
+    token,
+    wallet,
+    tier: walletInfo.tier,
+    referralCode: user.referralCode || "",
+    totalLaunches: user.totalLaunches || 0,
+    verified: true,
+  });
+});
+
+// Apply referral code
+app.post("/api/referral/apply", apiLimiter, async (req, res) => {
+  const { wallet, refCode } = req.body;
+  if (!wallet || !refCode) return res.status(400).json({ error: "wallet and refCode required" });
+  if (!userStore) return res.status(503).json({ error: "Service not ready" });
+  const result = await userStore.applyReferral(wallet, refCode);
+  res.json(result);
+});
+
+// Get referral info
+app.get("/api/referral/:wallet", apiLimiter, async (req, res) => {
+  if (!userStore) return res.json({ referralCode: "", referralCount: 0, referralEarnings: 0 });
+  const user = await userStore.get(req.params.wallet);
+  if (!user) return res.json({ referralCode: "", referralCount: 0, referralEarnings: 0 });
+  res.json({ referralCode: user.referralCode, referralCount: user.referralCount, referralEarnings: user.referralEarnings });
+});
+
+// Get user profile/stats
+app.get("/api/user/:wallet", apiLimiter, async (req, res) => {
+  if (!userStore) return res.json({ wallet: req.params.wallet, tier: "free" });
+  const user = await userStore.getOrCreate(req.params.wallet);
+  const walletInfo = await getWalletTier(req.params.wallet);
+  res.json({
+    wallet: user.wallet,
+    tier: walletInfo.tier,
+    firstSeen: user.firstSeen,
+    totalLaunches: user.totalLaunches,
+    totalDeploys: user.totalDeploys,
+    totalSolIn: user.totalSolIn,
+    totalSolOut: user.totalSolOut,
+    totalProfit: user.totalProfit,
+    totalPlatformCut: user.totalPlatformCut,
+    referralCode: user.referralCode,
+    referralCount: user.referralCount,
+    referralEarnings: user.referralEarnings,
+    lastActive: user.lastActive,
+  });
+});
 
 // ═══════════════════════════════════════
 // ROUTES — Health
@@ -574,7 +666,10 @@ app.post("/api/session/create", apiLimiter, async (req, res) => {
     if (!sessionManager) return res.status(503).json({ error: "Server still starting up. Try again in a few seconds." });
     const { totalSol, tokenConfig, wallet, fleetConfig, masterSeed } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
-    if (!totalSol || totalSol < 0.1 || totalSol > 100) {
+
+    // Deploy-only allows totalSol = 0
+    const isDeployOnly = fleetConfig?.deployOnly;
+    if (!isDeployOnly && (!totalSol || totalSol < 0.1 || totalSol > 100)) {
       return res.status(400).json({ error: "totalSol must be between 0.1 and 100" });
     }
     if (!tokenConfig) return res.status(400).json({ error: "tokenConfig required" });
@@ -584,9 +679,30 @@ app.post("/api/session/create", apiLimiter, async (req, res) => {
 
     const walletInfo = await getWalletTier(wallet);
 
+    // (4) Rate limiting per tier
+    if (userStore) {
+      const limits = { free: 5, pro: 50, vip: 200 };
+      const maxPerHour = limits[walletInfo.tier] || limits.free;
+      const rl = await userStore.checkRateLimit(wallet, "launch", maxPerHour);
+      if (!rl.allowed) return res.status(429).json({ error: `Rate limit: ${maxPerHour} launches/hour. Try again in ${rl.resetIn}s.` });
+    }
+
+    // (1)(5) Free tier branding enforcement — server-side, can't bypass
+    if (walletInfo.tier === "free" && !walletInfo.whitelisted && !tokenConfig.existingCA) {
+      // Force "deployed with bondli.fun" in description
+      const desc = (tokenConfig.description || "").trim();
+      const brandTag = "deployed with bondli.fun";
+      if (!desc.toLowerCase().includes("bondli")) {
+        tokenConfig.description = desc ? `${desc} | ${brandTag}` : brandTag;
+      }
+    }
+
+    // (2) Track user
+    if (userStore) await userStore.getOrCreate(wallet);
+
     const session = await sessionManager.create({
       userWallet: wallet,
-      totalSol: Math.min(100, totalSol),
+      totalSol: isDeployOnly ? 0 : Math.min(100, totalSol),
       tokenConfig,
       tier: walletInfo.tier,
       fleetConfig: fleetConfig || {},
@@ -718,6 +834,10 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
 
     if (sessionStore) {
       await sessionStore.recordLaunch(session.userWallet, tokenCA, session.totalSol);
+    }
+    if (userStore) {
+      if (isDeployOnly) await userStore.recordDeploy(session.userWallet, tokenCA);
+      else await userStore.recordLaunch(session.userWallet, tokenCA, session.totalSol);
     }
 
     console.log(`[LAUNCH] ${sessionId} complete | CA: ${tokenCA} | devBuy: ${session.devBuy} SOL | fleet: ${session.fleetBudget} SOL`);
@@ -860,7 +980,7 @@ app.post("/api/session/resume", apiLimiter, async (req, res) => {
 });
 
 // Emergency recover: sweep all SOL from fleet wallets back to master/user wallet
-app.post("/api/session/recover", apiLimiter, async (req, res) => {
+app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
     if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
@@ -930,7 +1050,7 @@ app.post("/api/session/recover", apiLimiter, async (req, res) => {
 });
 
 // Batch deploy — create multiple tokens rapidly (VIP only)
-app.post("/api/batch-deploy", apiLimiter, async (req, res) => {
+app.post("/api/batch-deploy", apiLimiter, requireVerifiedWallet, async (req, res) => {
   try {
     const { wallet, count, tokenConfig, masterSeed, jitoTip, delayMs } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
@@ -940,6 +1060,14 @@ app.post("/api/batch-deploy", apiLimiter, async (req, res) => {
     const walletInfo = await getWalletTier(wallet);
     if (walletInfo.tier !== "pro" && !walletInfo.whitelisted) {
       return res.status(403).json({ error: "Batch deploy is VIP/Pro only" });
+    }
+
+    // Free tier branding (shouldn't reach here since batch is pro/vip only, but safety)
+    if (walletInfo.tier === "free") {
+      const desc = (tokenConfig.description || "").trim();
+      if (!desc.toLowerCase().includes("bondli")) {
+        tokenConfig.description = desc ? `${desc} | deployed with bondli.fun` : "deployed with bondli.fun";
+      }
     }
 
     const connection = new Connection(CONFIG.RPC_URL, "confirmed");
@@ -999,7 +1127,7 @@ app.post("/api/batch-deploy", apiLimiter, async (req, res) => {
 });
 
 // Sell all tokens in fleet wallets and sweep SOL back to master
-app.post("/api/session/sell-sweep", apiLimiter, async (req, res) => {
+app.post("/api/session/sell-sweep", apiLimiter, requireVerifiedWallet, async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
     if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
@@ -1108,7 +1236,7 @@ app.post("/api/session/sell-sweep", apiLimiter, async (req, res) => {
 });
 
 // Get fleet wallet private keys for manual recovery (VIP only)
-app.get("/api/session/:id/keys", apiLimiter, async (req, res) => {
+app.get("/api/session/:id/keys", apiLimiter, requireVerifiedWallet, async (req, res) => {
   try {
     const wallet = req.headers["x-wallet"];
     if (!wallet) return res.status(401).json({ error: "wallet required" });
@@ -1194,6 +1322,7 @@ app.post("/api/close", apiLimiter, walletAuth, closeSchema, async (req, res) => 
     const netProfit = result.netProfit || 0;
     if (walletInfo.tier === "free" && !walletInfo.whitelisted) {
       await recordProfit(wallet, netProfit, platformCut);
+      if (userStore) await userStore.recordClose(wallet, result.solRecovered || 0, platformCut, netProfit);
       result.fee = { tier: "free", netProfit, platformCut, userKeeps: netProfit - platformCut, cutPercent: platformCut > 0 ? FREE_PROFIT_CUT : 0 };
       if (platformCut > 0) console.log(`[FEE] Recorded: ${wallet} | profit: ${netProfit.toFixed(4)} SOL | skimmed: ${platformCut.toFixed(4)} SOL (${FREE_PROFIT_CUT}%)`);
     } else {
@@ -1247,6 +1376,20 @@ app.get("/api/admin/sessions", async (req, res) => {
   if (!sessionStore) return res.json({ sessions: [] });
   const sessions = await sessionStore.allSessions();
   res.json({ count: sessions.length, sessions });
+});
+
+app.get("/api/admin/users", async (req, res) => {
+  if (req.headers["x-admin-secret"] !== CONFIG.API_SECRET) return res.status(403).json({ error: "Forbidden" });
+  if (!userStore) return res.json({ users: [] });
+  const users = await userStore.allUsers(500);
+  res.json({ count: users.length, users });
+});
+
+app.get("/api/admin/stats", async (req, res) => {
+  if (req.headers["x-admin-secret"] !== CONFIG.API_SECRET) return res.status(403).json({ error: "Forbidden" });
+  if (!userStore) return res.json({});
+  const stats = await userStore.platformStats();
+  res.json(stats);
 });
 
 // ═══════════════════════════════════════
