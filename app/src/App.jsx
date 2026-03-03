@@ -378,6 +378,144 @@ function TierGate({ user, onSelect, onDisconnect }) {
 // LAUNCH FLOW — generate dev wallet, fund, launch
 // ══════════════════════════════════════════
 function mcapFmt(n) { return n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "k" : Math.round(n).toString(); }
+
+// ── Live Price Chart (canvas-based, uses fleet priceHistory + trades) ──
+function PriceChart({ priceHistory, trades, mobile, T }) {
+  const canvasRef = useRef(null);
+  const [hoveredPoint, setHoveredPoint] = useState(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !priceHistory || priceHistory.length < 2) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+    const W = rect.width, H = rect.height;
+    const pad = { top: 30, right: 60, bottom: 25, left: 10 };
+
+    // Data
+    const points = priceHistory;
+    const mcaps = points.map(p => p.mcap);
+    const minMcap = Math.min(...mcaps);
+    const maxMcap = Math.max(...mcaps);
+    const range = maxMcap - minMcap || 1;
+    const minTime = points[0].time;
+    const maxTime = points[points.length - 1].time;
+    const timeRange = maxTime - minTime || 1;
+
+    const toX = (t) => pad.left + ((t - minTime) / timeRange) * (W - pad.left - pad.right);
+    const toY = (m) => pad.top + (1 - (m - minMcap) / range) * (H - pad.top - pad.bottom);
+
+    // Clear
+    ctx.clearRect(0, 0, W, H);
+
+    // Grid lines
+    ctx.strokeStyle = (T.border || "#333") + "33";
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.top + (i / 4) * (H - pad.top - pad.bottom);
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+      const val = maxMcap - (i / 4) * range;
+      ctx.fillStyle = T.faint || "#666";
+      ctx.font = "10px monospace";
+      ctx.textAlign = "right";
+      ctx.fillText("$" + mcapFmt(val), W - 6, y + 3);
+    }
+
+    // Gradient fill under line
+    const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
+    const lastMcap = mcaps[mcaps.length - 1];
+    const firstMcap = mcaps[0];
+    const isUp = lastMcap >= firstMcap;
+    const lineColor = isUp ? (T.green || "#00ff88") : (T.red || "#ff4444");
+    grad.addColorStop(0, lineColor + "30");
+    grad.addColorStop(1, lineColor + "00");
+
+    // Fill area
+    ctx.beginPath();
+    ctx.moveTo(toX(points[0].time), H - pad.bottom);
+    for (const p of points) ctx.lineTo(toX(p.time), toY(p.mcap));
+    ctx.lineTo(toX(points[points.length - 1].time), H - pad.bottom);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // Price line
+    ctx.beginPath();
+    ctx.moveTo(toX(points[0].time), toY(points[0].mcap));
+    for (let i = 1; i < points.length; i++) ctx.lineTo(toX(points[i].time), toY(points[i].mcap));
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Trade markers (our buys/sells)
+    if (trades && trades.length > 0) {
+      for (const t of trades) {
+        if (t.time < minTime || t.time > maxTime) continue;
+        const closest = points.reduce((a, b) => Math.abs(b.time - t.time) < Math.abs(a.time - t.time) ? b : a);
+        const x = toX(t.time), y = toY(closest.mcap);
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = t.side === "buy" ? (T.green || "#00ff88") : (T.red || "#ff4444");
+        ctx.fill();
+        ctx.strokeStyle = "#000";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    // Current price label
+    const lastPoint = points[points.length - 1];
+    const lastY = toY(lastPoint.mcap);
+    ctx.fillStyle = lineColor;
+    ctx.font = "bold 12px monospace";
+    ctx.textAlign = "right";
+    ctx.fillText("$" + mcapFmt(lastPoint.mcap), W - 6, lastY - 8);
+
+    // Bonding progress bar
+    if (lastPoint.bondingProgress != null) {
+      const bp = Math.min(100, lastPoint.bondingProgress);
+      const barW = W - pad.left - pad.right;
+      const barH = 4;
+      const barY = H - 6;
+      ctx.fillStyle = (T.border || "#333") + "44";
+      ctx.fillRect(pad.left, barY, barW, barH);
+      ctx.fillStyle = lineColor;
+      ctx.fillRect(pad.left, barY, barW * (bp / 100), barH);
+      ctx.fillStyle = T.faint || "#666";
+      ctx.font = "9px monospace";
+      ctx.textAlign = "left";
+      ctx.fillText(bp.toFixed(1) + "% bonded", pad.left, barY - 2);
+    }
+
+    // Header
+    ctx.fillStyle = T.text || "#fff";
+    ctx.font = "bold 13px monospace";
+    ctx.textAlign = "left";
+    const pctChange = firstMcap > 0 ? ((lastMcap - firstMcap) / firstMcap * 100) : 0;
+    ctx.fillText("MCap $" + mcapFmt(lastMcap), pad.left, 16);
+    ctx.fillStyle = isUp ? (T.green || "#00ff88") : (T.red || "#ff4444");
+    ctx.fillText((pctChange >= 0 ? "+" : "") + pctChange.toFixed(1) + "%", pad.left + 140, 16);
+  }, [priceHistory, trades, T, mobile]);
+
+  const hasData = priceHistory && priceHistory.length >= 2;
+
+  return (
+    <div style={{ position: "relative", width: "100%", height: mobile ? 240 : 360, background: "#0a0a0a", borderRadius: 0 }}>
+      {hasData ? (
+        <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+      ) : (
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", fontFamily: "monospace", fontSize: 13, color: T.faint }}>
+          Waiting for price data...
+        </div>
+      )}
+    </div>
+  );
+}
+
 function calcDevBuyPreview(totalSol, isApe) {
   if (isApe) return { devBuy: 0, creationFee: 0, fleet: +totalSol.toFixed(4), pct: 0 };
   let pct, min, max;
@@ -794,11 +932,11 @@ export default function App() {
                     </div>
                     <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(launchCA); toast("CA copied", "success"); }}>{launchCA.slice(0, 6)}...{launchCA.slice(-4)} {"\u{1F4CB}"}</span>
                   </div>
-                  <iframe src={"https://pump.fun/coin/" + launchCA} style={{ width: "100%", height: mobile ? 380 : 520, border: "none", display: "block" }} title="Chart" allow="clipboard-read; clipboard-write" />
+                  <PriceChart priceHistory={fleetStatus?.priceHistory || []} trades={(fleetStatus?.trades || []).slice(0, 30)} mobile={mobile} T={T} />
                   <div style={{ padding: "6px 12px", background: T.bg, borderTop: "1px solid " + T.border, display: "flex", gap: 8, justifyContent: "center" }}>
-                    <button onClick={() => { const el = document.querySelector('iframe[title="Chart"]'); if (el) el.src = "https://pump.fun/coin/" + launchCA; }} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "4px 10px", color: T.green, fontFamily: mono, fontSize: 11, cursor: "pointer" }}>pump.fun</button>
-                    <button onClick={() => { const el = document.querySelector('iframe[title="Chart"]'); if (el) el.src = "https://www.gmgn.cc/kline/sol/" + launchCA; }} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "4px 10px", color: T.mid, fontFamily: mono, fontSize: 11, cursor: "pointer" }}>gmgn</button>
-                    <button onClick={() => { const el = document.querySelector('iframe[title="Chart"]'); if (el) el.src = "https://dexscreener.com/solana/" + launchCA + "?embed=1&theme=dark&trades=0&info=0"; }} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "4px 10px", color: T.mid, fontFamily: mono, fontSize: 11, cursor: "pointer" }}>dex</button>
+                    <span style={{ fontSize: 11, fontFamily: mono, color: T.faint }}>Live from bonding curve</span>
+                    <a href={"https://pump.fun/coin/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.green, textDecoration: "none" }}>pump.fun {"\u2197"}</a>
+                    <a href={"https://dexscreener.com/solana/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.dim, textDecoration: "none" }}>dex {"\u2197"}</a>
                   </div>
                 </div>
 
