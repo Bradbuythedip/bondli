@@ -89,7 +89,8 @@ async function uploadMetadata(config, maxRetries = 5) {
 // ═══════════════════════════════════════
 
 export async function createToken(connection, creator, tokenConfig, options = {}) {
-  const { devBuySol = 0 } = options;
+  const { devBuySol = 0, jitoTip = 0.001 } = options;
+  const tipMicroLamports = Math.round((jitoTip * 1e9) / 600_000 * 1e6); // Convert SOL tip to microLamports per CU
 
   console.log(`\n${"═".repeat(50)}`);
   console.log(`[CREATE] ${tokenConfig.name} ($${tokenConfig.ticker})`);
@@ -168,7 +169,7 @@ export async function createToken(connection, creator, tokenConfig, options = {}
   const computeUnits = devBuySol > 0 ? 600_000 : 300_000;
   tx.add(
     ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnits }),
-    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 150_000 }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.max(150_000, tipMicroLamports) }),
   );
 
   // Add SDK instructions
