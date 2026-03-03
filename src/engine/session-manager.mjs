@@ -121,6 +121,7 @@ export class SessionManager {
         sniperCount: fleetConfig?.sniperCount || 2,
         slippage: fleetConfig?.slippage || 25,
         duration: fleetConfig?.duration || 60,
+        jitoTip: fleetConfig?.jitoTip || 0.001,
       },
       useMaster: !!masterSeed,
       status: masterSeed ? "funded" : "awaiting_deposit", // awaiting_deposit → funded → creating → live → closing → closed
