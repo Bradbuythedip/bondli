@@ -443,7 +443,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
         if (!sid) return;
         const res = await fetch(API + "/api/session/balance?sessionId=" + sid + "&wallet=" + user?.pubkey);
         const data = await res.json();
-        if (data.funded) { clearInterval(pollRef.current); setStep("funded"); }
+        if (data.funded) { clearInterval(pollRef.current); setError(""); setStep("funded"); }
       } catch {}
     }, 5000);
   };
@@ -466,7 +466,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
         setError(data.error || "Verification failed"); setStep("awaiting_deposit"); return;
       }
       if (pollRef.current) clearInterval(pollRef.current);
-      setStep("funded");
+      setError(""); setStep("funded");
     } catch { setError("Verification failed"); setStep("awaiting_deposit"); }
   };
 
@@ -522,7 +522,10 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
 
   return (
     <div style={{ marginTop: 8 }}>
-      {error && <p style={{ fontSize: 14, color: T.red, fontFamily: mono, marginBottom: 12, padding: "10px 14px", background: T.redGhost, borderRadius: 10, border: "1px solid " + T.red + "22" }}>{error}</p>}
+      {error && <div style={{ fontSize: 14, color: T.red, fontFamily: mono, marginBottom: 12, padding: "10px 14px", background: T.redGhost, borderRadius: 10, border: "1px solid " + T.red + "22", display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ flex: 1 }}>{error}</span>
+        <button onClick={() => setError("")} style={{ background: "none", border: "none", color: T.red, cursor: "pointer", fontFamily: mono, fontSize: 16, padding: "0 4px", flexShrink: 0 }}>{"\u2715"}</button>
+      </div>}
 
       <div style={{ padding: mobile ? 14 : 18, background: T.bg, borderRadius: 14, border: "1px solid " + T.border, marginBottom: 16 }}>
         <div style={{ fontSize: 12, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 12 }}>SOL Breakdown</div>
