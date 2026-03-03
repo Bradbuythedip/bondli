@@ -93,9 +93,12 @@ export class SessionManager {
     }
 
     const isApe = !!(tokenConfig?.existingCA);
+    const isDeployOnly = !!(fleetConfig?.deployOnly);
     const devBuyInfo = isApe
       ? { devBuy: 0, creationFee: 0, fleetBudget: totalSol, devBuyPercent: 0 }
-      : calculateDevBuy(totalSol);
+      : isDeployOnly
+        ? { devBuy: 0, creationFee: 0.02, fleetBudget: 0, devBuyPercent: 0 }
+        : calculateDevBuy(totalSol);
 
     const session = {
       id: "sess_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8),
