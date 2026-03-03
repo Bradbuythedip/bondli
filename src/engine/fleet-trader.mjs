@@ -47,7 +47,12 @@ export class FleetTrader {
 
   // ── Launch fleet on a CA ──
   async launch(ca, opts = {}) {
-    const { totalSol = 0.5, devKeypair, sessionId, force = false } = opts;
+    const { totalSol = 0.5, devKeypair, sessionId, force = false, fleetConfig = {} } = opts;
+    const {
+      sniperCount = 2,     // how many sniper wallets
+      slippage = 25,       // bps
+      duration = 60,       // minutes to run
+    } = fleetConfig;
 
     if (this.sessions.has(ca)) {
       console.warn(`[FLEET] Session already exists for ${ca.slice(0, 8)}`);
@@ -87,15 +92,20 @@ export class FleetTrader {
       const distributable = totalSol - reserveForFees;
 
       for (const role of selectedRoles) {
-        const kp = Keypair.generate();
-        const allocation = (role.weight / totalWeight) * distributable;
-        if (allocation < 0.003) continue;
+        // Create multiple sniper wallets based on sniperCount
+        const count = role.id === "sniper" ? Math.max(1, Math.min(5, sniperCount)) : 1;
+        const perWalletAlloc = ((role.weight / totalWeight) * distributable) / count;
 
-        fleetWallets.push({
-          keypair: kp, pubkey: kp.publicKey.toBase58(),
-          role: role.id, roleConfig: role, allocation,
-          funded: false, solSpent: 0, solRecovered: 0, trades: [],
-        });
+        for (let n = 0; n < count; n++) {
+          if (perWalletAlloc < 0.003) continue;
+          const kp = Keypair.generate();
+          fleetWallets.push({
+            keypair: kp, pubkey: kp.publicKey.toBase58(),
+            role: role.id, roleConfig: { ...role, isSniper: role.id === "sniper" },
+            allocation: perWalletAlloc,
+            funded: false, solSpent: 0, solRecovered: 0, trades: [],
+          });
+        }
       }
 
       console.log(`[FLEET] Generated ${fleetWallets.length} wallets:`);
@@ -114,10 +124,22 @@ export class FleetTrader {
 
     const session = {
       ca, mint, masterKp, totalSol, sessionId, fleetWallets,
+      fleetConfig: { sniperCount, slippage, duration },
       startTime: Date.now(), phase: "starting", running: true,
       tradeCount: 0, totalSolSpent: 0, totalSolRecovered: 0,
     };
     this.sessions.set(ca, session);
+
+    // Auto-stop after duration
+    if (duration > 0) {
+      setTimeout(() => {
+        if (session.running) {
+          console.log(`[FLEET] Duration ${duration}m reached — stopping ${ca.slice(0, 8)}`);
+          session.running = false;
+          session.phase = "duration_complete";
+        }
+      }, duration * 60 * 1000);
+    }
 
     // Start all wallet trading loops
     this._runFleet(session).catch(e => {
@@ -196,6 +218,11 @@ export class FleetTrader {
     const { roleConfig, allocation } = wallet;
     const { buyPct, sellPct, delayMin, delayMax } = roleConfig;
 
+    // ── SNIPER SPECIAL LOGIC: buy fast, then sell everything after 15-45s ──
+    if (roleConfig.isSniper) {
+      return this._runSniperLoop(session, wallet, global, feeConfig);
+    }
+
     const maxBuySol = allocation * buyPct;
     let spent = 0;
     const rounds = 2 + Math.floor(Math.random() * 3);
@@ -256,6 +283,48 @@ export class FleetTrader {
     }
 
     console.log(`[FLEET] [${wallet.role}] Done — spent: ${wallet.solSpent.toFixed(4)}, recovered: ${wallet.solRecovered.toFixed(4)}`);
+  }
+
+  // ── Sniper loop: buy fast, hold 15-45s, sell everything ──
+  async _runSniperLoop(session, wallet, global, feeConfig) {
+    const { ca, mint } = session;
+    const buyAmount = wallet.allocation * 0.9;
+
+    console.log(`[FLEET] [sniper] ${wallet.pubkey.slice(0, 8)} — buying ${buyAmount.toFixed(4)} SOL`);
+
+    // INSTANT BUY
+    try {
+      const fg = await this.onlineSdk.fetchGlobal().catch(() => global);
+      const result = await this._executeBuy(wallet, mint, fg, feeConfig, buyAmount);
+      if (result.ok) {
+        wallet.solSpent += buyAmount;
+        wallet.trades.push({ side: "buy", sol: buyAmount, sig: result.sig, time: Date.now() });
+        session.tradeCount++; session.totalSolSpent += buyAmount;
+        this.emit("trade", { ca, role: "sniper", side: "buy", sol: buyAmount, sig: result.sig });
+        console.log(`[FLEET] [sniper] BUY ${buyAmount.toFixed(4)} SOL -> ${result.sig?.slice(0, 12)}...`);
+      } else return;
+    } catch (e) { console.error(`[FLEET] [sniper] Buy error:`, e.message); return; }
+
+    // HOLD 15-45s — let other buyers create liquidity to sell into
+    const holdTime = 15000 + Math.random() * 30000;
+    console.log(`[FLEET] [sniper] Holding ${(holdTime / 1000).toFixed(0)}s before exit...`);
+    await sleep(holdTime);
+    if (!session.running) return;
+
+    // SELL 100% — take profit
+    try {
+      const result = await this._executeSell(wallet, mint, global, feeConfig, 0.99);
+      if (result.ok) {
+        wallet.solRecovered += result.solOut || 0;
+        wallet.trades.push({ side: "sell", solOut: result.solOut, sig: result.sig, time: Date.now() });
+        session.tradeCount++; session.totalSolRecovered += result.solOut || 0;
+        this.emit("trade", { ca, role: "sniper", side: "sell", sol: result.solOut, sig: result.sig });
+        const pnl = (result.solOut || 0) - buyAmount;
+        console.log(`[FLEET] [sniper] SOLD -> ${(result.solOut || 0).toFixed(4)} SOL (${pnl >= 0 ? "+" : ""}${pnl.toFixed(4)})`);
+      }
+    } catch (e) { console.error(`[FLEET] [sniper] Sell error:`, e.message); }
+
+    console.log(`[FLEET] [sniper] ${wallet.pubkey.slice(0, 8)} done`);
   }
 
   // ── Execute buy ──
