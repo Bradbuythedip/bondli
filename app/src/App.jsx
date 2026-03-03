@@ -675,6 +675,7 @@ export default function App() {
   const [rpc, setRpc] = useState(""); const [seed, setSeed] = useState("");
   const [slippage, setSlippage] = useState(25); const [duration, setDuration] = useState(60); const [useAtlas, setUseAtlas] = useState(false);
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
+  const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState("");
   const mobile = useIsMobile();
 
   const hasAccess = user && (user?.whitelisted || user?.tier === "free" || user?.tier === "pro" || user?.demo);
@@ -696,6 +697,23 @@ export default function App() {
   }, []);
 
   useEffect(() => { if (!hasAccess) return; let ws, dead = false; const connect = () => { if (dead) return; try { ws = new WebSocket(WS_URL); ws.onopen = () => setWsConnected(true); ws.onclose = () => { setWsConnected(false); if (!dead) setTimeout(connect, 3000); }; ws.onerror = () => {}; } catch {} }; connect(); return () => { dead = true; if (ws) ws.close(); }; }, [hasAccess]);
+  // After launch, poll server for fleet trading status
+  const [fleetStatus, setFleetStatus] = useState(null);
+  useEffect(() => {
+    if (!launched || !launchCA) return;
+    const iv = setInterval(async () => {
+      try {
+        const res = await fetch(API + "/api/status", { headers: { "X-Wallet": user?.pubkey } });
+        if (res.ok) {
+          const data = await res.json();
+          setFleetStatus(data);
+          if (data.curveProgress) setCurveProgress(data.curveProgress);
+        }
+      } catch {}
+    }, 5000);
+    return () => clearInterval(iv);
+  }, [launched, launchCA]);
+
   useEffect(() => { if (!launched) return; const iv = setInterval(() => setCurveProgress(p => Math.min(1, p + Math.random() * 0.004)), 2000); return () => clearInterval(iv); }, [launched]);
 
   const walletCount = totalSol < 0.5 ? 3 : totalSol < 1 ? 5 : totalSol < 5 ? 9 : totalSol < 10 ? 11 : totalSol < 25 ? 15 : 20;
@@ -768,7 +786,7 @@ export default function App() {
                     tokenConfig={{ name: tokenName, ticker, description: desc, image, twitter, telegram, website, existingCA }}
                     canLaunch={existingCA || (tokenName && ticker)}
                     launched={launched}
-                    onLaunched={(session) => { setLaunched(true); setCurveProgress(0.03); setTab("wallets"); }}
+                    onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); setTab("wallets"); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }}}
                   />
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: mobile ? 12 : 20 }}>
@@ -779,7 +797,22 @@ export default function App() {
               </div>
             )}
             {/* WALLETS */}
-            {tab === "wallets" && (<div><div style={{ marginBottom: mobile ? 16 : 24 }}><h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 20 : 24, color: T.text }}>Wallet Fleet <span style={{ color: T.green }}>({activeRoles.length})</span></h2><p style={{ fontSize: mobile ? 13 : 15, color: T.dim, marginTop: 6 }}>Each wallet thinks independently</p></div>{!canLaunch ? (<div style={{ padding: mobile ? 40 : 70, textAlign: "center", background: T.surface, borderRadius: 18, border: "2px dashed " + T.border }}><span style={{ fontSize: mobile ? 40 : 56, display: "block", marginBottom: 16 }}>{"\u{1F916}"}</span><p style={{ fontFamily: mono, fontSize: mobile ? 14 : 16, color: T.dim }}>Configure token + wallet in Create & Config tabs first</p></div>) : (<div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : activeRoles.length <= 5 ? "1fr 1fr" : "1fr 1fr 1fr", gap: mobile ? 12 : 18 }}>{activeRoles.map(role => (<WalletCard key={role.id} role={role} solBudget={+(totalSol * role.weight / 100).toFixed(4)} mobile={mobile} />))}</div>)}</div>)}
+            {tab === "wallets" && (<div><div style={{ marginBottom: mobile ? 16 : 24 }}><h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 20 : 24, color: T.text }}>Wallet Fleet <span style={{ color: T.green }}>({activeRoles.length})</span></h2><p style={{ fontSize: mobile ? 13 : 15, color: T.dim, marginTop: 6 }}>Each wallet thinks independently</p></div>
+              {launchCA && (<div style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 14, padding: mobile ? 14 : 18, marginBottom: mobile ? 14 : 20 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <span style={{ fontSize: 10, fontWeight: 800, fontFamily: mono, color: T.bg, background: T.green, padding: "2px 8px", borderRadius: 6, textTransform: "uppercase", letterSpacing: ".1em" }}>LIVE</span>
+                  <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(launchCA); }}>{launchCA}</span>
+                </div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  <a href={"https://pump.fun/coin/" + launchCA} target="_blank" rel="noopener" style={{ fontFamily: mono, fontSize: 12, color: T.green, textDecoration: "none" }}>pump.fun ↗</a>
+                  <a href={"https://solscan.io/token/" + launchCA} target="_blank" rel="noopener" style={{ fontFamily: mono, fontSize: 12, color: T.dim, textDecoration: "none" }}>solscan ↗</a>
+                  <a href={"https://dexscreener.com/solana/" + launchCA} target="_blank" rel="noopener" style={{ fontFamily: mono, fontSize: 12, color: T.dim, textDecoration: "none" }}>dexscreener ↗</a>
+                </div>
+                {fleetStatus && (<div style={{ marginTop: 10, fontSize: 12, fontFamily: mono, color: T.dim }}>
+                  Fleet: {fleetStatus.phase || "initializing"} | Wallets: {fleetStatus.activeWallets || 0} | Trades: {fleetStatus.tradeCount || 0}
+                </div>)}
+              </div>)}
+              {!canLaunch ? (<div style={{ padding: mobile ? 40 : 70, textAlign: "center", background: T.surface, borderRadius: 18, border: "2px dashed " + T.border }}><span style={{ fontSize: mobile ? 40 : 56, display: "block", marginBottom: 16 }}>{"\u{1F916}"}</span><p style={{ fontFamily: mono, fontSize: mobile ? 14 : 16, color: T.dim }}>Configure token + wallet in Create & Config tabs first</p></div>) : (<div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : activeRoles.length <= 5 ? "1fr 1fr" : "1fr 1fr 1fr", gap: mobile ? 12 : 18 }}>{activeRoles.map(role => (<WalletCard key={role.id} role={role} solBudget={+(totalSol * role.weight / 100).toFixed(4)} mobile={mobile} />))}</div>)}</div>)}
             {/* CONFIG */}
             {tab === "config" && (<div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: mobile ? 12 : 24, animation: "fadeUp .4s ease" }}>
               <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}><h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, marginBottom: 24, display: "flex", alignItems: "center", gap: 10, color: T.text }}><Ic.Wallet /> Network & Wallet</h3><div style={{ display: "flex", flexDirection: "column", gap: 20 }}><div><Label>RPC URL</Label><Input value={rpc} onChange={setRpc} placeholder="https://mainnet.helius-rpc.com/?api-key=..." icon={<Ic.Zap />} big /></div><div><Label>Master Wallet (Private Key)</Label><Input value={seed} onChange={setSeed} placeholder="bs58 encoded private key" type="password" icon={<Ic.Lock />} big /></div><div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", background: T.bg, borderRadius: 12, border: "2px solid " + T.border, cursor: "pointer" }} onClick={() => setUseAtlas(!useAtlas)}><div style={{ width: 46, height: 26, borderRadius: 13, padding: 3, background: useAtlas ? T.green : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", transform: useAtlas ? "translateX(20px)" : "translateX(0)", transition: "transform .2s" }} /></div><div><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: T.text }}>Helius Atlas</div><div style={{ fontSize: 13, color: T.dim }}>Ultra low-latency staked connections</div></div></div></div></div>
