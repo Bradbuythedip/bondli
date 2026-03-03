@@ -327,7 +327,7 @@ app.get("/api/fleet", apiLimiter, (req, res) => {
 
   // We need trades from the actual session object
   const ca = Object.keys(sessions)[0];
-  const session = orch.fleetTrader?.sessions?.get(ca);
+  const session = orch.sessions?.get(ca);
   if (session) {
     for (const w of session.fleetWallets) {
       for (const t of (w.trades || [])) {
@@ -601,6 +601,7 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
       
       createResult = await createToken(connection, devKeypair, session.tokenConfig, {
         devBuySol: session.devBuy,
+        jitoTip: session.fleetConfig?.jitoTip || 0.001,
         slippageBps: parseInt(CONFIG.SLIPPAGE_BPS || "2500"),
         priorityFee: parseInt(CONFIG.PRIORITY_FEE || "100000"),
         sendUrl: CONFIG.HELIUS_SEND_TX_URL || null,
