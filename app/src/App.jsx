@@ -394,39 +394,35 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
   const [step, setStep] = useState("idle");
   const [session, setSession] = useState(null);
   const [devSecret, setDevSecret] = useState("");
+  const [tokenCA, setTokenCA] = useState("");
+  const [launchStatus, setLaunchStatus] = useState("");
   const [txSig, setTxSig] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const preview = calcDevBuyPreview(totalSol);
   const pollRef = useRef(null);
 
-  const copyText = (text) => {
-    navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
-  };
-
+  const copyText = (text) => { navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); }); };
   useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
 
-  const createSession = async () => {
-    setError(""); setStep("creating");
+  // ── STEP 1: Generate dev wallet ──
+  const startLaunch = async () => {
+    setError(""); setStep("generating");
     try {
       const res = await fetch(API + "/api/session/create", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey },
         body: JSON.stringify({ totalSol, tokenConfig, wallet: user?.pubkey }),
       });
-      if (!res.ok) {
-        try { const d = await res.json(); setError(d.error || "Server error " + res.status); }
-        catch { setError("Server error " + res.status); }
-        setStep("idle"); return;
-      }
       const data = await res.json();
       if (data.error) { setError(data.error); setStep("idle"); return; }
       setSession(data);
       if (data.devSecret) setDevSecret(data.devSecret);
-      setStep("awaiting_deposit");
+      setStep("awaiting");
     } catch (e) { setError("Failed: " + (e.message || "")); setStep("idle"); }
   };
 
+  // ── STEP 2: Send SOL → auto-poll → auto-launch ──
   const openPhantomSend = () => {
     const addr = session?.devWallet;
     if (!addr) return;
@@ -435,43 +431,48 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     } else {
       copyText(addr);
     }
-    setStep("polling");
+    startPolling();
+  };
+
+  const startPolling = () => {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
       try {
         const sid = session?.sessionId;
         if (!sid) return;
-        const res = await fetch(API + "/api/session/balance?sessionId=" + sid + "&wallet=" + user?.pubkey);
+        const res = await fetch(API + "/api/session/balance?sessionId=" + sid + "&wallet=" + (user?.pubkey || ""));
         const data = await res.json();
-        if (data.funded) { clearInterval(pollRef.current); setError(""); setStep("funded"); }
+        if (data.funded) {
+          clearInterval(pollRef.current);
+          executeLaunch();
+        }
       } catch {}
-    }, 5000);
+    }, 4000);
   };
 
-  const verifyDeposit = async (sig) => {
-    const signature = sig || txSig;
-    if (!signature) { setError("No transaction signature"); return; }
-    setError(""); setStep("verifying");
+  const manualVerify = async () => {
+    if (!txSig) return;
+    setError("");
     try {
       const res = await fetch(API + "/api/session/fund", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey },
-        body: JSON.stringify({ sessionId: session?.sessionId, txSig: signature, wallet: user?.pubkey }),
+        body: JSON.stringify({ sessionId: session?.sessionId, txSig, wallet: user?.pubkey }),
       });
       const data = await res.json();
       if (!data.ok) {
-        if (data.error?.includes("not found") || data.error?.includes("Wait")) {
-          setTimeout(() => verifyDeposit(signature), 5000); return;
-        }
-        setError(data.error || "Verification failed"); setStep("awaiting_deposit"); return;
+        if (data.error?.includes("not found") || data.error?.includes("Wait")) { setTimeout(manualVerify, 5000); return; }
+        setError(data.error || "Verification failed"); return;
       }
       if (pollRef.current) clearInterval(pollRef.current);
-      setError(""); setStep("funded");
-    } catch { setError("Verification failed"); setStep("awaiting_deposit"); }
+      executeLaunch();
+    } catch { setError("Verification failed"); }
   };
 
-  const launchEngine = async () => {
+  // ── STEP 3: Auto-launch after deposit ──
+  const executeLaunch = async () => {
     setError(""); setStep("launching");
+    setLaunchStatus("Uploading metadata to IPFS...");
     try {
       const res = await fetch(API + "/api/session/launch", {
         method: "POST",
@@ -479,216 +480,155 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
         body: JSON.stringify({ sessionId: session?.sessionId, wallet: user?.pubkey }),
       });
       const data = await res.json();
-      if (data.error) { setError(data.error); setStep("funded"); return; }
-      // Save tokenCA + pumpUrl into session state
-      setSession(prev => ({ ...prev, tokenCA: data.tokenCA, pumpUrl: data.pumpUrl, createTx: data.createTx }));
+      if (data.error) { setError(data.error); setStep("awaiting"); return; }
+
+      const ca = data.tokenCA || "";
+      setTokenCA(ca);
+      setSession(prev => ({ ...prev, tokenCA: ca, pumpUrl: data.pumpUrl }));
       setStep("live");
-      onLaunched(data);
-    } catch (e) { setError("Launch failed: " + (e.message || "")); setStep("funded"); }
+      if (ca) onLaunched({ ...data, tokenCA: ca });
+    } catch (e) { setError("Launch failed: " + (e.message || "")); setStep("awaiting"); }
   };
 
   const KeyBox = () => devSecret ? (
-    <div style={{ padding: "14px 16px", background: T.yellow + "08", borderRadius: 12, border: "2px solid " + T.yellow + "33", marginBottom: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: 16 }}>{"\u{1F511}"}</span>
-        <span style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.yellow, textTransform: "uppercase", letterSpacing: ".05em" }}>Creator Wallet Private Key</span>
+    <div style={{ padding: "12px 14px", background: T.yellow + "08", borderRadius: 10, border: "1px solid " + T.yellow + "28", marginBottom: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+        <span style={{ fontSize: 14 }}>{"\u{1F511}"}</span>
+        <span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.yellow, textTransform: "uppercase" }}>Creator Private Key</span>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{ flex: 1, fontFamily: mono, fontSize: 11, color: T.mid, wordBreak: "break-all", lineHeight: 1.5, background: T.bg, padding: "10px 12px", borderRadius: 8, border: "1px solid " + T.border, maxHeight: 60, overflow: "auto" }}>{devSecret}</div>
-        <button onClick={() => copyText(devSecret)} style={{ background: T.yellow, border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.bg, flexShrink: 0 }}>
-          {copied ? "\u2713" : "Copy"}
-        </button>
+        <div style={{ flex: 1, fontFamily: mono, fontSize: 10, color: T.mid, wordBreak: "break-all", lineHeight: 1.4, background: T.bg, padding: "6px 8px", borderRadius: 6, border: "1px solid " + T.border, maxHeight: 44, overflow: "auto" }}>{devSecret}</div>
+        <button onClick={() => copyText(devSecret)} style={{ background: T.yellow, border: "none", borderRadius: 6, padding: "6px 10px", cursor: "pointer", fontFamily: mono, fontSize: 11, fontWeight: 700, color: T.bg, flexShrink: 0 }}>{copied ? "\u2713" : "Copy"}</button>
       </div>
-      <p style={{ fontSize: 12, color: T.yellow, fontFamily: "system-ui,sans-serif", marginTop: 8, lineHeight: 1.5 }}>
-        {"\u26A0\uFE0F"} Save this! Import into Phantom to claim pump.fun creator fees (0.5% of all trades).
-      </p>
+      <p style={{ fontSize: 10, color: T.yellow, fontFamily: "system-ui,sans-serif", marginTop: 4, opacity: 0.8 }}>Import into Phantom for creator fees (0.5%)</p>
     </div>
   ) : null;
 
-  if (launched) {
-    const ca = session?.tokenCA || "";
-    const pumpUrl = ca ? "https://pump.fun/coin/" + ca : "";
+  const dw = session?.devWallet || "";
+
+  // ═══════════════ LIVE — show CA + chart ═══════════════
+  if (step === "live" || (launched && tokenCA)) {
+    const ca = tokenCA || "";
     return (
       <div>
-        {ca && (
-          <div style={{ padding: "16px 20px", background: T.surface, borderRadius: 14, border: "2px solid " + T.green + "44", marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-              <span style={{ color: T.green, animation: "pulse 2s infinite", fontSize: 16 }}>{"\u25CF"}</span>
-              <span style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 15 }}>Token Live!</span>
+        {ca ? (
+          <div style={{ padding: mobile ? 14 : 18, background: T.surface, borderRadius: 14, border: "2px solid " + T.green + "44", marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <span style={{ color: T.green }}>{"\u2705"}</span>
+              <span style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 14 }}>Token Live on pump.fun</span>
             </div>
-            <div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginBottom: 6, textTransform: "uppercase", letterSpacing: ".08em" }}>Contract Address</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ flex: 1, fontFamily: mono, fontSize: 13, color: T.text, wordBreak: "break-all", background: T.bg, padding: "10px 12px", borderRadius: 8, border: "1px solid " + T.border }}>{ca}</div>
-              <button onClick={() => copyText(ca)} style={{ background: T.green, border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.bg, flexShrink: 0 }}>
-                {copied ? "\u2713" : "Copy CA"}
-              </button>
+            <div style={{ fontFamily: mono, fontSize: 11, color: T.text, wordBreak: "break-all", background: T.bg, padding: "8px 10px", borderRadius: 8, border: "1px solid " + T.border, marginBottom: 8, cursor: "pointer" }} onClick={() => copyText(ca)}>{ca} <span style={{ color: T.faint, fontSize: 10 }}>{copied ? "\u2713 copied" : "click to copy"}</span></div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {[
+                { label: "pump.fun", url: "https://pump.fun/coin/" + ca, c: T.green },
+                { label: "Solscan", url: "https://solscan.io/token/" + ca },
+                { label: "DexScreener", url: "https://dexscreener.com/solana/" + ca },
+                { label: "Photon", url: "https://photon-sol.tinyastro.io/en/lp/" + ca },
+              ].map(l => (
+                <a key={l.label} href={l.url} target="_blank" rel="noopener noreferrer" style={{ flex: 1, minWidth: 65, textAlign: "center", padding: "7px 4px", background: (l.c || T.mid) + "12", borderRadius: 6, border: "1px solid " + (l.c || T.mid) + "22", color: l.c || T.mid, fontFamily: mono, fontSize: 10, fontWeight: 700, textDecoration: "none" }}>
+                  {l.label}
+                </a>
+              ))}
             </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-              <a href={pumpUrl} target="_blank" rel="noopener noreferrer" style={{ flex: 1, minWidth: 80, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "10px", background: T.green + "18", borderRadius: 8, border: "1px solid " + T.green + "33", color: T.green, fontFamily: mono, fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
-                pump.fun
-              </a>
-              <a href={"https://solscan.io/token/" + ca} target="_blank" rel="noopener noreferrer" style={{ flex: 1, minWidth: 80, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "10px", background: T.surface, borderRadius: 8, border: "1px solid " + T.border, color: T.mid, fontFamily: mono, fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
-                Solscan
-              </a>
-              <a href={"https://dexscreener.com/solana/" + ca} target="_blank" rel="noopener noreferrer" style={{ flex: 1, minWidth: 80, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "10px", background: T.surface, borderRadius: 8, border: "1px solid " + T.border, color: T.mid, fontFamily: mono, fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
-                DexScreener
-              </a>
-            </div>
+          </div>
+        ) : (
+          <div style={{ padding: "14px 18px", background: T.greenGhost, borderRadius: 12, border: "1px solid " + T.green + "33", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ color: T.green, animation: "pulse 2s infinite", fontSize: 14 }}>{"\u25CF"}</span>
+            <span style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 13 }}>Engine Running</span>
           </div>
         )}
 
         {ca && (
-          <div style={{ borderRadius: 14, overflow: "hidden", border: "1px solid " + T.border, marginBottom: 12, background: "#0d0d0d" }}>
-            <iframe
-              src={"https://www.gmgn.cc/kline/sol/" + ca}
-              style={{ width: "100%", height: mobile ? 300 : 420, border: "none", display: "block" }}
-              title="Live chart"
-              allow="clipboard-write"
-            />
+          <div style={{ borderRadius: 12, overflow: "hidden", border: "1px solid " + T.border, marginBottom: 12, background: "#0d0d0d" }}>
+            <iframe src={"https://www.gmgn.cc/kline/sol/" + ca} style={{ width: "100%", height: mobile ? 260 : 380, border: "none", display: "block" }} title="Chart" />
           </div>
         )}
 
         <KeyBox />
-
-        <div style={{ padding: "12px 16px", background: T.greenGhost, borderRadius: 10, border: "1px solid " + T.green + "33", display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
-          <span style={{ color: T.green, animation: "pulse 2s infinite", fontSize: 16 }}>{"\u25CF"}</span>
-          <span style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 14 }}>Engine Running</span>
-          <span style={{ flex: 1 }} />
-          <span style={{ fontFamily: mono, fontSize: 12, color: T.dim }}>Dev: {(session?.devWallet || "").slice(0, 6)}...</span>
-        </div>
       </div>
     );
   }
 
-  const dw = session?.devWallet || "";
-
-  return (
-    <div style={{ marginTop: 8 }}>
-      {error && <div style={{ fontSize: 14, color: T.red, fontFamily: mono, marginBottom: 12, padding: "10px 14px", background: T.redGhost, borderRadius: 10, border: "1px solid " + T.red + "22", display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ flex: 1 }}>{error}</span>
-        <button onClick={() => setError("")} style={{ background: "none", border: "none", color: T.red, cursor: "pointer", fontFamily: mono, fontSize: 16, padding: "0 4px", flexShrink: 0 }}>{"\u2715"}</button>
-      </div>}
-
-      <div style={{ padding: mobile ? 14 : 18, background: T.bg, borderRadius: 14, border: "1px solid " + T.border, marginBottom: 16 }}>
-        <div style={{ fontSize: 12, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 12 }}>SOL Breakdown</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-          {[
-            { label: "Dev Buy", val: preview.devBuy + " SOL", sub: preview.pct + "%", c: T.yellow },
-            { label: "Creation", val: preview.creationFee + " SOL", sub: "tx fee", c: T.dim },
-            { label: "Fleet", val: preview.fleet + " SOL", sub: "7 wallets", c: T.green },
-          ].map(s => (
-            <div key={s.label} style={{ textAlign: "center", padding: "10px 8px", background: T.surface, borderRadius: 10, border: "1px solid " + T.border }}>
-              <div style={{ fontSize: mobile ? 15 : 18, fontFamily: mono, fontWeight: 800, color: s.c }}>{s.val}</div>
-              <div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.label}</div>
-              <div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>{s.sub}</div>
+  // ═══════════════ LAUNCHING — progress ═══════════════
+  if (step === "launching") {
+    return (
+      <div style={{ background: T.surface, border: "2px solid " + T.green + "44", borderRadius: 16, padding: mobile ? 20 : 28, textAlign: "center" }}>
+        <div style={{ fontSize: 32, marginBottom: 14, animation: "pulse 1s infinite" }}>{"\u{1F680}"}</div>
+        <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.green, marginBottom: 8 }}>Creating token on pump.fun</div>
+        <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginBottom: 16 }}>{launchStatus}</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxWidth: 260, margin: "0 auto", textAlign: "left" }}>
+          {["Upload metadata", "Generate mint", "Build transaction", "Sign & send", "Confirm on-chain"].map((s, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: mono, fontSize: 11 }}>
+              <span style={{ color: T.faint, animation: "pulse 1.5s infinite" }}>{"\u25CB"}</span>
+              <span style={{ color: T.dim }}>{s}</span>
             </div>
           ))}
         </div>
-        <div style={{ marginTop: 10, height: 6, borderRadius: 3, background: T.border, overflow: "hidden", display: "flex" }}>
-          <div style={{ width: preview.pct + "%", background: T.yellow, transition: "width .3s" }} />
-          <div style={{ width: ((preview.creationFee / totalSol) * 100) + "%", background: T.dim }} />
-          <div style={{ flex: 1, background: T.green + "66" }} />
+        <div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginTop: 14 }}>15-45 seconds...</div>
+      </div>
+    );
+  }
+
+  // ═══════════════ IDLE + AWAITING ═══════════════
+  return (
+    <div style={{ marginTop: 8 }}>
+      {error && (
+        <div style={{ fontSize: 13, color: T.red, fontFamily: mono, marginBottom: 12, padding: "10px 14px", background: T.redGhost, borderRadius: 10, border: "1px solid " + T.red + "22", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ flex: 1 }}>{error}</span>
+          <button onClick={() => setError("")} style={{ background: "none", border: "none", color: T.red, cursor: "pointer", fontSize: 14, padding: 0 }}>{"\u2715"}</button>
+        </div>
+      )}
+
+      {/* BUDGET */}
+      <div style={{ padding: mobile ? 10 : 14, background: T.bg, borderRadius: 10, border: "1px solid " + T.border, marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 8 }}>
+          {[
+            { label: "Dev Buy", val: preview.devBuy + " SOL", c: T.yellow },
+            { label: "Fee", val: preview.creationFee + "", c: T.dim },
+            { label: "Fleet", val: preview.fleet + " SOL", c: T.green },
+          ].map(s => (
+            <div key={s.label} style={{ flex: 1, textAlign: "center", padding: "6px 4px", background: T.surface, borderRadius: 8 }}>
+              <div style={{ fontSize: mobile ? 13 : 15, fontFamily: mono, fontWeight: 800, color: s.c }}>{s.val}</div>
+              <div style={{ fontSize: 9, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.label}</div>
+            </div>
+          ))}
         </div>
       </div>
 
       {step === "idle" && (
-        <div>
-          <Btn onClick={createSession} full disabled={!canLaunch}
-            style={{ padding: "16px 24px", fontSize: mobile ? 16 : 18, borderRadius: 14, animation: canLaunch ? "glow 3s infinite" : "none" }}>
-            <Ic.Zap /> Generate Dev Wallet & Launch
-          </Btn>
-          {!canLaunch && <p style={{ fontSize: 13, color: T.orange, fontFamily: mono, textAlign: "center", marginTop: 14 }}>
-            need: {!tokenConfig.existingCA && !tokenConfig.name ? "token name \u00B7 " : ""}{!tokenConfig.existingCA && !tokenConfig.ticker ? "ticker" : ""}
-          </p>}
-        </div>
+        <Btn onClick={startLaunch} full disabled={!canLaunch}
+          style={{ padding: "16px 24px", fontSize: mobile ? 16 : 18, borderRadius: 14, animation: canLaunch ? "glow 3s infinite" : "none" }}>
+          <Ic.Zap /> Launch on pump.fun
+        </Btn>
       )}
 
-      {step === "creating" && <div style={{ textAlign: "center", padding: 20 }}><div style={{ fontFamily: mono, color: T.dim, animation: "pulse 1.5s infinite" }}>Generating dev wallet...</div></div>}
+      {step === "generating" && <div style={{ textAlign: "center", padding: 16 }}><div style={{ fontFamily: mono, color: T.dim, animation: "pulse 1.5s infinite" }}>Generating dev wallet...</div></div>}
 
-      {step === "awaiting_deposit" && session && (
-        <div style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 16, padding: mobile ? 18 : 24, animation: "fadeUp .4s ease" }}>
-          <div style={{ fontSize: 14, fontFamily: mono, fontWeight: 700, color: T.green, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}><Ic.Check /> Dev wallet generated</div>
+      {step === "awaiting" && session && (
+        <div style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 14, padding: mobile ? 14 : 20 }}>
           <KeyBox />
-          <div style={{ padding: "14px 16px", background: T.bg, borderRadius: 12, border: "1px dashed " + T.border, marginBottom: 16 }}>
-            <div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginBottom: 6 }}>SEND {totalSol} SOL TO:</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ flex: 1, fontFamily: mono, fontSize: mobile ? 13 : 15, color: T.green, fontWeight: 600, wordBreak: "break-all" }}>{dw}</div>
-              <button onClick={() => copyText(dw)} style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontFamily: mono, fontSize: 12, color: copied ? T.green : T.dim, flexShrink: 0 }}>{copied ? "\u2713" : "Copy"}</button>
-            </div>
+
+          <div style={{ padding: "10px 12px", background: T.bg, borderRadius: 8, border: "1px dashed " + T.border, marginBottom: 12 }}>
+            <div style={{ fontSize: 10, color: T.faint, fontFamily: mono, marginBottom: 3, textTransform: "uppercase" }}>Send {totalSol} SOL to</div>
+            <div style={{ fontFamily: mono, fontSize: mobile ? 11 : 13, color: T.green, fontWeight: 600, wordBreak: "break-all", cursor: "pointer" }} onClick={() => copyText(dw)}>{dw} <span style={{ color: T.faint, fontSize: 10 }}>{copied ? "\u2713" : "copy"}</span></div>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16, fontSize: 13, fontFamily: mono }}>
-            <div style={{ textAlign: "center" }}><div style={{ color: T.yellow, fontWeight: 700 }}>{session?.devBuy || 0} SOL</div><div style={{ color: T.faint, fontSize: 11 }}>dev buy</div></div>
-            <div style={{ textAlign: "center" }}><div style={{ color: T.green, fontWeight: 700 }}>{session?.fleetBudget || 0} SOL</div><div style={{ color: T.faint, fontSize: 11 }}>fleet</div></div>
-            <div style={{ textAlign: "center" }}><div style={{ color: T.mid, fontWeight: 700 }}>{session?.devBuyPercent || 0}%</div><div style={{ color: T.faint, fontSize: 11 }}>dev %</div></div>
-          </div>
-          <Btn onClick={openPhantomSend} full style={{ borderRadius: 12, background: "linear-gradient(135deg, #534bb1, #551bf9)", marginBottom: 10 }}>
-            <Ic.Phantom /> {/iPhone|iPad|Android/i.test(navigator.userAgent) ? "Open Phantom & Send " + totalSol + " SOL" : "Copy Address & Send " + totalSol + " SOL"}
+
+          <Btn onClick={openPhantomSend} full style={{ borderRadius: 10, background: "linear-gradient(135deg, #534bb1, #551bf9)", marginBottom: 8 }}>
+            {/iPhone|iPad|Android/i.test(navigator.userAgent) ? "Open Phantom" : "Copy & Send " + totalSol + " SOL"}
           </Btn>
-          <div style={{ fontSize: 12, color: T.faint, fontFamily: mono, paddingTop: 12, borderTop: "1px solid " + T.border }}>Already sent? Paste tx sig or we'll auto-detect:</div>
-          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            <div style={{ flex: 1 }}><Input value={txSig} onChange={setTxSig} placeholder="tx signature (optional)..." /></div>
-            <Btn onClick={() => verifyDeposit()} small disabled={!txSig} ghost color={T.green}>Verify</Btn>
-          </div>
-        </div>
-      )}
 
-      {step === "polling" && session && (
-        <div style={{ background: T.surface, border: "2px solid " + T.yellow + "33", borderRadius: 16, padding: mobile ? 18 : 24, animation: "fadeUp .4s ease" }}>
-          <div style={{ textAlign: "center", marginBottom: 16 }}>
-            <div style={{ fontSize: 32, marginBottom: 10, animation: "pulse 1.5s infinite" }}>{"\u23F3"}</div>
-            <div style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: T.yellow }}>Waiting for {totalSol} SOL...</div>
-            <div style={{ fontSize: 13, color: T.dim, fontFamily: mono, marginTop: 6 }}>Send to: <span style={{ color: T.green }}>{dw.slice(0, 8)}...{dw.slice(-6)}</span></div>
-            <div style={{ fontSize: 12, color: T.faint, fontFamily: mono, marginTop: 8 }}>Auto-detecting every 5s</div>
-          </div>
-          <KeyBox />
-          <div style={{ display: "flex", gap: 8, paddingTop: 14, borderTop: "1px solid " + T.border }}>
+          <p style={{ textAlign: "center", fontFamily: mono, fontSize: 11, color: T.dim, marginBottom: 8 }}>{"\u23F3"} Auto-detect + auto-launch after deposit</p>
+
+          <div style={{ display: "flex", gap: 6, paddingTop: 8, borderTop: "1px solid " + T.border }}>
             <div style={{ flex: 1 }}><Input value={txSig} onChange={setTxSig} placeholder="or paste tx sig..." /></div>
-            <Btn onClick={() => verifyDeposit()} small disabled={!txSig} ghost color={T.green}>Verify</Btn>
+            <Btn onClick={manualVerify} small disabled={!txSig} ghost color={T.green}>Go</Btn>
           </div>
-          <button onClick={() => { if (pollRef.current) clearInterval(pollRef.current); setStep("awaiting_deposit"); }} style={{ display: "block", margin: "12px auto 0", background: "none", border: "none", color: T.faint, cursor: "pointer", fontFamily: mono, fontSize: 13, textDecoration: "underline", textUnderlineOffset: 4 }}>{"\u2190"} Back</button>
-        </div>
-      )}
-
-      {step === "verifying" && (
-        <div style={{ background: T.surface, border: "2px solid " + T.yellow + "33", borderRadius: 16, padding: 24, textAlign: "center" }}>
-          <div style={{ fontSize: 28, marginBottom: 12, animation: "pulse 1.5s infinite" }}>{"\u23F3"}</div>
-          <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.yellow }}>Verifying deposit...</div>
-          {txSig && <div style={{ fontSize: 12, color: T.faint, fontFamily: mono, marginTop: 8 }}>tx: {txSig.slice(0, 12)}...{txSig.slice(-6)}</div>}
-        </div>
-      )}
-
-      {step === "funded" && session && (
-        <div style={{ background: T.surface, border: "2px solid " + T.green + "44", borderRadius: 16, padding: 24, animation: "fadeUp .4s ease" }}>
-          <div style={{ textAlign: "center", marginBottom: 16 }}>
-            <div style={{ fontSize: 32, marginBottom: 8 }}>{"\u2705"}</div>
-            <div style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: T.green }}>Dev wallet funded!</div>
-            <div style={{ fontSize: 13, color: T.dim, fontFamily: mono, marginTop: 4 }}>{dw.slice(0, 8)}...{dw.slice(-6)} has {totalSol} SOL</div>
-          </div>
-          <KeyBox />
-          <Btn onClick={launchEngine} full style={{ padding: "16px 24px", fontSize: 18, borderRadius: 14, animation: "glow 3s infinite" }}>
-            <Ic.Zap /> Launch Token + Start Fleet
-          </Btn>
-          <p style={{ fontSize: 12, color: T.faint, fontFamily: mono, textAlign: "center", marginTop: 10 }}>
-            Dev buy: {session?.devBuy || 0} SOL ({session?.devBuyPercent || 0}%) {"\u2192"} Fleet: {session?.fleetBudget || 0} SOL
-          </p>
-        </div>
-      )}
-
-      {step === "launching" && (
-        <div style={{ background: T.surface, border: "2px solid " + T.green + "44", borderRadius: 16, padding: 24, textAlign: "center" }}>
-          <div style={{ fontSize: 28, marginBottom: 12, animation: "pulse 1s infinite" }}>{"\u{1F680}"}</div>
-          <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.green, animation: "pulse 1.5s infinite" }}>Creating token on pump.fun...</div>
-          <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginTop: 8 }}>Uploading metadata {"\u2192"} Mint keypair {"\u2192"} Create tx {"\u2192"} Dev buy</div>
-          <div style={{ fontFamily: mono, fontSize: 11, color: T.faint, marginTop: 12 }}>This takes 10-30 seconds</div>
         </div>
       )}
     </div>
   );
 }
 
-// ══════════════════════════════════════════
-// WALLET CARD + HELPERS (compact)
-// ══════════════════════════════════════════
 function WalletCard({ role, solBudget, mobile }) {
   const T = useTheme(); const rc = ROLE_COLORS(T)[role.id] || T.dim;
   const [status, setStatus] = useState("idle"); const [thought, setThought] = useState(""); const [trades, setTrades] = useState([]); const [solSpent, setSolSpent] = useState(0); const [solRecovered, setSolRecovered] = useState(0); const [tokenBal, setTokenBal] = useState(0); const [expanded, setExpanded] = useState(false); const exitRef = useRef(null);
