@@ -707,7 +707,7 @@ export default function App() {
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState("");
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
-  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false);
+  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
   const mobile = useIsMobile();
@@ -740,6 +740,18 @@ export default function App() {
       else { toast("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL | Recovered: " + (data.solRecovered || 0).toFixed(4) + " SOL", "success"); setLaunched(false); setLaunchCA(""); setFleetStatus(null); }
     } catch (e) { toast(e.message, "error"); }
     setIsClosing(false);
+  };
+  const recoverSession = async (sessionId) => {
+    if (isRecovering) return;
+    if (!confirm("Recover all SOL from fleet wallets? This sells tokens and sweeps SOL back to your wallet.")) return;
+    setIsRecovering(true);
+    try {
+      const res = await fetch(API + "/api/session/recover", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId, wallet: user?.pubkey }) });
+      const data = await res.json();
+      if (data.error) toast(data.error, "error");
+      else { toast("Recovered " + (data.totalRecovered || 0).toFixed(4) + " SOL!", "success"); setSessionDetail(null); }
+    } catch (e) { toast(e.message, "error"); }
+    setIsRecovering(false);
   };
   const handleCAKeyDown = (e) => { if (e.key === "Enter" && existingCA.length >= 32) { e.preventDefault(); analyzeCA(existingCA); } };
   return (
@@ -912,7 +924,21 @@ export default function App() {
                 <Section n={"\u{1F680}"} title={isApe ? "Start Trading" : "Launch"} highlight={canLaunch} T={T} mobile={mobile}>
                   <LaunchFlow user={user} mobile={mobile} totalSol={totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip }} onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }} />
                 </Section>
-                {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginTop: 8 }}><div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12 }}>Active Sessions</div>{pastSessions.map(s => (<div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid " + T.border + "22" }}><span style={{ fontFamily: mono, fontSize: 13, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || s.tokenConfig?.name || "?"} {"\u2014"} <span style={{ color: T.faint, fontSize: 11 }}>{s.tokenCA?.slice(0, 8)}...</span></span><button onClick={() => closeSession(s.tokenCA)} disabled={isClosing} style={{ background: T.red + "15", color: T.red, border: "1px solid " + T.red + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{"\u2620"} Close</button><button onClick={async () => { try { const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) }); const data = await res.json(); if (data.ok) { setLaunchCA(data.tokenCA || s.tokenCA); setLaunched(true); if (s.tokenConfig?.name) setTokenName(s.tokenConfig.name); if (s.tokenConfig?.ticker) setTicker(s.tokenConfig.ticker); } else toast(data.error || "Failed", "error"); } catch (e) { toast(e.message, "error"); } }} style={{ background: T.green, color: T.bg, border: "none", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 12px", borderRadius: 6, cursor: "pointer" }}>Resume</button></div>))}</div>)}
+                {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginTop: 8 }}>
+                  <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12 }}>Active Sessions</div>
+                  {pastSessions.map(s => (<div key={s.id} style={{ marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid " + T.border + "22" }}>
+                      <span style={{ fontFamily: mono, fontSize: 13, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || s.tokenConfig?.name || "?"} {"\u2014"} <span style={{ color: T.faint, fontSize: 11 }}>{s.tokenCA?.slice(0, 8)}...</span></span>
+                      <button onClick={() => closeSession(s.tokenCA)} disabled={isClosing} style={{ background: T.red + "15", color: T.red, border: "1px solid " + T.red + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{"\u2620"} Close</button>
+                      <button onClick={async () => { try { const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) }); const data = await res.json(); if (data.ok && data.status === "running") { setLaunchCA(data.tokenCA); setLaunched(true); } else if (data.ok) { setSessionDetail(data); } else toast(data.error || "Failed", "error"); } catch (e) { toast(e.message, "error"); } }} style={{ background: T.green + "15", color: T.green, border: "1px solid " + T.green + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: "pointer" }}>View</button>
+                      <button onClick={() => recoverSession(s.id)} disabled={isRecovering} style={{ background: T.yellow + "15", color: T.yellow, border: "1px solid " + T.yellow + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: isRecovering ? "wait" : "pointer", opacity: isRecovering ? 0.5 : 1 }}>{isRecovering ? "..." : "\u21BB Recover"}</button>
+                    </div>
+                    {sessionDetail && sessionDetail.session?.id === s.id && (<div style={{ padding: "12px 0" }}>
+                      <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginBottom: 8 }}>Total SOL in fleet: <span style={{ color: T.green, fontWeight: 700, fontSize: 14 }}>{(sessionDetail.totalBalance || 0).toFixed(4)}</span></div>
+                      {sessionDetail.wallets && sessionDetail.wallets.map((w, i) => (<div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontFamily: mono, fontSize: 11, color: T.mid }}><span style={{ width: 70, color: T.faint, textTransform: "capitalize" }}>{w.role}</span><span>{w.pubkey}...</span><span style={{ marginLeft: "auto", fontWeight: 700, color: w.balance > 0 ? T.green : T.faint }}>{w.balance.toFixed(4)} SOL</span></div>))}
+                    </div>)}
+                  </div>))}
+                </div>)}
               </div>
             )}
           </div>
