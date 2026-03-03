@@ -25,7 +25,7 @@ import SessionStore from "../db/session-store.mjs";
 
 // Launch Sessions (dev wallet generation + funding)
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
-import { createToken, testPumpPortal } from "../engine/token-creator.mjs";
+import { createToken } from "../engine/token-creator.mjs";
 
 // ═══════════════════════════════════════
 // TIER + ACCESS SYSTEM
@@ -380,19 +380,6 @@ app.post("/api/session/fund", apiLimiter, async (req, res) => {
   } catch (e) {
     console.error("[SESSION] Fund error:", e.message);
     res.status(500).json({ error: "Deposit verification failed" });
-  }
-});
-
-// Diagnostic: test PumpPortal connectivity
-app.get("/api/test-pumpportal", async (req, res) => {
-  try {
-    const wallet = req.query.wallet || "11111111111111111111111111111111";
-    console.log("[TEST] Running PumpPortal diagnostic...");
-    const results = await testPumpPortal(wallet);
-    console.log("[TEST] Results:", JSON.stringify(results, null, 2));
-    res.json(results);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
 });
 
