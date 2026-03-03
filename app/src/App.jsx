@@ -480,6 +480,8 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
       });
       const data = await res.json();
       if (data.error) { setError(data.error); setStep("funded"); return; }
+      // Save tokenCA + pumpUrl into session state
+      setSession(prev => ({ ...prev, tokenCA: data.tokenCA, pumpUrl: data.pumpUrl, createTx: data.createTx }));
       setStep("live");
       onLaunched(data);
     } catch (e) { setError("Launch failed: " + (e.message || "")); setStep("funded"); }
@@ -504,16 +506,56 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
   ) : null;
 
   if (launched) {
+    const ca = session?.tokenCA || "";
+    const pumpUrl = ca ? "https://pump.fun/coin/" + ca : "";
     return (
       <div>
-        <div style={{ padding: "16px 20px", background: T.greenGhost, borderRadius: 14, border: "1px solid " + T.green + "33", display: "flex", alignItems: "center", gap: 12, marginBottom: devSecret ? 12 : 0 }}>
-          <span style={{ color: T.green, animation: "pulse 2s infinite", fontSize: 20 }}>{"\u25CF"}</span>
-          <div>
-            <div style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 15 }}>Engine Running</div>
-            {session && <div style={{ fontSize: 12, color: T.dim, fontFamily: mono, marginTop: 2 }}>Dev: {(session?.devWallet || "").slice(0, 8)}...</div>}
+        {ca && (
+          <div style={{ padding: "16px 20px", background: T.surface, borderRadius: 14, border: "2px solid " + T.green + "44", marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <span style={{ color: T.green, animation: "pulse 2s infinite", fontSize: 16 }}>{"\u25CF"}</span>
+              <span style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 15 }}>Token Live!</span>
+            </div>
+            <div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginBottom: 6, textTransform: "uppercase", letterSpacing: ".08em" }}>Contract Address</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ flex: 1, fontFamily: mono, fontSize: 13, color: T.text, wordBreak: "break-all", background: T.bg, padding: "10px 12px", borderRadius: 8, border: "1px solid " + T.border }}>{ca}</div>
+              <button onClick={() => copyText(ca)} style={{ background: T.green, border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.bg, flexShrink: 0 }}>
+                {copied ? "\u2713" : "Copy CA"}
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <a href={pumpUrl} target="_blank" rel="noopener noreferrer" style={{ flex: 1, minWidth: 80, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "10px", background: T.green + "18", borderRadius: 8, border: "1px solid " + T.green + "33", color: T.green, fontFamily: mono, fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
+                pump.fun
+              </a>
+              <a href={"https://solscan.io/token/" + ca} target="_blank" rel="noopener noreferrer" style={{ flex: 1, minWidth: 80, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "10px", background: T.surface, borderRadius: 8, border: "1px solid " + T.border, color: T.mid, fontFamily: mono, fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
+                Solscan
+              </a>
+              <a href={"https://dexscreener.com/solana/" + ca} target="_blank" rel="noopener noreferrer" style={{ flex: 1, minWidth: 80, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "10px", background: T.surface, borderRadius: 8, border: "1px solid " + T.border, color: T.mid, fontFamily: mono, fontSize: 13, fontWeight: 700, textDecoration: "none" }}>
+                DexScreener
+              </a>
+            </div>
           </div>
-        </div>
+        )}
+
+        {ca && (
+          <div style={{ borderRadius: 14, overflow: "hidden", border: "1px solid " + T.border, marginBottom: 12, background: "#0d0d0d" }}>
+            <iframe
+              src={"https://www.gmgn.cc/kline/sol/" + ca}
+              style={{ width: "100%", height: mobile ? 300 : 420, border: "none", display: "block" }}
+              title="Live chart"
+              allow="clipboard-write"
+            />
+          </div>
+        )}
+
         <KeyBox />
+
+        <div style={{ padding: "12px 16px", background: T.greenGhost, borderRadius: 10, border: "1px solid " + T.green + "33", display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
+          <span style={{ color: T.green, animation: "pulse 2s infinite", fontSize: 16 }}>{"\u25CF"}</span>
+          <span style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 14 }}>Engine Running</span>
+          <span style={{ flex: 1 }} />
+          <span style={{ fontFamily: mono, fontSize: 12, color: T.dim }}>Dev: {(session?.devWallet || "").slice(0, 6)}...</span>
+        </div>
       </div>
     );
   }
@@ -635,7 +677,9 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
       {step === "launching" && (
         <div style={{ background: T.surface, border: "2px solid " + T.green + "44", borderRadius: 16, padding: 24, textAlign: "center" }}>
           <div style={{ fontSize: 28, marginBottom: 12, animation: "pulse 1s infinite" }}>{"\u{1F680}"}</div>
-          <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.green, animation: "pulse 1.5s infinite" }}>Creating token & executing dev buy...</div>
+          <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.green, animation: "pulse 1.5s infinite" }}>Creating token on pump.fun...</div>
+          <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginTop: 8 }}>Uploading metadata {"\u2192"} Mint keypair {"\u2192"} Create tx {"\u2192"} Dev buy</div>
+          <div style={{ fontFamily: mono, fontSize: 11, color: T.faint, marginTop: 12 }}>This takes 10-30 seconds</div>
         </div>
       )}
     </div>
