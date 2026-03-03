@@ -898,7 +898,7 @@ export default function App() {
                     </div>
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 2, background: T.border + "44", borderRadius: 10, overflow: "hidden" }}>
-                    {[{ k: "Dev Buy", v: calcDevBuyPreview(totalSol).devBuy.toFixed(2) }, { k: "Fleet", v: calcDevBuyPreview(totalSol).fleet.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }, { k: "Fee", v: calcDevBuyPreview(totalSol).fee.toFixed(3) }].map(s => (
+                    {[{ k: "Dev Buy", v: calcDevBuyPreview(totalSol).devBuy.toFixed(2) }, { k: "Fleet", v: calcDevBuyPreview(totalSol).fleet.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }, { k: "Fee", v: calcDevBuyPreview(totalSol).creationFee.toFixed(3) }].map(s => (
                       <div key={s.k} style={{ background: T.bg, padding: "10px 4px", textAlign: "center" }}><div style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 9, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.k}</div></div>
                     ))}
                   </div>
