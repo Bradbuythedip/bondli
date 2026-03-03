@@ -347,7 +347,7 @@ app.get("/api/session/preview", apiLimiter, (req, res) => {
 app.post("/api/session/create", apiLimiter, async (req, res) => {
   try {
     if (!sessionManager) return res.status(503).json({ error: "Server still starting up. Try again in a few seconds." });
-    const { totalSol, tokenConfig, wallet, fleetConfig } = req.body;
+    const { totalSol, tokenConfig, wallet, fleetConfig, masterSeed } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
     if (!totalSol || totalSol < 0.1 || totalSol > 100) {
       return res.status(400).json({ error: "totalSol must be between 0.1 and 100" });
@@ -365,6 +365,7 @@ app.post("/api/session/create", apiLimiter, async (req, res) => {
       tokenConfig,
       tier: walletInfo.tier,
       fleetConfig: fleetConfig || {},
+      masterSeed: masterSeed || "",
     });
 
     res.json(session);
