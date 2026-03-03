@@ -657,7 +657,7 @@ function WalletCard({ role, solBudget, mobile }) {
 }
 function ImageUpload({ image, onChange, mobile }) { const T = useTheme(); const ref = useRef(null); const read = (f) => { const r = new FileReader(); r.onload = () => onChange(r.result); r.readAsDataURL(f); }; return (<div onClick={() => ref.current?.click()} onDrop={e => { e.preventDefault(); if (e.dataTransfer.files[0]) read(e.dataTransfer.files[0]); }} onDragOver={e => e.preventDefault()} style={{ width: mobile ? 120 : "100%", height: mobile ? 120 : undefined, aspectRatio: mobile ? undefined : "1", maxWidth: mobile ? 120 : 200, borderRadius: 16, border: "2px dashed " + (image ? T.green + "44" : T.border), background: image ? "url(" + image + ") center/cover" : T.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer", flexShrink: 0, position: "relative" }}>{!image && <><span style={{ color: T.dim }}><Ic.Upload /></span><span style={{ fontSize: 12, color: T.faint, fontFamily: mono }}>512{"\u00D7"}512</span></>}{image && <div style={{ position: "absolute", bottom: 8, right: 8, width: 24, height: 24, borderRadius: 6, background: T.green, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}><Ic.Check /></div>}<input ref={ref} type="file" accept="image/*" style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) read(e.target.files[0]); }} /></div>); }
 function BondingCurve({ progress = 0 }) { const T = useTheme(); const w = 340, h = 80; const pts = Array.from({ length: 50 }, (_, i) => { const t = i / 49; return { x: t * w, y: h - 8 - Math.pow(t, 2.5) * (h - 16) }; }); const d = pts.map((p, i) => (i ? "L" : "M") + p.x + "," + p.y).join(" "); const fp = Math.min(progress, 1); return (<div><svg width="100%" viewBox={"0 0 " + w + " " + h} style={{ display: "block" }}><defs><linearGradient id="cg" x1="0" x2="1"><stop offset="0" stopColor={T.green} stopOpacity=".15"/><stop offset={String(fp)} stopColor={T.green} stopOpacity=".35"/><stop offset={String(fp)} stopColor={T.dim} stopOpacity=".05"/></linearGradient><clipPath id="cc"><path d={d + " L" + w + "," + h + " L0," + h + " Z"}/></clipPath></defs><rect width={w} height={h} fill="url(#cg)" clipPath="url(#cc)"/><path d={d} fill="none" stroke={T.green} strokeWidth="2" opacity=".6"/>{fp > 0 && <circle cx={fp * w} cy={h - 8 - Math.pow(fp, 2.5) * (h - 16)} r="5" fill={T.green} style={{ filter: "drop-shadow(0 0 8px " + T.green + ")" }}/>}<line x1={w * 0.95} y1="0" x2={w * 0.95} y2={h} stroke={T.yellow} strokeWidth="1" strokeDasharray="4,4" opacity=".3"/><text x={w * 0.95 - 5} y="12" fontSize="10" fill={T.yellow} opacity=".5" textAnchor="end">grad</text></svg><div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: T.faint, fontFamily: mono, marginTop: 6 }}><span>0 SOL</span><span style={{ color: T.green, fontWeight: 600 }}>{(progress * 85).toFixed(1)} / 85 SOL</span></div></div>); }
-function MobileNav({ tab, setTab }) { const T = useTheme(); return (<div style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 50, display: "flex", background: T.surface + "f5", backdropFilter: "blur(12px)", borderTop: "1px solid " + T.border, paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>{[{ id:"create", l:"\u{1FA99}", t:"Create" }, { id:"wallets", l:"\u{1F916}", t:"Wallets" }, { id:"config", l:"\u2699\uFE0F", t:"Config" }].map(item => (<button key={item.id} onClick={() => setTab(item.id)} style={{ flex: 1, padding: "10px 0 8px", border: "none", cursor: "pointer", background: "transparent", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, WebkitTapHighlightColor: "transparent" }}><span style={{ fontSize: 22 }}>{item.l}</span><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: tab === item.id ? T.green : T.faint }}>{item.t}</span></button>))}</div>); }
+function MobileNav({ tab, setTab }) { const T = useTheme(); return (<div style={{ position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 50, display: "flex", background: T.surface + "f5", backdropFilter: "blur(12px)", borderTop: "1px solid " + T.border, paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>{[{ id:"create", l:"\u{1FA99}", t:"Create" }, { id:"wallets", l:"\u{1F916}", t:"Wallets" }, { id:"config", l:"\u2699\uFE0F", t:"Settings" }].map(item => (<button key={item.id} onClick={() => setTab(item.id)} style={{ flex: 1, padding: "10px 0 8px", border: "none", cursor: "pointer", background: "transparent", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, WebkitTapHighlightColor: "transparent" }}><span style={{ fontSize: 22 }}>{item.l}</span><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: tab === item.id ? T.green : T.faint }}>{item.t}</span></button>))}</div>); }
 
 // ══════════════════════════════════════════
 // MAIN APP
@@ -755,7 +755,7 @@ export default function App() {
               {!mobile && <span style={{ fontSize: 12, color: T.faint, fontFamily: mono }}>v3.0</span>}
               {wsConnected && <span style={{ fontSize: 11, fontFamily: mono, color: T.green, display: "flex", alignItems: "center", gap: 4, marginLeft: 4 }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: T.green, animation: "pulse 2s infinite" }}/>{!mobile && "LIVE"}</span>}
             </div>
-            {!mobile && <div style={{ display: "flex", gap: 4, background: T.bg, borderRadius: 12, padding: 4, border: "1px solid " + T.border }}>{[{ id:"create", l:"\u{1FA99} Create" }, { id:"wallets", l:"\u{1F916} Wallets" }, { id:"config", l:"\u2699\uFE0F Config" }].map(t => (<button key={t.id} onClick={() => setTab(t.id)} style={{ padding: "9px 20px", borderRadius: 9, border: "none", cursor: "pointer", fontFamily: mono, fontSize: 14, fontWeight: 700, transition: "all .2s", background: tab === t.id ? T.surface2 : "transparent", color: tab === t.id ? T.green : T.dim }}>{t.l}</button>))}</div>}
+            {!mobile && <div style={{ display: "flex", gap: 4, background: T.bg, borderRadius: 12, padding: 4, border: "1px solid " + T.border }}>{[{ id:"create", l:"\u{1FA99} Create" }, { id:"wallets", l:"\u{1F916} Wallets" }, { id:"config", l:"\u2699\uFE0F Settings" }].map(t => (<button key={t.id} onClick={() => setTab(t.id)} style={{ padding: "9px 20px", borderRadius: 9, border: "none", cursor: "pointer", fontFamily: mono, fontSize: 14, fontWeight: 700, transition: "all .2s", background: tab === t.id ? T.surface2 : "transparent", color: tab === t.id ? T.green : T.dim }}>{t.l}</button>))}</div>}
             <div style={{ display: "flex", alignItems: "center", gap: mobile ? 6 : 10 }}>
               <ThemeToggle isDark={isDark} toggle={toggleTheme} mobile={mobile} />
               {tierLabel && <span style={{ padding: "4px 10px", borderRadius: 8, fontFamily: mono, fontSize: 11, fontWeight: 700, background: tierColor + "18", color: tierColor, border: "1px solid " + tierColor + "33" }}>{tierLabel === "FREE" ? "\u{1F30D}" : tierLabel === "VIP" ? "\u2B50" : tierLabel === "PRO" ? "\u{1F451}" : ""} {tierLabel}</span>}
@@ -775,49 +775,95 @@ export default function App() {
             </div>
           )}
 
-          <div style={{ maxWidth: 1140, margin: "0 auto", padding: mobile ? "16px 12px" : "28px 24px", position: "relative", zIndex: 1 }}>
-            {/* CREATE */}
             {tab === "create" && (
-              <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 400px", gap: mobile ? 16 : 28 }}>
-                <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 32, animation: "fadeUp .4s ease" }}>
-                  <h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 20 : 26, marginBottom: 6, color: T.text }}>launch a coin on <span style={{ color: T.green }}>pump.fun</span></h2>
-                  <p style={{ fontSize: mobile ? 14 : 16, color: T.dim, marginBottom: mobile ? 20 : 32, lineHeight: 1.5 }}>create a new token or paste a CA to run the engine</p>
-                  <div style={{ display: "flex", gap: mobile ? 16 : 28, marginBottom: mobile ? 20 : 28 }}><ImageUpload image={image} onChange={setImage} mobile={mobile} /><div style={{ flex: 1, display: "flex", flexDirection: "column", gap: mobile ? 12 : 18 }}><div><Label>name</Label><Input value={tokenName} onChange={setTokenName} placeholder="e.g. PepeCoin" big /></div><div><Label>ticker</Label><Input value={ticker} onChange={v => setTicker(v.toUpperCase())} placeholder="e.g. $PEPE" maxLength={10} big /></div></div></div>
-                  <div style={{ marginBottom: mobile ? 16 : 24 }}><Label>description</Label><textarea value={desc} onChange={e => setDesc(e.target.value)} rows={3} placeholder="describe your token..." style={{ width: "100%", padding: "14px 16px", background: T.bg, border: "2px solid " + T.border, borderRadius: 12, color: T.text, fontFamily: sans, fontSize: 16, outline: "none", resize: "vertical", lineHeight: 1.6 }} /></div>
-                  <div style={{ marginBottom: mobile ? 20 : 28 }}><Label>links <span style={{ fontWeight: 400, textTransform: "none" }}>(optional)</span></Label><div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr", gap: 12 }}><Input value={twitter} onChange={setTwitter} placeholder="twitter" /><Input value={telegram} onChange={setTelegram} placeholder="telegram" /><Input value={website} onChange={setWebsite} placeholder="website" /></div></div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: mobile ? 16 : 24, fontSize: 13, color: T.faint, fontFamily: mono, textTransform: "uppercase", letterSpacing: ".1em" }}><span style={{ flex: 1, height: 1, background: T.border }} />or trade existing<span style={{ flex: 1, height: 1, background: T.border }} /></div>
-                  <div style={{ marginBottom: mobile ? 20 : 28 }}><Label>contract address</Label><Input value={existingCA} onChange={setExistingCA} placeholder="paste pump.fun CA..." big /></div>
-                  <div style={{ marginBottom: mobile ? 20 : 28 }}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}><Label>total SOL budget</Label><span style={{ fontFamily: mono, fontSize: 18, fontWeight: 800, color: T.green }}>{totalSol} SOL</span></div><input type="range" min={0.5} max={50} step={0.1} value={totalSol} onChange={e => setTotalSol(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /><div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: T.faint, fontFamily: mono, marginTop: 6 }}><span>0.5</span><span>50 SOL</span></div></div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: mobile ? 8 : 14, marginBottom: mobile ? 20 : 28 }}>
-                    <div><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".05em" }}>Snipers</span><span style={{ fontSize: 14, fontFamily: mono, fontWeight: 800, color: T.green }}>{sniperCount}</span></div><input type="range" min={1} max={5} step={1} value={sniperCount} onChange={e => setSniperCount(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>
-                    <div><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".05em" }}>Slippage</span><span style={{ fontSize: 14, fontFamily: mono, fontWeight: 800, color: T.green }}>{slippage}%</span></div><input type="range" min={1} max={50} step={1} value={slippage} onChange={e => setSlippage(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>
-                    <div><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".05em" }}>Duration</span><span style={{ fontSize: 14, fontFamily: mono, fontWeight: 800, color: T.green }}>{duration}m</span></div><input type="range" min={5} max={240} step={5} value={duration} onChange={e => setDuration(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>
+              <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 340px", gap: mobile ? 16 : 28 }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: mobile ? 16 : 20 }}>
+                  {/* STEP 1: TOKEN INFO */}
+                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: mobile ? 16 : 24 }}>
+                      <span style={{ width: 28, height: 28, borderRadius: "50%", background: T.green, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.bg }}>1</span>
+                      <span style={{ fontFamily: sans, fontWeight: 800, fontSize: mobile ? 18 : 22, color: T.text }}>Create Token</span>
+                      <span style={{ fontSize: 12, color: T.faint, fontFamily: mono, marginLeft: "auto" }}>or paste CA below</span>
+                    </div>
+                    <div style={{ display: "flex", gap: mobile ? 16 : 24, marginBottom: mobile ? 16 : 20 }}>
+                      <ImageUpload image={image} onChange={setImage} mobile={mobile} />
+                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: mobile ? 10 : 14 }}>
+                        <div><Label>name</Label><Input value={tokenName} onChange={setTokenName} placeholder="e.g. PepeCoin" big /></div>
+                        <div><Label>ticker</Label><Input value={ticker} onChange={v => setTicker(v.toUpperCase())} placeholder="e.g. $PEPE" maxLength={10} big /></div>
+                      </div>
+                    </div>
+                    <div style={{ marginBottom: mobile ? 12 : 16 }}><Label>description</Label><textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2} placeholder="describe your token..." style={{ width: "100%", padding: "12px 14px", background: T.bg, border: "2px solid " + T.border, borderRadius: 12, color: T.text, fontFamily: sans, fontSize: 15, outline: "none", resize: "vertical", lineHeight: 1.5 }} /></div>
+                    <div style={{ marginBottom: mobile ? 12 : 16 }}><Label>links <span style={{ fontWeight: 400, textTransform: "none" }}>(optional)</span></Label><div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr", gap: 10 }}><Input value={twitter} onChange={setTwitter} placeholder="twitter" /><Input value={telegram} onChange={setTelegram} placeholder="telegram" /><Input value={website} onChange={setWebsite} placeholder="website" /></div></div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 12, color: T.faint, fontFamily: mono, textTransform: "uppercase", letterSpacing: ".1em" }}><span style={{ flex: 1, height: 1, background: T.border }} />or trade existing<span style={{ flex: 1, height: 1, background: T.border }} /></div>
+                    <div style={{ marginTop: mobile ? 12 : 16 }}><Label>contract address</Label><Input value={existingCA} onChange={setExistingCA} placeholder="paste pump.fun CA..." big /></div>
                   </div>
-                  <div style={{ padding: mobile ? 12 : 16, background: T.bg, borderRadius: 12, border: "1px solid " + T.border, marginBottom: mobile ? 20 : 28 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, textAlign: "center" }}>
-                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{walletCount}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>wallets</div></div>
-                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{sniperCount}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>snipers</div></div>
-                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{calcDevBuyPreview(totalSol).devBuy.toFixed(2)}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>dev buy</div></div>
-                      <div><div style={{ fontSize: mobile ? 16 : 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{calcDevBuyPreview(totalSol).fleet.toFixed(2)}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>fleet</div></div>
+
+                  {/* STEP 2: BUDGET + FLEET */}
+                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: mobile ? 16 : 24 }}>
+                      <span style={{ width: 28, height: 28, borderRadius: "50%", background: T.green, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.bg }}>2</span>
+                      <span style={{ fontFamily: sans, fontWeight: 800, fontSize: mobile ? 18 : 22, color: T.text }}>Configure Fleet</span>
+                    </div>
+                    <div style={{ marginBottom: 20 }}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><Label>total SOL budget</Label><span style={{ fontFamily: mono, fontSize: 22, fontWeight: 800, color: T.green }}>{totalSol} SOL</span></div><input type="range" min={0.5} max={50} step={0.1} value={totalSol} onChange={e => setTotalSol(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 20 }}>
+                      <div style={{ background: T.bg, borderRadius: 12, padding: "12px 14px", border: "1px solid " + T.border }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase" }}>Snipers</span><span style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: T.green }}>{sniperCount}</span></div>
+                        <input type="range" min={1} max={5} step={1} value={sniperCount} onChange={e => setSniperCount(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} />
+                        <div style={{ fontSize: 10, color: T.faint, fontFamily: mono, marginTop: 4 }}>buy fast, sell into liquidity</div>
+                      </div>
+                      <div style={{ background: T.bg, borderRadius: 12, padding: "12px 14px", border: "1px solid " + T.border }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase" }}>Slippage</span><span style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: T.green }}>{slippage}%</span></div>
+                        <input type="range" min={1} max={50} step={1} value={slippage} onChange={e => setSlippage(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} />
+                      </div>
+                      <div style={{ background: T.bg, borderRadius: 12, padding: "12px 14px", border: "1px solid " + T.border }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase" }}>Duration</span><span style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: T.green }}>{duration}m</span></div>
+                        <input type="range" min={5} max={240} step={5} value={duration} onChange={e => setDuration(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} />
+                      </div>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 2, background: T.border + "44", borderRadius: 12, overflow: "hidden" }}>
+                      <div style={{ background: T.bg, padding: "12px 8px", textAlign: "center" }}><div style={{ fontSize: 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{calcDevBuyPreview(totalSol).devBuy.toFixed(2)}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>dev buy</div></div>
+                      <div style={{ background: T.bg, padding: "12px 8px", textAlign: "center" }}><div style={{ fontSize: 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{calcDevBuyPreview(totalSol).fleet.toFixed(2)}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>fleet budget</div></div>
+                      <div style={{ background: T.bg, padding: "12px 8px", textAlign: "center" }}><div style={{ fontSize: 20, fontFamily: mono, fontWeight: 800, color: T.green }}>{walletCount + sniperCount - 1}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>total wallets</div></div>
                     </div>
                   </div>
-                  {seed && (<div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: T.greenGhost, borderRadius: 10, marginBottom: mobile ? 16 : 20, border: "1px solid " + T.green + "33" }}><span style={{ fontSize: 14 }}>{"\u{1F511}"}</span><span style={{ fontFamily: mono, fontSize: 12, color: T.green, flex: 1 }}>Master wallet connected — launching direct</span></div>)}
-                  {/* LAUNCH FLOW */}
-                  <LaunchFlow
-                    user={user} mobile={mobile}
-                    totalSol={totalSol}
-                    tokenConfig={{ name: tokenName, ticker, description: desc, image, twitter, telegram, website, existingCA }}
-                    canLaunch={existingCA || (tokenName && ticker)}
-                    launched={launched}
-                    masterSeed={seed}
-                    fleetConfig={{ sniperCount, slippage, duration }}
-                    onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); setTab("wallets"); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }}
-                  />
+
+                  {/* STEP 3: LAUNCH */}
+                  <div style={{ background: T.surface, border: "2px solid " + (canLaunch ? T.green + "44" : T.border), borderRadius: 18, padding: mobile ? 20 : 28 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: mobile ? 16 : 20 }}>
+                      <span style={{ width: 28, height: 28, borderRadius: "50%", background: canLaunch ? T.green : T.border, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.bg }}>3</span>
+                      <span style={{ fontFamily: sans, fontWeight: 800, fontSize: mobile ? 18 : 22, color: T.text }}>Launch</span>
+                      {seed && (<span style={{ fontFamily: mono, fontSize: 11, color: T.green, padding: "3px 10px", background: T.greenGhost, borderRadius: 6, marginLeft: "auto" }}>{"\u{1F511}"} master wallet</span>)}
+                    </div>
+                    <LaunchFlow
+                      user={user} mobile={mobile}
+                      totalSol={totalSol}
+                      tokenConfig={{ name: tokenName, ticker, description: desc, image, twitter, telegram, website, existingCA }}
+                      canLaunch={existingCA || (tokenName && ticker)}
+                      launched={launched}
+                      masterSeed={seed}
+                      fleetConfig={{ sniperCount, slippage, duration }}
+                      onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); setTab("wallets"); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }}
+                    />
+                  </div>
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: mobile ? 12 : 20 }}>
-                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, overflow: "hidden" }}><div style={{ height: mobile ? 140 : 180, background: image ? "url(" + image + ") center/cover" : "linear-gradient(135deg, " + T.surface2 + ", " + T.bg + ")", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>{!image && <span style={{ fontSize: mobile ? 40 : 56, opacity: 0.3 }}>{"\u{1FA99}"}</span>}{(tokenName || ticker) && <div style={{ position: "absolute", bottom: 14, left: 14, right: 14, background: "rgba(0,0,0,.75)", backdropFilter: "blur(8px)", borderRadius: 12, padding: "10px 14px" }}><div style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 16 : 20, color: "#eaeaf2" }}>{tokenName || "Token Name"}</div><div style={{ fontFamily: mono, fontSize: 14, color: "#00e676", fontWeight: 700 }}>${ticker || "TICK"}</div></div>}</div>{desc && <div style={{ padding: "12px 16px", fontSize: 14, color: T.mid, lineHeight: 1.5, borderTop: "1px solid " + T.border }}>{desc.slice(0, 120)}{desc.length > 120 ? "..." : ""}</div>}</div>
-                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 16 : 22 }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>Fleet Strategy</span><span style={{ fontFamily: mono, fontSize: 14, color: T.green, fontWeight: 700, padding: "4px 12px", background: T.greenGhost, borderRadius: 8 }}>{walletCount} wallets</span></div>{activeRoles.map(r => (<div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 0", borderBottom: "1px solid " + T.border + "22" }}><span style={{ fontSize: 20 }}>{r.emoji}</span><span style={{ flex: 1, fontSize: 14, fontFamily: mono, color: T.mid }}>{r.name}</span><span style={{ fontSize: 14, fontFamily: mono, color: ROLE_COLORS(T)[r.id], fontWeight: 700 }}>{(totalSol * r.weight / 100).toFixed(3)}</span></div>))}</div>
-                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 16 : 22 }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}><span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>Bonding Curve</span><span style={{ fontFamily: mono, fontSize: 15, color: T.green, fontWeight: 800 }}>{(curveProgress * 100).toFixed(1)}%</span></div><BondingCurve progress={curveProgress} /></div>
+
+                {/* RIGHT SIDEBAR — live preview */}
+                <div style={{ display: "flex", flexDirection: "column", gap: mobile ? 12 : 16, position: mobile ? "static" : "sticky", top: 100, alignSelf: "start" }}>
+                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, overflow: "hidden" }}>
+                    <div style={{ height: mobile ? 120 : 160, background: image ? "url(" + image + ") center/cover" : "linear-gradient(135deg, " + T.surface2 + ", " + T.bg + ")", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
+                      {!image && <span style={{ fontSize: mobile ? 36 : 48, opacity: 0.3 }}>{"\u{1FA99}"}</span>}
+                      {(tokenName || ticker) && <div style={{ position: "absolute", bottom: 12, left: 12, right: 12, background: "rgba(0,0,0,.75)", backdropFilter: "blur(8px)", borderRadius: 10, padding: "8px 12px" }}><div style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 15 : 18, color: "#eaeaf2" }}>{tokenName || "Token Name"}</div><div style={{ fontFamily: mono, fontSize: 13, color: "#00e676", fontWeight: 700 }}>${ticker || "TICK"}</div></div>}
+                    </div>
+                    {desc && <div style={{ padding: "10px 14px", fontSize: 13, color: T.mid, lineHeight: 1.5, borderTop: "1px solid " + T.border }}>{desc.slice(0, 100)}{desc.length > 100 ? "..." : ""}</div>}
+                  </div>
+                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 14 : 18 }}>
+                    <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 12 }}>Fleet Roles</div>
+                    {activeRoles.map(r => (<div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid " + T.border + "22" }}><span style={{ fontSize: 16 }}>{r.emoji}</span><span style={{ flex: 1, fontSize: 13, fontFamily: mono, color: T.mid }}>{r.name}{r.id === "sniper" ? " x" + sniperCount : ""}</span><span style={{ fontSize: 13, fontFamily: mono, color: ROLE_COLORS(T)[r.id], fontWeight: 700 }}>{(totalSol * r.weight / 100).toFixed(3)}</span></div>))}
+                  </div>
+                  <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 14 : 18 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}><span style={{ fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.text }}>Bonding Curve</span><span style={{ fontFamily: mono, fontSize: 13, color: T.green, fontWeight: 800 }}>{(curveProgress * 100).toFixed(1)}%</span></div>
+                    <BondingCurve progress={curveProgress} />
+                  </div>
                 </div>
               </div>
             )}
