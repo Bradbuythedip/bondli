@@ -27,6 +27,9 @@ import SessionStore from "../db/session-store.mjs";
 // Launch Sessions (dev wallet generation + funding)
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
 import { createToken } from "../engine/token-creator.mjs";
+import { getAssociatedTokenAddressSync, getAccount } from "@solana/spl-token";
+import BN from "bn.js";
+import { getSellSolAmountFromTokenAmount } from "@pump-fun/pump-sdk";
 
 // ═══════════════════════════════════════
 // TIER + ACCESS SYSTEM
@@ -897,6 +900,117 @@ app.post("/api/session/recover", apiLimiter, async (req, res) => {
     res.json({ ok: true, ...result, destination });
   } catch (e) {
     console.error("[RECOVER] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Sell all tokens in fleet wallets and sweep SOL back to master
+app.post("/api/session/sell-sweep", apiLimiter, async (req, res) => {
+  try {
+    const { sessionId, wallet } = req.body;
+    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
+
+    const session = await sessionManager.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
+    if (!session.tokenCA) return res.status(400).json({ error: "No token CA" });
+
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const results = [];
+    let totalSold = 0, totalSwept = 0;
+
+    // Get master wallet
+    const devKeypair = await sessionManager.getDevKeypair(sessionId);
+    const masterPubkey = devKeypair ? devKeypair.publicKey : new PublicKey(wallet);
+
+    // Get all fleet wallet keys
+    const fleetWallets = session.fleetWallets || [];
+    if (fleetWallets.length === 0 && devKeypair) {
+      // At minimum try to sell from dev wallet
+      fleetWallets.push({ role: "dev", secret: bs58.encode(devKeypair.secretKey), pubkey: devKeypair.publicKey.toBase58() });
+    }
+
+    // Fetch pump globals once
+    let global, feeConfig;
+    try { global = await orch.onlineSdk.fetchGlobal(); feeConfig = await orch.onlineSdk.fetchFeeConfig(); } catch (e) {
+      return res.status(500).json({ error: "Cannot fetch pump.fun state: " + e.message });
+    }
+
+    const mint = new PublicKey(session.tokenCA);
+
+    for (const fw of fleetWallets) {
+      const walletResult = { role: fw.role, pubkey: (fw.pubkey || "?").slice(0, 8), sold: 0, swept: 0, errors: [] };
+      try {
+        const kp = Keypair.fromSecretKey(bs58.decode(fw.secret));
+
+        // Step 1: Sell all tokens
+        try {
+          const ata = getAssociatedTokenAddressSync(mint, kp.publicKey, true);
+          const account = await getAccount(connection, ata);
+          const tokenBalance = new BN(account.amount.toString());
+
+          if (!tokenBalance.isZero() && global && feeConfig) {
+            const sellState = await orch.onlineSdk.fetchSellState(mint, kp.publicKey);
+            const { bondingCurveAccountInfo, bondingCurve } = sellState;
+            const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
+            const solOut = getSellSolAmountFromTokenAmount({ global, feeConfig, mintSupply, bondingCurve, amount: tokenBalance });
+
+            const sellIx = await orch.sdk.sellInstructions({
+              global, bondingCurveAccountInfo, bondingCurve,
+              mint, user: kp.publicKey, amount: tokenBalance, solAmount: solOut, slippage: 50,
+            });
+
+            const tx = new Transaction();
+            tx.add(
+              ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+              ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
+              ...sellIx,
+            );
+            await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
+            const soldSol = parseFloat(solOut.toString()) / 1e9;
+            walletResult.sold = soldSol;
+            totalSold += soldSol;
+            console.log(`[SELL-SWEEP] [${fw.role}] Sold tokens -> ${soldSol.toFixed(4)} SOL`);
+          }
+        } catch (e) { walletResult.errors.push("sell: " + e.message); }
+
+        await new Promise(r => setTimeout(r, 500));
+
+        // Step 2: Sweep SOL to master
+        if (!kp.publicKey.equals(masterPubkey)) {
+          try {
+            const balance = await connection.getBalance(kp.publicKey);
+            const sweepAmount = balance - 6000;
+            if (sweepAmount > 0) {
+              const tx = new Transaction().add(
+                ComputeBudgetProgram.setComputeUnitLimit({ units: 50_000 }),
+                ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+                SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: masterPubkey, lamports: sweepAmount })
+              );
+              await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
+              const sweptSol = sweepAmount / LAMPORTS_PER_SOL;
+              walletResult.swept = sweptSol;
+              totalSwept += sweptSol;
+              console.log(`[SELL-SWEEP] [${fw.role}] Swept ${sweptSol.toFixed(4)} SOL -> master`);
+            }
+          } catch (e) { walletResult.errors.push("sweep: " + e.message); }
+        }
+      } catch (e) { walletResult.errors.push("keypair: " + e.message); }
+
+      results.push(walletResult);
+      await new Promise(r => setTimeout(r, 300));
+    }
+
+    // Check master balance
+    let masterBalance = 0;
+    try { masterBalance = await connection.getBalance(masterPubkey) / LAMPORTS_PER_SOL; } catch {}
+
+    await sessionManager.update(sessionId, { status: "swept", sweptAt: new Date().toISOString() });
+    console.log(`[SELL-SWEEP] ${sessionId} complete | Sold: ${totalSold.toFixed(4)} SOL | Swept: ${totalSwept.toFixed(4)} SOL | Master: ${masterBalance.toFixed(4)} SOL`);
+
+    res.json({ ok: true, totalSold, totalSwept, masterBalance, wallets: results, destination: masterPubkey.toBase58() });
+  } catch (e) {
+    console.error("[SELL-SWEEP] Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
