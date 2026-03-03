@@ -708,6 +708,7 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
       devBuy: session.devBuy,
       fleetBudget: session.fleetBudget,
       createTx: createResult?.txSig || null,
+      walletKeys: orchResult.walletKeys || [],
       ...orchResult,
     });
   } catch (e) {
