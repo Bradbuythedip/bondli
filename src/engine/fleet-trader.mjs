@@ -366,17 +366,97 @@ export class FleetTrader {
     }
   }
 
-  // ── Close a session (stop + return stats) ──
+  // ── Close a session (sell all tokens + sweep SOL back) ──
   async close(ca) {
     const session = this.sessions.get(ca);
     if (!session) throw new Error(`No session for ${ca}`);
+    
     session.running = false;
     session.phase = "closing";
-    // Wait for loop to exit
-    await sleep(2000);
+    console.log(`[FLEET] Closing ${ca.slice(0, 8)}... — selling all tokens`);
+
+    // Wait for any in-flight trade to finish
+    await sleep(3000);
+
+    const { mint, trader } = session;
+    let sellResult = null;
+
+    // ── Step 1: Sell all tokens ──
+    try {
+      const global = await this.onlineSdk.fetchGlobal();
+      const feeConfig = await this.onlineSdk.fetchFeeConfig();
+      
+      // Get token balance
+      const ata = getAssociatedTokenAddressSync(mint, trader.publicKey, true);
+      let tokenBalance;
+      try {
+        const account = await getAccount(this.connection, ata);
+        tokenBalance = new BN(account.amount.toString());
+      } catch {
+        tokenBalance = new BN(0);
+      }
+
+      if (!tokenBalance.isZero()) {
+        console.log(`[FLEET] Selling ${tokenBalance.toString()} tokens...`);
+        
+        const sellState = await this.onlineSdk.fetchSellState(mint, trader.publicKey);
+        const { bondingCurveAccountInfo, bondingCurve } = sellState;
+        const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
+
+        const solOut = getSellSolAmountFromTokenAmount({
+          global, feeConfig, mintSupply, bondingCurve,
+          amount: tokenBalance,
+        });
+
+        const instructions = await this.sdk.sellInstructions({
+          global, bondingCurveAccountInfo, bondingCurve,
+          mint, user: trader.publicKey,
+          amount: tokenBalance,
+          solAmount: solOut,
+          slippage: 50, // 50% slippage on close — just get out
+        });
+
+        const tx = new Transaction();
+        tx.add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
+          ...instructions,
+        );
+
+        const sig = await sendAndConfirmTransaction(
+          this.connection, tx, [trader],
+          { skipPreflight: true, commitment: "confirmed", maxRetries: 3 }
+        );
+
+        const solOutNum = parseFloat(solOut.toString()) / 1e9;
+        session.solRecovered += solOutNum;
+        sellResult = { ok: true, sig, solOut: solOutNum, tokens: tokenBalance.toString() };
+        console.log(`[FLEET] Sold all tokens → ${solOutNum.toFixed(4)} SOL | tx: ${sig.slice(0, 12)}...`);
+      } else {
+        console.log(`[FLEET] No tokens to sell`);
+        sellResult = { ok: true, solOut: 0, tokens: "0" };
+      }
+    } catch (e) {
+      console.error(`[FLEET] Sell-all failed:`, e.message);
+      sellResult = { ok: false, error: e.message };
+    }
+
+    // ── Step 2: Sweep remaining SOL back (if we know user wallet from session) ──
+    let sweepResult = null;
+    try {
+      const balance = await this.connection.getBalance(trader.publicKey);
+      const sweepAmount = balance - 10000; // leave rent for fees
+      if (sweepAmount > 0) {
+        console.log(`[FLEET] ${(sweepAmount / LAMPORTS_PER_SOL).toFixed(4)} SOL remaining in dev wallet`);
+        // Note: SOL stays in dev wallet — user can withdraw via session endpoint
+        sweepResult = { balanceRemaining: sweepAmount / LAMPORTS_PER_SOL };
+      }
+    } catch {}
+
     const netProfit = session.solRecovered - session.solSpent;
     session.phase = "closed";
     this.sessions.delete(ca);
+
     return {
       trades: session.tradeCount,
       solSpent: session.solSpent,
@@ -384,20 +464,24 @@ export class FleetTrader {
       netProfit,
       totalIn: session.totalSol,
       totalReturn: session.solRecovered,
+      sellResult,
+      sweepResult,
     };
   }
 
   // ── Close all sessions ──
   async closeAll() {
     const results = {};
+    let totalNetProfit = 0;
     for (const ca of [...this.sessions.keys()]) {
       try {
         results[ca] = await this.close(ca);
+        totalNetProfit += results[ca].netProfit || 0;
       } catch (e) {
         results[ca] = { error: e.message };
       }
     }
-    return results;
+    return { results, totalNetProfit };
   }
 
   // ── Get status ──
