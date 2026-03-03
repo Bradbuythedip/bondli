@@ -408,6 +408,8 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
     // ── Step 1: Create token on pump.fun (if no existing CA) ──
     if (!existingCA) {
       console.log(`[LAUNCH] Creating token: ${session.tokenConfig.name} ($${session.tokenConfig.ticker})`);
+      console.log(`[LAUNCH] Dev wallet: ${devKeypair.publicKey.toBase58()}`);
+      console.log(`[LAUNCH] Budget: ${session.devBuy} SOL dev buy + ${session.fleetBudget} SOL fleet`);
       
       const connection = new Connection(CONFIG.RPC_URL, "confirmed");
       
@@ -448,8 +450,17 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
         force: true,
       };
 
+      console.log(`[LAUNCH] Starting fleet with ${session.fleetBudget} SOL on ${tokenCA}`);
+      console.log(`[LAUNCH] Orch type: ${typeof orch.launch}, Has launch: ${!!orch.launch}`);
+      
       orchResult = await orch.launch(tokenCA, launchConfig);
-      console.log(`[LAUNCH] Fleet started on ${tokenCA}`);
+      console.log(`[LAUNCH] Fleet result:`, JSON.stringify(orchResult).slice(0, 300));
+    } catch (orchErr) {
+      // Fleet failed but token was created — still a partial success
+      console.warn("[LAUNCH] Fleet start failed:", orchErr.message);
+      console.warn("[LAUNCH] Fleet error stack:", orchErr.stack?.split("\n").slice(0, 3).join("\n"));
+      orchResult = { ok: true, fleetError: orchErr.message };
+    }
     } catch (orchErr) {
       // Fleet failed but token was created — still a partial success
       console.warn("[LAUNCH] Fleet start failed:", orchErr.message);
