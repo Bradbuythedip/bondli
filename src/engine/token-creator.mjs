@@ -309,6 +309,8 @@ export async function createToken(connection, creator, tokenConfig, options = {}
     txSig = await sendAndConfirmTransaction(connection, tx, signers, {
       commitment: "confirmed",
       maxRetries: 3,
+      skipPreflight: true,
+      preflightCommitment: "processed",
     });
   }
 
