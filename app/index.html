@@ -2,11 +2,42 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/bondli-icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>bondli.fun</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23111'/><text x='16' y='22' text-anchor='middle' font-size='18'>%F0%9F%92%8A</text></svg>" />
+
+    <!-- Primary Meta Tags -->
+    <title>BONDLI — Launch & Trade on pump.fun</title>
+    <meta name="title" content="BONDLI — Launch & Trade on pump.fun" />
+    <meta name="description" content="Launchpad + trading engine for Pump.fun. Deploy tokens, run multi-wallet fleet trading, and trade bonding curves with gas optimization." />
+
+    <!-- Open Graph / Facebook / iMessage -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://bondli.fun/" />
+    <meta property="og:title" content="BONDLI — Launch & Trade on pump.fun" />
+    <meta property="og:description" content="Launchpad + trading engine for Pump.fun. Deploy tokens, run multi-wallet fleet trading, and trade bonding curves with gas optimization." />
+    <meta property="og:image" content="https://bondli.fun/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:site_name" content="BONDLI" />
+
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image" />
+    <meta property="twitter:url" content="https://bondli.fun/" />
+    <meta property="twitter:title" content="BONDLI — Launch & Trade on pump.fun" />
+    <meta property="twitter:description" content="Launchpad + trading engine for Pump.fun. Deploy tokens, run multi-wallet fleet trading, and trade bonding curves." />
+    <meta property="twitter:image" content="https://bondli.fun/og-image.png" />
+
+    <!-- Theme -->
+    <meta name="theme-color" content="#00ff88" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+    <style>
+      body { margin: 0; background: #0a0a0a; }
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+      @keyframes glow { 0%, 100% { box-shadow: 0 0 20px #00ff8822; } 50% { box-shadow: 0 0 40px #00ff8844; } }
+    </style>
   </head>
-  <body style="margin:0;background:#0a0a0a;">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
