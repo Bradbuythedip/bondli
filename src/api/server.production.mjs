@@ -344,6 +344,58 @@ app.get("/api/session/preview", apiLimiter, (req, res) => {
 });
 
 // Create session: generate dev wallet, return address for funding
+// ── CA Analysis proxy (avoids CORS) ──
+app.get("/api/analyze/:ca", async (req, res) => {
+  try {
+    const ca = req.params.ca;
+    if (!ca || ca.length < 32) return res.status(400).json({ error: "Invalid CA" });
+
+    // Try pump.fun first with 8s timeout
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const resp = await fetch("https://frontend-api-v2.pump.fun/coins/" + ca, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (resp.ok) {
+        const coin = await resp.json();
+        return res.json({ ...coin, source: "pumpfun" });
+      }
+    } catch (e) {
+      clearTimeout(timeout);
+      console.log("[ANALYZE] pump.fun failed:", e.message);
+    }
+
+    // Fallback: DexScreener
+    try {
+      const dexRes = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca);
+      if (dexRes.ok) {
+        const dex = await dexRes.json();
+        const pair = dex.pairs?.[0];
+        if (pair) {
+          return res.json({
+            name: pair.baseToken?.name || "?",
+            symbol: pair.baseToken?.symbol || "?",
+            usd_market_cap: pair.marketCap || pair.fdv || 0,
+            created_timestamp: pair.pairCreatedAt || Date.now(),
+            reply_count: 0,
+            complete: pair.dexId !== "pumpfun",
+            image_uri: pair.info?.imageUrl || null,
+            description: pair.info?.description || "",
+            source: "dexscreener",
+          });
+        }
+      }
+    } catch (e) {
+      console.log("[ANALYZE] DexScreener fallback failed:", e.message);
+    }
+
+    res.status(404).json({ error: "Token not found on pump.fun or DexScreener" });
+  } catch (e) {
+    console.error("[ANALYZE]", e.message);
+    res.status(500).json({ error: "Analysis failed: " + e.message });
+  }
+});
+
 app.post("/api/session/create", apiLimiter, async (req, res) => {
   try {
     if (!sessionManager) return res.status(503).json({ error: "Server still starting up. Try again in a few seconds." });
