@@ -128,9 +128,9 @@ function Btn({ children, onClick, color, ghost = false, disabled = false, small 
   const T = useTheme(); const c = color || T.green; const [hov, setHov] = useState(false);
   return (<button onClick={disabled ? undefined : onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, padding: small ? "10px 16px" : "14px 24px", borderRadius: 12, fontFamily: mono, fontSize: small ? 14 : 16, fontWeight: 700, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.35 : 1, width: full ? "100%" : undefined, WebkitTapHighlightColor: "transparent", border: ghost ? "2px solid " + c + "44" : "none", background: ghost ? (hov ? c + "15" : "transparent") : (hov ? c + "dd" : c), color: ghost ? c : (T.mode === "light" ? "#fff" : T.bg), transform: hov && !disabled ? "translateY(-1px)" : "none", transition: "all .15s", letterSpacing: ".02em", ...sx }}>{children}</button>);
 }
-function Input({ value, onChange, placeholder, type = "text", icon, big = false, ...props }) {
+function Input({ value, onChange, onKeyDown, placeholder, type = "text", icon, big = false, ...props }) {
   const T = useTheme(); const [focus, setFocus] = useState(false);
-  return (<div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 14px", background: T.bg, border: "2px solid " + (focus ? T.green + "55" : T.border), borderRadius: 12, transition: "border-color .2s" }}>{icon && <span style={{ color: T.dim, display: "flex", flexShrink: 0 }}>{icon}</span>}<input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} style={{ flex: 1, padding: big ? "14px 0" : "12px 0", background: "none", border: "none", outline: "none", color: T.text, fontFamily: mono, fontSize: 16, minWidth: 0 }} {...props} /></div>);
+  return (<div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 14px", background: T.bg, border: "2px solid " + (focus ? T.green + "55" : T.border), borderRadius: 12, transition: "border-color .2s" }}>{icon && <span style={{ color: T.dim, display: "flex", flexShrink: 0 }}>{icon}</span>}<input type={type} value={value} onChange={e => onChange(e.target.value)} onKeyDown={onKeyDown} placeholder={placeholder} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)} style={{ flex: 1, padding: big ? "14px 0" : "12px 0", background: "none", border: "none", outline: "none", color: T.text, fontFamily: mono, fontSize: 16, minWidth: 0 }} {...props} /></div>);
 }
 function Label({ children }) { const T = useTheme(); return <div style={{ fontSize: 13, fontWeight: 700, color: T.dim, fontFamily: mono, textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 8 }}>{children}</div>; }
 function ThemeToggle({ isDark, toggle, mobile }) { const T = useTheme(); return <button onClick={toggle} style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: mobile ? "6px 8px" : "7px 10px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: T.dim, transition: "all .2s", WebkitTapHighlightColor: "transparent" }}>{isDark ? <Ic.Sun /> : <Ic.Moon />}</button>; }
@@ -152,7 +152,7 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
       if (!provider) { if (/iPhone|iPad|Android/i.test(navigator.userAgent)) { window.location.href = "https://phantom.app/ul/browse/" + encodeURIComponent(window.location.href); return; } setError("Phantom not found. Install at phantom.app"); setConnecting(false); return; }
       const resp = await provider.connect(); const pubkey = resp.publicKey.toString();
       let whitelisted = false, paid = false, tier = "none";
-      try { const res = await fetch(API + "/api/access/check?wallet=" + pubkey); const data = await res.json(); whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "free"; } catch { tier = "free"; }
+      try { const res = await fetch(API + "/api/access/check?wallet=" + pubkey); const data = await res.json(); whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "free"; } catch {}
       onConnect({ pubkey, whitelisted, paid, tier, demo: false });
     } catch (e) { setError(e.code === 4001 ? "Connection rejected" : "Failed to connect"); }
     setConnecting(false);
@@ -378,10 +378,7 @@ function TierGate({ user, onSelect, onDisconnect }) {
 // LAUNCH FLOW — generate dev wallet, fund, launch
 // ══════════════════════════════════════════
 function calcDevBuyPreview(totalSol, isApe) {
-  if (isApe) {
-    // APE mode: no dev buy, no creation fee, all to fleet
-    return { devBuy: 0, creationFee: 0, fleet: +totalSol.toFixed(4), pct: 0 };
-  }
+  if (isApe) return { devBuy: 0, creationFee: 0, fleet: +totalSol.toFixed(4), pct: 0 };
   let pct, min, max;
   if (totalSol < 1) { pct = 0.50; min = 0.1; max = 0.5; }
   else if (totalSol < 5) { pct = 0.40; min = 0.3; max = 2.0; }
@@ -586,24 +583,18 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
       )}
 
       {/* BUDGET */}
-      {isApe ? (
-        <div style={{ padding: "8px 0", marginBottom: 12, textAlign: "center", fontFamily: mono, fontSize: mobile ? 12 : 13, color: T.dim }}>
-          <span style={{ color: T.green, fontWeight: 700 }}>{totalSol} SOL</span> fleet budget
-        </div>
-      ) : (
-        <div style={{ padding: "8px 0", marginBottom: 12, display: "flex", justifyContent: "center", gap: mobile ? 12 : 20, fontFamily: mono, fontSize: mobile ? 12 : 13, color: T.dim }}>
-          <span><span style={{ color: T.yellow, fontWeight: 700 }}>{preview.devBuy}</span> dev buy</span>
-          <span style={{ color: T.border }}>{"\u00B7"}</span>
-          <span><span style={{ color: T.dim, fontWeight: 700 }}>{preview.creationFee}</span> fee</span>
-          <span style={{ color: T.border }}>{"\u00B7"}</span>
-          <span><span style={{ color: T.green, fontWeight: 700 }}>{preview.fleet}</span> fleet</span>
-        </div>
-      )}
+      <div style={{ padding: "8px 0", marginBottom: 12, display: "flex", justifyContent: "center", gap: mobile ? 12 : 20, fontFamily: mono, fontSize: 12, color: T.dim }}>
+        <span><span style={{ color: T.yellow, fontWeight: 700 }}>{preview.devBuy}</span> dev buy</span>
+        <span style={{ color: T.border }}>{"\u00B7"}</span>
+        <span><span style={{ color: T.dim, fontWeight: 700 }}>{preview.creationFee}</span> fee</span>
+        <span style={{ color: T.border }}>{"\u00B7"}</span>
+        <span><span style={{ color: T.green, fontWeight: 700 }}>{preview.fleet}</span> fleet</span>
+      </div>
 
       {step === "idle" && (
         <Btn onClick={startLaunch} full disabled={!canLaunch}
           style={{ padding: "16px 24px", fontSize: mobile ? 16 : 18, borderRadius: 14, animation: canLaunch ? "glow 3s infinite" : "none" }}>
-          <Ic.Zap /> {isApe ? "Start Trading" : "Launch on pump.fun"}
+          <Ic.Zap /> Launch on pump.fun
         </Btn>
       )}
 
@@ -633,36 +624,6 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     </div>
   );
 }
-
-
-function Section({ n, title, done, highlight, T, mobile, children }) {
-  const bg = highlight ? T.green + "08" : T.surface;
-  const border = highlight ? T.green + "44" : done ? T.green + "33" : T.border;
-  return (
-    <div style={{ background: bg, border: "1px solid " + border, borderRadius: 14, padding: mobile ? 18 : 24, marginBottom: mobile ? 12 : 16 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: mobile ? 12 : 16 }}>
-        <span style={{ width: 26, height: 26, borderRadius: "50%", background: done ? T.green : T.border, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 12, fontWeight: 800, color: T.bg, flexShrink: 0 }}>{done ? "\u2713" : n}</span>
-        <span style={{ fontFamily: sans, fontWeight: 800, fontSize: mobile ? 16 : 18, color: T.text }}>{title}</span>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function NumInput({ label, value, onChange, min, max, step, T }) {
-  const s = step || 1;
-  return (
-    <div style={{ background: T.bg, borderRadius: 10, border: "1px solid " + T.border, padding: "10px 12px" }}>
-      <div style={{ fontSize: 10, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>{label}</div>
-      <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
-        <button onClick={() => onChange(Math.max(min, value - s))} style={{ width: 32, height: 32, borderRadius: "8px 0 0 8px", border: "1px solid " + T.border, background: T.surface, color: T.mid, fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: mono }}>-</button>
-        <div style={{ flex: 1, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: T.surface, borderTop: "1px solid " + T.border, borderBottom: "1px solid " + T.border, fontFamily: mono, fontSize: 16, fontWeight: 800, color: T.green }}>{value}</div>
-        <button onClick={() => onChange(Math.min(max, value + s))} style={{ width: 32, height: 32, borderRadius: "0 8px 8px 0", border: "1px solid " + T.border, background: T.surface, color: T.mid, fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: mono }}>+</button>
-      </div>
-    </div>
-  );
-}
-
 
 function WalletCard({ role, solBudget, mobile }) {
   const T = useTheme(); const rc = ROLE_COLORS(T)[role.id] || T.dim;
@@ -698,6 +659,36 @@ function WalletCard({ role, solBudget, mobile }) {
 function ImageUpload({ image, onChange, mobile }) { const T = useTheme(); const ref = useRef(null); const read = (f) => { const r = new FileReader(); r.onload = () => onChange(r.result); r.readAsDataURL(f); }; return (<div onClick={() => ref.current?.click()} onDrop={e => { e.preventDefault(); if (e.dataTransfer.files[0]) read(e.dataTransfer.files[0]); }} onDragOver={e => e.preventDefault()} style={{ width: mobile ? 120 : "100%", height: mobile ? 120 : undefined, aspectRatio: mobile ? undefined : "1", maxWidth: mobile ? 120 : 200, borderRadius: 16, border: "2px dashed " + (image ? T.green + "44" : T.border), background: image ? "url(" + image + ") center/cover" : T.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, cursor: "pointer", flexShrink: 0, position: "relative" }}>{!image && <><span style={{ color: T.dim }}><Ic.Upload /></span><span style={{ fontSize: 12, color: T.faint, fontFamily: mono }}>512{"\u00D7"}512</span></>}{image && <div style={{ position: "absolute", bottom: 8, right: 8, width: 24, height: 24, borderRadius: 6, background: T.green, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff" }}><Ic.Check /></div>}<input ref={ref} type="file" accept="image/*" style={{ display: "none" }} onChange={e => { if (e.target.files?.[0]) read(e.target.files[0]); }} /></div>); }
 function BondingCurve({ progress = 0 }) { const T = useTheme(); const w = 340, h = 80; const pts = Array.from({ length: 50 }, (_, i) => { const t = i / 49; return { x: t * w, y: h - 8 - Math.pow(t, 2.5) * (h - 16) }; }); const d = pts.map((p, i) => (i ? "L" : "M") + p.x + "," + p.y).join(" "); const fp = Math.min(progress, 1); return (<div><svg width="100%" viewBox={"0 0 " + w + " " + h} style={{ display: "block" }}><defs><linearGradient id="cg" x1="0" x2="1"><stop offset="0" stopColor={T.green} stopOpacity=".15"/><stop offset={String(fp)} stopColor={T.green} stopOpacity=".35"/><stop offset={String(fp)} stopColor={T.dim} stopOpacity=".05"/></linearGradient><clipPath id="cc"><path d={d + " L" + w + "," + h + " L0," + h + " Z"}/></clipPath></defs><rect width={w} height={h} fill="url(#cg)" clipPath="url(#cc)"/><path d={d} fill="none" stroke={T.green} strokeWidth="2" opacity=".6"/>{fp > 0 && <circle cx={fp * w} cy={h - 8 - Math.pow(fp, 2.5) * (h - 16)} r="5" fill={T.green} style={{ filter: "drop-shadow(0 0 8px " + T.green + ")" }}/>}<line x1={w * 0.95} y1="0" x2={w * 0.95} y2={h} stroke={T.yellow} strokeWidth="1" strokeDasharray="4,4" opacity=".3"/><text x={w * 0.95 - 5} y="12" fontSize="10" fill={T.yellow} opacity=".5" textAnchor="end">grad</text></svg><div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: T.faint, fontFamily: mono, marginTop: 6 }}><span>0 SOL</span><span style={{ color: T.green, fontWeight: 600 }}>{(progress * 85).toFixed(1)} / 85 SOL</span></div></div>); }
 
+// ── Step section wrapper ──
+function Section({ n, title, done, highlight, T, mobile, children, subtitle }) {
+  const bg = highlight ? T.green + "08" : T.surface;
+  const bdr = highlight ? T.green + "44" : done ? T.green + "33" : T.border;
+  return (
+    <div style={{ background: bg, border: "1px solid " + bdr, borderRadius: 14, padding: mobile ? 16 : 22, marginBottom: mobile ? 10 : 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: mobile ? 10 : 14 }}>
+        <span style={{ width: 26, height: 26, borderRadius: "50%", background: done ? T.green : highlight ? T.green : T.border, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 12, fontWeight: 800, color: done || highlight ? T.bg : T.dim, flexShrink: 0 }}>{done ? "\u2713" : n}</span>
+        <span style={{ fontFamily: sans, fontWeight: 800, fontSize: mobile ? 15 : 17, color: T.text }}>{title}</span>
+        {subtitle && <span style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginLeft: "auto" }}>{subtitle}</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function NumInput({ label, value, onChange, min, max, step, T }) {
+  const s = step || 1;
+  return (
+    <div style={{ background: T.bg, borderRadius: 10, border: "1px solid " + T.border, padding: "8px 10px" }}>
+      <div style={{ fontSize: 10, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
+        <button onClick={() => onChange(Math.max(min, value - s))} style={{ width: 30, height: 30, borderRadius: "8px 0 0 8px", border: "1px solid " + T.border, background: T.surface, color: T.dim, fontSize: 16, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>-</button>
+        <div style={{ flex: 1, height: 30, display: "flex", alignItems: "center", justifyContent: "center", background: T.surface, borderTop: "1px solid " + T.border, borderBottom: "1px solid " + T.border, fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.green }}>{value}</div>
+        <button onClick={() => onChange(Math.min(max, value + s))} style={{ width: 30, height: 30, borderRadius: "0 8px 8px 0", border: "1px solid " + T.border, background: T.surface, color: T.dim, fontSize: 16, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+      </div>
+    </div>
+  );
+}
+
 // ══════════════════════════════════════════
 // MAIN APP
 // ══════════════════════════════════════════
@@ -706,10 +697,7 @@ export default function App() {
   const T = isDark ? dark : light;
   const toggleTheme = () => setIsDark(d => { try { localStorage.setItem("bondli_theme", d ? "light" : "dark"); } catch {} return !d; });
 
-  // user: null | { pubkey, whitelisted, paid, tier, demo }
-  // tier: "none" | "free" | "pro" | "demo"
   const [user, setUser] = useState(null);
-  
   const [tokenName, setTokenName] = useState(""); const [ticker, setTicker] = useState(""); const [desc, setDesc] = useState(""); const [image, setImage] = useState(null);
   const [twitter, setTwitter] = useState(""); const [telegram, setTelegram] = useState(""); const [website, setWebsite] = useState("");
   const [existingCA, setExistingCA] = useState(""); const [totalSol, setTotalSol] = useState(1);
@@ -718,20 +706,20 @@ export default function App() {
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState("");
   const [pastSessions, setPastSessions] = useState([]);
-  useEffect(() => {
-    if (!user?.pubkey || !user?.whitelisted && user?.tier !== "pro") return;
-    fetch(API + "/api/sessions?wallet=" + user.pubkey).then(r => r.json()).then(d => {
-      if (d.sessions) setPastSessions(d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5));
-    }).catch(() => {});
-  }, [user, launched]);
-  const mobile = useIsMobile();
+  const [fleetStatus, setFleetStatus] = useState(null);
+  const [caAnalysis, setCaAnalysis] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
 
+  const mobile = useIsMobile();
   const hasAccess = user && (user?.whitelisted || user?.tier === "free" || user?.tier === "pro" || user?.demo);
   const needsTier = user && !user?.demo && !user?.whitelisted && user?.tier === "none";
   const tierLabel = user?.whitelisted ? "VIP" : user?.tier === "pro" ? "PRO" : user?.tier === "free" ? "FREE" : user?.demo ? "DEMO" : "";
   const tierColor = user?.whitelisted ? T.yellow : user?.tier === "pro" ? T.purple : user?.tier === "free" ? T.green : T.orange;
 
-  // Auto-reconnect
+  // Free tier default description
+  useEffect(() => { if (user?.tier === "free" && !desc) setDesc("bondli.fun deployed"); }, [user?.tier]);
+
+  // Phantom auto-reconnect
   useEffect(() => {
     const p = window?.phantom?.solana || window?.solana;
     if (p?.isPhantom && p?.isConnected && !user) {
@@ -744,20 +732,22 @@ export default function App() {
     }
   }, []);
 
+  // WebSocket
   useEffect(() => { if (!hasAccess) return; let ws, dead = false; const connect = () => { if (dead) return; try { ws = new WebSocket(WS_URL); ws.onopen = () => setWsConnected(true); ws.onclose = () => { setWsConnected(false); if (!dead) setTimeout(connect, 3000); }; ws.onerror = () => {}; } catch {} }; connect(); return () => { dead = true; if (ws) ws.close(); }; }, [hasAccess]);
-  // After launch, poll server for fleet trading status
-  const [fleetStatus, setFleetStatus] = useState(null);
+
+  // Past sessions
+  useEffect(() => {
+    if (!user?.pubkey || (!user?.whitelisted && user?.tier !== "pro")) return;
+    fetch(API + "/api/sessions?wallet=" + user.pubkey).then(r => r.json()).then(d => {
+      if (d.sessions) setPastSessions(d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5));
+    }).catch(() => {});
+  }, [user, launched]);
+
+  // Fleet status polling
   useEffect(() => {
     if (!launched || !launchCA) return;
     const iv = setInterval(async () => {
-      try {
-        const res = await fetch(API + "/api/status", { headers: { "X-Wallet": user?.pubkey } });
-        if (res.ok) {
-          const data = await res.json();
-          setFleetStatus(data);
-          if (data.curveProgress) setCurveProgress(data.curveProgress);
-        }
-      } catch {}
+      try { const res = await fetch(API + "/api/status", { headers: { "X-Wallet": user?.pubkey } }); if (res.ok) { const data = await res.json(); setFleetStatus(data); if (data.curveProgress) setCurveProgress(data.curveProgress); } } catch {}
     }, 5000);
     return () => clearInterval(iv);
   }, [launched, launchCA]);
@@ -766,108 +756,202 @@ export default function App() {
 
   const walletCount = totalSol < 0.5 ? 3 : totalSol < 1 ? 5 : totalSol < 5 ? 9 : totalSol < 10 ? 11 : totalSol < 25 ? 15 : 20;
   const activeRoles = useMemo(() => { if (walletCount <= 3) return ROLES.filter(r => ["accumulator","momentum","whale"].includes(r.id)); if (walletCount <= 5) return ROLES.filter(r => ["sniper","accumulator","momentum","whale","liquidator"].includes(r.id)); if (walletCount <= 9) return ROLES.filter(r => r.id !== "recycler"); return ROLES; }, [walletCount]);
+  const isApe = !!existingCA;
   const canLaunch = (existingCA || (tokenName && ticker));
+  const preview = calcDevBuyPreview(totalSol, isApe);
 
   const disconnect = async () => { try { const p = window?.phantom?.solana || window?.solana; await p?.disconnect(); } catch {} setUser(null); };
-
   const handleTierSelect = (tier) => setUser({ ...user, tier, paid: tier === "pro" });
+
+  // CA Analysis
+  const analyzeCA = async (ca) => {
+    if (!ca || ca.length < 32) return;
+    setCaAnalysis({ ca, loading: true, error: null, data: null });
+    try {
+      const res = await fetch("https://frontend-api-v2.pump.fun/coins/" + ca);
+      if (!res.ok) throw new Error("Not found on pump.fun");
+      const coin = await res.json();
+      const age = (Date.now() - new Date(coin.created_timestamp).getTime()) / 60000;
+      const mcap = coin.usd_market_cap || 0;
+      const replies = coin.reply_count || 0;
+      let score = 50;
+      if (mcap > 50000) score += 15;
+      if (mcap > 200000) score += 10;
+      if (mcap < 5000) score -= 20;
+      if (age < 10) score += 10;
+      if (age > 1440) score -= 15;
+      if (replies > 20) score += 10;
+      if (coin.complete) score -= 30;
+      score = Math.max(0, Math.min(100, score));
+      const verdict = score >= 65 ? "ape" : score >= 40 ? "risky" : "avoid";
+      setCaAnalysis({ ca, loading: false, error: null, data: { ...coin, age, score, verdict } });
+    } catch (e) {
+      setCaAnalysis({ ca, loading: false, error: e.message || "Analysis failed", data: null });
+    }
+  };
+
+  const handleCAChange = (v) => { setExistingCA(v); setCaAnalysis(null); };
+  const handleCAKeyDown = (e) => { if (e.key === "Enter" && existingCA.length >= 32) { e.preventDefault(); analyzeCA(existingCA); } };
 
   return (
     <ThemeCtx.Provider value={T}>
       <style>{makeCss(T)}</style>
-
       {!user && <LandingPage onConnect={setUser} isDark={isDark} toggleTheme={toggleTheme} />}
       {needsTier && <TierGate user={user} onSelect={handleTierSelect} onDisconnect={disconnect} />}
-
       {user && hasAccess && (
-        <div style={{ minHeight: "100dvh", background: T.bg, color: T.text, fontFamily: sans }}>
-          <div style={{ position: "fixed", inset: 0, opacity: 0.015, pointerEvents: "none", zIndex: 0, backgroundImage: T.dotGrid, backgroundSize: "30px 30px" }} />
+        <div style={{ minHeight: "100dvh", background: T.bg, color: T.text, fontFamily: sans, transition: "background .3s" }}>
+          <div style={{ position: "fixed", inset: 0, opacity: T.mode === "dark" ? 0.015 : 0.025, pointerEvents: "none", zIndex: 0, backgroundImage: T.gridLines, backgroundSize: "60px 60px" }} />
 
-          <header style={{ padding: mobile ? "10px 16px" : "12px 28px", borderBottom: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "space-between", background: T.surface + "ee", backdropFilter: "blur(10px)", position: "sticky", top: 0, zIndex: 40 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <RedPill size={mobile ? 24 : 28} />
-              <span style={{ fontFamily: mono, fontWeight: 800, fontSize: mobile ? 16 : 18, color: T.text }}>BOND<span style={{ color: T.red }}>LI</span></span>
-              {wsConnected && <span style={{ fontSize: 10, fontFamily: mono, color: T.green, display: "flex", alignItems: "center", gap: 4 }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: T.green, animation: "pulse 2s infinite" }}/>{!mobile && "LIVE"}</span>}
+          <header style={{ padding: mobile ? "10px 14px" : "12px 28px", borderBottom: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "space-between", position: "relative", zIndex: 10, background: T.bg + "ee", backdropFilter: "blur(10px)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: mobile ? 8 : 12 }}>
+              <RedPill size={mobile ? 24 : 30} />
+              <span style={{ fontFamily: mono, fontWeight: 800, fontSize: mobile ? 15 : 18, color: T.text }}>BOND<span style={{ color: T.red }}>LI</span></span>
+              {wsConnected && <span style={{ fontSize: 10, fontFamily: mono, color: T.green, display: "flex", alignItems: "center", gap: 4, opacity: 0.8 }}>{"\u25CF"} live</span>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: mobile ? 6 : 10 }}>
+              <button onClick={() => setShowSettings(!showSettings)} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: T.dim, fontSize: 14 }}>{"\u2699"}</button>
               <ThemeToggle isDark={isDark} toggle={toggleTheme} mobile={mobile} />
               {tierLabel && <span style={{ padding: "3px 8px", borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 700, background: tierColor + "18", color: tierColor, border: "1px solid " + tierColor + "33" }}>{tierLabel}</span>}
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", background: T.bg, borderRadius: 10, border: "1px solid " + T.border }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", background: T.surface, borderRadius: 10, border: "1px solid " + T.border }}>
                 <span style={{ fontFamily: mono, fontSize: 12, color: T.mid }}>{user?.demo ? "demo" : (user?.pubkey || "").slice(0, 4) + ".." + (user?.pubkey || "").slice(-4)}</span>
-                <button onClick={disconnect} style={{ background: "none", border: "none", cursor: "pointer", color: T.dim, display: "flex", padding: 0 }}><Ic.Disconnect /></button>
+                <button onClick={disconnect} style={{ background: "none", border: "none", cursor: "pointer", color: T.dim, fontSize: 11, fontFamily: mono }}>{"\u2715"}</button>
               </div>
             </div>
           </header>
 
-          <div style={{ maxWidth: 640, margin: "0 auto", padding: mobile ? "20px 14px" : "32px 24px", position: "relative", zIndex: 1 }}>
+          {showSettings && (
+            <div style={{ maxWidth: 680, margin: "0 auto", padding: mobile ? "12px 14px" : "16px 24px" }}>
+              <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 16 : 22, animation: "fadeUp .3s ease" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                  <span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>{"\u2699"} Settings</span>
+                  <button onClick={() => setShowSettings(false)} style={{ background: "none", border: "none", color: T.dim, cursor: "pointer", fontFamily: mono }}>{"\u2715"}</button>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div><Label>RPC URL</Label><Input value={rpc} onChange={setRpc} placeholder="https://mainnet.helius-rpc.com/?api-key=..." big /></div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: T.bg, borderRadius: 10, border: "1px solid " + T.border, cursor: "pointer" }} onClick={() => setUseAtlas(!useAtlas)}>
+                    <div style={{ width: 40, height: 22, borderRadius: 11, padding: 2, background: useAtlas ? T.green : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", transform: useAtlas ? "translateX(18px)" : "translateX(0)", transition: "transform .2s" }} /></div>
+                    <div><div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.text }}>Helius Atlas</div><div style={{ fontSize: 11, color: T.dim }}>Staked connections</div></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {user?.tier === "free" && !user?.whitelisted && (
+            <div style={{ background: T.green + "08", borderBottom: "1px solid " + T.green + "22", padding: "6px 20px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
+              <span style={{ fontSize: 12, fontFamily: mono, color: T.green }}>{FREE_PROFIT_CUT}% profit share on close</span>
+              <button onClick={() => setUser({ ...user, tier: "none" })} style={{ background: T.green, color: T.bg, border: "none", borderRadius: 6, padding: "3px 10px", fontFamily: mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Upgrade</button>
+            </div>
+          )}
+
+          <div style={{ maxWidth: launched ? 1100 : 680, margin: "0 auto", padding: mobile ? "16px 12px" : "24px 20px", position: "relative", zIndex: 1, transition: "max-width .3s" }}>
 
             {launched && launchCA ? (
               <div>
-                <div style={{ background: "#000", borderRadius: 14, overflow: "hidden", border: "1px solid " + T.border, marginBottom: 14 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: T.surface, borderBottom: "1px solid " + T.border }}>
+                <div style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 14, overflow: "hidden", marginBottom: mobile ? 12 : 16 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: "1px solid " + T.border }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      {image && <img src={image} style={{ width: 22, height: 22, borderRadius: 6, objectFit: "cover" }} />}
-                      <span style={{ fontFamily: mono, fontSize: 14, fontWeight: 700, color: T.text }}>{tokenName || ticker || "Token"}</span>
-                      <span style={{ fontSize: 9, fontWeight: 800, fontFamily: mono, color: T.bg, background: T.green, padding: "1px 6px", borderRadius: 4 }}>LIVE</span>
+                      <span style={{ fontSize: 10, fontWeight: 800, fontFamily: mono, color: T.bg, background: T.green, padding: "2px 8px", borderRadius: 6, animation: "pulse 2s infinite" }}>LIVE</span>
+                      <span style={{ fontFamily: mono, fontSize: 14, fontWeight: 700, color: T.text }}>{tokenName || ticker || "Trading"}</span>
                     </div>
-                    <span style={{ fontFamily: mono, fontSize: 11, color: T.dim, cursor: "pointer" }} onClick={() => navigator.clipboard?.writeText(launchCA)}>{launchCA.slice(0, 6)}...{launchCA.slice(-4)}</span>
+                    <span style={{ fontFamily: mono, fontSize: 11, color: T.mid, cursor: "pointer" }} onClick={() => navigator.clipboard?.writeText(launchCA)}>{launchCA.slice(0, 6)}...{launchCA.slice(-4)} {"\u{1F4CB}"}</span>
                   </div>
-                  <iframe src={"https://pump.fun/coin/" + launchCA} style={{ width: "100%", height: mobile ? 420 : 560, border: "none", display: "block" }} title="pump.fun" />
+                  <iframe src={"https://pump.fun/coin/" + launchCA} style={{ width: "100%", height: mobile ? 420 : 560, border: "none", display: "block" }} title="Chart" />
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
-                  {[{ k: "Phase", v: fleetStatus?.phase || "trading", c: T.green }, { k: "Trades", v: fleetStatus?.tradeCount || 0, c: T.text }, { k: "Spent", v: (fleetStatus?.solSpent || 0).toFixed(3), c: T.red }, { k: "Recovered", v: (fleetStatus?.solRecovered || 0).toFixed(3), c: T.green }].map(s => (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginBottom: mobile ? 12 : 16 }}>
+                  {[{ l: "pump.fun", u: "https://pump.fun/coin/" + launchCA, c: T.green }, { l: "Solscan", u: "https://solscan.io/token/" + launchCA }, { l: "DexScreener", u: "https://dexscreener.com/solana/" + launchCA }, { l: "Photon", u: "https://photon-sol.tinyastro.io/en/lp/" + launchCA }].map(x => (
+                    <a key={x.l} href={x.u} target="_blank" rel="noopener" style={{ textAlign: "center", padding: "8px 4px", background: T.surface, borderRadius: 8, border: "1px solid " + T.border, color: x.c || T.mid, fontFamily: mono, fontSize: mobile ? 10 : 11, fontWeight: 700, textDecoration: "none" }}>{x.l}</a>
+                  ))}
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 8, marginBottom: mobile ? 12 : 16 }}>
+                  {[{ k: "Phase", v: fleetStatus?.phase || "starting", c: T.green }, { k: "Trades", v: fleetStatus?.tradeCount || 0, c: T.green }, { k: "Spent", v: (fleetStatus?.solSpent || 0).toFixed(3), c: T.red }, { k: "Recovered", v: (fleetStatus?.solRecovered || 0).toFixed(3), c: T.green }].map(s => (
                     <div key={s.k} style={{ background: T.surface, borderRadius: 10, padding: "10px 12px", border: "1px solid " + T.border }}>
                       <div style={{ fontSize: 9, fontFamily: mono, color: T.faint, textTransform: "uppercase", marginBottom: 3 }}>{s.k}</div>
-                      <div style={{ fontSize: 18, fontFamily: mono, fontWeight: 800, color: s.c }}>{s.v}</div>
+                      <div style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: s.c }}>{s.v}</div>
                     </div>
                   ))}
                 </div>
 
-                <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-                  {[{ l: "pump.fun", u: "https://pump.fun/coin/" + launchCA }, { l: "Solscan", u: "https://solscan.io/token/" + launchCA }, { l: "DexScreener", u: "https://dexscreener.com/solana/" + launchCA }, { l: "Photon", u: "https://photon-sol.tinyastro.io/en/lp/" + launchCA }].map(x => (
-                    <a key={x.l} href={x.u} target="_blank" rel="noopener" style={{ flex: 1, textAlign: "center", padding: "8px", background: T.surface, borderRadius: 8, border: "1px solid " + T.border, color: T.mid, fontFamily: mono, fontSize: 11, fontWeight: 700, textDecoration: "none" }}>{x.l}</a>
-                  ))}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={async () => {
+                    if (!confirm("Close all positions?")) return;
+                    try { const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca: launchCA, wallet: user?.pubkey }) }); const data = await res.json(); if (data.error) alert(data.error); else alert("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL"); } catch (e) { alert(e.message); }
+                  }} style={{ flex: 1, padding: "12px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 13, fontWeight: 800, borderRadius: 10, cursor: "pointer" }}>{"\u2620"} Close All</button>
+                  <button onClick={() => { setLaunched(false); setLaunchCA(""); setCaAnalysis(null); }} style={{ padding: "12px 20px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 12, borderRadius: 10, cursor: "pointer" }}>New</button>
                 </div>
-
-                <button onClick={async () => { if (!confirm("Close all positions?")) return; try { const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca: launchCA, wallet: user?.pubkey }) }); const data = await res.json(); if (data.error) alert(data.error); else alert("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL"); } catch (e) { alert(e.message); } }} style={{ width: "100%", padding: "12px", background: T.red + "12", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 13, fontWeight: 800, borderRadius: 10, cursor: "pointer", marginBottom: 8 }}>{"\u2620"} Close All Positions</button>
-                <button onClick={() => { setLaunched(false); setLaunchCA(""); }} style={{ width: "100%", padding: "10px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 12, borderRadius: 8, cursor: "pointer" }}>New Launch</button>
               </div>
 
             ) : (
+
               <div>
-                <h1 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 24 : 32, textAlign: "center", marginBottom: 4, color: T.text }}>Launch on <span style={{ color: T.green }}>pump.fun</span></h1>
-                <p style={{ textAlign: "center", fontSize: 14, color: T.dim, fontFamily: mono, marginBottom: mobile ? 24 : 36 }}>create a token or ape an existing one</p>
+                <h1 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 22 : 28, textAlign: "center", marginBottom: 2, color: T.text }}>Launch on <span style={{ color: T.green }}>pump.fun</span></h1>
+                <p style={{ textAlign: "center", fontSize: 13, color: T.dim, fontFamily: mono, marginBottom: mobile ? 20 : 28 }}>create a token or ape an existing one</p>
 
                 <Section n="1" title="Wallet" done={!!seed} T={T} mobile={mobile}>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <div onClick={() => setSeed("")} style={{ padding: 16, background: !seed ? T.green + "10" : T.bg, border: "1px solid " + (!seed ? T.green : T.border), borderRadius: 10, cursor: "pointer", textAlign: "center" }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <div onClick={() => setSeed("")} style={{ padding: mobile ? 14 : 16, background: !seed ? T.green + "10" : T.bg, border: "1px solid " + (!seed ? T.green : T.border), borderRadius: 10, cursor: "pointer", textAlign: "center" }}>
                       <div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: !seed ? T.green : T.mid }}>Generate Fresh</div>
                       <div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginTop: 4 }}>Deposit SOL to fund</div>
                     </div>
-                    <div style={{ padding: 16, background: seed ? T.green + "10" : T.bg, border: "1px solid " + (seed ? T.green : T.border), borderRadius: 10 }}>
-                      <div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: seed ? T.green : T.mid, marginBottom: 8, textAlign: "center" }}>Master Wallet</div>
+                    <div style={{ padding: mobile ? 14 : 16, background: seed ? T.green + "10" : T.bg, border: "1px solid " + (seed ? T.green : T.border), borderRadius: 10 }}>
+                      <div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: seed ? T.green : T.mid, textAlign: "center", marginBottom: 6 }}>Master Wallet</div>
                       <Input value={seed} onChange={setSeed} placeholder="bs58 private key" type="password" />
                     </div>
                   </div>
                 </Section>
 
-                <Section n="2" title="Token" done={canLaunch} T={T} mobile={mobile}>
-                  <div style={{ marginBottom: 12 }}>
+                <Section n="2" title="Token" done={canLaunch} subtitle={isApe ? "aping CA" : canLaunch ? "creating new" : ""} T={T} mobile={mobile}>
+                  <div style={{ marginBottom: 10 }}>
                     <Label>paste CA to ape</Label>
-                    <Input value={existingCA} onChange={setExistingCA} placeholder="pump.fun contract address..." big />
+                    <Input value={existingCA} onChange={handleCAChange} onKeyDown={handleCAKeyDown} placeholder="pump.fun CA... (Enter to analyze)" big />
+                    {existingCA.length >= 32 && !caAnalysis && <div style={{ textAlign: "right", marginTop: 4 }}><span style={{ fontSize: 11, fontFamily: mono, color: T.green, cursor: "pointer" }} onClick={() => analyzeCA(existingCA)}>Analyze {"\u21B5"}</span></div>}
                   </div>
+
+                  {caAnalysis?.loading && (
+                    <div style={{ padding: 16, textAlign: "center", fontFamily: mono, fontSize: 12, color: T.dim, animation: "pulse 1.5s infinite" }}>Analyzing {existingCA.slice(0, 8)}...</div>
+                  )}
+                  {caAnalysis?.error && (
+                    <div style={{ padding: "10px 14px", background: T.red + "10", border: "1px solid " + T.red + "33", borderRadius: 10, fontFamily: mono, fontSize: 12, color: T.red, marginBottom: 10 }}>{caAnalysis.error}</div>
+                  )}
+                  {caAnalysis?.data && (
+                    <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 12, overflow: "hidden", marginBottom: 10 }}>
+                      <iframe src={"https://pump.fun/coin/" + caAnalysis.ca} style={{ width: "100%", height: mobile ? 280 : 340, border: "none", display: "block" }} title="Preview" />
+                      <div style={{ padding: mobile ? 10 : 14 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontFamily: mono, fontSize: 15, fontWeight: 800, color: T.text }}>{caAnalysis.data.name || "?"}</span>
+                          <span style={{ fontFamily: mono, fontSize: 13, color: T.green, fontWeight: 700 }}>${caAnalysis.data.symbol || "?"}</span>
+                          <span style={{ marginLeft: "auto", padding: "3px 10px", borderRadius: 6, fontFamily: mono, fontSize: 11, fontWeight: 800, background: caAnalysis.data.verdict === "ape" ? T.green + "20" : caAnalysis.data.verdict === "risky" ? T.yellow + "20" : T.red + "20", color: caAnalysis.data.verdict === "ape" ? T.green : caAnalysis.data.verdict === "risky" ? T.yellow : T.red, textTransform: "uppercase" }}>{caAnalysis.data.score}/100 {caAnalysis.data.verdict}</span>
+                        </div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6 }}>
+                          {[
+                            { k: "MCap", v: "$" + ((caAnalysis.data.usd_market_cap || 0) / 1000).toFixed(1) + "k" },
+                            { k: "Age", v: caAnalysis.data.age < 60 ? Math.round(caAnalysis.data.age) + "m" : Math.round(caAnalysis.data.age / 60) + "h" },
+                            { k: "Replies", v: caAnalysis.data.reply_count || 0 },
+                            { k: "Bonded", v: caAnalysis.data.complete ? "YES" : "no" },
+                          ].map(s => (
+                            <div key={s.k} style={{ textAlign: "center", padding: "6px 2px" }}>
+                              <div style={{ fontSize: 14, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div>
+                              <div style={{ fontSize: 9, color: T.faint, fontFamily: mono }}>{s.k}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {!existingCA && (<>
-                    <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "4px 0 12px", fontSize: 11, color: T.faint, fontFamily: mono, textTransform: "uppercase", letterSpacing: ".1em" }}><span style={{ flex: 1, height: 1, background: T.border }} />or create new<span style={{ flex: 1, height: 1, background: T.border }} /></div>
-                    <div style={{ display: "flex", gap: 14, marginBottom: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "4px 0 10px", fontSize: 11, color: T.faint, fontFamily: mono, textTransform: "uppercase", letterSpacing: ".08em" }}><span style={{ flex: 1, height: 1, background: T.border }} />or create new<span style={{ flex: 1, height: 1, background: T.border }} /></div>
+                    <div style={{ display: "flex", gap: mobile ? 10 : 14, marginBottom: 10 }}>
                       <ImageUpload image={image} onChange={setImage} mobile={mobile} />
-                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 10 }}>
+                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
                         <Input value={tokenName} onChange={setTokenName} placeholder="Token Name" big />
                         <Input value={ticker} onChange={v => setTicker(v.toUpperCase())} placeholder="$TICKER" maxLength={10} big />
                       </div>
                     </div>
-                    <textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2} placeholder="Description..." style={{ width: "100%", padding: "10px 14px", background: T.bg, border: "1px solid " + T.border, borderRadius: 10, color: T.text, fontFamily: sans, fontSize: 14, outline: "none", resize: "vertical", marginBottom: 8 }} />
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                    <div style={{ marginBottom: 8 }}><textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2} placeholder="Description..." style={{ width: "100%", padding: "10px 12px", background: T.bg, border: "1px solid " + T.border, borderRadius: 10, color: T.text, fontFamily: sans, fontSize: 14, outline: "none", resize: "vertical", lineHeight: 1.5, boxSizing: "border-box" }} /></div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
                       <Input value={twitter} onChange={setTwitter} placeholder="Twitter" />
                       <Input value={telegram} onChange={setTelegram} placeholder="Telegram" />
                       <Input value={website} onChange={setWebsite} placeholder="Website" />
@@ -876,37 +960,54 @@ export default function App() {
                 </Section>
 
                 <Section n="3" title="Configure" T={T} mobile={mobile}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                     <span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase" }}>SOL Budget</span>
-                    <span style={{ fontFamily: mono, fontSize: 24, fontWeight: 900, color: T.green }}>{totalSol}</span>
+                    <span style={{ fontFamily: mono, fontSize: 22, fontWeight: 900, color: T.green }}>{totalSol}</span>
                   </div>
-                  <input type="range" min={0.5} max={50} step={0.1} value={totalSol} onChange={e => setTotalSol(Number(e.target.value))} style={{ width: "100%", accentColor: T.green, marginBottom: 14 }} />
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }}>
+                  <input type="range" min={0.5} max={50} step={0.1} value={totalSol} onChange={e => setTotalSol(Number(e.target.value))} style={{ width: "100%", accentColor: T.green, marginBottom: 12 }} />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 12 }}>
                     <NumInput label="Snipers" value={sniperCount} onChange={setSniperCount} min={1} max={5} T={T} />
                     <NumInput label="Slippage %" value={slippage} onChange={setSlippage} min={1} max={50} T={T} />
                     <NumInput label="Duration m" value={duration} onChange={setDuration} min={5} max={240} step={5} T={T} />
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 2, background: T.border + "44", borderRadius: 8, overflow: "hidden" }}>
-                    {(existingCA ? [{ k: "Fleet", v: totalSol.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }] : [{ k: "Dev Buy", v: calcDevBuyPreview(totalSol, false).devBuy.toFixed(2) }, { k: "Fleet", v: calcDevBuyPreview(totalSol, false).fleet.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }]).map(s => (
-                      <div key={s.k} style={{ background: T.bg, padding: "10px 6px", textAlign: "center" }}><div style={{ fontSize: 16, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 9, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.k}</div></div>
+                  <div style={{ display: "grid", gridTemplateColumns: isApe ? "repeat(3, 1fr)" : "repeat(4, 1fr)", gap: 2, background: T.border + "44", borderRadius: 8, overflow: "hidden" }}>
+                    {(isApe
+                      ? [{ k: "Fleet", v: totalSol.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }]
+                      : [{ k: "Dev Buy", v: preview.devBuy.toFixed(2) }, { k: "Fleet", v: preview.fleet.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }]
+                    ).map(s => (
+                      <div key={s.k} style={{ background: T.bg, padding: "8px 4px", textAlign: "center" }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 9, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.k}</div></div>
                     ))}
                   </div>
                 </Section>
 
-                <Section n={"\u{1F680}"} title={existingCA ? "Start Trading" : "Launch"} highlight={canLaunch} T={T} mobile={mobile}>
-                  <LaunchFlow user={user} mobile={mobile} totalSol={totalSol} tokenConfig={{ name: tokenName, ticker, description: desc, image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration }} onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); }} />
+                <Section n={"\u{1F680}"} title={isApe ? "Start Trading" : "Launch"} highlight={canLaunch} T={T} mobile={mobile}>
+                  <LaunchFlow
+                    user={user} mobile={mobile} totalSol={totalSol}
+                    tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }}
+                    canLaunch={canLaunch} launched={launched} masterSeed={seed}
+                    fleetConfig={{ sniperCount, slippage, duration }}
+                    onLaunched={(data) => { setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); }}
+                  />
                 </Section>
 
-                {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 12, padding: 16, marginTop: 4 }}>
-                  <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 10 }}>Resume Session</div>
-                  {pastSessions.map(s => (<div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid " + T.border + "22" }}>
-                    <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || "?"} {s.tokenCA?.slice(0, 8)}...</span>
-                    <button onClick={async () => { try { const r = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) }); const d = await r.json(); if (d.ok) { setLaunchCA(d.tokenCA); setLaunched(true); } else alert(d.error); } catch (e) { alert(e.message); } }} style={{ background: T.green, color: T.bg, border: "none", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 12px", borderRadius: 6, cursor: "pointer" }}>Resume</button>
-                  </div>))}
-                </div>)}
+                {pastSessions.length > 0 && (
+                  <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 12, padding: mobile ? 14 : 18, marginTop: 4 }}>
+                    <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.text, marginBottom: 10 }}>Resume Session</div>
+                    {pastSessions.map(s => (
+                      <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid " + T.border + "22" }}>
+                        <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || "?"} {"\u2014"} {s.tokenCA?.slice(0, 8)}...</span>
+                        <button onClick={async () => {
+                          try { const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) }); const data = await res.json(); if (data.ok) { setLaunchCA(data.tokenCA); setLaunched(true); } else alert(data.error || "Failed"); } catch (e) { alert(e.message); }
+                        }} style={{ background: T.green, color: T.bg, border: "none", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "4px 12px", borderRadius: 6, cursor: "pointer" }}>Resume</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
+
+          {!mobile && <footer style={{ padding: "12px 28px", borderTop: "1px solid " + T.border, marginTop: 32, display: "flex", justifyContent: "space-between", fontSize: 12, color: T.faint, fontFamily: mono }}><span>BONDLI v3.2</span><span>{launched ? <span style={{ color: T.green }}>{"\u25CF"} ACTIVE</span> : "\u25CF IDLE"}</span></footer>}
         </div>
       )}
     </ThemeCtx.Provider>
