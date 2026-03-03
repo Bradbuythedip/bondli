@@ -8,6 +8,7 @@ import bs58 from "bs58";
 
 // Engine
 import { FleetTrader } from "../engine/fleet-trader.mjs";
+import { skimSweep } from "../engine/fleet-trader.mjs";
 import { calculateFee, getFeeTier, isOwnerWallet, registerOwner } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
 
@@ -688,6 +689,7 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
           sessionId: session.id,
           force: true,
           fleetConfig: session.fleetConfig || {},
+          profitConfig: (session.tier === "free") ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET } : null,
         });
         console.log(`[LAUNCH] Fleet started:`, JSON.stringify(orchResult).slice(0, 300));
         
@@ -698,6 +700,7 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
         if (orchResult.walletKeys) {
           await sessionManager.update(session.id, {
             fleetWallets: orchResult.walletKeys,
+            profitConfig: (session.tier === "free") ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET } : null,
             status: "live",
             launchedAt: new Date().toISOString(),
           });
@@ -889,7 +892,13 @@ app.post("/api/session/recover", apiLimiter, async (req, res) => {
       return res.json({ ok: true, message: "No fleet wallets found to recover", totalRecovered: 0, wallets: [] });
     }
 
-    const result = await orch.recover(secrets, destination);
+    // Determine profit config
+    const walletInfo = await getWalletTier(wallet);
+    const profitConfig = (walletInfo.tier === "free" && !walletInfo.whitelisted)
+      ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET }
+      : null;
+
+    const result = await orch.recover(secrets, destination, profitConfig);
 
     // Also sweep dev wallet to user if it's not the master
     if (!session.useMaster && devKeypair) {
@@ -1002,7 +1011,13 @@ app.post("/api/session/sell-sweep", apiLimiter, async (req, res) => {
 
     const connection = new Connection(CONFIG.RPC_URL, "confirmed");
     const results = [];
-    let totalSold = 0, totalSwept = 0;
+    let totalSold = 0, totalSwept = 0, totalSkimmed = 0;
+
+    // Determine profit config for this user
+    const walletInfo = await getWalletTier(wallet);
+    const profitConfig = (walletInfo.tier === "free" && !walletInfo.whitelisted)
+      ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET }
+      : session.profitConfig || null; // fallback to persisted config
 
     // Get master wallet
     const devKeypair = await sessionManager.getDevKeypair(sessionId);
@@ -1061,23 +1076,15 @@ app.post("/api/session/sell-sweep", apiLimiter, async (req, res) => {
 
         await new Promise(r => setTimeout(r, 500));
 
-        // Step 2: Sweep SOL to master
+        // Step 2: Sweep SOL to master (with enforced profit skim)
         if (!kp.publicKey.equals(masterPubkey)) {
           try {
-            const balance = await connection.getBalance(kp.publicKey);
-            const sweepAmount = balance - 6000;
-            if (sweepAmount > 0) {
-              const tx = new Transaction().add(
-                ComputeBudgetProgram.setComputeUnitLimit({ units: 50_000 }),
-                ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
-                SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: masterPubkey, lamports: sweepAmount })
-              );
-              await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
-              const sweptSol = sweepAmount / LAMPORTS_PER_SOL;
-              walletResult.swept = sweptSol;
-              totalSwept += sweptSol;
-              console.log(`[SELL-SWEEP] [${fw.role}] Swept ${sweptSol.toFixed(4)} SOL -> master`);
-            }
+            const sweepResult = await skimSweep(connection, kp, masterPubkey, profitConfig, fw.allocation || 0);
+            walletResult.swept = sweepResult.swept;
+            walletResult.skimmed = sweepResult.skimmed;
+            totalSwept += sweepResult.swept;
+            totalSkimmed += sweepResult.skimmed;
+            if (sweepResult.swept > 0) console.log(`[SELL-SWEEP] [${fw.role}] Swept ${sweepResult.swept.toFixed(4)} SOL -> master${sweepResult.skimmed > 0 ? ` (skimmed ${sweepResult.skimmed.toFixed(4)})` : ""}`);
           } catch (e) { walletResult.errors.push("sweep: " + e.message); }
         }
       } catch (e) { walletResult.errors.push("keypair: " + e.message); }
@@ -1091,9 +1098,9 @@ app.post("/api/session/sell-sweep", apiLimiter, async (req, res) => {
     try { masterBalance = await connection.getBalance(masterPubkey) / LAMPORTS_PER_SOL; } catch {}
 
     await sessionManager.update(sessionId, { status: "swept", sweptAt: new Date().toISOString() });
-    console.log(`[SELL-SWEEP] ${sessionId} complete | Sold: ${totalSold.toFixed(4)} SOL | Swept: ${totalSwept.toFixed(4)} SOL | Master: ${masterBalance.toFixed(4)} SOL`);
+    console.log(`[SELL-SWEEP] ${sessionId} complete | Sold: ${totalSold.toFixed(4)} SOL | Swept: ${totalSwept.toFixed(4)} SOL | Skimmed: ${totalSkimmed.toFixed(4)} SOL | Master: ${masterBalance.toFixed(4)} SOL`);
 
-    res.json({ ok: true, totalSold, totalSwept, masterBalance, wallets: results, destination: masterPubkey.toBase58() });
+    res.json({ ok: true, totalSold, totalSwept, totalSkimmed, masterBalance, wallets: results, destination: masterPubkey.toBase58() });
   } catch (e) {
     console.error("[SELL-SWEEP] Error:", e.message);
     res.status(500).json({ error: e.message });
@@ -1179,58 +1186,18 @@ app.post("/api/close", apiLimiter, walletAuth, closeSchema, async (req, res) => 
     // Get wallet tier
     const walletInfo = await getWalletTier(wallet);
 
-    // Execute close
+    // Execute close (skim already enforced atomically in fleet-trader)
     const result = await orch.close(ca);
 
-    // Calculate profit share for free tier
+    // Record the already-enforced skim
+    const platformCut = result.platformCut || 0;
+    const netProfit = result.netProfit || 0;
     if (walletInfo.tier === "free" && !walletInfo.whitelisted) {
-      const netProfit = result.netProfit || 0; // SOL profit after all sells
-
-      if (netProfit > 0) {
-        const platformCut = +(netProfit * (FREE_PROFIT_CUT / 100)).toFixed(6);
-        const userKeeps = +(netProfit - platformCut).toFixed(6);
-
-        console.log(`[FEE] Free tier skim: ${wallet} | profit: ${netProfit} SOL | cut: ${platformCut} SOL (${FREE_PROFIT_CUT}%) | user keeps: ${userKeeps} SOL`);
-
-        // Record for admin dashboard
-        await recordProfit(wallet, netProfit, platformCut);
-
-        // If not dry run, send the platform cut
-        if (!CONFIG.DRY_RUN && platformCut > 0.0001) {
-          try {
-            const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-            // The orchestrator's master wallet sends platformCut to PLATFORM_WALLET
-            // This happens as part of the close sweep
-            result.platformCut = platformCut;
-            result.userKeeps = userKeeps;
-            result.profitCutPercent = FREE_PROFIT_CUT;
-
-            // Queue the transfer via orchestrator
-            if (orch.queueProfitTransfer) {
-              await orch.queueProfitTransfer(PLATFORM_WALLET, platformCut);
-            }
-          } catch (e) {
-            console.error("[FEE] Transfer failed:", e.message);
-            // Still record it — can collect manually later
-          }
-        }
-
-        // Attach fee info to response
-        result.fee = {
-          tier: "free",
-          netProfit,
-          platformCut,
-          userKeeps,
-          cutPercent: FREE_PROFIT_CUT,
-        };
-      } else {
-        // No profit = no fee
-        result.fee = { tier: "free", netProfit, platformCut: 0, userKeeps: netProfit, cutPercent: 0 };
-        console.log(`[FEE] Free tier: ${wallet} | no profit (${netProfit} SOL) — no fee charged`);
-      }
+      await recordProfit(wallet, netProfit, platformCut);
+      result.fee = { tier: "free", netProfit, platformCut, userKeeps: netProfit - platformCut, cutPercent: platformCut > 0 ? FREE_PROFIT_CUT : 0 };
+      if (platformCut > 0) console.log(`[FEE] Recorded: ${wallet} | profit: ${netProfit.toFixed(4)} SOL | skimmed: ${platformCut.toFixed(4)} SOL (${FREE_PROFIT_CUT}%)`);
     } else {
-      // Pro/VIP: no fee
-      result.fee = { tier: walletInfo.tier, netProfit: result.netProfit || 0, platformCut: 0, userKeeps: result.netProfit || 0, cutPercent: 0 };
+      result.fee = { tier: walletInfo.tier, netProfit, platformCut: 0, userKeeps: netProfit, cutPercent: 0 };
     }
 
     res.json(result);
@@ -1243,20 +1210,12 @@ app.post("/api/close-all", apiLimiter, walletAuth, async (req, res) => {
     const walletInfo = await getWalletTier(wallet);
     const result = await orch.closeAll();
 
-    // Apply profit skim to aggregate
+    // Apply profit skim to aggregate (already enforced in fleet-trader)
     if (walletInfo.tier === "free" && !walletInfo.whitelisted) {
       const netProfit = result.totalNetProfit || 0;
-      if (netProfit > 0) {
-        const platformCut = +(netProfit * (FREE_PROFIT_CUT / 100)).toFixed(6);
-        result.fee = { tier: "free", netProfit, platformCut, userKeeps: +(netProfit - platformCut).toFixed(6), cutPercent: FREE_PROFIT_CUT };
-        await recordProfit(wallet, netProfit, platformCut);
-        if (!CONFIG.DRY_RUN && platformCut > 0.0001 && orch.queueProfitTransfer) {
-          try { await orch.queueProfitTransfer(PLATFORM_WALLET, platformCut); } catch {}
-        }
-        console.log(`[FEE] Close-all skim: ${wallet} | ${platformCut} SOL`);
-      } else {
-        result.fee = { tier: "free", netProfit, platformCut: 0, userKeeps: netProfit, cutPercent: 0 };
-      }
+      const platformCut = result.totalPlatformCut || 0;
+      result.fee = { tier: "free", netProfit, platformCut, userKeeps: +(netProfit - platformCut).toFixed(6), cutPercent: platformCut > 0 ? FREE_PROFIT_CUT : 0 };
+      if (platformCut > 0) await recordProfit(wallet, netProfit, platformCut);
     } else {
       result.fee = { tier: walletInfo.tier, platformCut: 0, cutPercent: 0 };
     }
