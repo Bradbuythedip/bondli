@@ -130,6 +130,14 @@ export class FleetTrader {
     };
     this.sessions.set(ca, session);
 
+    // Export wallet keys for persistence (caller should save these)
+    const walletKeys = fleetWallets.map(w => ({
+      role: w.role, pubkey: w.pubkey,
+      secret: bs58.encode(w.keypair.secretKey),
+      allocation: w.allocation,
+    }));
+    session._walletKeys = walletKeys;
+
     // Auto-stop after duration
     if (duration > 0) {
       setTimeout(() => {
@@ -147,7 +155,7 @@ export class FleetTrader {
       session.running = false; session.phase = "error";
     });
 
-    return { ok: true, ca, wallets: fleetWallets.length, phase: "starting" };
+    return { ok: true, ca, wallets: fleetWallets.length, phase: "starting", walletKeys };
   }
 
   // ── Fund wallets from master ──
@@ -482,6 +490,44 @@ export class FleetTrader {
       catch (e) { results[ca] = { error: e.message }; }
     }
     return { results, totalNetProfit };
+  }
+
+  // Emergency recovery: sweep SOL from wallets back to a destination, no trading
+  async recover(walletSecrets, destinationPubkey) {
+    const dest = new PublicKey(destinationPubkey);
+    const results = [];
+    let totalRecovered = 0;
+
+    for (const secret of walletSecrets) {
+      try {
+        const kp = Keypair.fromSecretKey(bs58.decode(secret));
+        const balance = await this.connection.getBalance(kp.publicKey);
+        const sweepAmount = balance - 5000; // leave rent
+        if (sweepAmount <= 0) {
+          results.push({ pubkey: kp.publicKey.toBase58().slice(0, 8), balance: 0, swept: 0, status: "empty" });
+          continue;
+        }
+
+        // First try to sell any tokens in this wallet
+        // (skip if we can't — just sweep SOL)
+        
+        const tx = new Transaction().add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 50_000 }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+          SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: dest, lamports: sweepAmount })
+        );
+        const sig = await sendAndConfirmTransaction(this.connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
+        const sweptSol = sweepAmount / LAMPORTS_PER_SOL;
+        totalRecovered += sweptSol;
+        results.push({ pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balance / LAMPORTS_PER_SOL, swept: sweptSol, sig, status: "ok" });
+        console.log(`[RECOVER] ${kp.publicKey.toBase58().slice(0, 8)}... -> ${sweptSol.toFixed(4)} SOL swept`);
+      } catch (e) {
+        results.push({ pubkey: "?", error: e.message, status: "failed" });
+      }
+      await sleep(300);
+    }
+
+    return { totalRecovered, wallets: results };
   }
 
   stop(ca) { const s = this.sessions.get(ca); if (s) s.running = false; }
