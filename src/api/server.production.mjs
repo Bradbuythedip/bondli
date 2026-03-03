@@ -287,7 +287,7 @@ app.get("/api/access/profits", async (req, res) => {
     results.sort((a, b) => (b.totalSkimmed || 0) - (a.totalSkimmed || 0));
     res.json({ wallets: results, totalSkimmed: results.reduce((s, r) => s + (r.totalSkimmed || 0), 0) });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: IS_PROD ? "Server error. Check logs." : e.message });
   }
 });
 
@@ -357,7 +357,7 @@ app.post("/api/session/create", apiLimiter, async (req, res) => {
     res.json(session);
   } catch (e) {
     console.error("[SESSION] Create error:", e.message, e.stack);
-    res.status(500).json({ error: "Failed to create session: " + e.message });
+    res.status(500).json({ error: "Failed to create session. Try again." });
   }
 });
 
@@ -437,8 +437,12 @@ app.post("/api/session/launch", launchLimiter, async (req, res) => {
       ...result,
     });
   } catch (e) {
-    console.error("[SESSION] Launch error:", e.message);
-    res.status(500).json({ error: e.message });
+    console.error("[SESSION] Launch error:", e.stack || e.message);
+    // Don't expose internal JS errors to frontend
+    const userMsg = e.message?.includes("Cannot read properties")
+      ? "Engine not ready. Check server logs."
+      : (e.message || "Launch failed");
+    res.status(500).json({ error: userMsg });
   }
 });
 
@@ -514,7 +518,7 @@ app.post("/api/launch", launchLimiter, walletAuth, launchSchema, async (req, res
     if (sessionStore) await sessionStore.recordLaunch(req.user.wallet, ca, sol);
     const result = await orch.launch(ca, { totalSol: sol, force });
     res.json(result);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: IS_PROD ? "Server error. Check logs." : e.message }); }
 });
 
 // ═══════════════════════════════════════
@@ -583,7 +587,7 @@ app.post("/api/close", apiLimiter, walletAuth, closeSchema, async (req, res) => 
     }
 
     res.json(result);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: IS_PROD ? "Server error. Check logs." : e.message }); }
 });
 
 app.post("/api/close-all", apiLimiter, walletAuth, async (req, res) => {
@@ -611,7 +615,7 @@ app.post("/api/close-all", apiLimiter, walletAuth, async (req, res) => {
     }
 
     res.json(result);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(500).json({ error: IS_PROD ? "Server error. Check logs." : e.message }); }
 });
 
 app.post("/api/fees/calculate", apiLimiter, walletAuth, (req, res) => {
