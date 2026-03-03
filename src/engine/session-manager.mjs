@@ -74,7 +74,7 @@ export class SessionManager {
   }
 
   // Create a new launch session
-  async create({ userWallet, totalSol, tokenConfig, tier }) {
+  async create({ userWallet, totalSol, tokenConfig, tier, fleetConfig }) {
     // Generate fresh dev wallet
     const devKeypair = Keypair.generate();
     const devWallet = devKeypair.publicKey.toString();
@@ -101,6 +101,11 @@ export class SessionManager {
         telegram: tokenConfig.telegram || "",
         website: tokenConfig.website || "",
         existingCA: tokenConfig.existingCA || "",
+      },
+      fleetConfig: {
+        sniperCount: fleetConfig?.sniperCount || 2,
+        slippage: fleetConfig?.slippage || 25,
+        duration: fleetConfig?.duration || 60,
       },
       status: "awaiting_deposit", // awaiting_deposit → funded → creating → live → closing → closed
       funded: false,
