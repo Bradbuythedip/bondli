@@ -14,7 +14,7 @@ import {
   ComputeBudgetProgram,
 } from "@solana/web3.js";
 import BN from "bn.js";
-import { PumpSdk, getBuyTokenAmountFromSolAmount } from "@pump-fun/pump-sdk";
+import { PumpSdk, OnlinePumpSdk, getBuyTokenAmountFromSolAmount } from "@pump-fun/pump-sdk";
 
 // ═══════════════════════════════════════
 // IPFS UPLOAD (unchanged, with retries)
@@ -106,8 +106,9 @@ export async function createToken(connection, creator, tokenConfig, options = {}
   // Step 1: Upload metadata to IPFS
   const { metadataUri } = await uploadMetadata(tokenConfig);
 
-  // Step 2: Initialize SDK
+  // Step 2: Initialize SDKs
   const sdk = new PumpSdk(connection);
+  const onlineSdk = new OnlinePumpSdk(connection);
   console.log(`[CREATE] SDK initialized`);
 
   // Step 3: Generate mint keypair
@@ -120,7 +121,7 @@ export async function createToken(connection, creator, tokenConfig, options = {}
 
   if (devBuySol > 0) {
     // Create + initial buy in same transaction
-    const global = await sdk.fetchGlobal();
+    const global = await onlineSdk.fetchGlobal();
     console.log(`[CREATE] Fetched global config`);
 
     const solAmount = new BN(Math.floor(devBuySol * 1e9));
