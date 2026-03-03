@@ -27,6 +27,52 @@ const ROLES = [
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ═══════════════════════════════════════
+// ENFORCED PROFIT SKIM — atomic sweep + platform cut in one tx
+// Called on every exit path (close, sell-sweep, recover)
+// Both transfers happen in same transaction — user can't intercept
+// ═══════════════════════════════════════
+async function skimSweep(connection, sourceKp, destinationPubkey, profitConfig, solInputForThisWallet = 0) {
+  const balance = await connection.getBalance(sourceKp.publicKey);
+  const available = balance - 6000; // leave rent
+  if (available <= 0) return { swept: 0, skimmed: 0, sig: null };
+
+  const balanceSol = available / LAMPORTS_PER_SOL;
+  let skimLamports = 0;
+
+  // Only skim if there's profit AND profitConfig exists
+  if (profitConfig && profitConfig.cutPercent > 0 && profitConfig.platformWallet) {
+    const profit = balanceSol - solInputForThisWallet;
+    if (profit > 0.001) {
+      skimLamports = Math.floor(profit * (profitConfig.cutPercent / 100) * LAMPORTS_PER_SOL);
+      skimLamports = Math.min(skimLamports, Math.floor(available * 0.9)); // safety cap
+    }
+  }
+
+  const sweepLamports = available - skimLamports;
+  const tx = new Transaction();
+  tx.add(
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+  );
+
+  // BOTH in same tx — atomic, can't be frontrun
+  if (sweepLamports > 0) {
+    tx.add(SystemProgram.transfer({ fromPubkey: sourceKp.publicKey, toPubkey: destinationPubkey, lamports: sweepLamports }));
+  }
+  if (skimLamports > 0) {
+    tx.add(SystemProgram.transfer({ fromPubkey: sourceKp.publicKey, toPubkey: new PublicKey(profitConfig.platformWallet), lamports: skimLamports }));
+  }
+
+  const sig = await sendAndConfirmTransaction(connection, tx, [sourceKp], { skipPreflight: true, commitment: "confirmed" });
+  const swept = sweepLamports / LAMPORTS_PER_SOL;
+  const skimmed = skimLamports / LAMPORTS_PER_SOL;
+  if (skimmed > 0) console.log(`[FEE] Skimmed ${skimmed.toFixed(4)} SOL (${profitConfig.cutPercent}%) from ${sourceKp.publicKey.toBase58().slice(0, 8)}`);
+  return { swept, skimmed, sig };
+}
+
+export { skimSweep };
+
+// ═══════════════════════════════════════
 // FLEET TRADER
 // ═══════════════════════════════════════
 export class FleetTrader {
@@ -47,7 +93,7 @@ export class FleetTrader {
 
   // ── Launch fleet on a CA ──
   async launch(ca, opts = {}) {
-    const { totalSol = 0.5, devKeypair, sessionId, force = false, fleetConfig = {} } = opts;
+    const { totalSol = 0.5, devKeypair, sessionId, force = false, fleetConfig = {}, profitConfig = null } = opts;
     const {
       sniperCount = 2,     // how many sniper wallets
       slippage = 25,       // bps
@@ -127,6 +173,7 @@ export class FleetTrader {
       fleetConfig: { sniperCount, slippage, duration },
       startTime: Date.now(), phase: "starting", running: true,
       tradeCount: 0, totalSolSpent: 0, totalSolRecovered: 0,
+      _profitConfig: profitConfig,
     };
     this.sessions.set(ca, session);
 
@@ -443,34 +490,61 @@ export class FleetTrader {
       await sleep(500);
     }
 
-    // Sweep SOL from fleet wallets back to master
+    // Sweep SOL from fleet wallets back to master (with profit skim)
+    let totalSkimmed = 0;
     for (const wallet of session.fleetWallets) {
       if (wallet.keypair.publicKey.equals(session.masterKp.publicKey)) continue;
       try {
-        const balance = await this.connection.getBalance(wallet.keypair.publicKey);
-        const sweepAmount = balance - 5000;
-        if (sweepAmount <= 0) continue;
-
-        const tx = new Transaction().add(
-          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
-          SystemProgram.transfer({ fromPubkey: wallet.keypair.publicKey, toPubkey: session.masterKp.publicKey, lamports: sweepAmount })
+        const result = await skimSweep(
+          this.connection, wallet.keypair, session.masterKp.publicKey,
+          session._profitConfig, wallet.allocation || 0
         );
-        await sendAndConfirmTransaction(this.connection, tx, [wallet.keypair], { skipPreflight: true, commitment: "confirmed" });
-        console.log(`[FLEET] [${wallet.role}] Swept ${(sweepAmount / LAMPORTS_PER_SOL).toFixed(4)} SOL back`);
+        if (result.swept > 0) console.log(`[FLEET] [${wallet.role}] Swept ${result.swept.toFixed(4)} SOL back`);
+        totalSkimmed += result.skimmed;
       } catch (e) { console.error(`[FLEET] [${wallet.role}] Sweep failed:`, e.message); }
       await sleep(300);
     }
 
+    // Also skim from master wallet (aggregated profit)
+    // Master wallet has dev buy returns + all swept fleet SOL
     let masterBalance = 0;
     try { masterBalance = await this.connection.getBalance(session.masterKp.publicKey) / LAMPORTS_PER_SOL; } catch {}
+    
+    // If there's profit on master and profitConfig, skim the master too
+    // But only if master isn't the user's own wallet (useMaster mode)
+    if (session._profitConfig && masterBalance > session.totalSol && session._profitConfig.platformWallet) {
+      const masterProfit = masterBalance - session.totalSol;
+      if (masterProfit > 0.001) {
+        try {
+          const cutLamports = Math.floor(masterProfit * (session._profitConfig.cutPercent / 100) * LAMPORTS_PER_SOL);
+          if (cutLamports > 0) {
+            const tx = new Transaction().add(
+              ComputeBudgetProgram.setComputeUnitLimit({ units: 50_000 }),
+              ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+              SystemProgram.transfer({
+                fromPubkey: session.masterKp.publicKey,
+                toPubkey: new PublicKey(session._profitConfig.platformWallet),
+                lamports: cutLamports,
+              })
+            );
+            await sendAndConfirmTransaction(this.connection, tx, [session.masterKp], { skipPreflight: true, commitment: "confirmed" });
+            totalSkimmed += cutLamports / LAMPORTS_PER_SOL;
+            masterBalance -= cutLamports / LAMPORTS_PER_SOL;
+            console.log(`[FEE] Master skim: ${(cutLamports / LAMPORTS_PER_SOL).toFixed(4)} SOL (${session._profitConfig.cutPercent}%)`);
+          }
+        } catch (e) { console.error(`[FEE] Master skim failed:`, e.message); }
+      }
+    }
 
     const netProfit = session.totalSolRecovered - session.totalSolSpent;
+
     session.phase = "closed";
 
     const closeResult = {
       trades: session.tradeCount, wallets: session.fleetWallets.length,
       solSpent: session.totalSolSpent, solRecovered: session.totalSolRecovered,
       netProfit, totalIn: session.totalSol, totalReturn: session.totalSolRecovered, masterBalance,
+      platformCut: totalSkimmed, userKeeps: netProfit - totalSkimmed,
     };
     session._closeResult = closeResult;
 
@@ -493,41 +567,32 @@ export class FleetTrader {
   }
 
   // Emergency recovery: sweep SOL from wallets back to a destination, no trading
-  async recover(walletSecrets, destinationPubkey) {
+  async recover(walletSecrets, destinationPubkey, profitConfig = null) {
     const dest = new PublicKey(destinationPubkey);
     const results = [];
-    let totalRecovered = 0;
+    let totalRecovered = 0, totalSkimmed = 0;
 
     for (const secret of walletSecrets) {
       try {
         const kp = Keypair.fromSecretKey(bs58.decode(secret));
         const balance = await this.connection.getBalance(kp.publicKey);
-        const sweepAmount = balance - 5000; // leave rent
-        if (sweepAmount <= 0) {
+        if (balance <= 6000) {
           results.push({ pubkey: kp.publicKey.toBase58().slice(0, 8), balance: 0, swept: 0, status: "empty" });
           continue;
         }
 
-        // First try to sell any tokens in this wallet
-        // (skip if we can't — just sweep SOL)
-        
-        const tx = new Transaction().add(
-          ComputeBudgetProgram.setComputeUnitLimit({ units: 50_000 }),
-          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
-          SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: dest, lamports: sweepAmount })
-        );
-        const sig = await sendAndConfirmTransaction(this.connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
-        const sweptSol = sweepAmount / LAMPORTS_PER_SOL;
-        totalRecovered += sweptSol;
-        results.push({ pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balance / LAMPORTS_PER_SOL, swept: sweptSol, sig, status: "ok" });
-        console.log(`[RECOVER] ${kp.publicKey.toBase58().slice(0, 8)}... -> ${sweptSol.toFixed(4)} SOL swept`);
+        const sweepResult = await skimSweep(this.connection, kp, dest, profitConfig, 0);
+        totalRecovered += sweepResult.swept;
+        totalSkimmed += sweepResult.skimmed;
+        results.push({ pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balance / LAMPORTS_PER_SOL, swept: sweepResult.swept, skimmed: sweepResult.skimmed, sig: sweepResult.sig, status: "ok" });
+        console.log(`[RECOVER] ${kp.publicKey.toBase58().slice(0, 8)}... -> ${sweepResult.swept.toFixed(4)} SOL swept${sweepResult.skimmed > 0 ? ` (skimmed ${sweepResult.skimmed.toFixed(4)})` : ""}`);
       } catch (e) {
         results.push({ pubkey: "?", error: e.message, status: "failed" });
       }
       await sleep(300);
     }
 
-    return { totalRecovered, wallets: results };
+    return { totalRecovered, totalSkimmed, wallets: results };
   }
 
   stop(ca) { const s = this.sessions.get(ca); if (s) s.running = false; }
