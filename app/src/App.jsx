@@ -412,7 +412,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
       const res = await fetch(API + "/api/session/create", {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey },
-        body: JSON.stringify({ totalSol, tokenConfig, wallet: user?.pubkey }),
+        body: JSON.stringify({ totalSol, tokenConfig, wallet: user?.pubkey, fleetConfig: { sniperCount, slippage, duration } }),
       });
       const data = await res.json();
       if (data.error) { setError(data.error); setStep("idle"); return; }
@@ -673,9 +673,16 @@ export default function App() {
   const [twitter, setTwitter] = useState(""); const [telegram, setTelegram] = useState(""); const [website, setWebsite] = useState("");
   const [existingCA, setExistingCA] = useState(""); const [totalSol, setTotalSol] = useState(1);
   const [rpc, setRpc] = useState(""); const [seed, setSeed] = useState("");
-  const [slippage, setSlippage] = useState(25); const [duration, setDuration] = useState(60); const [useAtlas, setUseAtlas] = useState(false);
+  const [slippage, setSlippage] = useState(25); const [sniperCount, setSniperCount] = useState(2); const [duration, setDuration] = useState(60); const [useAtlas, setUseAtlas] = useState(false);
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState("");
+  const [pastSessions, setPastSessions] = useState([]);
+  useEffect(() => {
+    if (!user?.pubkey || !user?.whitelisted && user?.tier !== "pro") return;
+    fetch(API + "/api/sessions?wallet=" + user.pubkey).then(r => r.json()).then(d => {
+      if (d.sessions) setPastSessions(d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5));
+    }).catch(() => {});
+  }, [user, launched]);
   const mobile = useIsMobile();
 
   const hasAccess = user && (user?.whitelisted || user?.tier === "free" || user?.tier === "pro" || user?.demo);
@@ -826,11 +833,26 @@ export default function App() {
                   Fleet: {fleetStatus.phase || "initializing"} | Wallets: {fleetStatus.activeWallets || 0} | Trades: {fleetStatus.tradeCount || 0}
                 </div>)}
               </div>)}
+              {pastSessions.length > 0 && !launchCA && (<div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginBottom: mobile ? 14 : 20 }}>
+                <div style={{ fontFamily: mono, fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 12 }}>Past Sessions (VIP)</div>
+                {pastSessions.map(s => (<div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid " + T.border + "22" }}>
+                  <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || "?"} — {s.tokenCA?.slice(0, 8)}...</span>
+                  <span style={{ fontSize: 11, fontFamily: mono, color: T.dim }}>{s.status}</span>
+                  <button onClick={async () => {
+                    try {
+                      const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) });
+                      const data = await res.json();
+                      if (data.ok) { setLaunchCA(data.tokenCA); setLaunched(true); }
+                      else alert(data.error || "Resume failed");
+                    } catch (e) { alert("Error: " + e.message); }
+                  }} style={{ background: T.green, color: T.bg, border: "none", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "4px 10px", borderRadius: 6, cursor: "pointer" }}>Resume</button>
+                </div>))}
+              </div>)}
               {!canLaunch ? (<div style={{ padding: mobile ? 40 : 70, textAlign: "center", background: T.surface, borderRadius: 18, border: "2px dashed " + T.border }}><span style={{ fontSize: mobile ? 40 : 56, display: "block", marginBottom: 16 }}>{"\u{1F916}"}</span><p style={{ fontFamily: mono, fontSize: mobile ? 14 : 16, color: T.dim }}>Configure token + wallet in Create & Config tabs first</p></div>) : (<div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : activeRoles.length <= 5 ? "1fr 1fr" : "1fr 1fr 1fr", gap: mobile ? 12 : 18 }}>{activeRoles.map(role => (<WalletCard key={role.id} role={role} solBudget={+(totalSol * role.weight / 100).toFixed(4)} mobile={mobile} />))}</div>)}</div>)}
             {/* CONFIG */}
             {tab === "config" && (<div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: mobile ? 12 : 24, animation: "fadeUp .4s ease" }}>
               <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}><h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, marginBottom: 24, display: "flex", alignItems: "center", gap: 10, color: T.text }}><Ic.Wallet /> Network & Wallet</h3><div style={{ display: "flex", flexDirection: "column", gap: 20 }}><div><Label>RPC URL</Label><Input value={rpc} onChange={setRpc} placeholder="https://mainnet.helius-rpc.com/?api-key=..." icon={<Ic.Zap />} big /></div><div><Label>Master Wallet (Private Key)</Label><Input value={seed} onChange={setSeed} placeholder="bs58 encoded private key" type="password" icon={<Ic.Lock />} big /></div><div style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 16px", background: T.bg, borderRadius: 12, border: "2px solid " + T.border, cursor: "pointer" }} onClick={() => setUseAtlas(!useAtlas)}><div style={{ width: 46, height: 26, borderRadius: 13, padding: 3, background: useAtlas ? T.green : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", transform: useAtlas ? "translateX(20px)" : "translateX(0)", transition: "transform .2s" }} /></div><div><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: T.text }}>Helius Atlas</div><div style={{ fontSize: 13, color: T.dim }}>Ultra low-latency staked connections</div></div></div></div></div>
-              <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}><h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, marginBottom: 24, display: "flex", alignItems: "center", gap: 10, color: T.text }}><Ic.Zap /> Trading Parameters</h3><div style={{ display: "flex", flexDirection: "column", gap: 24 }}>{[{ label: "Slippage", val: slippage, set: setSlippage, min: 1, max: 50, step: 1, suf: "%" }, { label: "Duration", val: duration, set: setDuration, min: 5, max: 240, step: 5, suf: " min" }, { label: "SOL Budget", val: totalSol, set: setTotalSol, min: 0.5, max: 50, step: 0.1, suf: " SOL" }].map(s => (<div key={s.label}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}><span style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".1em" }}>{s.label}</span><span style={{ fontSize: 18, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.val}{s.suf}</span></div><input type="range" min={s.min} max={s.max} step={s.step} value={s.val} onChange={e => s.set(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>))}<div style={{ padding: mobile ? 16 : 20, background: T.bg, borderRadius: 12, border: "1px solid " + T.border }}><Label>computed strategy</Label><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginTop: 14 }}>{[{ k: "Wallets", v: walletCount }, { k: "Reserve", v: (totalSol * 0.12).toFixed(3) }, { k: "Per Wallet", v: "~" + (totalSol * 0.88 / walletCount).toFixed(3) }].map(s => (<div key={s.k} style={{ textAlign: "center" }}><div style={{ fontSize: mobile ? 20 : 24, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 12, color: T.faint, fontFamily: mono }}>{s.k}</div></div>))}</div></div></div></div>
+              <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 20 : 28 }}><h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 700, marginBottom: 24, display: "flex", alignItems: "center", gap: 10, color: T.text }}><Ic.Zap /> Trading Parameters</h3><div style={{ display: "flex", flexDirection: "column", gap: 24 }}>{[{ label: "Snipers", val: sniperCount, set: setSniperCount, min: 1, max: 5, step: 1, suf: "" }, { label: "Slippage", val: slippage, set: setSlippage, min: 1, max: 50, step: 1, suf: "%" }, { label: "Duration", val: duration, set: setDuration, min: 5, max: 240, step: 5, suf: " min" }, { label: "SOL Budget", val: totalSol, set: setTotalSol, min: 0.5, max: 50, step: 0.1, suf: " SOL" }].map(s => (<div key={s.label}><div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}><span style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.dim, textTransform: "uppercase", letterSpacing: ".1em" }}>{s.label}</span><span style={{ fontSize: 18, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.val}{s.suf}</span></div><input type="range" min={s.min} max={s.max} step={s.step} value={s.val} onChange={e => s.set(Number(e.target.value))} style={{ width: "100%", accentColor: T.green }} /></div>))}<div style={{ padding: mobile ? 16 : 20, background: T.bg, borderRadius: 12, border: "1px solid " + T.border }}><Label>computed strategy</Label><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginTop: 14 }}>{[{ k: "Wallets", v: walletCount }, { k: "Reserve", v: (totalSol * 0.12).toFixed(3) }, { k: "Per Wallet", v: "~" + (totalSol * 0.88 / walletCount).toFixed(3) }].map(s => (<div key={s.k} style={{ textAlign: "center" }}><div style={{ fontSize: mobile ? 20 : 24, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 12, color: T.faint, fontFamily: mono }}>{s.k}</div></div>))}</div></div></div></div>
             </div>)}
           </div>
           {mobile ? <MobileNav tab={tab} setTab={setTab} /> : <footer style={{ padding: "16px 28px", borderTop: "1px solid " + T.border, marginTop: 40, display: "flex", justifyContent: "space-between", fontSize: 13, color: T.faint, fontFamily: mono }}><span>BONDLI v3.1 {"\u00B7"} {PLATFORM_WALLET}</span><span>{launched ? <span style={{ color: T.green }}>{"\u25CF"} ACTIVE</span> : "\u25CF IDLE"}</span></footer>}
