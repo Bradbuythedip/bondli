@@ -25,6 +25,7 @@ import SessionStore from "../db/session-store.mjs";
 
 // Launch Sessions (dev wallet generation + funding)
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
+import { createToken } from "../engine/token-creator.mjs";
 
 // ═══════════════════════════════════════
 // TIER + ACCESS SYSTEM
@@ -382,7 +383,7 @@ app.post("/api/session/fund", apiLimiter, async (req, res) => {
   }
 });
 
-// Launch: trigger engine after funding confirmed
+// Launch: create token on pump.fun + start orchestrator
 app.post("/api/session/launch", apiLimiter, async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
@@ -395,74 +396,85 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
     if (!session.funded) return res.status(400).json({ error: "Session not funded yet" });
     if (session.status === "live") return res.status(400).json({ error: "Session already running" });
 
-    // Get the dev keypair
     const devKeypair = await sessionManager.getDevKeypair(sessionId);
     if (!devKeypair) return res.status(500).json({ error: "Dev wallet key not found" });
 
-    // Update status
     await sessionManager.update(sessionId, { status: "creating", launchedAt: new Date().toISOString() });
 
-    // Launch the engine with the dev wallet
-    const ca = session.tokenConfig?.existingCA || null;
+    const existingCA = session.tokenConfig?.existingCA || null;
+    let tokenCA = existingCA;
+    let createResult = null;
 
-    let result;
+    // ── Step 1: Create token on pump.fun (if no existing CA) ──
+    if (!existingCA) {
+      console.log(`[LAUNCH] Creating token: ${session.tokenConfig.name} ($${session.tokenConfig.ticker})`);
+      
+      const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+      
+      createResult = await createToken(connection, devKeypair, session.tokenConfig, {
+        devBuySol: session.devBuy,
+        slippageBps: parseInt(CONFIG.SLIPPAGE_BPS || "2500"),
+        priorityFee: parseInt(CONFIG.PRIORITY_FEE || "100000"),
+        sendUrl: CONFIG.HELIUS_SEND_TX_URL || null,
+      });
+
+      tokenCA = createResult.mint;
+      console.log(`[LAUNCH] ✅ Token created: ${tokenCA}`);
+      console.log(`[LAUNCH] 🔗 https://pump.fun/coin/${tokenCA}`);
+    }
+
+    // ── Step 2: Update session with CA ──
+    await sessionManager.update(sessionId, {
+      status: "live",
+      tokenCA,
+      createTx: createResult?.txSig || null,
+      pumpUrl: `https://pump.fun/coin/${tokenCA}`,
+      bondingCurve: createResult?.bondingCurve || null,
+      metadataUri: createResult?.metadataUri || null,
+    });
+
+    // ── Step 3: Start orchestrator fleet on this CA ──
+    let orchResult = { ok: true };
     try {
-      // Try the real orchestrator
+      // Set the CA in config so orchestrator trades it
+      CONFIG.TOKEN_CA = tokenCA;
+      
       const launchConfig = {
         totalSol: session.fleetBudget,
-        devBuy: session.devBuy,
+        devBuy: existingCA ? session.devBuy : 0, // already bought in create tx
         devKeypair,
         tokenConfig: session.tokenConfig,
         sessionId: session.id,
         force: true,
       };
 
-      if (sessionStore) {
-        await sessionStore.recordLaunch(session.userWallet, ca || "new_token", session.totalSol);
-      }
-
-      result = await orch.launch(ca, launchConfig);
+      orchResult = await orch.launch(tokenCA, launchConfig);
+      console.log(`[LAUNCH] Fleet started on ${tokenCA}`);
     } catch (orchErr) {
-      // Engine not wired for session flow yet — run in dry mode
-      console.warn("[SESSION] Orchestrator failed, running dry mode:", orchErr.message);
-      
-      const fakeCA = ca || "BONDLI" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-      result = {
-        ok: true,
-        dryRun: true,
-        tokenCA: fakeCA,
-        devBuy: session.devBuy,
-        fleetBudget: session.fleetBudget,
-        wallets: 7,
-        status: "live",
-        message: "Dry run — engine simulating trades",
-      };
+      // Fleet failed but token was created — still a partial success
+      console.warn("[LAUNCH] Fleet start failed:", orchErr.message);
+      orchResult = { ok: true, fleetError: orchErr.message };
     }
 
-    // Update with token CA if created
-    const tokenCA = result.tokenCA || ca;
-    await sessionManager.update(sessionId, {
-      status: "live",
-      tokenCA,
-    });
+    if (sessionStore) {
+      await sessionStore.recordLaunch(session.userWallet, tokenCA, session.totalSol);
+    }
 
-    console.log(`[SESSION] ${sessionId} launched | CA: ${tokenCA} | devBuy: ${session.devBuy} SOL | fleet: ${session.fleetBudget} SOL`);
+    console.log(`[LAUNCH] ${sessionId} complete | CA: ${tokenCA} | devBuy: ${session.devBuy} SOL | fleet: ${session.fleetBudget} SOL`);
 
     res.json({
       ok: true,
       sessionId,
       tokenCA,
+      pumpUrl: `https://pump.fun/coin/${tokenCA}`,
       devBuy: session.devBuy,
       fleetBudget: session.fleetBudget,
-      ...result,
+      createTx: createResult?.txSig || null,
+      ...orchResult,
     });
   } catch (e) {
-    console.error("[SESSION] Launch error:", e.stack || e.message);
-    // Don't expose internal JS errors to frontend
-    const userMsg = e.message?.includes("Cannot read properties")
-      ? "Engine not ready. Check server logs."
-      : (e.message || "Launch failed");
-    res.status(500).json({ error: userMsg });
+    console.error("[LAUNCH] Error:", e.stack || e.message);
+    res.status(500).json({ error: e.message || "Launch failed" });
   }
 });
 
