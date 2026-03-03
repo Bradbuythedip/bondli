@@ -122,10 +122,17 @@ export async function createToken(connection, creator, tokenConfig, options = {}
   if (devBuySol > 0) {
     // Create + initial buy in same transaction
     const global = await onlineSdk.fetchGlobal();
-    console.log(`[CREATE] Fetched global config`);
+    const feeConfig = await onlineSdk.fetchFeeConfig();
+    console.log(`[CREATE] Fetched global + feeConfig`);
 
     const solAmount = new BN(Math.floor(devBuySol * 1e9));
-    const tokenAmount = getBuyTokenAmountFromSolAmount(global, null, solAmount);
+    const tokenAmount = getBuyTokenAmountFromSolAmount({
+      global,
+      feeConfig,
+      mintSupply: null,
+      bondingCurve: null,
+      amount: solAmount,
+    });
     console.log(`[CREATE] Dev buy: ${devBuySol} SOL → ~${tokenAmount.toString()} tokens`);
 
     instructions = await sdk.createAndBuyInstructions({
