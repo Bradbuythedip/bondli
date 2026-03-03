@@ -391,78 +391,63 @@ function calcDevBuyPreview(totalSol) {
 
 function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, onLaunched }) {
   const T = useTheme();
-  // Steps: idle → creating → awaiting_deposit → sending → verifying → funded → launching → live
   const [step, setStep] = useState("idle");
   const [session, setSession] = useState(null);
+  const [devSecret, setDevSecret] = useState("");
   const [txSig, setTxSig] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const preview = calcDevBuyPreview(totalSol);
+  const pollRef = useRef(null);
 
-  const copyAddr = (addr) => {
-    navigator.clipboard?.writeText(addr).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+  const copyText = (text) => {
+    navigator.clipboard?.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
   };
 
-  // Step 1: Create session → get dev wallet
+  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
+
   const createSession = async () => {
     setError(""); setStep("creating");
     try {
       const res = await fetch(API + "/api/session/create", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
         body: JSON.stringify({ totalSol, tokenConfig, wallet: user.pubkey }),
       });
       if (!res.ok) {
-        const text = await res.text();
-        try { const d = JSON.parse(text); setError(d.error || "Server error " + res.status); }
-        catch { setError("Server error " + res.status + ": " + text.slice(0, 200)); }
+        try { const d = await res.json(); setError(d.error || "Server error " + res.status); }
+        catch { setError("Server error " + res.status); }
         setStep("idle"); return;
       }
       const data = await res.json();
       if (data.error) { setError(data.error); setStep("idle"); return; }
       setSession(data);
+      if (data.devSecret) setDevSecret(data.devSecret);
       setStep("awaiting_deposit");
-    } catch (e) { setError("Failed to create session: " + (e.message || e)); setStep("idle"); }
+    } catch (e) { setError("Failed: " + (e.message || "")); setStep("idle"); }
   };
 
-  // Step 2: Open Phantom to send (deep link on mobile, manual on desktop)
   const openPhantomSend = () => {
-    const addr = session.devWallet;
-    const isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent);
-    if (isMobile) {
-      // Phantom deep link for transfer
-      window.location.href = `https://phantom.app/ul/transfer?recipient=${addr}&amount=${totalSol}`;
+    const addr = session?.devWallet;
+    if (!addr) return;
+    if (/iPhone|iPad|Android/i.test(navigator.userAgent)) {
+      window.location.href = "https://phantom.app/ul/transfer?recipient=" + addr + "&amount=" + totalSol;
     } else {
-      // Desktop: copy address, user sends manually
-      navigator.clipboard?.writeText(addr);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      copyText(addr);
     }
-    // Start polling balance
     setStep("polling");
-    pollBalance();
-  };
-
-  // Auto-poll dev wallet balance until deposit detected
-  const pollRef = useRef(null);
-  const pollBalance = () => {
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = setInterval(async () => {
       try {
-        const res = await fetch(API + "/api/session/balance?sessionId=" + session.sessionId + "&wallet=" + user.pubkey);
+        const sid = session?.sessionId;
+        if (!sid) return;
+        const res = await fetch(API + "/api/session/balance?sessionId=" + sid + "&wallet=" + user.pubkey);
         const data = await res.json();
-        if (data.funded) {
-          clearInterval(pollRef.current);
-          setStep("funded");
-        }
+        if (data.funded) { clearInterval(pollRef.current); setStep("funded"); }
       } catch {}
-    }, 5000); // check every 5s
+    }, 5000);
   };
 
-  // Cleanup poll on unmount
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
-
-  // Step 3: Verify deposit on-chain
   const verifyDeposit = async (sig) => {
     const signature = sig || txSig;
     if (!signature) { setError("No transaction signature"); return; }
@@ -470,53 +455,75 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
     try {
       const res = await fetch(API + "/api/session/fund", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: session.sessionId, txSig: signature, wallet: user.pubkey }),
+        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
+        body: JSON.stringify({ sessionId: session?.sessionId, txSig: signature, wallet: user.pubkey }),
       });
       const data = await res.json();
       if (!data.ok) {
-        // Maybe not confirmed yet — retry
         if (data.error?.includes("not found") || data.error?.includes("Wait")) {
-          setTimeout(() => verifyDeposit(signature), 5000);
-          return;
+          setTimeout(() => verifyDeposit(signature), 5000); return;
         }
-        setError(data.error); setStep("awaiting_deposit"); return;
+        setError(data.error || "Verification failed"); setStep("awaiting_deposit"); return;
       }
+      if (pollRef.current) clearInterval(pollRef.current);
       setStep("funded");
     } catch { setError("Verification failed"); setStep("awaiting_deposit"); }
   };
 
-  // Step 4: Launch engine
   const launchEngine = async () => {
     setError(""); setStep("launching");
     try {
       const res = await fetch(API + "/api/session/launch", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: session.sessionId, wallet: user.pubkey }),
+        headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey },
+        body: JSON.stringify({ sessionId: session?.sessionId, wallet: user.pubkey }),
       });
       const data = await res.json();
       if (data.error) { setError(data.error); setStep("funded"); return; }
       setStep("live");
       onLaunched(data);
-    } catch { setError("Launch failed"); setStep("funded"); }
+    } catch (e) { setError("Launch failed: " + (e.message || "")); setStep("funded"); }
   };
+
+  const KeyBox = () => devSecret ? (
+    <div style={{ padding: "14px 16px", background: T.yellow + "08", borderRadius: 12, border: "2px solid " + T.yellow + "33", marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 16 }}>{"\u{1F511}"}</span>
+        <span style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.yellow, textTransform: "uppercase", letterSpacing: ".05em" }}>Creator Wallet Private Key</span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ flex: 1, fontFamily: mono, fontSize: 11, color: T.mid, wordBreak: "break-all", lineHeight: 1.5, background: T.bg, padding: "10px 12px", borderRadius: 8, border: "1px solid " + T.border, maxHeight: 60, overflow: "auto" }}>{devSecret}</div>
+        <button onClick={() => copyText(devSecret)} style={{ background: T.yellow, border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.bg, flexShrink: 0 }}>
+          {copied ? "\u2713" : "Copy"}
+        </button>
+      </div>
+      <p style={{ fontSize: 12, color: T.yellow, fontFamily: "system-ui,sans-serif", marginTop: 8, lineHeight: 1.5 }}>
+        {"\u26A0\uFE0F"} Save this! Import into Phantom to claim pump.fun creator fees (0.5% of all trades).
+      </p>
+    </div>
+  ) : null;
 
   if (launched) {
     return (
-      <div style={{ padding: "16px 20px", background: T.greenGhost, borderRadius: 14, border: "1px solid " + T.green + "33", display: "flex", alignItems: "center", gap: 12 }}>
-        <span style={{ color: T.green, animation: "pulse 2s infinite", fontSize: 20 }}>{"\u25CF"}</span>
-        <div><div style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 15 }}>Engine Running</div>
-        {session && <div style={{ fontSize: 12, color: T.dim, fontFamily: mono, marginTop: 2 }}>Dev: {session.devWallet?.slice(0, 8)}... {"\u00B7"} CA: {session.tokenCA || "creating..."}</div>}</div>
+      <div>
+        <div style={{ padding: "16px 20px", background: T.greenGhost, borderRadius: 14, border: "1px solid " + T.green + "33", display: "flex", alignItems: "center", gap: 12, marginBottom: devSecret ? 12 : 0 }}>
+          <span style={{ color: T.green, animation: "pulse 2s infinite", fontSize: 20 }}>{"\u25CF"}</span>
+          <div>
+            <div style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 15 }}>Engine Running</div>
+            {session && <div style={{ fontSize: 12, color: T.dim, fontFamily: mono, marginTop: 2 }}>Dev: {(session.devWallet || "").slice(0, 8)}...</div>}
+          </div>
+        </div>
+        <KeyBox />
       </div>
     );
   }
+
+  const dw = session?.devWallet || "";
 
   return (
     <div style={{ marginTop: 8 }}>
       {error && <p style={{ fontSize: 14, color: T.red, fontFamily: mono, marginBottom: 12, padding: "10px 14px", background: T.redGhost, borderRadius: 10, border: "1px solid " + T.red + "22" }}>{error}</p>}
 
-      {/* BUDGET BREAKDOWN — always visible */}
       <div style={{ padding: mobile ? 14 : 18, background: T.bg, borderRadius: 14, border: "1px solid " + T.border, marginBottom: 16 }}>
         <div style={{ fontSize: 12, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 12 }}>SOL Breakdown</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
@@ -539,76 +546,40 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
         </div>
       </div>
 
-      {/* STEP: idle — show launch button */}
       {step === "idle" && (
-        <Btn onClick={createSession} full disabled={!canLaunch}
-          style={{ padding: "16px 24px", fontSize: mobile ? 16 : 18, borderRadius: 14, animation: canLaunch ? "glow 3s infinite" : "none" }}>
-          <Ic.Zap /> Generate Dev Wallet & Launch
-        </Btn>
-      )}
-      {step === "idle" && !canLaunch && (
-        <p style={{ fontSize: 13, color: T.orange, fontFamily: mono, textAlign: "center", marginTop: 14 }}>
-          need: {!tokenConfig.existingCA && !tokenConfig.name ? "token name \u00B7 " : ""}{!tokenConfig.existingCA && !tokenConfig.ticker ? "ticker" : ""}{tokenConfig.existingCA || (tokenConfig.name && tokenConfig.ticker) ? "" : ""}
-        </p>
-      )}
-
-      {/* STEP: creating */}
-      {step === "creating" && (
-        <div style={{ textAlign: "center", padding: 20 }}>
-          <div style={{ fontFamily: mono, color: T.dim, animation: "pulse 1.5s infinite" }}>Generating dev wallet...</div>
+        <div>
+          <Btn onClick={createSession} full disabled={!canLaunch}
+            style={{ padding: "16px 24px", fontSize: mobile ? 16 : 18, borderRadius: 14, animation: canLaunch ? "glow 3s infinite" : "none" }}>
+            <Ic.Zap /> Generate Dev Wallet & Launch
+          </Btn>
+          {!canLaunch && <p style={{ fontSize: 13, color: T.orange, fontFamily: mono, textAlign: "center", marginTop: 14 }}>
+            need: {!tokenConfig.existingCA && !tokenConfig.name ? "token name \u00B7 " : ""}{!tokenConfig.existingCA && !tokenConfig.ticker ? "ticker" : ""}
+          </p>}
         </div>
       )}
 
-      {/* STEP: awaiting_deposit — show dev wallet + private key + send button */}
-      {(step === "awaiting_deposit" || step === "sending") && session && (
+      {step === "creating" && <div style={{ textAlign: "center", padding: 20 }}><div style={{ fontFamily: mono, color: T.dim, animation: "pulse 1.5s infinite" }}>Generating dev wallet...</div></div>}
+
+      {step === "awaiting_deposit" && session && (
         <div style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 16, padding: mobile ? 18 : 24, animation: "fadeUp .4s ease" }}>
-          <div style={{ fontSize: 14, fontFamily: mono, fontWeight: 700, color: T.green, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
-            <Ic.Check /> Dev wallet generated
-          </div>
-
-          {/* PRIVATE KEY — save this */}
-          {session.devSecret && (
-            <div style={{ padding: "14px 16px", background: T.yellow + "08", borderRadius: 12, border: "2px solid " + T.yellow + "33", marginBottom: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                <span style={{ fontSize: 16 }}>{"\u{1F511}"}</span>
-                <span style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.yellow, textTransform: "uppercase", letterSpacing: ".05em" }}>Creator Wallet Private Key</span>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={{ flex: 1, fontFamily: mono, fontSize: 12, color: T.mid, wordBreak: "break-all", lineHeight: 1.5, background: T.bg, padding: "10px 12px", borderRadius: 8, border: "1px solid " + T.border }}>{session.devSecret}</div>
-                <button onClick={() => copyAddr(session.devSecret)} style={{ background: T.yellow, border: "none", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.bg, flexShrink: 0 }}>
-                  {copied ? "\u2713" : "Copy"}
-                </button>
-              </div>
-              <p style={{ fontSize: 12, color: T.yellow, fontFamily: sans, marginTop: 8, lineHeight: 1.5 }}>
-                {"\u26A0\uFE0F"} Save this now! Import into Phantom to claim pump.fun creator fees (0.5% of all trades). This key will not be shown again.
-              </p>
-            </div>
-          )}
-
+          <div style={{ fontSize: 14, fontFamily: mono, fontWeight: 700, color: T.green, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}><Ic.Check /> Dev wallet generated</div>
+          <KeyBox />
           <div style={{ padding: "14px 16px", background: T.bg, borderRadius: 12, border: "1px dashed " + T.border, marginBottom: 16 }}>
             <div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginBottom: 6 }}>SEND {totalSol} SOL TO:</div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ flex: 1, fontFamily: mono, fontSize: mobile ? 13 : 15, color: T.green, fontWeight: 600, wordBreak: "break-all" }}>{session.devWallet}</div>
-              <button onClick={() => copyAddr(session.devWallet)} style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontFamily: mono, fontSize: 12, color: copied ? T.green : T.dim, flexShrink: 0 }}>
-                {copied ? "\u2713" : "Copy"}
-              </button>
+              <div style={{ flex: 1, fontFamily: mono, fontSize: mobile ? 13 : 15, color: T.green, fontWeight: 600, wordBreak: "break-all" }}>{dw}</div>
+              <button onClick={() => copyText(dw)} style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontFamily: mono, fontSize: 12, color: copied ? T.green : T.dim, flexShrink: 0 }}>{copied ? "\u2713" : "Copy"}</button>
             </div>
           </div>
-
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16, fontSize: 13, fontFamily: mono }}>
-            <div style={{ textAlign: "center" }}><div style={{ color: T.yellow, fontWeight: 700 }}>{session.devBuy} SOL</div><div style={{ color: T.faint, fontSize: 11 }}>dev buy</div></div>
-            <div style={{ textAlign: "center" }}><div style={{ color: T.green, fontWeight: 700 }}>{session.fleetBudget} SOL</div><div style={{ color: T.faint, fontSize: 11 }}>fleet</div></div>
-            <div style={{ textAlign: "center" }}><div style={{ color: T.mid, fontWeight: 700 }}>{session.devBuyPercent}%</div><div style={{ color: T.faint, fontSize: 11 }}>dev %</div></div>
+            <div style={{ textAlign: "center" }}><div style={{ color: T.yellow, fontWeight: 700 }}>{session.devBuy || 0} SOL</div><div style={{ color: T.faint, fontSize: 11 }}>dev buy</div></div>
+            <div style={{ textAlign: "center" }}><div style={{ color: T.green, fontWeight: 700 }}>{session.fleetBudget || 0} SOL</div><div style={{ color: T.faint, fontSize: 11 }}>fleet</div></div>
+            <div style={{ textAlign: "center" }}><div style={{ color: T.mid, fontWeight: 700 }}>{session.devBuyPercent || 0}%</div><div style={{ color: T.faint, fontSize: 11 }}>dev %</div></div>
           </div>
-
-          <Btn onClick={openPhantomSend} full
-            style={{ borderRadius: 12, background: "linear-gradient(135deg, #534bb1, #551bf9)", marginBottom: 10 }}>
+          <Btn onClick={openPhantomSend} full style={{ borderRadius: 12, background: "linear-gradient(135deg, #534bb1, #551bf9)", marginBottom: 10 }}>
             <Ic.Phantom /> {/iPhone|iPad|Android/i.test(navigator.userAgent) ? "Open Phantom & Send " + totalSol + " SOL" : "Copy Address & Send " + totalSol + " SOL"}
           </Btn>
-
-          <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 12, borderTop: "1px solid " + T.border }}>
-            <span style={{ fontSize: 12, color: T.faint, fontFamily: mono, flex: 1 }}>Already sent? Paste tx sig or we'll auto-detect:</span>
-          </div>
+          <div style={{ fontSize: 12, color: T.faint, fontFamily: mono, paddingTop: 12, borderTop: "1px solid " + T.border }}>Already sent? Paste tx sig or we'll auto-detect:</div>
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
             <div style={{ flex: 1 }}><Input value={txSig} onChange={setTxSig} placeholder="tx signature (optional)..." /></div>
             <Btn onClick={() => verifyDeposit()} small disabled={!txSig} ghost color={T.green}>Verify</Btn>
@@ -616,53 +587,48 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
         </div>
       )}
 
-      {/* STEP: polling — waiting for deposit */}
       {step === "polling" && session && (
         <div style={{ background: T.surface, border: "2px solid " + T.yellow + "33", borderRadius: 16, padding: mobile ? 18 : 24, animation: "fadeUp .4s ease" }}>
           <div style={{ textAlign: "center", marginBottom: 16 }}>
             <div style={{ fontSize: 32, marginBottom: 10, animation: "pulse 1.5s infinite" }}>{"\u23F3"}</div>
             <div style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: T.yellow }}>Waiting for {totalSol} SOL...</div>
-            <div style={{ fontSize: 13, color: T.dim, fontFamily: mono, marginTop: 6 }}>Send to: <span style={{ color: T.green }}>{session.devWallet.slice(0, 8)}...{session.devWallet.slice(-6)}</span></div>
-            <div style={{ fontSize: 12, color: T.faint, fontFamily: mono, marginTop: 8 }}>Auto-detecting deposit every 5s</div>
+            <div style={{ fontSize: 13, color: T.dim, fontFamily: mono, marginTop: 6 }}>Send to: <span style={{ color: T.green }}>{dw.slice(0, 8)}...{dw.slice(-6)}</span></div>
+            <div style={{ fontSize: 12, color: T.faint, fontFamily: mono, marginTop: 8 }}>Auto-detecting every 5s</div>
           </div>
-
+          <KeyBox />
           <div style={{ display: "flex", gap: 8, paddingTop: 14, borderTop: "1px solid " + T.border }}>
-            <div style={{ flex: 1 }}><Input value={txSig} onChange={setTxSig} placeholder="or paste tx sig to verify now..." /></div>
+            <div style={{ flex: 1 }}><Input value={txSig} onChange={setTxSig} placeholder="or paste tx sig..." /></div>
             <Btn onClick={() => verifyDeposit()} small disabled={!txSig} ghost color={T.green}>Verify</Btn>
           </div>
-
           <button onClick={() => { if (pollRef.current) clearInterval(pollRef.current); setStep("awaiting_deposit"); }} style={{ display: "block", margin: "12px auto 0", background: "none", border: "none", color: T.faint, cursor: "pointer", fontFamily: mono, fontSize: 13, textDecoration: "underline", textUnderlineOffset: 4 }}>{"\u2190"} Back</button>
         </div>
       )}
 
-      {/* STEP: verifying */}
       {step === "verifying" && (
-        <div style={{ background: T.surface, border: "2px solid " + T.yellow + "33", borderRadius: 16, padding: 24, textAlign: "center", animation: "fadeUp .4s ease" }}>
+        <div style={{ background: T.surface, border: "2px solid " + T.yellow + "33", borderRadius: 16, padding: 24, textAlign: "center" }}>
           <div style={{ fontSize: 28, marginBottom: 12, animation: "pulse 1.5s infinite" }}>{"\u23F3"}</div>
-          <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.yellow, marginBottom: 6 }}>Verifying deposit...</div>
-          <div style={{ fontSize: 13, color: T.dim, fontFamily: mono }}>Confirming {totalSol} SOL on-chain</div>
+          <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.yellow }}>Verifying deposit...</div>
           {txSig && <div style={{ fontSize: 12, color: T.faint, fontFamily: mono, marginTop: 8 }}>tx: {txSig.slice(0, 12)}...{txSig.slice(-6)}</div>}
         </div>
       )}
 
-      {/* STEP: funded — ready to launch */}
-      {step === "funded" && (
+      {step === "funded" && session && (
         <div style={{ background: T.surface, border: "2px solid " + T.green + "44", borderRadius: 16, padding: 24, animation: "fadeUp .4s ease" }}>
           <div style={{ textAlign: "center", marginBottom: 16 }}>
             <div style={{ fontSize: 32, marginBottom: 8 }}>{"\u2705"}</div>
             <div style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: T.green }}>Dev wallet funded!</div>
-            <div style={{ fontSize: 13, color: T.dim, fontFamily: mono, marginTop: 4 }}>{session.devWallet?.slice(0, 8)}...{session.devWallet?.slice(-6)} has {totalSol} SOL</div>
+            <div style={{ fontSize: 13, color: T.dim, fontFamily: mono, marginTop: 4 }}>{dw.slice(0, 8)}...{dw.slice(-6)} has {totalSol} SOL</div>
           </div>
+          <KeyBox />
           <Btn onClick={launchEngine} full style={{ padding: "16px 24px", fontSize: 18, borderRadius: 14, animation: "glow 3s infinite" }}>
             <Ic.Zap /> Launch Token + Start Fleet
           </Btn>
           <p style={{ fontSize: 12, color: T.faint, fontFamily: mono, textAlign: "center", marginTop: 10 }}>
-            Dev buy: {session.devBuy} SOL ({session.devBuyPercent}%) {"\u2192"} Fleet: {session.fleetBudget} SOL across all wallets
+            Dev buy: {session.devBuy || 0} SOL ({session.devBuyPercent || 0}%) {"\u2192"} Fleet: {session.fleetBudget || 0} SOL
           </p>
         </div>
       )}
 
-      {/* STEP: launching */}
       {step === "launching" && (
         <div style={{ background: T.surface, border: "2px solid " + T.green + "44", borderRadius: 16, padding: 24, textAlign: "center" }}>
           <div style={{ fontSize: 28, marginBottom: 12, animation: "pulse 1s infinite" }}>{"\u{1F680}"}</div>
