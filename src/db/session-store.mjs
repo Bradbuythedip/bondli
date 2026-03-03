@@ -1,10 +1,10 @@
-// BONDLI v3.0 — Redis Session Store
-// Tracks active user sessions, launch history, wallet associations
+// BONDLI — Redis Session Store (30-day TTL for session data)
 
 export class SessionStore {
   constructor(redis) {
     this.redis = redis;
     this.prefix = "session:";
+    this.TTL = 30 * 86400; // 30 days
   }
 
   // Store user session
@@ -18,7 +18,7 @@ export class SessionStore {
       totalSolUsed: "0",
       ...Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
     });
-    await this.redis.expire(key, 86400); // 24h TTL
+    await this.redis.expire(key, this.TTL);
     return true;
   }
 
@@ -30,11 +30,11 @@ export class SessionStore {
     return data;
   }
 
-  // Update session activity
+  // Update session activity (refreshes TTL)
   async touch(wallet) {
     const key = `${this.prefix}${wallet}`;
     await this.redis.hSet(key, "lastActive", Date.now().toString());
-    await this.redis.expire(key, 86400);
+    await this.redis.expire(key, this.TTL);
   }
 
   // Track launch
@@ -51,12 +51,11 @@ export class SessionStore {
       lastCA: ca,
       lastLaunch: Date.now().toString(),
     });
+    await this.redis.expire(key, this.TTL);
 
-    // Also track in launch history
-    await this.redis.lPush(`launches:${wallet}`, JSON.stringify({
-      ca, sol, time: Date.now(),
-    }));
-    await this.redis.lTrim(`launches:${wallet}`, 0, 99); // keep last 100
+    // Also track in launch history (keep 200)
+    await this.redis.lPush(`launches:${wallet}`, JSON.stringify({ ca, sol, time: Date.now() }));
+    await this.redis.lTrim(`launches:${wallet}`, 0, 199);
 
     return true;
   }
@@ -64,7 +63,7 @@ export class SessionStore {
   // Get user launch history
   async getLaunchHistory(wallet, limit = 20) {
     const items = await this.redis.lRange(`launches:${wallet}`, 0, limit - 1);
-    return items.map(i => JSON.parse(i));
+    return items.map(i => { try { return JSON.parse(i); } catch { return null; } }).filter(Boolean);
   }
 
   // Count active sessions
