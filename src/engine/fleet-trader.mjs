@@ -1,5 +1,5 @@
-// BONDLI — Fleet Trader v3 (Smart Distribution Strategy)
-// Dev buys cheap → sells 35% for volume → distributes tokens to fleet → fleet sells staggered
+// BONDLI — Fleet Trader v4 (Organic + Reactive Game Theory)
+// Wallets buy independently → GameState monitors opponent behavior → fleet adapts sell timing
 import {
   Connection, Keypair, PublicKey, Transaction,
   ComputeBudgetProgram, sendAndConfirmTransaction,
@@ -14,6 +14,248 @@ import BN from "bn.js";
 import bs58 from "bs58";
 import CONFIG from "./config.mjs";
 import { EventEmitter } from "events";
+import WebSocket from "ws";
+
+// ═══════════════════════════════════════
+// GAME STATE — Real-time opponent modeling via PumpPortal WS
+// Observes every trade on our token and maintains a Bayesian model
+// of market conditions to inform sell/hold decisions
+// ═══════════════════════════════════════
+class GameState {
+  constructor(ca, ourWallets = new Set()) {
+    this.ca = ca;
+    this.ourWallets = ourWallets; // our fleet wallet pubkeys (to exclude from opponent analysis)
+    this.trades = [];             // last 100 trades: { time, type, sol, wallet, isOurs }
+    this.opponents = new Map();   // wallet -> { buys, sells, totalSol, firstSeen, lastSeen, avgSize }
+
+    // ── Signals (updated per trade) ──
+    this.buyPressure = 0.5;       // 0-1: ratio of buys in last 30s
+    this.momentum = 0;            // positive = pumping, negative = dumping
+    this.whaleAlert = false;      // large buy detected in last 15s
+    this.devSelling = false;      // creator is selling
+    this.dumpCascade = false;     // 3+ sells in 10s from different wallets
+    this.bondingPct = 0;          // bonding curve progress
+    this.mcapSol = 0;
+    this.volumeRate = 0;          // SOL per minute (rolling 60s)
+    this.uniqueBuyers = 0;        // distinct buy wallets in last 2min
+    this.signal = "HOLD";         // HOLD, SELL_NOW, ACCUMULATE, RIDE
+
+    // ── Strategy parameters ──
+    this.sellMultiplier = 1.0;    // <1 = delay sells, >1 = accelerate sells
+    this.holdExtension = 0;       // seconds to extend hold phase
+
+    // WS connection
+    this.ws = null;
+    this.alive = false;
+    this.devWallet = null;        // set after first create event or from session
+  }
+
+  // Start monitoring via PumpPortal WS
+  connect() {
+    try {
+      this.ws = new WebSocket("wss://pumpportal.fun/api/data");
+    } catch (e) {
+      console.error(`[GAME] WS connect failed: ${e.message}`);
+      return;
+    }
+
+    this.ws.on("open", () => {
+      this.alive = true;
+      this.ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [this.ca] }));
+      console.log(`[GAME] Monitoring ${this.ca.slice(0, 8)}... for opponent trades`);
+    });
+
+    this.ws.on("message", (raw) => {
+      try {
+        const msg = JSON.parse(raw.toString());
+        if ((msg.txType === "buy" || msg.txType === "sell") && msg.mint === this.ca) {
+          this._processTrade(msg);
+        }
+      } catch {}
+    });
+
+    this.ws.on("close", () => {
+      this.alive = false;
+      // Reconnect if still needed
+      setTimeout(() => { if (!this._stopped) this.connect(); }, 3000);
+    });
+
+    this.ws.on("error", () => { this.alive = false; });
+  }
+
+  stop() {
+    this._stopped = true;
+    if (this.ws) try { this.ws.close(); } catch {}
+  }
+
+  _processTrade(msg) {
+    const now = Date.now();
+    const wallet = msg.traderPublicKey || "";
+    const isOurs = this.ourWallets.has(wallet);
+    const sol = Math.abs(msg.solAmount || 0);
+    const type = msg.txType; // "buy" or "sell"
+
+    // Record trade
+    this.trades.push({ time: now, type, sol, wallet, isOurs });
+    if (this.trades.length > 200) this.trades = this.trades.slice(-200);
+
+    // Update opponent profile (skip our own wallets)
+    if (!isOurs && wallet) {
+      if (!this.opponents.has(wallet)) {
+        this.opponents.set(wallet, { buys: 0, sells: 0, totalSol: 0, firstSeen: now, lastSeen: now, avgSize: 0, tradeCount: 0 });
+      }
+      const opp = this.opponents.get(wallet);
+      if (type === "buy") opp.buys++;
+      else opp.sells++;
+      opp.totalSol += sol;
+      opp.tradeCount++;
+      opp.avgSize = opp.totalSol / opp.tradeCount;
+      opp.lastSeen = now;
+    }
+
+    // Update bonding curve
+    if (msg.vSolInBondingCurve) {
+      this.bondingPct = Math.max(0, Math.min(100, ((msg.vSolInBondingCurve - 30) / 55) * 100));
+    }
+    if (msg.marketCapSol) this.mcapSol = msg.marketCapSol;
+
+    // ── Compute signals ──
+    this._computeSignals(now);
+  }
+
+  _computeSignals(now) {
+    const window30s = this.trades.filter(t => now - t.time < 30000 && !t.isOurs);
+    const window60s = this.trades.filter(t => now - t.time < 60000 && !t.isOurs);
+    const window10s = this.trades.filter(t => now - t.time < 10000 && !t.isOurs);
+
+    // Buy pressure: ratio of buys in last 30s
+    const buys30 = window30s.filter(t => t.type === "buy").length;
+    const sells30 = window30s.filter(t => t.type === "sell").length;
+    this.buyPressure = (buys30 + sells30) > 0 ? buys30 / (buys30 + sells30) : 0.5;
+
+    // Momentum: net SOL flow in last 30s (buys positive, sells negative)
+    const buyVol = window30s.filter(t => t.type === "buy").reduce((s, t) => s + t.sol, 0);
+    const sellVol = window30s.filter(t => t.type === "sell").reduce((s, t) => s + t.sol, 0);
+    this.momentum = buyVol - sellVol;
+
+    // Volume rate: SOL per minute
+    const vol60 = window60s.reduce((s, t) => s + t.sol, 0);
+    this.volumeRate = vol60; // already per 60s
+
+    // Unique buyers in last 2 min
+    const window2m = this.trades.filter(t => now - t.time < 120000 && !t.isOurs && t.type === "buy");
+    this.uniqueBuyers = new Set(window2m.map(t => t.wallet)).size;
+
+    // Whale alert: any single buy > 0.5 SOL in last 15s
+    this.whaleAlert = window30s.some(t => t.type === "buy" && t.sol > 0.5 && now - t.time < 15000);
+
+    // Dev selling: check if creator/dev wallet is selling
+    if (this.devWallet) {
+      this.devSelling = window60s.some(t => t.type === "sell" && t.wallet.startsWith(this.devWallet));
+    }
+
+    // Dump cascade: 3+ sells from different wallets in 10s
+    const sells10 = window10s.filter(t => t.type === "sell");
+    const uniqueSellers10 = new Set(sells10.map(t => t.wallet)).size;
+    this.dumpCascade = uniqueSellers10 >= 3;
+
+    // ── Derive strategic signal using Nash equilibrium logic ──
+    // Nash insight: each player's optimal strategy depends on what others are doing
+    // If others are buying → holding is dominant strategy (free ride the pump)
+    // If others are selling → selling first is dominant (first-mover advantage in dumps)
+    // If whale enters → everyone holds hoping for more pump (coordination game)
+    // If dev sells → everyone should sell (trust collapse, prisoner's dilemma)
+
+    let signal = "HOLD";
+    let sellMult = 1.0;
+    let holdExt = 0;
+
+    // ── SELL_NOW triggers (high priority) ──
+    if (this.devSelling) {
+      // Dev selling = trust collapse. In Nash equilibrium, everyone should defect.
+      // First to sell gets the best price. This is a strict dominant strategy.
+      signal = "SELL_NOW";
+      sellMult = 3.0; // sell 3x faster
+      console.log(`[GAME] 🚨 DEV SELLING — triggering immediate exit`);
+    } else if (this.dumpCascade) {
+      // Multiple sellers in short window = cascade starting.
+      // Nash: if you believe others will sell, your best response is to sell first.
+      signal = "SELL_NOW";
+      sellMult = 2.5;
+      console.log(`[GAME] 🚨 DUMP CASCADE — ${uniqueSellers10} sellers in 10s`);
+    } else if (this.buyPressure < 0.25 && sells30 >= 5) {
+      // Heavy sell pressure — market is exiting
+      signal = "SELL_NOW";
+      sellMult = 2.0;
+      console.log(`[GAME] ⚠️ Heavy sell pressure: ${(this.buyPressure * 100).toFixed(0)}% buys`);
+    }
+
+    // ── RIDE triggers (delay sells, ride momentum) ──
+    else if (this.whaleAlert) {
+      // Whale buy = coordination signal. Others will hold hoping for more pump.
+      // Nash: if whale is buying, holding is weakly dominant (whale has info edge).
+      signal = "RIDE";
+      sellMult = 0.3; // delay sells significantly
+      holdExt = 30;   // extend hold by 30s
+      console.log(`[GAME] 🐋 WHALE DETECTED — riding momentum, extending hold 30s`);
+    } else if (this.buyPressure > 0.75 && buys30 >= 4) {
+      // Strong buy pressure from multiple participants
+      // Nash: cooperative equilibrium — everyone holds, price goes up
+      signal = "RIDE";
+      sellMult = 0.5;
+      holdExt = 15;
+      console.log(`[GAME] 📈 Strong buy pressure: ${(this.buyPressure * 100).toFixed(0)}% | ${this.uniqueBuyers} unique buyers`);
+    } else if (this.bondingPct > 60 && this.momentum > 0) {
+      // Approaching graduation — potential Raydium migration premium
+      // Nash: holding is dominant if graduation is likely (everyone benefits from LP)
+      signal = "RIDE";
+      sellMult = 0.4;
+      holdExt = 45;
+      console.log(`[GAME] 🎓 Graduation approaching: ${this.bondingPct.toFixed(0)}% bonded — holding for migration`);
+    }
+
+    // ── ACCUMULATE triggers (buy more if conditions are right) ──
+    else if (this.uniqueBuyers >= 5 && this.momentum > 0.5 && this.buyPressure > 0.6) {
+      signal = "ACCUMULATE";
+      sellMult = 0.5;
+      holdExt = 20;
+      console.log(`[GAME] 💰 Accumulate signal: ${this.uniqueBuyers} buyers, positive momentum`);
+    }
+
+    // ── Default HOLD ──
+    else {
+      signal = "HOLD";
+      sellMult = 1.0;
+      // Adjust slightly based on pressure
+      if (this.buyPressure > 0.55) sellMult = 0.8; // slightly delay
+      if (this.buyPressure < 0.4) sellMult = 1.3;  // slightly accelerate
+    }
+
+    this.signal = signal;
+    this.sellMultiplier = sellMult;
+    this.holdExtension = holdExt;
+  }
+
+  // Get a snapshot for logging/UI
+  snapshot() {
+    return {
+      signal: this.signal,
+      sellMultiplier: this.sellMultiplier,
+      holdExtension: this.holdExtension,
+      buyPressure: Math.round(this.buyPressure * 100),
+      momentum: Math.round(this.momentum * 100) / 100,
+      volumeRate: Math.round(this.volumeRate * 100) / 100,
+      uniqueBuyers: this.uniqueBuyers,
+      opponents: this.opponents.size,
+      whaleAlert: this.whaleAlert,
+      devSelling: this.devSelling,
+      dumpCascade: this.dumpCascade,
+      bondingPct: Math.round(this.bondingPct),
+      mcapSol: Math.round(this.mcapSol * 100) / 100,
+      tradeCount: this.trades.length,
+    };
+  }
+}
 
 // ═══════════════════════════════════════
 // WALLET ROLES v4 — organic buy-first strategy
@@ -115,18 +357,29 @@ class FleetTrader extends EventEmitter {
       });
     }
 
+    // Build set of our own wallet pubkeys (to exclude from opponent analysis)
+    const ourWallets = new Set(fleetWallets.map(w => w.pubkey));
+    ourWallets.add(masterKp.publicKey.toBase58());
+
+    // Initialize game state monitor
+    const gameState = new GameState(ca, ourWallets);
+
     const session = {
       ca, mint, masterKp, totalSol, sessionId, fleetWallets,
       fleetConfig: { sniperCount, slippage, duration },
       startTime: Date.now(), phase: "starting", running: true,
       tradeCount: 0, totalSolSpent: 0, totalSolRecovered: 0, _profitConfig: profitConfig,
       _isApe: !!fleetConfig.existingCA,
+      gameState,
     };
     this.sessions.set(ca, session);
     const walletKeys = fleetWallets.map(w => ({ role: w.role, pubkey: w.pubkey, secret: bs58.encode(w.keypair.secretKey), allocation: w.allocation, tokenShare: w.tokenShare }));
     session._walletKeys = walletKeys;
 
     if (duration > 0) setTimeout(() => { if (session.running) { session.running = false; session.phase = "duration_complete"; } }, duration * 60 * 1000);
+
+    // Start game state monitoring (opponent trade feed)
+    gameState.connect();
 
     this._runSmartFleet(session).catch(e => { console.error(`[FLEET] Fatal:`, e.message); session.running = false; session.phase = "error"; });
     return { ok: true, ca, wallets: fleetWallets.length, phase: "starting", walletKeys };
@@ -298,32 +551,56 @@ class FleetTrader extends EventEmitter {
     console.log(`[FLEET] APE: ${session.tradeCount} buys landed`);
 
     // Phase 2: Hold briefly — let the chart develop, wait for other buyers
+    // GameState continuously monitors — can extend or cut hold short
     if (!session.running) return;
     session.phase = "holding";
     this.emit("phase", { ca, phase: "holding" });
-    const holdTime = (session.fleetConfig?.duration || 1) * 60 * 1000; // default 1 min hold
-    const holdEnd = Date.now() + holdTime;
-    console.log(`[FLEET] APE: Holding for ${(holdTime / 1000).toFixed(0)}s...`);
+    const baseHoldTime = (session.fleetConfig?.duration || 1) * 60 * 1000;
+    let holdEnd = Date.now() + baseHoldTime;
+    console.log(`[FLEET] APE: Holding for ${(baseHoldTime / 1000).toFixed(0)}s (GameState may adjust)...`);
 
-    // During hold, do small volume trades to keep chart active
     while (Date.now() < holdEnd && session.running) {
-      await sleep(8000 + Math.random() * 12000);
-      if (!session.running || Date.now() >= holdEnd) break;
-      // Pick a random wallet with tokens and do a small sell+rebuy (volume)
-      const activeWallets = fleetWallets.filter(w => w.funded && w.trades.length > 0);
-      if (activeWallets.length >= 2) {
-        const w = activeWallets[Math.floor(Math.random() * activeWallets.length)];
-        try {
-          global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig();
-          // Sell 5-15% for volume
-          const smallSellPct = 0.05 + Math.random() * 0.10;
-          const sellResult = await this._executeSell(w, mint, global, feeConfig, smallSellPct);
-          if (sellResult.ok) {
-            session.tradeCount++; session.totalSolRecovered += sellResult.solOut || 0;
-            this.emit("trade", { ca, role: w.role, side: "sell", sol: sellResult.solOut, sig: sellResult.sig });
-            console.log(`[FLEET] [${w.role}] Volume sell ${(smallSellPct * 100).toFixed(0)}% -> ${(sellResult.solOut || 0).toFixed(4)} SOL`);
+      await sleep(5000 + Math.random() * 8000);
+      if (!session.running) break;
+
+      // Check GameState for early exit or hold extension
+      if (session.gameState?.alive) {
+        const gs = session.gameState.snapshot();
+
+        if (gs.signal === "SELL_NOW") {
+          console.log(`[GAME] APE: ⚡ SELL_NOW during hold — cutting hold short`);
+          break; // exit hold, go straight to sells
+        }
+        if (gs.signal === "RIDE" && gs.holdExtension > 0) {
+          const newEnd = Date.now() + gs.holdExtension * 1000;
+          if (newEnd > holdEnd) {
+            console.log(`[GAME] APE: 📈 Extending hold by ${gs.holdExtension}s (${gs.buyPressure}% buy pressure)`);
+            holdEnd = newEnd;
           }
-        } catch {}
+        }
+
+        // Log game state periodically
+        if (Math.random() < 0.3) {
+          console.log(`[GAME] ${gs.signal} | bp:${gs.buyPressure}% | mom:${gs.momentum} | buyers:${gs.uniqueBuyers} | vol:${gs.volumeRate}/min${gs.whaleAlert ? " | 🐋" : ""}${gs.devSelling ? " | ⚠DEV" : ""}`);
+        }
+      }
+
+      // During hold, do small volume trades
+      if (Date.now() < holdEnd && session.running) {
+        const activeWallets = fleetWallets.filter(w => w.funded && w.trades.length > 0);
+        if (activeWallets.length >= 2) {
+          const w = activeWallets[Math.floor(Math.random() * activeWallets.length)];
+          try {
+            global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig();
+            const smallSellPct = 0.05 + Math.random() * 0.10;
+            const sellResult = await this._executeSell(w, mint, global, feeConfig, smallSellPct);
+            if (sellResult.ok) {
+              session.tradeCount++; session.totalSolRecovered += sellResult.solOut || 0;
+              this.emit("trade", { ca, role: w.role, side: "sell", sol: sellResult.solOut, sig: sellResult.sig });
+              console.log(`[FLEET] [${w.role}] Volume sell ${(smallSellPct * 100).toFixed(0)}% -> ${(sellResult.solOut || 0).toFixed(4)} SOL`);
+            }
+          } catch {}
+        }
       }
     }
 
@@ -403,23 +680,93 @@ class FleetTrader extends EventEmitter {
   }
 
   async _runSellLoop(session, wallet, global, feeConfig) {
-    const { ca, mint } = session;
+    const { ca, mint, gameState } = session;
     const { sellPct, sellRounds } = wallet.roleConfig;
     console.log(`[FLEET] [${wallet.role}] Starting sell — ${sellRounds} rounds, ${(sellPct * 100).toFixed(0)}%`);
     const pctPerRound = sellPct / sellRounds;
+
     for (let i = 0; i < sellRounds && session.running; i++) {
-      const actualPct = pctPerRound * (0.7 + Math.random() * 0.6);
+      // ── Check GameState before each sell ──
+      if (gameState && gameState.alive) {
+        const gs = gameState.snapshot();
+
+        // RIDE signal: delay this sell round
+        if (gs.signal === "RIDE" && i < sellRounds - 1) {
+          const extraWait = (gameState.holdExtension || 15) * 1000;
+          console.log(`[FLEET] [${wallet.role}] RIDE signal (${gs.buyPressure}% buys, ${gs.uniqueBuyers} buyers) — delaying ${(extraWait/1000).toFixed(0)}s`);
+          await sleep(extraWait);
+          if (!session.running) break;
+          // Re-check after delay
+          const gs2 = gameState.snapshot();
+          if (gs2.signal === "RIDE") {
+            console.log(`[FLEET] [${wallet.role}] Still RIDE — skipping this sell round`);
+            continue; // skip this round entirely
+          }
+        }
+
+        // SELL_NOW signal: dump everything immediately
+        if (gs.signal === "SELL_NOW") {
+          console.log(`[FLEET] [${wallet.role}] ⚡ SELL_NOW signal — dumping remaining tokens`);
+          try {
+            // Refetch for fresh state
+            try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+            const result = await this._executeSell(wallet, mint, global, feeConfig, 0.95);
+            if (result.ok) {
+              wallet.solRecovered += result.solOut || 0;
+              wallet.trades.push({ side: "sell", solOut: result.solOut, sig: result.sig, time: Date.now() });
+              session.tradeCount++; session.totalSolRecovered += result.solOut || 0;
+              this.emit("trade", { ca, role: wallet.role, side: "sell", sol: result.solOut, sig: result.sig });
+              console.log(`[FLEET] [${wallet.role}] EMERGENCY SELL -> ${(result.solOut || 0).toFixed(4)} SOL`);
+            }
+          } catch (e) { console.error(`[FLEET] [${wallet.role}] Emergency sell failed:`, e.message); }
+          return; // exit sell loop entirely
+        }
+
+        // ACCUMULATE signal: buy more instead of selling (if we have SOL)
+        if (gs.signal === "ACCUMULATE" && i === 0) {
+          const walletBal = await this.connection.getBalance(wallet.keypair.publicKey);
+          const availSol = walletBal / LAMPORTS_PER_SOL - 0.003;
+          if (availSol > 0.01) {
+            console.log(`[FLEET] [${wallet.role}] ACCUMULATE signal — buying ${availSol.toFixed(4)} more SOL`);
+            try {
+              global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig();
+              const buyResult = await this._executeBuy(wallet, mint, global, feeConfig, availSol * 0.8);
+              if (buyResult.ok) {
+                wallet.solSpent += availSol * 0.8;
+                session.tradeCount++; session.totalSolSpent += availSol * 0.8;
+                this.emit("trade", { ca, role: wallet.role, side: "buy", sol: availSol * 0.8, sig: buyResult.sig });
+                console.log(`[FLEET] [${wallet.role}] Re-accumulated ${(availSol * 0.8).toFixed(4)} SOL`);
+              }
+            } catch {}
+            await sleep(10000 + Math.random() * 15000); // hold the re-buy for a bit
+            if (!session.running) break;
+          }
+        }
+      }
+
+      // ── Execute sell with GameState-adjusted sizing ──
+      const gsMultiplier = gameState?.sellMultiplier || 1.0;
+      const actualPct = pctPerRound * (0.7 + Math.random() * 0.6) * Math.min(gsMultiplier, 2.0);
+
       try {
+        // Refetch global for fresh bonding curve
+        try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
         const result = await this._executeSell(wallet, mint, global, feeConfig, Math.min(actualPct, 0.95));
         if (result.ok) {
           wallet.solRecovered += result.solOut || 0;
           wallet.trades.push({ side: "sell", solOut: result.solOut, sig: result.sig, time: Date.now() });
           session.tradeCount++; session.totalSolRecovered += result.solOut || 0;
           this.emit("trade", { ca, role: wallet.role, side: "sell", sol: result.solOut, sig: result.sig });
-          console.log(`[FLEET] [${wallet.role}] SELL ${i + 1}/${sellRounds} -> ${(result.solOut || 0).toFixed(4)} SOL`);
+          console.log(`[FLEET] [${wallet.role}] SELL ${i + 1}/${sellRounds} -> ${(result.solOut || 0).toFixed(4)} SOL${gsMultiplier !== 1 ? ` (${gsMultiplier.toFixed(1)}x)` : ""}`);
         }
       } catch (e) { console.error(`[FLEET] [${wallet.role}] Sell failed:`, e.message); }
-      if (i < sellRounds - 1) await sleep((10 + Math.random() * 30) * 1000);
+
+      if (i < sellRounds - 1) {
+        // Inter-round delay adjusted by GameState
+        const baseDelay = (10 + Math.random() * 30) * 1000;
+        const adjustedDelay = baseDelay / Math.max(0.3, gsMultiplier);
+        await sleep(adjustedDelay);
+      }
     }
   }
 
@@ -464,6 +811,8 @@ class FleetTrader extends EventEmitter {
     if (session.phase === "closed") return session._closeResult || {};
     session.running = false; session.phase = "closing";
     this.emit("phase", { ca, phase: "closing" });
+    // Stop game state monitoring
+    if (session.gameState) session.gameState.stop();
     await sleep(3000);
     // Fetch global/feeConfig with retry — critical for selling tokens
     let global, feeConfig;
@@ -554,6 +903,7 @@ class FleetTrader extends EventEmitter {
         elapsed: Date.now() - s.startTime,
         activeWallets: s.fleetWallets.filter(w => w.funded).length,
         walletDetails: s.fleetWallets.map(w => ({ role: w.role, pubkey: w.pubkey.slice(0, 8), allocation: w.allocation, spent: w.solSpent, recovered: w.solRecovered, trades: w.trades.length })),
+        gameState: s.gameState?.alive ? s.gameState.snapshot() : null,
       };
     }
     return { sessions, activeSessions: this.sessions.size };
