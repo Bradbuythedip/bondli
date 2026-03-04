@@ -2,7 +2,7 @@
 // Tiers: Free (25% profit share), Pro (10 SOL one-time, 0%), VIP (whitelisted, 0%)
 import express from "express";
 import { createServer } from "http";
-import { WebSocketServer } from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import { Connection, PublicKey, LAMPORTS_PER_SOL, SystemProgram, Transaction, Keypair, sendAndConfirmTransaction, ComputeBudgetProgram } from "@solana/web3.js";
 import bs58 from "bs58";
 
@@ -505,61 +505,160 @@ app.get("/api/price/:ca", apiLimiter, async (req, res) => {
 });
 
 // ═══════════════════════════════════════
-// RADAR — Live new pairs + movers scanner
-// Polls pump.fun API for new tokens and king of the hill
+// RADAR — PumpPortal WebSocket (real-time new tokens)
+// HTTP APIs get Cloudflare'd. WebSocket doesn't.
 // ═══════════════════════════════════════
-let radarCache = { tokens: [], updated: 0, koth: [], trending: [] };
-const RADAR_TTL = 8000; // refresh every 8s
+const radar = {
+  tokens: [],     // newest first, max 50
+  enriched: {},   // ca -> enriched data cache
+  wsAlive: false,
+  updated: 0,
+};
 
-async function refreshRadar() {
-  try {
-    const [newRes, kothRes] = await Promise.allSettled([
-      fetch("https://frontend-api-v2.pump.fun/coins?offset=0&limit=20&sort=created_timestamp&order=DESC&includeNsfw=false", { signal: AbortSignal.timeout(6000) }),
-      fetch("https://frontend-api-v2.pump.fun/coins/king-of-the-hill?includeNsfw=false", { signal: AbortSignal.timeout(6000) }),
-    ]);
+function enrichToken(raw) {
+  // Merge raw WS data + any enriched data
+  const e = radar.enriched[raw.ca] || {};
+  const mcap = e.mcap || raw.mcapSol * (e.solPrice || 170) || 0;
+  const bp = e.bp || 0;
+  const score = Math.min(100, Math.round(
+    (Math.min(mcap, 50000) / 500) +
+    (bp > 5 ? 10 : 0) + (bp > 20 ? 15 : 0) + (bp > 50 ? 10 : 0) +
+    (e.replies ? Math.min(e.replies * 2, 30) : 0) +
+    (raw.initialBuy > 0 ? 5 : 0)
+  ));
+  const verdict = mcap > 10000 && bp > 10 ? "APE" : mcap > 3000 ? "WATCH" : "NEW";
+  return {
+    ...raw, mcap, bp, score, verdict,
+    image: e.image || raw.image || "",
+    description: e.description || raw.description || "",
+    replies: e.replies || 0,
+    name: e.name || raw.name,
+    ticker: e.ticker || raw.ticker,
+  };
+}
 
-    if (newRes.status === "fulfilled" && newRes.value.ok) {
-      const coins = await newRes.value.json();
-      radarCache.tokens = (Array.isArray(coins) ? coins : []).map(c => ({
-        ca: c.mint, name: c.name, ticker: c.symbol, image: c.image_uri,
-        mcap: c.usd_market_cap || 0, bp: c.bonding_curve_progress || 0,
-        created: c.created_timestamp, complete: c.complete || false,
-        replies: c.reply_count || 0, description: (c.description || "").slice(0, 100),
-        dev: c.creator?.slice(0, 8),
-        // Quick score: volume proxy from mcap + replies + freshness
-        score: Math.min(100, Math.round(
-          (Math.min(c.usd_market_cap || 0, 50000) / 500) + // mcap weight (max 100)
-          Math.min((c.reply_count || 0) * 2, 30) + // social weight
-          (c.bonding_curve_progress > 5 ? 10 : 0) + // traction bonus
-          (c.bonding_curve_progress > 20 ? 15 : 0) // strong traction
-        )),
-        verdict: (c.usd_market_cap || 0) > 10000 && (c.bonding_curve_progress || 0) > 10 ? "APE" :
-          (c.usd_market_cap || 0) > 3000 ? "WATCH" : "NEW",
-      }));
-    }
-
-    if (kothRes.status === "fulfilled" && kothRes.value.ok) {
-      const koth = await kothRes.value.json();
-      radarCache.koth = (Array.isArray(koth) ? koth : koth ? [koth] : []).map(c => ({
-        ca: c.mint, name: c.name, ticker: c.symbol, image: c.image_uri,
-        mcap: c.usd_market_cap || 0, bp: c.bonding_curve_progress || 0,
-        complete: c.complete || false,
-      }));
-    }
-
-    radarCache.updated = Date.now();
-  } catch (e) {
-    console.error("[RADAR] Refresh error:", e.message);
+// Background enrichment — fetch full coin data for recent tokens
+async function enrichRecent() {
+  const toEnrich = radar.tokens.filter(t => !radar.enriched[t.ca]).slice(0, 5);
+  for (const t of toEnrich) {
+    try {
+      const r = await fetch("https://frontend-api-v2.pump.fun/coins/" + t.ca, {
+        headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (r.ok) {
+        const c = await r.json();
+        radar.enriched[t.ca] = {
+          mcap: c.usd_market_cap || 0, bp: c.bonding_curve_progress || 0,
+          image: c.image_uri || "", name: c.name, ticker: c.symbol,
+          description: (c.description || "").slice(0, 100),
+          replies: c.reply_count || 0, solPrice: c.usd_market_cap && c.market_cap ? c.usd_market_cap / c.market_cap : 170,
+        };
+      }
+    } catch {} // silent — enrichment is best-effort
+    await new Promise(r => setTimeout(r, 300)); // rate limit
   }
 }
 
-app.get("/api/radar", apiLimiter, async (req, res) => {
-  if (Date.now() - radarCache.updated > RADAR_TTL) await refreshRadar();
+// Fetch metadata from IPFS/Arweave URI to get image
+async function fetchTokenImage(uri, ca) {
+  if (!uri || radar.enriched[ca]?.image) return;
+  try {
+    // Convert ipfs:// to gateway
+    let url = uri;
+    if (url.startsWith("ipfs://")) url = "https://ipfs.io/ipfs/" + url.slice(7);
+    const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    if (r.ok) {
+      const meta = await r.json();
+      if (meta.image) {
+        let img = meta.image;
+        if (img.startsWith("ipfs://")) img = "https://ipfs.io/ipfs/" + img.slice(7);
+        radar.enriched[ca] = { ...(radar.enriched[ca] || {}), image: img, description: (meta.description || "").slice(0, 100) };
+      }
+    }
+  } catch {} // silent
+}
+
+function connectPumpPortalWS() {
+  console.log("[RADAR] Connecting to PumpPortal WebSocket...");
+  let ws;
+  try {
+    ws = new WebSocket("wss://pumpportal.fun/api/data");
+  } catch (e) {
+    console.error("[RADAR] WS constructor error:", e.message);
+    setTimeout(connectPumpPortalWS, 10000);
+    return;
+  }
+
+  ws.on("open", () => {
+    radar.wsAlive = true;
+    console.log("[RADAR] ✓ PumpPortal WebSocket connected — streaming new tokens");
+    // Subscribe to new token creations
+    ws.send(JSON.stringify({ method: "subscribeNewToken" }));
+  });
+
+  ws.on("message", (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      // New token creation event
+      if (msg.txType === "create" && msg.mint) {
+        const token = {
+          ca: msg.mint,
+          name: msg.name || "?",
+          ticker: msg.symbol || "?",
+          image: "",
+          mcapSol: msg.marketCapSol || 0,
+          mcap: 0, bp: 0,
+          dev: msg.traderPublicKey?.slice(0, 8) || "",
+          created: Date.now(),
+          initialBuy: msg.initialBuy || 0,
+          source: "ws",
+          uri: msg.uri || "",
+          description: "",
+        };
+        // Dedupe
+        if (!radar.tokens.find(t => t.ca === token.ca)) {
+          radar.tokens.unshift(token);
+          if (radar.tokens.length > 60) radar.tokens.pop();
+          radar.updated = Date.now();
+          // Fire-and-forget: fetch metadata for image
+          if (token.uri) fetchTokenImage(token.uri, token.ca);
+        }
+      }
+    } catch {}
+  });
+
+  ws.on("close", () => {
+    radar.wsAlive = false;
+    console.log("[RADAR] WebSocket disconnected — reconnecting in 5s...");
+    setTimeout(connectPumpPortalWS, 5000);
+  });
+
+  ws.on("error", (err) => {
+    console.error("[RADAR] WS error:", err.message);
+    radar.wsAlive = false;
+  });
+}
+
+// Start WebSocket + enrichment loop
+connectPumpPortalWS();
+setInterval(() => { enrichRecent().catch(() => {}); }, 10000);
+// Prune enrichment cache every 5 min
+setInterval(() => {
+  const activeCAs = new Set(radar.tokens.map(t => t.ca));
+  for (const ca of Object.keys(radar.enriched)) {
+    if (!activeCAs.has(ca)) delete radar.enriched[ca];
+  }
+}, 300000);
+
+app.get("/api/radar", apiLimiter, (req, res) => {
+  const tokens = radar.tokens.slice(0, 30).map(enrichToken);
   res.json({
     ok: true,
-    tokens: radarCache.tokens,
-    koth: radarCache.koth,
-    updated: radarCache.updated,
+    tokens,
+    wsAlive: radar.wsAlive,
+    count: radar.tokens.length,
+    updated: radar.updated,
   });
 });
 
