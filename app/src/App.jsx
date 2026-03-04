@@ -1357,17 +1357,33 @@ export default function App() {
                 {/* ═══ FLEET WALLETS ═══ */}
                 {fleetStatus?.wallets && fleetStatus.wallets.length > 0 && (
                   <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 12, overflow: "hidden", marginBottom: 12 }}>
-                    <div style={{ padding: "10px 14px", borderBottom: "1px solid " + T.border, fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.text }}>Fleet Wallets</div>
+                    <div style={{ padding: "10px 14px", borderBottom: "1px solid " + T.border, fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.text, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <span>Fleet Wallets</span>
+                      {(user?.tier === "pro" || user?.tier === "vip") && fleetKeys.length > 0 && (
+                        <button onClick={() => { const all = fleetKeys.map(k => k.role + ": " + k.secret).join("\n"); navigator.clipboard?.writeText(all); setCopied("all"); }} style={{ background: T.red + "15", border: "1px solid " + T.red + "33", borderRadius: 6, padding: "3px 8px", color: T.red, fontFamily: mono, fontSize: 10, fontWeight: 700, cursor: "pointer" }}>{copied === "all" ? "\u2713 Copied" : "\u{1F511} Copy All Keys"}</button>
+                      )}
+                    </div>
                     {fleetStatus.wallets.map((w, i) => {
                       const net = (w.recovered || 0) - (w.spent || 0);
                       const rc = { sniper: "#ff6b6b", accumulator: T.green, momentum: "#ffd43b", whale: "#4dabf7", liquidator: "#da77f2", recycler: "#69db7c", support: "#748ffc" };
+                      const keyData = fleetKeys.find(k => k.pubkey?.slice(0, 8) === w.pubkey?.slice(0, 8) || k.role === w.role);
+                      const walletSecret = keyData?.secret || ((w.role === "dev" || w.role === "master" || w.role === "solo") ? devSecret : null);
+                      const isVip = user?.tier === "pro" || user?.tier === "vip";
                       return (
-                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", borderBottom: "1px solid " + T.border + "22" }}>
-                          <span style={{ width: 8, height: 8, borderRadius: "50%", background: rc[w.role] || T.green, flexShrink: 0 }} />
-                          <span style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.mid, width: 80, textTransform: "capitalize" }}>{w.role}</span>
-                          <span style={{ fontFamily: mono, fontSize: 11, color: T.faint }}>{w.pubkey}...</span>
-                          <span style={{ marginLeft: "auto", fontFamily: mono, fontSize: 12, fontWeight: 700, color: net >= 0 ? T.green : T.red }}>{net >= 0 ? "+" : ""}{net.toFixed(4)}</span>
-                          <span style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>{w.tradeCount || 0}tx</span>
+                        <div key={i} style={{ padding: "8px 14px", borderBottom: "1px solid " + T.border + "22" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ width: 8, height: 8, borderRadius: "50%", background: rc[w.role] || T.green, flexShrink: 0 }} />
+                            <span style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.mid, width: 80, textTransform: "capitalize" }}>{w.role}</span>
+                            <span style={{ fontFamily: mono, fontSize: 11, color: T.faint }}>{w.pubkey}...</span>
+                            <span style={{ marginLeft: "auto", fontFamily: mono, fontSize: 12, fontWeight: 700, color: net >= 0 ? T.green : T.red }}>{net >= 0 ? "+" : ""}{net.toFixed(4)}</span>
+                            <span style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>{w.tradeCount || 0}tx</span>
+                          </div>
+                          {isVip && walletSecret && (
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 5, marginLeft: 16 }}>
+                              <div style={{ flex: 1, fontFamily: mono, fontSize: 9, color: T.dim, wordBreak: "break-all", lineHeight: 1.3, background: T.bg, padding: "4px 6px", borderRadius: 4, border: "1px solid " + T.border, maxHeight: 32, overflow: "hidden", textOverflow: "ellipsis" }}>{walletSecret.slice(0, 20)}...{walletSecret.slice(-8)}</div>
+                              <button onClick={() => { navigator.clipboard?.writeText(walletSecret); setCopied(w.role + i); }} style={{ background: T.red + "20", border: "none", borderRadius: 4, padding: "3px 8px", color: T.red, fontFamily: mono, fontSize: 9, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>{copied === w.role + i ? "\u2713" : "\u{1F511} Key"}</button>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
