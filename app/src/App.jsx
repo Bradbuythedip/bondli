@@ -562,7 +562,8 @@ function PriceChart({ trades, mobile, T, ca }) {
 // RADAR — Live new pairs scanner
 // ═══════════════════════════════════════
 function RadarFeed({ T, mobile, onApe, isVip }) {
-  const [tokens, setTokens] = useState([]);
+  const [tabs, setTabs] = useState({ new: [], hot: [], graduating: [] });
+  const [activeTab, setActiveTab] = useState("hot");
   const [wsAlive, setWsAlive] = useState(false);
   const [poolSize, setPoolSize] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -571,12 +572,15 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
+  const tokens = tabs[activeTab] || [];
+
   const fetchRadar = async () => {
     try {
       const r = await fetch(window.__BONDLI_API + "/api/radar");
       if (r.ok) {
         const d = await r.json();
-        if (d.tokens) setTokens(d.tokens);
+        if (d.tabs) setTabs(d.tabs);
+        else if (d.tokens) setTabs(prev => ({ ...prev, hot: d.tokens }));
         setWsAlive(d.wsAlive || false);
         setPoolSize(d.poolSize || 0);
         setEnabled(d.enabled !== false);
@@ -621,6 +625,12 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
   const vc = v => v === "APE" ? T.green : v === "WATCH" ? "#ffaa00" : T.faint;
   const ago = ts => { if (!ts) return ""; const s = Math.floor((Date.now() - ts) / 1000); return s < 60 ? s + "s" : s < 3600 ? Math.floor(s/60) + "m" : Math.floor(s/3600) + "h"; };
 
+  const TAB_CONFIG = [
+    { id: "new", label: "\u{1F195} New", desc: "fresh tokens with early buys" },
+    { id: "hot", label: "\uD83D\uDD25 Hot", desc: "volume spikes right now" },
+    { id: "graduating", label: "\uD83C\uDF93 Graduating", desc: "near bonding completion" },
+  ];
+
   return (
     <div>
       {/* Header */}
@@ -630,7 +640,7 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
           <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: T.text }}>Radar</span>
           <div style={{ width: 7, height: 7, borderRadius: "50%", background: !enabled ? T.faint : wsAlive ? T.green : T.red, boxShadow: enabled && wsAlive ? "0 0 6px " + T.green : "none", animation: enabled && wsAlive ? "pulse 2s infinite" : "none" }} />
           <span style={{ fontFamily: "monospace", fontSize: 10, color: !enabled ? T.faint : wsAlive ? T.green : T.red }}>{!enabled ? "OFF" : wsAlive ? "LIVE" : "..."}</span>
-          {enabled && poolSize > 0 && <span style={{ fontFamily: "monospace", fontSize: 9, color: T.faint }}>{poolSize} scanned</span>}
+          {enabled && poolSize > 0 && <span style={{ fontFamily: "monospace", fontSize: 9, color: T.faint }}>{poolSize}</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <button onClick={handleRefresh} disabled={refreshing} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "monospace", fontSize: 10, color: T.dim, transition: "all .2s" }}><span style={{ display: "inline-block", transition: "transform .5s", transform: refreshing ? "rotate(360deg)" : "none" }}>{"\u21BB"}</span></button>
@@ -639,6 +649,28 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
           </div>
         </div>
       </div>
+
+      {/* Tabs */}
+      {enabled && !loading && (
+        <div style={{ display: "flex", borderBottom: "1px solid " + T.border }}>
+          {TAB_CONFIG.map(tab => {
+            const count = (tabs[tab.id] || []).length;
+            const isActive = activeTab === tab.id;
+            return (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
+                flex: 1, padding: "8px 4px", background: isActive ? T.green + "08" : "transparent",
+                border: "none", borderBottom: isActive ? "2px solid " + T.green : "2px solid transparent",
+                fontFamily: "monospace", fontSize: mobile ? 11 : 12, fontWeight: 700,
+                color: isActive ? T.green : T.dim, cursor: "pointer", transition: "all .15s",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+              }}>
+                {tab.label}
+                {count > 0 && <span style={{ fontSize: 9, background: isActive ? T.green + "22" : T.border + "66", color: isActive ? T.green : T.faint, borderRadius: 8, padding: "1px 5px", fontWeight: 800 }}>{count}</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {!enabled ? (
         <div style={{ padding: "30px 20px", textAlign: "center" }}>
@@ -649,8 +681,8 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
         <div style={{ padding: 40, textAlign: "center", fontFamily: "monospace", fontSize: 13, color: T.faint, animation: "pulse 2s infinite" }}>{"\uD83D\uDCE1"} Scanning for movers...</div>
       ) : tokens.length === 0 ? (
         <div style={{ padding: "30px 20px", textAlign: "center" }}>
-          <div style={{ fontFamily: "monospace", fontSize: 12, color: T.faint, marginBottom: 4 }}>No movers yet</div>
-          <div style={{ fontFamily: "monospace", fontSize: 10, color: T.faint }}>{poolSize} tokens scanned \u2014 waiting for traction...</div>
+          <div style={{ fontFamily: "monospace", fontSize: 12, color: T.faint, marginBottom: 4 }}>No {activeTab} movers yet</div>
+          <div style={{ fontFamily: "monospace", fontSize: 10, color: T.faint }}>{poolSize} tokens scanned {"\u2014"} {TAB_CONFIG.find(t => t.id === activeTab)?.desc || ""}</div>
         </div>
       ) : (
         <div>
@@ -666,7 +698,6 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
                   {selected.creator && <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, marginTop: 3 }}>dev: {selected.creator.slice(0, 12)}...</div>}
                 </div>
               </div>
-              {/* Stats row */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1, background: T.border + "33", margin: "0 14px", borderRadius: 8, overflow: "hidden" }}>
                 {[{ k: "MCap", v: selected.mcap ? "$" + fmt(selected.mcap) : (selected.mcapSol ? selected.mcapSol + " SOL" : "\u2014"), c: selected.mcap > 5000 ? T.green : T.dim }, { k: "Bonded", v: (selected.bp || 0).toFixed(1) + "%", c: selected.bp > 20 ? T.green : T.faint }, { k: "Buys", v: String(selected.buys || 0), c: T.green }, { k: "Sells", v: String(selected.sells || 0), c: T.red || "#ff4444" }, { k: "Volume", v: (selected.solVol || 0).toFixed(2) + " SOL", c: selected.solVol > 1 ? T.green : T.dim }, { k: "Replies", v: String(selected.replies || 0), c: T.dim }].map(s => (
                   <div key={s.k} style={{ background: T.surface, padding: "8px 4px", textAlign: "center" }}>
@@ -676,9 +707,7 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
                 ))}
               </div>
               {selected.bp > 0 && <div style={{ height: 3, background: T.border, margin: "8px 14px 0" }}><div style={{ height: 3, background: selected.bp >= 80 ? "#ffaa00" : T.green, width: Math.min(100, selected.bp) + "%", borderRadius: 2 }} /></div>}
-              {/* CA copy */}
               <div onClick={() => { navigator.clipboard?.writeText(selected.ca); }} style={{ margin: "8px 14px", background: T.surface, borderRadius: 8, padding: "6px 10px", fontFamily: "monospace", fontSize: 10, color: T.faint, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.ca} <span style={{ color: T.dim }}>{"\u2398"} copy</span></div>
-              {/* Actions */}
               <div style={{ display: "flex", gap: 6, padding: "6px 14px 12px", flexWrap: "wrap" }}>
                 <button onClick={() => { onApe(selected.ca); setSelected(null); }} style={{ flex: 1, padding: "10px", background: T.green + "18", border: "1px solid " + T.green, borderRadius: 10, fontFamily: "monospace", fontSize: 14, fontWeight: 900, color: T.green, cursor: "pointer" }}>{"\uD83D\uDE80"} APE</button>
                 <a href={"https://pump.fun/coin/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "10px 10px", border: "1px solid " + T.border, borderRadius: 10, fontFamily: "monospace", fontSize: 10, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>pump {"\u2197"}</a>
@@ -706,13 +735,17 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
               <div style={{ textAlign: "right", flexShrink: 0 }}>
                 <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: t.verdict === "APE" ? T.green : T.dim }}>{t.buys || 0}b / {t.sells || 0}s</div>
                 <div style={{ fontFamily: "monospace", fontSize: 9, color: t.solVol > 1 ? T.green : T.faint }}>{(t.solVol || 0).toFixed(1)} SOL{t.mcapUsd > 0 ? " \u00B7 $" + fmt(t.mcapUsd) : ""}</div>
-                {t.bp > 0 && <div style={{ width: 40, height: 2, background: T.border, borderRadius: 1, marginTop: 3, marginLeft: "auto" }}><div style={{ height: 2, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 1 }} /></div>}
+                {activeTab === "graduating" && t.bp > 0 ? (
+                  <div style={{ fontFamily: "monospace", fontSize: 10, fontWeight: 800, color: t.bp >= 70 ? "#ffaa00" : T.green, marginTop: 1 }}>{t.bp.toFixed(0)}% bonded</div>
+                ) : t.bp > 0 ? (
+                  <div style={{ width: 40, height: 2, background: T.border, borderRadius: 1, marginTop: 3, marginLeft: "auto" }}><div style={{ height: 2, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 1 }} /></div>
+                ) : null}
               </div>
             </div>
           ))}
         </div>
       )}
-      <div style={{ textAlign: "center", padding: "6px", fontFamily: "monospace", fontSize: 8, color: T.faint }}>top movers {"\u00B7"} auto-refresh 5s {"\u00B7"} tap to evaluate</div>
+      <div style={{ textAlign: "center", padding: "6px", fontFamily: "monospace", fontSize: 8, color: T.faint }}>{TAB_CONFIG.find(t => t.id === activeTab)?.desc || ""} {"\u00B7"} auto-refresh 5s</div>
     </div>
   );
 }
