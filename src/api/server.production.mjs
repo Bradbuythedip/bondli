@@ -561,7 +561,10 @@ function computeMovers() {
     scored.push({
       ca, name: t.name, ticker: t.ticker, image: t.image || "",
       score, verdict, buys: t.buys, sells: t.sells,
-      solVol: t.solVol, mcapSol: t.mcapSol,
+      solVol: Math.round(t.solVol * 100) / 100,
+      mcapSol: Math.round(t.mcapSol * 100) / 100,
+      mcapUsd: Math.round((t.mcapSol || 0) * 170),
+      bp: Math.round((t.bp || 0) * 10) / 10,
       dev: t.dev, created: t.created,
       description: t.description || "",
       source: "ws",
@@ -602,6 +605,12 @@ function connectPumpPortalWS() {
     try {
       const msg = JSON.parse(raw.toString());
 
+      // Debug: log first trade event to see actual fields
+      if ((msg.txType === "buy" || msg.txType === "sell") && !radar._debuggedTrade) {
+        radar._debuggedTrade = true;
+        console.log("[RADAR] Sample trade event fields:", JSON.stringify(msg).slice(0, 500));
+      }
+
       // New token created
       if (msg.txType === "create" && msg.mint) {
         const ca = msg.mint;
@@ -612,6 +621,8 @@ function connectPumpPortalWS() {
             created: Date.now(), buys: 0, sells: 0, solVol: 0,
             mcapSol: msg.marketCapSol || 0, lastTrade: Date.now(),
             uri: msg.uri || "", image: "", description: "",
+            bp: msg.vSolInBondingCurve ? Math.max(0, ((msg.vSolInBondingCurve - 30) / 55) * 100) : 0,
+            vSol: msg.vSolInBondingCurve || 0,
           });
           // Subscribe to this token's trades
           if (radar.subbed.size < radar.MAX_TRACKED) {
@@ -633,9 +644,18 @@ function connectPumpPortalWS() {
         if (t) {
           if (msg.txType === "buy") t.buys++;
           else t.sells++;
-          t.solVol += Math.abs(msg.solAmount || 0) / 1e9; // lamports to SOL
+          // PumpPortal sends solAmount already in SOL (not lamports!)
+          t.solVol += Math.abs(msg.solAmount || 0);
           t.mcapSol = msg.marketCapSol || t.mcapSol;
           t.lastTrade = Date.now();
+          // Bonding curve progress from vSolInBondingCurve
+          // Curve starts at ~30 SOL virtual, graduates at ~85 SOL
+          if (msg.vSolInBondingCurve) {
+            t.vSol = msg.vSolInBondingCurve;
+            t.bp = Math.max(0, Math.min(100, ((msg.vSolInBondingCurve - 30) / 55) * 100));
+          }
+          // Token amount for volume tracking
+          if (msg.tokenAmount) t.lastTokenAmount = msg.tokenAmount;
           // Name might come through on trades
           if (msg.name && t.name === "?") t.name = msg.name;
           if (msg.symbol && t.ticker === "?") t.ticker = msg.symbol;
@@ -736,10 +756,13 @@ app.get("/api/radar/token/:ca", apiLimiter, async (req, res) => {
       return res.json({
         ok: true, ca, name: c.name || wsData?.name, ticker: c.symbol || wsData?.ticker,
         image: c.image_uri || wsData?.image || "", description: (c.description || "").slice(0, 300),
-        mcap: c.usd_market_cap || 0, bp: c.bonding_curve_progress || 0,
+        mcap: c.usd_market_cap || Math.round((wsData?.mcapSol || 0) * 170),
+        bp: c.bonding_curve_progress || wsData?.bp || 0,
         replies: c.reply_count || 0, complete: c.complete || false,
         creator: c.creator || wsData?.dev || "",
-        buys: wsData?.buys || 0, sells: wsData?.sells || 0, solVol: wsData?.solVol || 0,
+        buys: wsData?.buys || 0, sells: wsData?.sells || 0,
+        solVol: Math.round((wsData?.solVol || 0) * 100) / 100,
+        mcapSol: wsData?.mcapSol || 0,
       });
     }
   } catch {}
@@ -748,9 +771,13 @@ app.get("/api/radar/token/:ca", apiLimiter, async (req, res) => {
     return res.json({
       ok: true, ca, name: wsData.name, ticker: wsData.ticker,
       image: wsData.image, description: wsData.description,
-      mcap: 0, bp: 0, replies: 0, complete: false,
+      mcap: Math.round((wsData.mcapSol || 0) * 170),
+      bp: Math.round((wsData.bp || 0) * 10) / 10,
+      replies: 0, complete: false,
       creator: wsData.dev,
-      buys: wsData.buys, sells: wsData.sells, solVol: wsData.solVol,
+      buys: wsData.buys, sells: wsData.sells,
+      solVol: Math.round((wsData.solVol || 0) * 100) / 100,
+      mcapSol: Math.round((wsData.mcapSol || 0) * 100) / 100,
     });
   }
   res.json({ ok: false, error: "Token not found", ca });
