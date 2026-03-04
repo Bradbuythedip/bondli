@@ -36,9 +36,8 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ═══════════════════════════════════════
 async function skimSweep(connection, sourceKp, destinationPubkey, profitConfig, solInputForThisWallet = 0) {
   const balance = await connection.getBalance(sourceKp.publicKey);
-  // Reserve: 5000 base fee + priority fee (100K CU × 50K µL / 1M = 5K) + margin
-  const FEE_RESERVE = 15000; // ~0.000015 SOL
-  const available = balance - FEE_RESERVE;
+  // Reserve only base tx fee (5000). Account goes to 0 → no rent issue.
+  const available = balance - 5000;
   if (available <= 0) return { swept: 0, skimmed: 0, sig: null };
   const balanceSol = available / LAMPORTS_PER_SOL;
   let skimLamports = 0;
@@ -51,7 +50,7 @@ async function skimSweep(connection, sourceKp, destinationPubkey, profitConfig, 
   }
   const sweepLamports = available - skimLamports;
   const tx = new Transaction();
-  tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }));
+  // No priority fee — sweep must leave account at exactly 0 to avoid rent issues
   if (sweepLamports > 0) tx.add(SystemProgram.transfer({ fromPubkey: sourceKp.publicKey, toPubkey: destinationPubkey, lamports: sweepLamports }));
   if (skimLamports > 0 && profitConfig.platformWallet) tx.add(SystemProgram.transfer({ fromPubkey: sourceKp.publicKey, toPubkey: new PublicKey(profitConfig.platformWallet), lamports: skimLamports }));
   const sig = await sendAndConfirmTransaction(connection, tx, [sourceKp], { skipPreflight: true, commitment: "confirmed" });
