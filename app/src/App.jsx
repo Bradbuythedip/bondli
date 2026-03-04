@@ -1149,6 +1149,7 @@ export default function App() {
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState(""); const [activeSessionId, setActiveSessionId] = useState("");
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
+  const [fleetKeys, setFleetKeys] = useState([]); const [devSecret, setDevSecret] = useState("");
   const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
@@ -1181,7 +1182,7 @@ export default function App() {
       const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca, wallet: user?.pubkey }) });
       const data = await res.json();
       if (data.error) { toast(data.error, "error"); }
-      else { toast("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL | Recovered: " + (data.solRecovered || 0).toFixed(4) + " SOL", "success"); setLaunched(false); setLaunchCA(""); setFleetStatus(null); }
+      else { toast("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL | Recovered: " + (data.solRecovered || 0).toFixed(4) + " SOL", "success"); setLaunched(false); setLaunchCA(""); setFleetStatus(null); setFleetKeys([]); setDevSecret(""); }
     } catch (e) { toast(e.message, "error"); }
     setIsClosing(false);
   };
@@ -1235,7 +1236,7 @@ export default function App() {
         <div style={{ minHeight: "100dvh", background: T.bg, color: T.text, fontFamily: sans }}>
           <div style={{ position: "fixed", inset: 0, opacity: T.mode === "dark" ? 0.015 : 0.025, pointerEvents: "none", zIndex: 0, backgroundImage: T.gridLines, backgroundSize: "60px 60px" }} />
           <header style={{ padding: mobile ? "10px 14px" : "12px 28px", borderBottom: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "space-between", position: "relative", zIndex: 10, background: T.bg + "ee", backdropFilter: "blur(10px)" }}>
-            <div onClick={() => { setLaunched(false); setLaunchCA(""); setActiveSessionId(""); setCaAnalysis(null); setShowSettings(false); setFleetStatus(null); setSessionDetail(null); setWantsHome(true); }} style={{ display: "flex", alignItems: "center", gap: mobile ? 8 : 12, cursor: "pointer", userSelect: "none" }}>
+            <div onClick={() => { setLaunched(false); setLaunchCA(""); setActiveSessionId(""); setCaAnalysis(null); setShowSettings(false); setFleetStatus(null); setFleetKeys([]); setDevSecret(""); setSessionDetail(null); setWantsHome(true); }} style={{ display: "flex", alignItems: "center", gap: mobile ? 8 : 12, cursor: "pointer", userSelect: "none" }}>
               <RedPill size={mobile ? 26 : 34} />
               <span style={{ fontFamily: mono, fontWeight: 800, fontSize: mobile ? 17 : 22, color: T.text }}>BOND<span style={{ color: T.red }}>LI</span></span>
               {wsConnected && <span style={{ fontSize: 10, fontFamily: mono, color: T.green, opacity: 0.8 }}>{"\u25CF"} live</span>}
@@ -1372,7 +1373,7 @@ export default function App() {
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={() => closeSession(launchCA)} disabled={isClosing} style={{ flex: 1, padding: "14px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Closing..." : "\u2620 Close All"}</button>
                   <button onClick={() => sellAndSweep(activeSessionId || pastSessions[0]?.id)} disabled={isSweeping} style={{ flex: 1, padding: "14px", background: T.yellow + "10", border: "1px solid " + T.yellow, color: T.yellow, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isSweeping ? "wait" : "pointer", opacity: isSweeping ? 0.5 : 1 }}>{isSweeping ? "Sweeping..." : "\u21BB Sell & Sweep"}</button>
-                  <button onClick={() => { setLaunched(false); setLaunchCA(""); setCaAnalysis(null); setFleetStatus(null); setWantsHome(true); }} style={{ padding: "14px 20px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 13, borderRadius: 10, cursor: "pointer" }}>New</button>
+                  <button onClick={() => { setLaunched(false); setLaunchCA(""); setCaAnalysis(null); setFleetStatus(null); setFleetKeys([]); setDevSecret(""); setWantsHome(true); }} style={{ padding: "14px 20px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 13, borderRadius: 10, cursor: "pointer" }}>New</button>
                 </div>
               </div>
 
@@ -1451,7 +1452,7 @@ export default function App() {
                   </>)}
                 </Section>
                 <Section n={"\u{1F680}"} title={isApe ? "Start Trading" : "Launch"} highlight={canLaunch} T={T} mobile={mobile}>
-                  <LaunchFlow user={user} mobile={mobile} totalSol={deployOnly ? 0 : totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip, deployOnly, batchCount: deployOnly ? batchCount : 1, batchDelay: deployOnly ? batchDelay : 5 }} onLaunched={(data) => { setWantsHome(false); setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); }} />
+                  <LaunchFlow user={user} mobile={mobile} totalSol={deployOnly ? 0 : totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip, deployOnly, batchCount: deployOnly ? batchCount : 1, batchDelay: deployOnly ? batchDelay : 5 }} onLaunched={(data) => { setWantsHome(false); setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); if (data.walletKeys) setFleetKeys(data.walletKeys); if (data.devSecret) setDevSecret(data.devSecret); }} />
                 </Section>
                 {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginTop: 8 }}>
                   <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
