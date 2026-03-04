@@ -855,9 +855,11 @@ app.get("/api/analyze/:ca", async (req, res) => {
     const created = pumpData?.created_timestamp || dexData?.pairCreatedAt || Date.now();
     const age = (Date.now() - new Date(created).getTime()) / 60000; // minutes
     const replies = pumpData?.reply_count || 0;
-    const complete = pumpData?.complete || (dexData?.dexId !== "pumpfun");
+    const complete = pumpData?.complete || (dexData?.dexId && dexData.dexId !== "pumpfun");
     const imageUri = pumpData?.image_uri || dexData?.info?.imageUrl || null;
     const description = pumpData?.description || "";
+    // Bonding progress: pump.fun data > estimate from mcap (graduation ~$67k)
+    const bp = pumpData?.bonding_curve_progress || (complete ? 100 : Math.min(99, Math.max(0, (mcap / 67000) * 100)));
 
     // DexScreener real trading data
     const vol24h = dexData?.volume?.h24 || 0;
@@ -900,7 +902,6 @@ app.get("/api/analyze/:ca", async (req, res) => {
     factors.push({ name: "Buy Pressure", score: pressureScore, detail: txns1h.buys + "B/" + txns1h.sells + "S 1h" });
 
     // 4. Bonding Progress — how far along the curve? Sweet spot is 5-50%
-    const bp = pumpData?.bonding_curve_progress || 0;
     let bondScore = 5;
     if (complete) bondScore = 4; // graduated — already on raydium
     else if (bp >= 5 && bp < 20) bondScore = 18; // early traction, most upside
