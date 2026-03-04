@@ -563,7 +563,7 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
           count: fleetConfig?.batchCount || 1,
           tokenConfig,
           masterSeed: masterSeed || "",
-          jitoTip: fleetConfig?.jitoTip || 0.003,
+          jitoTip: fleetConfig?.jitoTip || 0.001,
           delayMs: (fleetConfig?.batchDelay || 5) * 1000,
         }),
       });
@@ -898,15 +898,16 @@ function Section({ n, title, done, highlight, T, mobile, children, subtitle }) {
     </div>
   );
 }
-function NumInput({ label, value, onChange, min, max, step, T }) {
+function NumInput({ label, value, onChange, min, max, step, T, decimals }) {
   const s = step || 1;
+  const display = decimals != null ? value.toFixed(decimals) : (s < 1 ? parseFloat(value.toFixed(6)) : value);
   return (
     <div style={{ background: T.bg, borderRadius: 12, border: "1px solid " + T.border, padding: "10px 10px", minWidth: 0, overflow: "hidden" }}>
       <div style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>{label}</div>
       <div style={{ display: "flex", alignItems: "center" }}>
-        <button onClick={() => onChange(Math.max(min, value - s))} style={{ width: 34, height: 34, borderRadius: "8px 0 0 8px", border: "1px solid " + T.border, background: T.surface, color: T.dim, fontSize: 18, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, padding: 0 }}>-</button>
-        <div style={{ flex: 1, height: 34, display: "flex", alignItems: "center", justifyContent: "center", background: T.surface, borderTop: "1px solid " + T.border, borderBottom: "1px solid " + T.border, fontFamily: mono, fontSize: 17, fontWeight: 800, color: T.green, minWidth: 0 }}>{value}</div>
-        <button onClick={() => onChange(Math.min(max, value + s))} style={{ width: 34, height: 34, borderRadius: "0 8px 8px 0", border: "1px solid " + T.border, background: T.surface, color: T.dim, fontSize: 18, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, padding: 0 }}>+</button>
+        <button onClick={() => onChange(Math.max(min, parseFloat((value - s).toFixed(6))))} style={{ width: 34, height: 34, borderRadius: "8px 0 0 8px", border: "1px solid " + T.border, background: T.surface, color: T.dim, fontSize: 18, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, padding: 0 }}>-</button>
+        <div style={{ flex: 1, height: 34, display: "flex", alignItems: "center", justifyContent: "center", background: T.surface, borderTop: "1px solid " + T.border, borderBottom: "1px solid " + T.border, fontFamily: mono, fontSize: 17, fontWeight: 800, color: T.green, minWidth: 0 }}>{display}</div>
+        <button onClick={() => onChange(Math.min(max, parseFloat((value + s).toFixed(6))))} style={{ width: 34, height: 34, borderRadius: "0 8px 8px 0", border: "1px solid " + T.border, background: T.surface, color: T.dim, fontSize: 18, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, padding: 0 }}>+</button>
       </div>
     </div>
   );
@@ -1201,7 +1202,7 @@ export default function App() {
                   ) : (<>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase" }}>SOL Budget</span><span style={{ fontFamily: mono, fontSize: 28, fontWeight: 900, color: T.green }}>{totalSol}</span></div>
                   <input type="range" min={0.5} max={50} step={0.1} value={totalSol} onChange={e => setTotalSol(Number(e.target.value))} style={{ width: "100%", accentColor: T.green, marginBottom: 12 }} />
-                  <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 12, overflow: "hidden" }}><NumInput label="Snipers" value={sniperCount} onChange={setSniperCount} min={1} max={5} T={T} /><NumInput label="Slippage %" value={slippage} onChange={setSlippage} min={1} max={50} T={T} /><NumInput label="Duration m" value={duration} onChange={setDuration} min={5} max={240} step={5} T={T} /><div style={{ background: T.bg, borderRadius: 12, border: "1px solid " + T.border, padding: "10px 10px", minWidth: 0 }}><div style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>Jito Tip</div><input type="number" value={jitoTip} onChange={e => setJitoTip(Math.max(0.0001, Math.min(0.1, Number(e.target.value))))} step={0.0005} min={0.0001} max={0.1} style={{ width: "100%", height: 34, background: T.surface, border: "1px solid " + T.border, borderRadius: 8, color: T.green, fontFamily: mono, fontSize: 15, fontWeight: 800, textAlign: "center", outline: "none", boxSizing: "border-box" }} /></div></div>
+                  <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 12, overflow: "hidden" }}><NumInput label="Snipers" value={sniperCount} onChange={setSniperCount} min={1} max={5} T={T} /><NumInput label="Slippage %" value={slippage} onChange={setSlippage} min={1} max={50} T={T} /><NumInput label="Duration m" value={duration} onChange={setDuration} min={5} max={240} step={5} T={T} /><NumInput label="Jito Tip" value={jitoTip} onChange={setJitoTip} min={0.001} max={0.1} step={0.001} decimals={3} T={T} /></div>
                   <div style={{ display: "grid", gridTemplateColumns: isApe ? "repeat(3, 1fr)" : "repeat(4, 1fr)", gap: 2, background: T.border + "44", borderRadius: 8, overflow: "hidden" }}>{(isApe ? [{ k: "Fleet", v: totalSol.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }] : [{ k: "Dev Buy", v: preview.devBuy.toFixed(2) }, { k: "Fleet", v: preview.fleet.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }]).map(s => (<div key={s.k} style={{ background: T.bg, padding: "8px 4px", textAlign: "center" }}><div style={{ fontSize: 18, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.k}</div></div>))}</div>
                   </>)}
                 </Section>
