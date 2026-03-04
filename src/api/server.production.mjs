@@ -899,13 +899,16 @@ app.get("/api/analyze/:ca", async (req, res) => {
     let pressureScore = Math.round(buyRatio * 20);
     factors.push({ name: "Buy Pressure", score: pressureScore, detail: txns1h.buys + "B/" + txns1h.sells + "S 1h" });
 
-    // 4. Liquidity — can we trade without slippage?
-    let liqScore = 5;
-    if (liquidity > 50000) liqScore = 20;
-    else if (liquidity > 20000) liqScore = 16;
-    else if (liquidity > 5000) liqScore = 12;
-    else if (liquidity > 1000) liqScore = 8;
-    factors.push({ name: "Liquidity", score: liqScore, detail: "$" + (liquidity > 1000 ? (liquidity / 1000).toFixed(1) + "k" : Math.round(liquidity)) });
+    // 4. Bonding Progress — how far along the curve? Sweet spot is 5-50%
+    const bp = pumpData?.bonding_curve_progress || 0;
+    let bondScore = 5;
+    if (complete) bondScore = 4; // graduated — already on raydium
+    else if (bp >= 5 && bp < 20) bondScore = 18; // early traction, most upside
+    else if (bp >= 20 && bp < 50) bondScore = 16; // confirmed momentum
+    else if (bp >= 50 && bp < 80) bondScore = 12; // getting expensive
+    else if (bp >= 80) bondScore = 8; // near graduation, risky entry
+    else if (bp > 0) bondScore = 10; // just started
+    factors.push({ name: "Bonded", score: bondScore, detail: complete ? "graduated" : bp.toFixed(1) + "%" });
 
     // 5. Market cap — sweet spot for pump potential
     let mcapScore = 10;
@@ -926,24 +929,19 @@ app.get("/api/analyze/:ca", async (req, res) => {
     else freshScore = 3; // old
     factors.push({ name: "Freshness", score: freshScore, detail: age < 60 ? Math.round(age) + "m" : Math.round(age / 60) + "h old" });
 
-    // Bonded penalty — already graduated means less pump potential
-    if (complete) {
-      factors.push({ name: "Bonded", score: 0, detail: "graduated — limited upside" });
-    }
-
     const rawTotal = factors.reduce((a, f) => a + f.score, 0);
-    const maxPossible = complete ? 140 : 120; // extra factor if bonded
+    const maxPossible = 120;
     const score = Math.round((rawTotal / maxPossible) * 100);
     const verdict = score >= 70 ? "APE" : score >= 45 ? "RISKY" : "AVOID";
 
     res.json({
       name, symbol, usd_market_cap: mcap, created_timestamp: created,
       reply_count: replies, complete, image_uri: imageUri, description,
-      source: pumpData ? "pumpfun" : "dexscreener",
+      bp, source: pumpData ? "pumpfun" : "dexscreener",
       // Trading data
       vol24h, vol1h, txns24h, txns1h,
       priceChange5m, priceChange1h, priceChange24h,
-      liquidity, priceUsd,
+      priceUsd,
       // Analysis
       score, verdict, factors,
     });
