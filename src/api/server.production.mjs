@@ -505,124 +505,186 @@ app.get("/api/price/:ca", apiLimiter, async (req, res) => {
 });
 
 // ═══════════════════════════════════════
-// RADAR — PumpPortal WebSocket (real-time new tokens)
-// HTTP APIs get Cloudflare'd. WebSocket doesn't.
+// RADAR — PumpPortal WebSocket → Enrich → Surface Movers Only
+// WS: ~200 bytes/msg, ~1/2s = negligible
+// Enrichment: ~10 API calls/10s = ~36MB/hr server-side
+// Client: 1 poll/5s @ ~3KB = ~2MB/hr
+// Total: ~40MB/hr server, ~2MB/hr client
 // ═══════════════════════════════════════
 const radar = {
-  tokens: [],     // newest first, max 50
-  enriched: {},   // ca -> enriched data cache
+  pool: [],        // raw WS tokens (last 200, newest first) — the firehose
+  enriched: {},    // ca -> { mcap, bp, image, name, ticker, description, replies, vol, buys, sells, lastCheck }
+  movers: [],      // top 10 filtered+scored tokens (computed each enrich cycle)
   wsAlive: false,
+  wsRef: null,     // WebSocket reference for cleanup
   updated: 0,
+  enabled: true,   // can be toggled
 };
 
-function enrichToken(raw) {
-  // Merge raw WS data + any enriched data
-  const e = radar.enriched[raw.ca] || {};
-  const mcap = e.mcap || raw.mcapSol * (e.solPrice || 170) || 0;
-  const bp = e.bp || 0;
-  const score = Math.min(100, Math.round(
-    (Math.min(mcap, 50000) / 500) +
-    (bp > 5 ? 10 : 0) + (bp > 20 ? 15 : 0) + (bp > 50 ? 10 : 0) +
-    (e.replies ? Math.min(e.replies * 2, 30) : 0) +
-    (raw.initialBuy > 0 ? 5 : 0)
-  ));
-  const verdict = mcap > 10000 && bp > 10 ? "APE" : mcap > 3000 ? "WATCH" : "NEW";
-  return {
-    ...raw, mcap, bp, score, verdict,
-    image: e.image || raw.image || "",
-    description: e.description || raw.description || "",
-    replies: e.replies || 0,
-    name: e.name || raw.name,
-    ticker: e.ticker || raw.ticker,
-  };
+function computeMovers() {
+  // Score each enriched token → filter to ones worth showing → top 10
+  const scored = radar.pool
+    .map(raw => {
+      const e = radar.enriched[raw.ca];
+      if (!e) return null; // not enriched yet
+      const mcap = e.mcap || 0;
+      const bp = e.bp || 0;
+      const replies = e.replies || 0;
+      const ageMin = (Date.now() - raw.created) / 60000;
+      const prevMcap = e.prevMcap || 0; // from previous check
+
+      // FILTER: need SOME signal — $1K mcap OR 1% bonding OR replies
+      if (mcap < 1000 && bp < 1 && replies < 1) return null;
+
+      // SCORE (0-100): bias toward low cap + fast growth
+      let score = 0;
+      // MCap sweet spot: $1K-$20K scores best, diminishing above (0-25)
+      if (mcap >= 1000 && mcap <= 20000) score += Math.min(25, mcap / 800);
+      else if (mcap > 20000) score += 25 - Math.min(10, (mcap - 20000) / 10000);
+      else score += mcap / 1000; // sub-$1K gets small credit
+      // Bonding curve traction (0-25): most important signal for low caps
+      score += Math.min(25, bp * 0.5);
+      if (bp > 5) score += 5;
+      if (bp > 20) score += 5;
+      // Momentum: mcap growth since last check (0-20)
+      if (prevMcap > 0 && mcap > prevMcap) {
+        const growth = ((mcap - prevMcap) / prevMcap) * 100;
+        score += Math.min(20, growth * 0.8);
+      }
+      // Social: replies (0-10)
+      score += Math.min(10, replies * 2);
+      // Freshness: newer = better (0-10)
+      if (ageMin < 3) score += 10;
+      else if (ageMin < 10) score += 7;
+      else if (ageMin < 20) score += 3;
+      // Combo bonus: growing mcap + high bp (0-5)
+      if (mcap > 5000 && bp > 10) score += 5;
+
+      score = Math.min(100, Math.round(score));
+      if (score < 15) return null; // too low to show
+
+      const verdict = score >= 55 ? "APE" : score >= 25 ? "WATCH" : "EARLY";
+      if (verdict === "EARLY") return null;
+
+      return {
+        ca: raw.ca,
+        name: e.name || raw.name || "?",
+        ticker: e.ticker || raw.ticker || "?",
+        image: e.image || "",
+        mcap, bp, score, verdict,
+        replies,
+        dev: raw.dev || "",
+        created: raw.created,
+        description: (e.description || "").slice(0, 120),
+        source: "pump",
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+
+  radar.movers = scored;
+  radar.updated = Date.now();
 }
 
-// Background enrichment — fetch full coin data for recent tokens
-async function enrichRecent() {
-  const toEnrich = radar.tokens.filter(t => !radar.enriched[t.ca]).slice(0, 5);
-  for (const t of toEnrich) {
+// Enrichment: aggressively check newest tokens for traction
+async function enrichCycle() {
+  if (!radar.enabled) return;
+
+  // Priority 1: un-enriched tokens (newest first, batch of 8)
+  // Priority 2: re-check previously enriched tokens that showed promise (refresh mcap)
+  const unenriched = radar.pool.filter(t => !radar.enriched[t.ca]).slice(0, 6);
+  const stale = radar.pool
+    .filter(t => radar.enriched[t.ca] && Date.now() - (radar.enriched[t.ca].lastCheck || 0) > 30000) // 30s stale
+    .filter(t => (radar.enriched[t.ca]?.mcap || 0) > 1000 || (radar.enriched[t.ca]?.bp || 0) > 2) // only re-check promising ones
+    .slice(0, 4);
+
+  const batch = [...unenriched, ...stale];
+
+  for (const t of batch) {
     try {
       const r = await fetch("https://frontend-api-v2.pump.fun/coins/" + t.ca, {
-        headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
-        signal: AbortSignal.timeout(5000),
+        headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)", "Accept": "application/json" },
+        signal: AbortSignal.timeout(4000),
       });
       if (r.ok) {
         const c = await r.json();
+        const prevMcap = radar.enriched[t.ca]?.mcap || 0;
         radar.enriched[t.ca] = {
-          mcap: c.usd_market_cap || 0, bp: c.bonding_curve_progress || 0,
-          image: c.image_uri || "", name: c.name, ticker: c.symbol,
-          description: (c.description || "").slice(0, 100),
-          replies: c.reply_count || 0, solPrice: c.usd_market_cap && c.market_cap ? c.usd_market_cap / c.market_cap : 170,
+          mcap: c.usd_market_cap || 0,
+          prevMcap, // store previous for momentum calc
+          bp: c.bonding_curve_progress || 0,
+          image: c.image_uri || radar.enriched[t.ca]?.image || "",
+          name: c.name || "",
+          ticker: c.symbol || "",
+          description: (c.description || "").slice(0, 120),
+          replies: c.reply_count || 0,
+          lastCheck: Date.now(),
         };
       }
-    } catch {} // silent — enrichment is best-effort
-    await new Promise(r => setTimeout(r, 300)); // rate limit
+    } catch {} // pump.fun may block — that's fine, we try again
+    await new Promise(r => setTimeout(r, 200)); // 200ms between calls
   }
-}
 
-// Fetch metadata from IPFS/Arweave URI to get image
-async function fetchTokenImage(uri, ca) {
-  if (!uri || radar.enriched[ca]?.image) return;
-  try {
-    // Convert ipfs:// to gateway
-    let url = uri;
-    if (url.startsWith("ipfs://")) url = "https://ipfs.io/ipfs/" + url.slice(7);
-    const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
-    if (r.ok) {
-      const meta = await r.json();
-      if (meta.image) {
-        let img = meta.image;
-        if (img.startsWith("ipfs://")) img = "https://ipfs.io/ipfs/" + img.slice(7);
-        radar.enriched[ca] = { ...(radar.enriched[ca] || {}), image: img, description: (meta.description || "").slice(0, 100) };
-      }
+  // If pump.fun API is down, try metadata URIs for images at least
+  for (const t of unenriched) {
+    if (!radar.enriched[t.ca]?.image && t.uri) {
+      try {
+        let url = t.uri;
+        if (url.startsWith("ipfs://")) url = "https://ipfs.io/ipfs/" + url.slice(7);
+        const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
+        if (r.ok) {
+          const meta = await r.json();
+          if (meta.image) {
+            let img = meta.image;
+            if (img.startsWith("ipfs://")) img = "https://ipfs.io/ipfs/" + img.slice(7);
+            radar.enriched[t.ca] = {
+              ...(radar.enriched[t.ca] || {}),
+              image: img,
+              name: meta.name || radar.enriched[t.ca]?.name || "",
+              description: (meta.description || "").slice(0, 120),
+              lastCheck: Date.now(),
+            };
+          }
+        }
+      } catch {}
     }
-  } catch {} // silent
+  }
+
+  computeMovers();
 }
 
 function connectPumpPortalWS() {
+  if (!radar.enabled) return;
   console.log("[RADAR] Connecting to PumpPortal WebSocket...");
   let ws;
   try {
     ws = new WebSocket("wss://pumpportal.fun/api/data");
   } catch (e) {
-    console.error("[RADAR] WS constructor error:", e.message);
+    console.error("[RADAR] WS error:", e.message);
     setTimeout(connectPumpPortalWS, 10000);
     return;
   }
+  radar.wsRef = ws;
 
   ws.on("open", () => {
     radar.wsAlive = true;
-    console.log("[RADAR] ✓ PumpPortal WebSocket connected — streaming new tokens");
-    // Subscribe to new token creations
+    console.log("[RADAR] \u2713 PumpPortal connected \u2014 streaming new tokens");
     ws.send(JSON.stringify({ method: "subscribeNewToken" }));
   });
 
   ws.on("message", (data) => {
     try {
       const msg = JSON.parse(data.toString());
-      // New token creation event
       if (msg.txType === "create" && msg.mint) {
-        const token = {
-          ca: msg.mint,
-          name: msg.name || "?",
-          ticker: msg.symbol || "?",
-          image: "",
-          mcapSol: msg.marketCapSol || 0,
-          mcap: 0, bp: 0,
-          dev: msg.traderPublicKey?.slice(0, 8) || "",
-          created: Date.now(),
-          initialBuy: msg.initialBuy || 0,
-          source: "ws",
-          uri: msg.uri || "",
-          description: "",
-        };
-        // Dedupe
-        if (!radar.tokens.find(t => t.ca === token.ca)) {
-          radar.tokens.unshift(token);
-          if (radar.tokens.length > 60) radar.tokens.pop();
-          radar.updated = Date.now();
-          // Fire-and-forget: fetch metadata for image
-          if (token.uri) fetchTokenImage(token.uri, token.ca);
+        if (!radar.pool.find(t => t.ca === msg.mint)) {
+          radar.pool.unshift({
+            ca: msg.mint, name: msg.name || "?", ticker: msg.symbol || "?",
+            mcapSol: msg.marketCapSol || 0, dev: msg.traderPublicKey?.slice(0, 8) || "",
+            created: Date.now(), initialBuy: msg.initialBuy || 0,
+            uri: msg.uri || "",
+          });
+          if (radar.pool.length > 200) radar.pool.length = 200;
         }
       }
     } catch {}
@@ -630,8 +692,8 @@ function connectPumpPortalWS() {
 
   ws.on("close", () => {
     radar.wsAlive = false;
-    console.log("[RADAR] WebSocket disconnected — reconnecting in 5s...");
-    setTimeout(connectPumpPortalWS, 5000);
+    console.log("[RADAR] Disconnected \u2014 reconnecting 5s...");
+    if (radar.enabled) setTimeout(connectPumpPortalWS, 5000);
   });
 
   ws.on("error", (err) => {
@@ -640,26 +702,78 @@ function connectPumpPortalWS() {
   });
 }
 
-// Start WebSocket + enrichment loop
+// Start
 connectPumpPortalWS();
-setInterval(() => { enrichRecent().catch(() => {}); }, 10000);
-// Prune enrichment cache every 5 min
+const radarEnrichInterval = setInterval(() => { enrichCycle().catch(() => {}); }, 8000);
+// Prune every 5 min
 setInterval(() => {
-  const activeCAs = new Set(radar.tokens.map(t => t.ca));
+  const active = new Set(radar.pool.map(t => t.ca));
   for (const ca of Object.keys(radar.enriched)) {
-    if (!activeCAs.has(ca)) delete radar.enriched[ca];
+    if (!active.has(ca)) delete radar.enriched[ca];
   }
+  // Drop tokens older than 30 min from pool
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  radar.pool = radar.pool.filter(t => t.created > cutoff);
 }, 300000);
 
 app.get("/api/radar", apiLimiter, (req, res) => {
-  const tokens = radar.tokens.slice(0, 30).map(enrichToken);
   res.json({
     ok: true,
-    tokens,
+    tokens: radar.movers,
     wsAlive: radar.wsAlive,
-    count: radar.tokens.length,
+    poolSize: radar.pool.length,
+    enrichedCount: Object.keys(radar.enriched).length,
     updated: radar.updated,
+    enabled: radar.enabled,
   });
+});
+
+// Single token detail (for expanded view)
+app.get("/api/radar/token/:ca", apiLimiter, async (req, res) => {
+  const ca = req.params.ca;
+  // Check cache first
+  const cached = radar.enriched[ca];
+  if (cached && Date.now() - (cached.lastCheck || 0) < 15000) {
+    return res.json({ ok: true, ...cached, ca });
+  }
+  // Fresh fetch
+  try {
+    const r = await fetch("https://frontend-api-v2.pump.fun/coins/" + ca, {
+      headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (r.ok) {
+      const c = await r.json();
+      const detail = {
+        ca, mcap: c.usd_market_cap || 0, bp: c.bonding_curve_progress || 0,
+        image: c.image_uri || "", name: c.name || "", ticker: c.symbol || "",
+        description: (c.description || "").slice(0, 300),
+        replies: c.reply_count || 0,
+        creator: c.creator || "",
+        complete: c.complete || false,
+        totalSupply: c.total_supply || 0,
+        lastCheck: Date.now(),
+      };
+      radar.enriched[ca] = { ...detail };
+      return res.json({ ok: true, ...detail });
+    }
+    res.json({ ok: false, error: "pump.fun returned " + r.status, ca });
+  } catch (e) {
+    res.json({ ok: false, error: e.message, ca, ...(cached || {}) });
+  }
+});
+
+// Toggle radar on/off
+app.post("/api/radar/toggle", apiLimiter, (req, res) => {
+  radar.enabled = !radar.enabled;
+  if (!radar.enabled && radar.wsRef) {
+    try { radar.wsRef.close(); } catch {}
+    radar.wsAlive = false;
+  } else if (radar.enabled && !radar.wsAlive) {
+    connectPumpPortalWS();
+  }
+  console.log("[RADAR]", radar.enabled ? "ENABLED" : "DISABLED");
+  res.json({ ok: true, enabled: radar.enabled });
 });
 
 app.get("/api/config", apiLimiter, (req, res) => {
