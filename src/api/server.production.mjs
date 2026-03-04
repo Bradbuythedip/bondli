@@ -1617,11 +1617,14 @@ wss.on("connection", (ws, req) => {
   if (connFromIP >= 3) { ws.close(4029, "Too many connections"); return; }
   ws._bondliIP = ip;
   ws.send(JSON.stringify({ event: "connected", data: { dryRun: CONFIG.DRY_RUN } }));
-  const handler = (msg) => { if (ws.readyState === 1) { try { ws.send(msg); } catch {} } };
-  orch.onEvent(handler);
+  const sendWs = (msg) => { if (ws.readyState === 1) { try { ws.send(msg); } catch {} } };
+  const onTrade = (data) => sendWs(JSON.stringify({ event: "trade", data }));
+  const onPhase = (data) => sendWs(JSON.stringify({ event: "phase", data }));
+  orch.on("trade", onTrade);
+  orch.on("phase", onPhase);
   ws.isAlive = true;
   ws.on("pong", () => { ws.isAlive = true; });
-  ws.on("close", () => { const idx = orch.listeners.indexOf(handler); if (idx >= 0) orch.listeners.splice(idx, 1); });
+  ws.on("close", () => { orch.off("trade", onTrade); orch.off("phase", onPhase); });
   ws.on("message", (data) => { const now = Date.now(); if (!ws._lastMsg) ws._lastMsg = 0; if (now - ws._lastMsg < 100) return; ws._lastMsg = now; try { const msg = JSON.parse(data.toString()); if (msg.type === "ping") ws.send(JSON.stringify({ type: "pong" })); } catch {} });
 });
 const heartbeat = setInterval(() => { wss.clients.forEach(ws => { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; ws.ping(); }); }, 30000);
