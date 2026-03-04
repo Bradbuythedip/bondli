@@ -7,7 +7,6 @@
 //   4. All subsequent requests use Bearer token
 
 import { PublicKey } from "@solana/web3.js";
-import nacl from "tweetnacl";
 import bs58 from "bs58";
 import crypto from "crypto";
 
@@ -54,7 +53,9 @@ export function verifySolanaSignature(wallet, signature, message) {
     const publicKey = new PublicKey(wallet);
     const sigBytes = bs58.decode(signature);
     const msgBytes = new TextEncoder().encode(message);
-    return nacl.sign.detached.verify(msgBytes, sigBytes, publicKey.toBytes());
+    // Use Node.js built-in ed25519 verification (no tweetnacl needed)
+    const keyObj = crypto.createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), publicKey.toBytes()]), format: "der", type: "spki" });
+    return crypto.verify(null, msgBytes, keyObj, sigBytes);
   } catch { return false; }
 }
 
