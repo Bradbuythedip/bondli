@@ -505,72 +505,114 @@ app.get("/api/price/:ca", apiLimiter, async (req, res) => {
 });
 
 // ═══════════════════════════════════════
-// RADAR — Pure PumpPortal WebSocket Mover Detection
-// No HTTP APIs needed. Zero Cloudflare risk.
-// Flow: subscribeNewToken → subscribeTokenTrade for each → track buys/sells/volume → score → top 10
-// Data: WS only, ~5KB/s worst case. Client polls 1 req/5s @ ~2KB.
-// Limitation: PumpPortal says don't open multiple WS — we use ONE connection for everything.
-// We rotate subscriptions: track last 50 tokens, unsub old ones.
+// RADAR — Multi-Tab Mover Detection via PumpPortal WebSocket
+// Tabs: NEW (fresh tokens with early traction), HOT (volume spikes), GRADUATING (near bonding completion)
 // ═══════════════════════════════════════
 const radar = {
-  pool: new Map(),   // ca -> { name, ticker, dev, created, buys, sells, solVol, lastTrade, mcapSol, uri, image }
-  movers: [],        // computed top 10
+  pool: new Map(),   // ca -> { name, ticker, dev, created, buys, sells, solVol, lastTrade, mcapSol, uri, image, bp, vSol, ... }
+  movers: { new: [], hot: [], graduating: [] },
   wsAlive: false,
   wsRef: null,
   updated: 0,
   enabled: true,
-  MAX_TRACKED: 50,   // max tokens to track trades on simultaneously
-  subbed: new Set(),  // currently subscribed CAs
+  MAX_TRACKED: 80,
+  subbed: new Set(),
 };
 
 function computeMovers() {
   const now = Date.now();
-  const scored = [];
+  const allScored = [];
+
   for (const [ca, t] of radar.pool) {
     const age = (now - t.created) / 60000; // minutes
-    // Need SOME trade activity to show
     if (t.buys < 1 && t.solVol < 0.01) continue;
 
-    let score = 0;
-    // Buy count (0-30): most direct signal of interest
-    score += Math.min(30, t.buys * 3);
-    // SOL volume (0-25): higher volume = more conviction
-    score += Math.min(25, t.solVol * 2.5); // 10 SOL = max
-    // Buy pressure (0-15): more buys than sells
-    const pressure = t.buys > 0 ? t.buys / (t.buys + t.sells) : 0;
-    score += pressure * 15;
-    // Freshness (0-15): newer tokens get bonus
-    if (age < 2) score += 15;
-    else if (age < 5) score += 10;
-    else if (age < 10) score += 5;
-    // Recent activity (0-10): traded in last 30s
     const lastTradeAge = (now - (t.lastTrade || t.created)) / 1000;
-    if (lastTradeAge < 10) score += 10;
-    else if (lastTradeAge < 30) score += 6;
-    else if (lastTradeAge < 60) score += 3;
-    // MCap estimate (0-5): from last trade data
-    if (t.mcapSol > 10) score += 5;
-    else if (t.mcapSol > 3) score += 3;
+    const pressure = t.buys > 0 ? t.buys / (t.buys + t.sells) : 0;
 
-    score = Math.min(100, Math.round(score));
-    if (score < 15) continue;
+    // ── NEW score: fresh tokens with early traction ──
+    let newScore = 0;
+    if (age < 5) {
+      newScore += Math.min(25, t.buys * 5);         // early buys are strong signal
+      newScore += Math.min(20, t.solVol * 4);        // volume conviction
+      newScore += pressure * 15;                      // buy pressure
+      if (age < 1) newScore += 20;                    // ultra-fresh bonus
+      else if (age < 2) newScore += 15;
+      else if (age < 3) newScore += 10;
+      else newScore += 5;
+      if (lastTradeAge < 10) newScore += 15;          // actively trading right now
+      else if (lastTradeAge < 30) newScore += 8;
+      if (t.mcapSol > 5) newScore += 5;              // some traction
+    }
 
-    const verdict = score >= 55 ? "APE" : score >= 25 ? "WATCH" : "SKIP";
-    if (verdict === "SKIP") continue;
+    // ── HOT score: volume spikes regardless of age ──
+    let hotScore = 0;
+    if (age < 20) {
+      // Volume is king for HOT
+      hotScore += Math.min(35, t.solVol * 3.5);       // 10 SOL = max
+      hotScore += Math.min(20, t.buys * 2);            // lots of transactions
+      // Velocity: trades in last 60s
+      if (lastTradeAge < 10) hotScore += 15;
+      else if (lastTradeAge < 30) hotScore += 10;
+      else if (lastTradeAge < 60) hotScore += 5;
+      // MCap sweet spot: $2K-$30K
+      const mcapUsd = (t.mcapSol || 0) * 170;
+      if (mcapUsd >= 2000 && mcapUsd < 10000) hotScore += 15;
+      else if (mcapUsd >= 10000 && mcapUsd < 30000) hotScore += 12;
+      else if (mcapUsd >= 30000) hotScore += 8;
+      else if (mcapUsd > 500) hotScore += 5;
+      // Buy pressure bonus
+      if (pressure > 0.6) hotScore += 10;
+      else if (pressure > 0.5) hotScore += 5;
+    }
 
-    scored.push({
+    // ── GRADUATING score: tokens near bonding curve completion ──
+    let gradScore = 0;
+    if (t.bp > 30) {
+      gradScore += Math.min(40, t.bp * 0.5);          // closer to 100% = higher score
+      if (t.bp >= 70) gradScore += 20;                 // very close to graduation
+      else if (t.bp >= 50) gradScore += 10;
+      gradScore += Math.min(15, t.solVol * 1.5);      // volume confirms it's real
+      if (lastTradeAge < 30) gradScore += 10;          // still actively trading
+      if (t.buys > 20) gradScore += 10;                // many participants
+      else if (t.buys > 10) gradScore += 5;
+      if (pressure > 0.55) gradScore += 5;             // still buying = momentum
+    }
+
+    const scores = { new: Math.min(100, Math.round(newScore)), hot: Math.min(100, Math.round(hotScore)), graduating: Math.min(100, Math.round(gradScore)) };
+    const bestScore = Math.max(scores.new, scores.hot, scores.graduating);
+    if (bestScore < 12) continue;
+
+    const base = {
       ca, name: t.name, ticker: t.ticker, image: t.image || "",
-      score, verdict, buys: t.buys, sells: t.sells,
+      buys: t.buys, sells: t.sells,
       solVol: Math.round(t.solVol * 100) / 100,
       mcapSol: Math.round(t.mcapSol * 100) / 100,
       mcapUsd: Math.round((t.mcapSol || 0) * 170),
       bp: Math.round((t.bp || 0) * 10) / 10,
       dev: t.dev, created: t.created,
-      description: t.description || "",
-      source: "ws",
-    });
+      description: t.description || "", source: "ws",
+    };
+
+    allScored.push({ ...base, scores });
   }
-  radar.movers = scored.sort((a, b) => b.score - a.score).slice(0, 10);
+
+  // Sort each tab by its own score, take top 10
+  radar.movers.new = allScored
+    .filter(t => t.scores.new >= 15)
+    .map(t => ({ ...t, score: t.scores.new, verdict: t.scores.new >= 55 ? "APE" : t.scores.new >= 25 ? "WATCH" : "SKIP" }))
+    .sort((a, b) => b.score - a.score).slice(0, 10);
+
+  radar.movers.hot = allScored
+    .filter(t => t.scores.hot >= 15)
+    .map(t => ({ ...t, score: t.scores.hot, verdict: t.scores.hot >= 50 ? "APE" : t.scores.hot >= 25 ? "WATCH" : "SKIP" }))
+    .sort((a, b) => b.score - a.score).slice(0, 10);
+
+  radar.movers.graduating = allScored
+    .filter(t => t.scores.graduating >= 20)
+    .map(t => ({ ...t, score: t.scores.graduating, verdict: t.scores.graduating >= 55 ? "APE" : t.scores.graduating >= 30 ? "WATCH" : "SKIP" }))
+    .sort((a, b) => b.score - a.score).slice(0, 10);
+
   radar.updated = now;
 }
 
@@ -730,9 +772,19 @@ setInterval(() => {
 }, 120000);
 
 app.get("/api/radar", apiLimiter, (req, res) => {
+  const tab = req.query.tab || "all"; // "new", "hot", "graduating", or "all"
+  if (tab !== "all" && radar.movers[tab]) {
+    return res.json({ ok: true, tokens: radar.movers[tab], tab, wsAlive: radar.wsAlive, poolSize: radar.pool.size, subbedCount: radar.subbed.size, updated: radar.updated, enabled: radar.enabled });
+  }
   res.json({
     ok: true,
-    tokens: radar.movers,
+    tabs: {
+      new: radar.movers.new || [],
+      hot: radar.movers.hot || [],
+      graduating: radar.movers.graduating || [],
+    },
+    // Backwards compat: "tokens" = hot tab (best default for aping)
+    tokens: radar.movers.hot || [],
     wsAlive: radar.wsAlive,
     poolSize: radar.pool.size,
     subbedCount: radar.subbed.size,
