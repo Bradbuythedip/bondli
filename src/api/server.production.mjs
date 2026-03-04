@@ -530,6 +530,13 @@ function computeMovers() {
     const lastTradeAge = (now - (t.lastTrade || t.created)) / 1000;
     const pressure = t.buys > 0 ? t.buys / (t.buys + t.sells) : 0;
 
+    // ── Social signals (applied to all tabs) ──
+    const socialBonus = (t.socialCount || 0) * 5;           // +5 per social link (max +15)
+    const twitterBonus = t.twitterValid ? 5 : 0;             // valid twitter format +5
+    const websiteBonus = t.websiteLive ? 5 : (t.websiteValid ? 2 : 0); // live site +5, valid URL +2
+    const imageDupePenalty = t.imageDupe ? -20 : 0;           // reused image = likely scam
+    const socialTotal = socialBonus + twitterBonus + websiteBonus + imageDupePenalty;
+
     // ── NEW score: fresh tokens with early traction ──
     let newScore = 0;
     if (age < 5) {
@@ -543,6 +550,7 @@ function computeMovers() {
       if (lastTradeAge < 10) newScore += 15;          // actively trading right now
       else if (lastTradeAge < 30) newScore += 8;
       if (t.mcapSol > 5) newScore += 5;              // some traction
+      newScore += socialTotal;                            // social signals
     }
 
     // ── HOT score: volume spikes regardless of age ──
@@ -564,6 +572,7 @@ function computeMovers() {
       // Buy pressure bonus
       if (pressure > 0.6) hotScore += 10;
       else if (pressure > 0.5) hotScore += 5;
+      hotScore += socialTotal;                             // social signals
     }
 
     // ── GRADUATING score: tokens near bonding curve completion ──
@@ -577,6 +586,7 @@ function computeMovers() {
       if (t.buys > 20) gradScore += 10;                // many participants
       else if (t.buys > 10) gradScore += 5;
       if (pressure > 0.55) gradScore += 5;             // still buying = momentum
+      gradScore += socialTotal;                            // social signals
     }
 
     const scores = { new: Math.min(100, Math.round(newScore)), hot: Math.min(100, Math.round(hotScore)), graduating: Math.min(100, Math.round(gradScore)) };
@@ -592,6 +602,13 @@ function computeMovers() {
       bp: Math.round((t.bp || 0) * 10) / 10,
       dev: t.dev, created: t.created,
       description: t.description || "", source: "ws",
+      // Social intel
+      twitter: t.twitter || "", twitterHandle: t.twitterHandle || null, twitterValid: !!t.twitterValid,
+      website: t.website || "", websiteValid: !!t.websiteValid, websiteLive: !!t.websiteLive,
+      telegram: t.telegram || "",
+      socialCount: t.socialCount || 0,
+      imageDupe: !!t.imageDupe,
+      imageOriginal: t.imageOriginal || null,
     };
 
     allScored.push({ ...base, scores });
@@ -730,7 +747,10 @@ function pruneSubscriptions(ws) {
   }
 }
 
-// Fetch token metadata from URI for images (best-effort, no Cloudflare involved)
+// Image fingerprint cache — detect reused images across tokens
+const imageFingerprints = new Map(); // imageUrl -> { firstCa, firstTicker, count, firstSeen }
+
+// Fetch token metadata from URI — extracts socials, image, description
 async function fetchMetadata(ca, uri) {
   try {
     let url = uri;
@@ -740,16 +760,68 @@ async function fetchMetadata(ca, uri) {
       const meta = await r.json();
       const t = radar.pool.get(ca);
       if (t) {
+        // Image
         let img = meta.image || "";
         if (img.startsWith("ipfs://")) img = "https://cf-ipfs.com/ipfs/" + img.slice(7);
         t.image = img;
-        if (meta.description) t.description = meta.description.slice(0, 120);
+
+        // Image dupe detection — normalize URL and check cache
+        if (img) {
+          const imgKey = img.replace(/^https?:\/\//, "").replace(/\?.*$/, ""); // strip protocol + query
+          if (imageFingerprints.has(imgKey)) {
+            const prev = imageFingerprints.get(imgKey);
+            prev.count++;
+            t.imageDupe = true;
+            t.imageOriginal = { ca: prev.firstCa, ticker: prev.firstTicker, seen: prev.count };
+          } else {
+            imageFingerprints.set(imgKey, { firstCa: ca, firstTicker: t.ticker, count: 1, firstSeen: Date.now() });
+            t.imageDupe = false;
+          }
+        }
+
+        // Text fields
+        if (meta.description) t.description = meta.description.slice(0, 200);
         if (meta.name && t.name === "?") t.name = meta.name;
         if (meta.symbol && t.ticker === "?") t.ticker = meta.symbol;
+
+        // Socials — pump.fun metadata includes these when creator fills them in
+        t.twitter = meta.twitter || "";
+        t.telegram = meta.telegram || "";
+        t.website = meta.website || "";
+
+        // Social score (0-3): how many social links present
+        t.socialCount = (t.twitter ? 1 : 0) + (t.telegram ? 1 : 0) + (t.website ? 1 : 0);
+
+        // Validate Twitter URL (basic format check)
+        if (t.twitter) {
+          const twMatch = t.twitter.match(/(?:twitter\.com|x\.com)\/([A-Za-z0-9_]+)/);
+          t.twitterHandle = twMatch ? twMatch[1] : null;
+          t.twitterValid = !!twMatch;
+        }
+
+        // Validate website (basic — is it a real URL?)
+        if (t.website) {
+          t.websiteValid = /^https?:\/\/.+\..+/.test(t.website);
+        }
+
+        // Quick website reachability check (HEAD, non-blocking)
+        if (t.website && t.websiteValid) {
+          fetch(t.website, { method: "HEAD", signal: AbortSignal.timeout(3000) })
+            .then(r => { t.websiteLive = r.ok; })
+            .catch(() => { t.websiteLive = false; });
+        }
       }
     }
-  } catch {} // silent — images are nice to have
+  } catch {} // silent — metadata is best-effort
 }
+
+// Prune old image fingerprints every 10 min
+setInterval(() => {
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  for (const [key, val] of imageFingerprints) {
+    if (val.firstSeen < cutoff) imageFingerprints.delete(key);
+  }
+}, 600000);
 
 // Start + intervals
 connectPumpPortalWS();
