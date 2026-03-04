@@ -962,15 +962,28 @@ export default function App() {
   };
   const recoverSession = async (sessionId) => {
     if (isRecovering) return;
-    if (!confirm("Recover all SOL from fleet wallets? This sells tokens and sweeps SOL back to your wallet.")) return;
+    if (!confirm("Recover all SOL from fleet wallets? This sweeps SOL back to your wallet.")) return;
     setIsRecovering(true);
     try {
-      const res = await fetch(API + "/api/session/recover", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId, wallet: user?.pubkey }) });
+      const res = await fetch(API + "/api/session/force-recover", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId, wallet: user?.pubkey }) });
       const data = await res.json();
       if (data.error) toast(data.error, "error");
-      else { toast("Recovered " + (data.totalRecovered || 0).toFixed(4) + " SOL!", "success"); setSessionDetail(null); }
+      else { toast("Recovered " + (data.totalRecovered || 0).toFixed(4) + " SOL from " + (data.wallets?.filter(w => w.status === "ok").length || 0) + " wallets!", "success"); setSessionDetail(null); }
     } catch (e) { toast(e.message, "error"); }
     setIsRecovering(false);
+  };
+  const [isClearing, setIsClearing] = useState(false);
+  const clearAllSessions = async () => {
+    if (isClearing) return;
+    if (!confirm("Clear ALL sessions? This removes them from your dashboard. Make sure you've recovered SOL first!")) return;
+    setIsClearing(true);
+    try {
+      const res = await fetch(API + "/api/sessions/clear", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ wallet: user?.pubkey }) });
+      const data = await res.json();
+      if (data.error) toast(data.error, "error");
+      else { toast("Cleared " + (data.cleared || 0) + " sessions", "success"); setPastSessions([]); setSessionDetail(null); }
+    } catch (e) { toast(e.message, "error"); }
+    setIsClearing(false);
   };
   const [isSweeping, setIsSweeping] = useState(false);
   const sellAndSweep = async (sessionId) => {
@@ -1196,7 +1209,10 @@ export default function App() {
                   <LaunchFlow user={user} mobile={mobile} totalSol={deployOnly ? 0 : totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip, deployOnly, batchCount: deployOnly ? batchCount : 1, batchDelay: deployOnly ? batchDelay : 5 }} onLaunched={(data) => { setWantsHome(false); setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); }} />
                 </Section>
                 {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginTop: 8 }}>
-                  <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12 }}>Active Sessions</div>
+                  <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <span>Active Sessions</span>
+                    <button onClick={clearAllSessions} disabled={isClearing} style={{ background: T.red + "12", color: T.red, border: "1px solid " + T.red + "33", fontFamily: mono, fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 6, cursor: isClearing ? "wait" : "pointer", opacity: isClearing ? 0.5 : 1 }}>{isClearing ? "Clearing..." : "\u{1F5D1} Clear All"}</button>
+                  </div>
                   {pastSessions.map(s => (<div key={s.id} style={{ marginBottom: 8 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid " + T.border + "22" }}>
                       <span style={{ fontFamily: mono, fontSize: 13, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || s.tokenConfig?.name || "?"} {"\u2014"} <span style={{ color: T.faint, fontSize: 11 }}>{s.tokenCA?.slice(0, 8)}...</span></span>
