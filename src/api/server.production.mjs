@@ -998,15 +998,34 @@ app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, 
     const secrets = [];
     const devKeypair = await sessionManager.getDevKeypair(sessionId);
 
-    // Fleet wallets
+    // Dev/master wallet — ALWAYS include
+    if (devKeypair) {
+      secrets.push(bs58.encode(devKeypair.secretKey));
+    }
+
+    // Fleet wallets (momentum, whale, sniper, etc.)
     if (session.fleetWallets) {
       for (const fw of session.fleetWallets) {
         if (fw.secret) secrets.push(fw.secret);
       }
     }
 
-    // Sweep everything to user's connected wallet (or dev wallet if master)
-    const destination = session.useMaster && devKeypair ? devKeypair.publicKey.toBase58() : wallet;
+    // Also try Redis-stored fleet keys (backup)
+    const redis = getRedis();
+    if (redis) {
+      try {
+        const storedKeys = await redis.get("fleetkeys:" + sessionId);
+        if (storedKeys) {
+          const parsed = JSON.parse(storedKeys);
+          for (const fk of parsed) {
+            if (fk.secret && !secrets.includes(fk.secret)) secrets.push(fk.secret);
+          }
+        }
+      } catch {}
+    }
+
+    // Sweep everything to user's connected wallet
+    const destination = wallet;
 
     if (secrets.length === 0) {
       return res.json({ ok: true, message: "No fleet wallets found to recover", totalRecovered: 0, wallets: [] });
@@ -1019,25 +1038,6 @@ app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, 
       : null;
 
     const result = await orch.recover(secrets, destination, profitConfig);
-
-    // Also sweep dev wallet to user if it's not the master
-    if (!session.useMaster && devKeypair) {
-      try {
-        const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-        const balance = await connection.getBalance(devKeypair.publicKey);
-        const sweepAmount = balance - 5000;
-        if (sweepAmount > 0) {
-          const tx = new Transaction().add(
-            SystemProgram.transfer({ fromPubkey: devKeypair.publicKey, toPubkey: new PublicKey(wallet), lamports: sweepAmount })
-          );
-          await sendAndConfirmTransaction(connection, tx, [devKeypair], { skipPreflight: true, commitment: "confirmed" });
-          result.totalRecovered += sweepAmount / LAMPORTS_PER_SOL;
-          result.wallets.push({ pubkey: devKeypair.publicKey.toBase58().slice(0, 8), swept: sweepAmount / LAMPORTS_PER_SOL, status: "ok", role: "dev" });
-        }
-      } catch (e) {
-        console.error("[RECOVER] Dev wallet sweep failed:", e.message);
-      }
-    }
 
     await sessionManager.update(sessionId, { status: "recovered", recoveredAt: new Date().toISOString() });
     console.log(`[RECOVER] ${sessionId} | Recovered ${result.totalRecovered.toFixed(4)} SOL to ${destination.slice(0, 8)}`);
@@ -1153,9 +1153,28 @@ app.post("/api/session/sell-sweep", apiLimiter, requireVerifiedWallet, async (re
 
     // Get all fleet wallet keys
     const fleetWallets = session.fleetWallets || [];
-    if (fleetWallets.length === 0 && devKeypair) {
-      // At minimum try to sell from dev wallet
-      fleetWallets.push({ role: "dev", secret: bs58.encode(devKeypair.secretKey), pubkey: devKeypair.publicKey.toBase58() });
+    
+    // Also check Redis backup for fleet keys
+    const redis = getRedis();
+    if (redis) {
+      try {
+        const storedKeys = await redis.get("fleetkeys:" + sessionId);
+        if (storedKeys) {
+          const parsed = JSON.parse(storedKeys);
+          const existingPubkeys = new Set(fleetWallets.map(w => w.pubkey));
+          for (const fk of parsed) {
+            if (fk.secret && !existingPubkeys.has(fk.pubkey)) fleetWallets.push(fk);
+          }
+        }
+      } catch {}
+    }
+
+    // Always include dev wallet for sell
+    if (devKeypair) {
+      const devPub = devKeypair.publicKey.toBase58();
+      if (!fleetWallets.find(w => w.pubkey === devPub)) {
+        fleetWallets.push({ role: "dev", secret: bs58.encode(devKeypair.secretKey), pubkey: devPub });
+      }
     }
 
     // Fetch pump globals once
@@ -1224,6 +1243,27 @@ app.post("/api/session/sell-sweep", apiLimiter, requireVerifiedWallet, async (re
     // Check master balance
     let masterBalance = 0;
     try { masterBalance = await connection.getBalance(masterPubkey) / LAMPORTS_PER_SOL; } catch {}
+
+    // Final sweep: master wallet -> user's connected wallet (if different)
+    if (devKeypair && !devKeypair.publicKey.equals(new PublicKey(wallet))) {
+      try {
+        const masterBal = await connection.getBalance(devKeypair.publicKey);
+        const sweepAmount = masterBal - 5000; // leave min rent
+        if (sweepAmount > 0) {
+          const tx = new Transaction().add(
+            SystemProgram.transfer({ fromPubkey: devKeypair.publicKey, toPubkey: new PublicKey(wallet), lamports: sweepAmount })
+          );
+          await sendAndConfirmTransaction(connection, tx, [devKeypair], { skipPreflight: true, commitment: "confirmed" });
+          const sweptSol = sweepAmount / LAMPORTS_PER_SOL;
+          totalSwept += sweptSol;
+          results.push({ role: "master->user", pubkey: devKeypair.publicKey.toBase58().slice(0, 8), swept: sweptSol, sold: 0, errors: [] });
+          console.log(`[SELL-SWEEP] Master -> User: ${sweptSol.toFixed(4)} SOL`);
+          masterBalance = 0;
+        }
+      } catch (e) {
+        console.error("[SELL-SWEEP] Master->User sweep failed:", e.message);
+      }
+    }
 
     await sessionManager.update(sessionId, { status: "swept", sweptAt: new Date().toISOString() });
     console.log(`[SELL-SWEEP] ${sessionId} complete | Sold: ${totalSold.toFixed(4)} SOL | Swept: ${totalSwept.toFixed(4)} SOL | Skimmed: ${totalSkimmed.toFixed(4)} SOL | Master: ${masterBalance.toFixed(4)} SOL`);
