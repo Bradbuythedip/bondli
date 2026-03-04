@@ -564,86 +564,158 @@ function PriceChart({ trades, mobile, T, ca }) {
 function RadarFeed({ T, mobile, onApe, isVip }) {
   const [tokens, setTokens] = useState([]);
   const [wsAlive, setWsAlive] = useState(false);
+  const [poolSize, setPoolSize] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState("new"); // "new" | "hot"
+  const [enabled, setEnabled] = useState(true);
+  const [selected, setSelected] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchRadar = async () => {
+    try {
+      const r = await fetch(window.__BONDLI_API + "/api/radar");
+      if (r.ok) {
+        const d = await r.json();
+        if (d.tokens) setTokens(d.tokens);
+        setWsAlive(d.wsAlive || false);
+        setPoolSize(d.poolSize || 0);
+        setEnabled(d.enabled !== false);
+        setLoading(false);
+      }
+    } catch {}
+  };
 
   useEffect(() => {
     let alive = true;
     const poll = async () => {
       while (alive) {
-        try {
-          const r = await fetch(window.__BONDLI_API + "/api/radar");
-          if (r.ok) {
-            const d = await r.json();
-            if (d.tokens) setTokens(d.tokens);
-            setWsAlive(d.wsAlive || false);
-            setLoading(false);
-          }
-        } catch {}
-        await new Promise(r => setTimeout(r, 4000)); // fast poll — WS data is real-time
+        if (enabled) await fetchRadar();
+        await new Promise(r => setTimeout(r, 5000));
       }
     };
+    fetchRadar();
     poll();
     return () => { alive = false; };
-  }, []);
+  }, [enabled]);
 
-  const fmt = n => !n || n === 0 ? "—" : n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "K" : n.toFixed(0);
-  const verdictColor = v => v === "APE" ? T.green : v === "WATCH" ? "#ffaa00" : T.faint;
-  const timeAgo = ts => { if (!ts) return ""; const s = Math.floor((Date.now() - ts) / 1000); if (s < 60) return s + "s ago"; if (s < 3600) return Math.floor(s / 60) + "m ago"; return Math.floor(s / 3600) + "h ago"; };
-  const feed = tab === "hot" ? [...tokens].filter(t => t.score >= 20).sort((a, b) => b.score - a.score) : tokens;
+  const handleRefresh = async () => { setRefreshing(true); await fetchRadar(); setTimeout(() => setRefreshing(false), 600); };
+
+  const handleToggle = async () => {
+    try {
+      const r = await fetch(window.__BONDLI_API + "/api/radar/toggle", { method: "POST" });
+      if (r.ok) { const d = await r.json(); setEnabled(d.enabled); }
+    } catch {}
+  };
+
+  const handleSelect = async (ca) => {
+    if (selected?.ca === ca) { setSelected(null); return; }
+    setDetailLoading(true); setSelected({ ca, loading: true });
+    try {
+      const r = await fetch(window.__BONDLI_API + "/api/radar/token/" + ca);
+      if (r.ok) { const d = await r.json(); setSelected(d.ok ? d : { ca, error: d.error || "Failed" }); }
+    } catch { setSelected({ ca, error: "Network error" }); }
+    setDetailLoading(false);
+  };
+
+  const fmt = n => !n || n === 0 ? "\u2014" : n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "K" : n.toFixed(0);
+  const vc = v => v === "APE" ? T.green : v === "WATCH" ? "#ffaa00" : T.faint;
+  const ago = ts => { if (!ts) return ""; const s = Math.floor((Date.now() - ts) / 1000); return s < 60 ? s + "s" : s < 3600 ? Math.floor(s/60) + "m" : Math.floor(s/3600) + "h"; };
 
   return (
     <div>
-      {/* Status bar */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", borderBottom: "1px solid " + T.border }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <div style={{ width: 7, height: 7, borderRadius: "50%", background: wsAlive ? T.green : T.red, boxShadow: wsAlive ? "0 0 6px " + T.green : "none", animation: wsAlive ? "pulse 2s infinite" : "none" }} />
-          <span style={{ fontFamily: "monospace", fontSize: 10, color: wsAlive ? T.green : T.red }}>{wsAlive ? "LIVE" : "connecting..."}</span>
-          <span style={{ fontFamily: "monospace", fontSize: 10, color: T.faint }}>{"\u00B7"} {tokens.length} tokens</span>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderBottom: "1px solid " + T.border }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 15 }}>{"\uD83D\uDCE1"}</span>
+          <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: T.text }}>Radar</span>
+          <div style={{ width: 7, height: 7, borderRadius: "50%", background: !enabled ? T.faint : wsAlive ? T.green : T.red, boxShadow: enabled && wsAlive ? "0 0 6px " + T.green : "none", animation: enabled && wsAlive ? "pulse 2s infinite" : "none" }} />
+          <span style={{ fontFamily: "monospace", fontSize: 10, color: !enabled ? T.faint : wsAlive ? T.green : T.red }}>{!enabled ? "OFF" : wsAlive ? "LIVE" : "..."}</span>
+          {enabled && poolSize > 0 && <span style={{ fontFamily: "monospace", fontSize: 9, color: T.faint }}>{poolSize} scanned</span>}
         </div>
-        <div style={{ display: "flex", gap: 4 }}>
-          {[{ id: "new", l: "New" }, { id: "hot", l: "\uD83D\uDD25 Hot" }].map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{ padding: "3px 10px", background: tab === t.id ? T.green + "15" : "none", border: "1px solid " + (tab === t.id ? T.green + "44" : "transparent"), borderRadius: 6, fontFamily: "monospace", fontSize: 10, fontWeight: 700, color: tab === t.id ? T.green : T.faint, cursor: "pointer" }}>{t.l}</button>
-          ))}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <button onClick={handleRefresh} disabled={refreshing} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "monospace", fontSize: 10, color: T.dim, transition: "all .2s" }}><span style={{ display: "inline-block", transition: "transform .5s", transform: refreshing ? "rotate(360deg)" : "none" }}>{"\u21BB"}</span></button>
+          <div style={{ cursor: "pointer", display: "flex", alignItems: "center" }} onClick={handleToggle}>
+            <div style={{ width: 28, height: 14, borderRadius: 7, background: enabled ? T.green + "44" : T.border, padding: 1, transition: "all .2s" }}><div style={{ width: 12, height: 12, borderRadius: "50%", background: enabled ? T.green : T.faint, transform: enabled ? "translateX(14px)" : "translateX(0)", transition: "all .2s" }} /></div>
+          </div>
         </div>
       </div>
-      {/* Token cards */}
-      {loading ? (
-        <div style={{ padding: 40, textAlign: "center", fontFamily: "monospace", fontSize: 13, color: T.faint, animation: "pulse 2s infinite" }}>{"\uD83D\uDCE1"} Connecting to PumpPortal...</div>
-      ) : feed.length === 0 ? (
-        <div style={{ padding: 30, textAlign: "center", fontFamily: "monospace", fontSize: 12, color: T.faint }}>{tab === "hot" ? "No hot tokens yet — waiting for traction signals" : "Waiting for new tokens..."}</div>
+
+      {!enabled ? (
+        <div style={{ padding: "30px 20px", textAlign: "center" }}>
+          <div style={{ fontFamily: "monospace", fontSize: 13, color: T.faint, marginBottom: 8 }}>Radar paused</div>
+          <button onClick={handleToggle} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 8, padding: "8px 20px", fontFamily: "monospace", fontSize: 12, fontWeight: 700, color: T.green, cursor: "pointer" }}>Turn On</button>
+        </div>
+      ) : loading ? (
+        <div style={{ padding: 40, textAlign: "center", fontFamily: "monospace", fontSize: 13, color: T.faint, animation: "pulse 2s infinite" }}>{"\uD83D\uDCE1"} Scanning for movers...</div>
+      ) : tokens.length === 0 ? (
+        <div style={{ padding: "30px 20px", textAlign: "center" }}>
+          <div style={{ fontFamily: "monospace", fontSize: 12, color: T.faint, marginBottom: 4 }}>No movers yet</div>
+          <div style={{ fontFamily: "monospace", fontSize: 10, color: T.faint }}>{poolSize} tokens scanned \u2014 waiting for traction...</div>
+        </div>
       ) : (
-        <div style={{ maxHeight: mobile ? 320 : 400, overflowY: "auto" }}>
-          {feed.slice(0, 24).map((t, i) => (
-            <div key={t.ca} onClick={() => onApe(t.ca)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: "1px solid " + T.border + "33", cursor: "pointer", transition: "background .15s", background: i === 0 && tab === "new" ? T.green + "06" : "transparent" }} onMouseEnter={e => e.currentTarget.style.background = T.green + "08"} onMouseLeave={e => e.currentTarget.style.background = i === 0 && tab === "new" ? T.green + "06" : "transparent"}>
-              {/* Image or placeholder */}
-              {t.image ? <img src={t.image} style={{ width: 34, height: 34, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: 34, height: 34, borderRadius: 8, background: T.border + "44", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontSize: 12, color: T.faint }}>{(t.ticker || "?")[0]}</div>}
+        <div>
+          {/* Expanded preview */}
+          {selected && !selected.loading && !selected.error && (
+            <div style={{ background: T.bg, border: "2px solid " + T.green + "33", borderRadius: 14, margin: "8px 10px", overflow: "hidden" }}>
+              <div style={{ display: "flex", gap: mobile ? 10 : 14, padding: "14px 14px 10px" }}>
+                {selected.image ? <img src={selected.image} style={{ width: mobile ? 90 : 120, height: mobile ? 90 : 120, borderRadius: 14, objectFit: "cover", flexShrink: 0, border: "2px solid " + T.border }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: mobile ? 90 : 120, height: mobile ? 90 : 120, borderRadius: 14, background: T.surface, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontSize: 32, color: T.faint }}>{(selected.ticker || "?")[0]}</div>}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: "monospace", fontSize: mobile ? 17 : 20, fontWeight: 900, color: T.text }}>{selected.name}</div>
+                  <div style={{ fontFamily: "monospace", fontSize: 14, color: T.green, fontWeight: 700 }}>${selected.ticker}</div>
+                  <div style={{ fontFamily: "monospace", fontSize: 11, color: T.dim, marginTop: 4, lineHeight: 1.4, maxHeight: 48, overflow: "hidden" }}>{selected.description || "No description"}</div>
+                  {selected.creator && <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, marginTop: 3 }}>dev: {selected.creator.slice(0, 12)}...</div>}
+                </div>
+              </div>
+              {/* Stats row */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1, background: T.border + "33", margin: "0 14px", borderRadius: 8, overflow: "hidden" }}>
+                {[{ k: "MCap", v: "$" + fmt(selected.mcap), c: selected.mcap > 5000 ? T.green : T.dim }, { k: "Bonded", v: (selected.bp || 0).toFixed(1) + "%", c: selected.bp > 20 ? T.green : T.faint }, { k: "Replies", v: String(selected.replies || 0), c: T.dim }].map(s => (
+                  <div key={s.k} style={{ background: T.surface, padding: "8px 4px", textAlign: "center" }}>
+                    <div style={{ fontSize: 14, fontFamily: "monospace", fontWeight: 800, color: s.c }}>{s.v}</div>
+                    <div style={{ fontSize: 9, color: T.faint, fontFamily: "monospace" }}>{s.k}</div>
+                  </div>
+                ))}
+              </div>
+              {selected.bp > 0 && <div style={{ height: 3, background: T.border, margin: "8px 14px 0" }}><div style={{ height: 3, background: selected.bp >= 80 ? "#ffaa00" : T.green, width: Math.min(100, selected.bp) + "%", borderRadius: 2 }} /></div>}
+              {/* CA copy */}
+              <div onClick={() => { navigator.clipboard?.writeText(selected.ca); }} style={{ margin: "8px 14px", background: T.surface, borderRadius: 8, padding: "6px 10px", fontFamily: "monospace", fontSize: 10, color: T.faint, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.ca} <span style={{ color: T.dim }}>{"\u2398"} copy</span></div>
+              {/* Actions */}
+              <div style={{ display: "flex", gap: 6, padding: "6px 14px 12px", flexWrap: "wrap" }}>
+                <button onClick={() => { onApe(selected.ca); setSelected(null); }} style={{ flex: 1, padding: "10px", background: T.green + "18", border: "1px solid " + T.green, borderRadius: 10, fontFamily: "monospace", fontSize: 14, fontWeight: 900, color: T.green, cursor: "pointer" }}>{"\uD83D\uDE80"} APE</button>
+                <a href={"https://pump.fun/coin/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "10px 10px", border: "1px solid " + T.border, borderRadius: 10, fontFamily: "monospace", fontSize: 10, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>pump {"\u2197"}</a>
+                <a href={"https://dexscreener.com/solana/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "10px 10px", border: "1px solid " + T.border, borderRadius: 10, fontFamily: "monospace", fontSize: 10, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>dex {"\u2197"}</a>
+                <a href={"https://solscan.io/token/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "10px 10px", border: "1px solid " + T.border, borderRadius: 10, fontFamily: "monospace", fontSize: 10, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>scan {"\u2197"}</a>
+                <button onClick={() => setSelected(null)} style={{ padding: "10px 12px", background: "none", border: "1px solid " + T.border, borderRadius: 10, fontFamily: "monospace", fontSize: 11, color: T.faint, cursor: "pointer" }}>{"\u2715"}</button>
+              </div>
+            </div>
+          )}
+          {selected?.loading && <div style={{ padding: 20, textAlign: "center", fontFamily: "monospace", fontSize: 12, color: T.dim, animation: "pulse 1s infinite" }}>Loading...</div>}
+          {selected?.error && <div style={{ padding: "12px 14px", margin: "8px 10px", background: T.red + "10", borderRadius: 10, fontFamily: "monospace", fontSize: 11, color: T.red, display: "flex", justifyContent: "space-between", alignItems: "center" }}><span>{selected.error}</span><button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: T.red, cursor: "pointer" }}>{"\u2715"}</button></div>}
+          {/* Ranked token list */}
+          {tokens.map((t, i) => (
+            <div key={t.ca} onClick={() => handleSelect(t.ca)} style={{ display: "flex", alignItems: "center", gap: 8, padding: mobile ? "9px 10px" : "10px 12px", borderBottom: "1px solid " + T.border + "22", cursor: "pointer", transition: "background .15s", background: selected?.ca === t.ca ? T.green + "08" : "transparent" }} onMouseEnter={e => e.currentTarget.style.background = T.green + "06"} onMouseLeave={e => e.currentTarget.style.background = selected?.ca === t.ca ? T.green + "08" : "transparent"}>
+              <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 800, color: i < 3 ? T.green : T.faint, width: 16, textAlign: "center", flexShrink: 0 }}>{i + 1}</span>
+              {t.image ? <img src={t.image} style={{ width: 34, height: 34, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: 34, height: 34, borderRadius: 8, background: T.border + "44", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontSize: 12, color: T.faint }}>{(t.ticker || "?")[0]}</div>}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <span style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: T.text }}>${t.ticker || "?"}</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 8, fontWeight: 700, color: verdictColor(t.verdict), background: verdictColor(t.verdict) + "12", border: "1px solid " + verdictColor(t.verdict) + "33", borderRadius: 3, padding: "1px 5px" }}>{t.verdict}</span>
-                  {t.score >= 40 && <span style={{ fontFamily: "monospace", fontSize: 8, color: T.green }}>{"\uD83D\uDD25"}{t.score}</span>}
+                  <span style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: T.text }}>${t.ticker}</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 8, fontWeight: 700, color: vc(t.verdict), background: vc(t.verdict) + "12", border: "1px solid " + vc(t.verdict) + "33", borderRadius: 3, padding: "1px 5px" }}>{t.verdict}</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 9, color: T.green, fontWeight: 700 }}>{t.score}</span>
                 </div>
-                <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 1 }}>
-                  {t.name || ""}{t.dev ? " \u00B7 dev:" + t.dev : ""}{t.created ? " \u00B7 " + timeAgo(t.created) : ""}
-                </div>
+                <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, marginTop: 1 }}>{t.name}{t.created ? " \u00B7 " + ago(t.created) : ""}</div>
               </div>
-              <div style={{ textAlign: "right", flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
-                {t.mcap > 0 ? <span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 800, color: t.mcap > 5000 ? T.green : T.dim }}>${fmt(t.mcap)}</span> : <span style={{ fontFamily: "monospace", fontSize: 9, color: T.faint }}>new</span>}
-                {t.bp > 0 && <span style={{ fontFamily: "monospace", fontSize: 8, color: T.faint }}>{t.bp.toFixed(0)}%</span>}
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: t.verdict === "APE" ? T.green : T.dim }}>${fmt(t.mcap)}</div>
+                {t.bp > 0 && <div style={{ width: 40, height: 2, background: T.border, borderRadius: 1, marginTop: 3, marginLeft: "auto" }}><div style={{ height: 2, background: T.green, width: Math.min(100, t.bp) + "%", borderRadius: 1 }} /></div>}
               </div>
-              {/* Ape button on hover feel */}
-              <div style={{ fontFamily: "monospace", fontSize: 10, fontWeight: 800, color: T.green, padding: "4px 8px", border: "1px solid " + T.green + "33", borderRadius: 6, flexShrink: 0, opacity: 0.7 }}>{"\u2197"}</div>
             </div>
           ))}
         </div>
       )}
-      <div style={{ textAlign: "center", padding: "6px", fontFamily: "monospace", fontSize: 8, color: T.faint }}>
-        pumpportal.fun websocket {"\u00B7"} click any token to ape
-      </div>
+      <div style={{ textAlign: "center", padding: "6px", fontFamily: "monospace", fontSize: 8, color: T.faint }}>top movers {"\u00B7"} auto-refresh 5s {"\u00B7"} tap to evaluate</div>
     </div>
   );
 }
+
 
 // ═══════════════════════════════════════
 // REFERRAL PANEL
@@ -1327,16 +1399,8 @@ export default function App() {
 
             ) : (
               <div>
-                {/* ═══ RADAR — always visible ═══ */}
+                {/* ═══ RADAR ═══ */}
                 <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden", marginBottom: 14 }}>
-                  <div style={{ padding: "12px 16px", borderBottom: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 16 }}>{"\uD83D\uDCE1"}</span>
-                      <span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>Radar</span>
-                      <span style={{ fontFamily: mono, fontSize: 10, color: T.green, animation: "pulse 2s infinite" }}>{"\u25CF"} LIVE</span>
-                    </div>
-                    {user?.tier !== "pro" && !user?.whitelisted && <span style={{ fontFamily: mono, fontSize: 9, color: T.faint, background: T.border, borderRadius: 4, padding: "2px 6px" }}>VIP: auto-ape coming soon</span>}
-                  </div>
                   <RadarFeed T={T} mobile={mobile} isVip={user?.tier === "pro" || user?.whitelisted} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); }} />
                 </div>
 
