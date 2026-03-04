@@ -455,14 +455,19 @@ function TierGate({ user, onSelect, onDisconnect }) {
 function mcapFmt(n) { return n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "k" : Math.round(n).toString(); }
 
 // ── Heartbeat MCap Monitor — polls pump.fun from browser, no server dependency ──
-function PriceChart({ trades, mobile, T, ca }) {
+function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
   const [mcap, setMcap] = useState(null);
   const [bp, setBp] = useState(0);
   const [chartMode, setChartMode] = useState("live");
   const [age, setAge] = useState(0);
   const canvasRef = useRef(null);
   const histRef = useRef([]);
+  const wsRef = useRef(wsChart || []);
 
+  // Update wsRef when new data comes in
+  useEffect(() => { if (wsChart?.length) wsRef.current = wsChart; }, [wsChart]);
+
+  // Poll for data (fallback if no WS chart)
   useEffect(() => {
     if (!ca) return;
     let alive = true;
@@ -473,15 +478,24 @@ function PriceChart({ trades, mobile, T, ca }) {
           const r = await fetch(window.__BONDLI_API + "/api/price/" + ca);
           if (r.ok) {
             const d = await r.json();
-            if (d.mcap) { setMcap(d.mcap); setBp(d.bp || 0); histRef.current.push({ t: Date.now(), m: d.mcap, b: d.bp || 0 }); if (histRef.current.length > 200) histRef.current.shift(); drawCanvas(); }
+            if (d.mcap) { setMcap(d.mcap); setBp(d.bp || 0); histRef.current.push({ t: Date.now(), mcap: d.mcap, bp: d.bp || 0 }); if (histRef.current.length > 200) histRef.current.shift(); }
           }
         } catch {}
+        // Also try WS chart endpoint
+        try {
+          const r = await fetch(window.__BONDLI_API + "/api/chart/" + ca);
+          if (r.ok) {
+            const d = await r.json();
+            if (d.points?.length) wsRef.current = d.points;
+          }
+        } catch {}
+        drawCanvas();
         setAge(Math.floor((Date.now() - born) / 1000));
         await new Promise(r => setTimeout(r, 3000));
       }
     };
     poll();
-    const autoSwitch = setTimeout(() => { setChartMode("dex"); }, 32000);
+    const autoSwitch = setTimeout(() => { if (wsRef.current.length < 5) setChartMode("dex"); }, 45000);
     return () => { alive = false; clearTimeout(autoSwitch); };
   }, [ca]);
 
@@ -490,44 +504,90 @@ function PriceChart({ trades, mobile, T, ca }) {
 
   const drawCanvas = () => {
     const canvas = canvasRef.current;
-    const hist = histRef.current;
+    // Prefer WS chart data (has buy/sell markers), fall back to polled mcap
+    const ws = wsRef.current;
+    const hist = ws.length >= 3 ? ws.map(p => ({ t: p.t, m: p.mcap || (p.mcapSol || 0) * 170, type: p.type, sol: p.sol, bp: p.bp })) : histRef.current.map(p => ({ t: p.t, m: p.mcap, type: null, sol: 0, bp: p.bp }));
     if (!canvas || hist.length < 2) return;
+
     const ctx = canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
     const W = canvas.offsetWidth, H = canvas.offsetHeight;
     canvas.width = W * dpr; canvas.height = H * dpr;
     ctx.scale(dpr, dpr);
-    const pad = { top: 28, right: 50, bottom: 18, left: 6 };
-    const mcaps = hist.map(p => p.m);
+    const pad = { top: 28, right: 50, bottom: 22, left: 6 };
+    const mcaps = hist.map(p => p.m).filter(m => m > 0);
+    if (mcaps.length < 2) return;
     const mn = Math.min(...mcaps) * 0.92, mx = Math.max(...mcaps) * 1.08, rng = mx - mn || 1;
     const tMin = hist[0].t, tMax = hist[hist.length - 1].t, tRng = tMax - tMin || 1;
     const toX = t => pad.left + ((t - tMin) / tRng) * (W - pad.left - pad.right);
     const toY = m => pad.top + (1 - (m - mn) / rng) * (H - pad.top - pad.bottom);
     ctx.clearRect(0, 0, W, H);
+
+    // Grid lines
     ctx.strokeStyle = "#ffffff06"; ctx.lineWidth = 0.5;
-    for (let i = 0; i <= 3; i++) { const y = pad.top + (i / 3) * (H - pad.top - pad.bottom); ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke(); ctx.fillStyle = "#555"; ctx.font = "9px monospace"; ctx.textAlign = "right"; ctx.fillText("$" + fmtMcap(mx - (i / 3) * rng), W - 2, y + 3); }
-    const last = mcaps[mcaps.length - 1], first = mcaps[0];
+    for (let i = 0; i <= 4; i++) { const y = pad.top + (i / 4) * (H - pad.top - pad.bottom); ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke(); ctx.fillStyle = "#555"; ctx.font = "9px monospace"; ctx.textAlign = "right"; ctx.fillText("$" + fmtMcap(mx - (i / 4) * rng), W - 2, y + 3); }
+
+    // Price line
+    const validHist = hist.filter(p => p.m > 0);
+    if (validHist.length < 2) return;
+    const last = validHist[validHist.length - 1].m, first = validHist[0].m;
     const up = last >= first, col = up ? "#00ff88" : "#ff4444";
+
+    // Glow
     ctx.save(); ctx.shadowColor = col; ctx.shadowBlur = 6;
-    ctx.beginPath(); ctx.moveTo(toX(hist[0].t), toY(hist[0].m));
-    for (let i = 1; i < hist.length; i++) ctx.lineTo(toX(hist[i].t), toY(hist[i].m));
-    ctx.strokeStyle = col + "50"; ctx.lineWidth = 3; ctx.stroke(); ctx.restore();
-    ctx.beginPath(); ctx.moveTo(toX(hist[0].t), toY(hist[0].m));
-    for (let i = 1; i < hist.length; i++) ctx.lineTo(toX(hist[i].t), toY(hist[i].m));
+    ctx.beginPath(); ctx.moveTo(toX(validHist[0].t), toY(validHist[0].m));
+    for (let i = 1; i < validHist.length; i++) ctx.lineTo(toX(validHist[i].t), toY(validHist[i].m));
+    ctx.strokeStyle = col + "40"; ctx.lineWidth = 3; ctx.stroke(); ctx.restore();
+
+    // Main line
+    ctx.beginPath(); ctx.moveTo(toX(validHist[0].t), toY(validHist[0].m));
+    for (let i = 1; i < validHist.length; i++) ctx.lineTo(toX(validHist[i].t), toY(validHist[i].m));
     ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
+
+    // Fill under
     const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
-    grad.addColorStop(0, col + "15"); grad.addColorStop(1, col + "00");
-    ctx.beginPath(); ctx.moveTo(toX(hist[0].t), H - pad.bottom);
-    for (const p of hist) ctx.lineTo(toX(p.t), toY(p.m));
-    ctx.lineTo(toX(hist[hist.length - 1].t), H - pad.bottom); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
-    const lx = toX(hist[hist.length - 1].t), ly = toY(last);
+    grad.addColorStop(0, col + "12"); grad.addColorStop(1, col + "00");
+    ctx.beginPath(); ctx.moveTo(toX(validHist[0].t), H - pad.bottom);
+    for (const p of validHist) ctx.lineTo(toX(p.t), toY(p.m));
+    ctx.lineTo(toX(validHist[validHist.length - 1].t), H - pad.bottom); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+
+    // Buy/sell markers (from WS data)
+    for (const p of hist) {
+      if (!p.type || p.m <= 0) continue;
+      const x = toX(p.t), y = toY(p.m);
+      const isBuy = p.type === "buy";
+      const markerSize = Math.min(6, 2 + (p.sol || 0) * 8); // bigger marker = bigger trade
+      ctx.beginPath();
+      ctx.arc(x, y, markerSize, 0, Math.PI * 2);
+      ctx.fillStyle = isBuy ? "#00ff8844" : "#ff444444";
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x, y, Math.max(1.5, markerSize - 1), 0, Math.PI * 2);
+      ctx.fillStyle = isBuy ? "#00ff88" : "#ff4444";
+      ctx.fill();
+    }
+
+    // Current price dot
+    const lx = toX(validHist[validHist.length - 1].t), ly = toY(last);
     ctx.beginPath(); ctx.arc(lx, ly, 4, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+
+    // Header text
     const pct = first > 0 ? ((last - first) / first * 100) : 0;
     ctx.fillStyle = "#ccc"; ctx.font = "bold 12px monospace"; ctx.textAlign = "left";
     ctx.fillText("MCap $" + fmtMcap(last), pad.left + 2, 16);
-    ctx.fillStyle = col; ctx.fillText((pct >= 0 ? "\u25B2" : "\u25BC") + Math.abs(pct).toFixed(1) + "%", pad.left + 140, 16);
-    const bpVal = hist[hist.length - 1]?.b || 0;
-    if (bpVal > 0) { const bW = W - pad.left - pad.right; ctx.fillStyle = "#ffffff08"; ctx.fillRect(pad.left, H - 4, bW, 2); ctx.fillStyle = col + "88"; ctx.fillRect(pad.left, H - 4, bW * Math.min(1, bpVal / 100), 2); }
+    ctx.fillStyle = col; ctx.fillText((pct >= 0 ? "\u25B2" : "\u25BC") + Math.abs(pct).toFixed(1) + "%", pad.left + 120, 16);
+
+    // Trade count in corner
+    const buyCnt = hist.filter(p => p.type === "buy").length;
+    const sellCnt = hist.filter(p => p.type === "sell").length;
+    if (buyCnt + sellCnt > 0) {
+      ctx.fillStyle = "#666"; ctx.font = "9px monospace"; ctx.textAlign = "right";
+      ctx.fillText(`${buyCnt}b / ${sellCnt}s`, W - pad.right + 45, 16);
+    }
+
+    // Bonding bar at bottom
+    const bpVal = validHist[validHist.length - 1]?.bp || 0;
+    if (bpVal > 0) { const bW = W - pad.left - pad.right; ctx.fillStyle = "#ffffff08"; ctx.fillRect(pad.left, H - 6, bW, 3); ctx.fillStyle = bpVal >= 80 ? "#ffaa0088" : col + "88"; ctx.fillRect(pad.left, H - 6, bW * Math.min(1, bpVal / 100), 3); ctx.fillStyle = "#555"; ctx.font = "8px monospace"; ctx.textAlign = "left"; ctx.fillText(bpVal.toFixed(0) + "%", pad.left + bW * Math.min(1, bpVal / 100) + 4, H - 1); }
   };
 
   return (
@@ -536,7 +596,7 @@ function PriceChart({ trades, mobile, T, ca }) {
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {mcap && <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 800, color: "#00e676" }}>${fmt(mcap)}</span>}
           {bp > 0 && <span style={{ fontFamily: "monospace", fontSize: 10, color: "#888" }}>{bp.toFixed(1)}% bonded</span>}
-          {chartMode === "live" && age < 35 && <span style={{ fontFamily: "monospace", fontSize: 9, color: "#555", animation: "pulse 2s infinite" }}>DexScreener in {Math.max(0, 30 - age)}s</span>}
+          {gameState && <span style={{ fontFamily: "monospace", fontSize: 9, padding: "1px 5px", borderRadius: 3, background: gameState.signal === "SELL_NOW" ? "#ff444422" : gameState.signal === "RIDE" ? "#00ff8822" : gameState.signal === "ACCUMULATE" ? "#4488ff22" : "#33333322", color: gameState.signal === "SELL_NOW" ? "#ff4444" : gameState.signal === "RIDE" ? "#00ff88" : gameState.signal === "ACCUMULATE" ? "#4488ff" : "#666", fontWeight: 700 }}>{gameState.signal} {gameState.buyPressure}%bp</span>}
         </div>
         <div style={{ display: "flex", gap: 4 }}>
           {["live", "dex", "pump"].map(m => (
@@ -547,8 +607,14 @@ function PriceChart({ trades, mobile, T, ca }) {
       {bp > 0 && <div style={{ height: 3, background: "#1a1a2a", margin: "0 14px 4px" }}><div style={{ height: 3, background: bp >= 100 ? "#ffaa00" : "#00e676", width: Math.min(100, bp) + "%", borderRadius: 2, transition: "width 1s" }} /></div>}
       {chartMode === "live" ? (
         <div style={{ position: "relative" }}>
-          <canvas ref={canvasRef} style={{ width: "100%", height: mobile ? 200 : 280, display: "block", background: "#050505" }} />
-          {histRef.current.length < 2 && <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", fontFamily: "monospace", fontSize: 12, color: "#444", animation: "pulse 2s infinite" }}>\u2764 Collecting data...</div>}
+          <canvas ref={canvasRef} style={{ width: "100%", height: mobile ? 220 : 300, display: "block", background: "#050505" }} />
+          {wsRef.current.length < 2 && histRef.current.length < 2 && <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", fontFamily: "monospace", fontSize: 12, color: "#444", animation: "pulse 2s infinite" }}>{"\u2764"} Collecting trades...</div>}
+          {/* Legend */}
+          <div style={{ position: "absolute", bottom: 10, left: 14, display: "flex", gap: 10, fontSize: 8, fontFamily: "monospace", color: "#555" }}>
+            <span><span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#00ff88", marginRight: 3 }}/>buy</span>
+            <span><span style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: "#ff4444", marginRight: 3 }}/>sell</span>
+            <span style={{ opacity: 0.6 }}>dot size = trade size</span>
+          </div>
         </div>
       ) : chartMode === "dex" ? (
         <iframe src={"https://dexscreener.com/solana/" + ca + "?embed=1&theme=dark&trades=0&info=0"} style={{ width: "100%", height: mobile ? 280 : 400, border: "none", display: "block" }} title="DexScreener" allow="clipboard-write" />
@@ -725,6 +791,10 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
                 ))}
               </div>
               {selected.bp > 0 && <div style={{ height: 3, background: T.border, margin: "8px 14px 0" }}><div style={{ height: 3, background: selected.bp >= 80 ? "#ffaa00" : T.green, width: Math.min(100, selected.bp) + "%", borderRadius: 2 }} /></div>}
+              {/* Mini WS chart */}
+              <div style={{ margin: "8px 14px 0", borderRadius: 8, overflow: "hidden", border: "1px solid " + T.border }}>
+                <PriceChart trades={[]} mobile={true} T={T} ca={selected.ca} />
+              </div>
               <div onClick={() => { navigator.clipboard?.writeText(selected.ca); }} style={{ margin: "8px 14px", background: T.surface, borderRadius: 8, padding: "6px 10px", fontFamily: "monospace", fontSize: 10, color: T.faint, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.ca} <span style={{ color: T.dim }}>{"\u2398"} copy</span></div>
               <div style={{ display: "flex", gap: 6, padding: "6px 14px 12px", flexWrap: "wrap" }}>
                 <button onClick={() => { onApe(selected.ca); setSelected(null); }} style={{ flex: 1, padding: "10px", background: T.green + "18", border: "1px solid " + T.green, borderRadius: 10, fontFamily: "monospace", fontSize: 14, fontWeight: 900, color: T.green, cursor: "pointer" }}>{"\uD83D\uDE80"} APE</button>
@@ -1342,7 +1412,7 @@ export default function App() {
                     </div>
                     <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(launchCA); toast("CA copied", "success"); }}>{launchCA.slice(0, 6)}...{launchCA.slice(-4)} {"\u{1F4CB}"}</span>
                   </div>
-                  <PriceChart trades={(fleetStatus?.trades || []).slice(0, 30)} mobile={mobile} T={T} ca={launchCA} />
+                  <PriceChart trades={(fleetStatus?.trades || []).slice(0, 30)} mobile={mobile} T={T} ca={launchCA} wsChart={fleetStatus?.wsChart} gameState={fleetStatus?.gameState} />
                   <div style={{ padding: "6px 12px", background: T.bg, borderTop: "1px solid " + T.border, display: "flex", gap: 8, justifyContent: "center" }}>
                     <a href={"https://pump.fun/coin/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.green, textDecoration: "none" }}>pump.fun {"\u2197"}</a>
                     <a href={"https://dexscreener.com/solana/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.dim, textDecoration: "none" }}>dexscreener {"\u2197"}</a>
