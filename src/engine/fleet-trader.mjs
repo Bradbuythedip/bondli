@@ -16,17 +16,17 @@ import CONFIG from "./config.mjs";
 import { EventEmitter } from "events";
 
 // ═══════════════════════════════════════
-// WALLET ROLES v3 — sell-focused, tokens distributed from dev
-// Delays shortened: pump.fun tokens move fast, ~2 min total cycle
+// WALLET ROLES v4 — organic buy-first strategy
+// Each wallet BUYS from bonding curve independently (looks like real users)
+// Then sells at staggered intervals
 // ═══════════════════════════════════════
 const ROLES = [
-  { id: "sniper",      weight: 0.08, sellDelay: 2,   sellPct: 0.95, sellRounds: 1, phase: "snipe"    },
-  { id: "accumulator", weight: 0.12, sellDelay: 8,   sellPct: 0.60, sellRounds: 2, phase: "accum"    },
-  { id: "momentum",    weight: 0.22, sellDelay: 15,  sellPct: 0.70, sellRounds: 3, phase: "momentum" },
-  { id: "swing",       weight: 0.18, sellDelay: 30,  sellPct: 0.50, sellRounds: 2, phase: "swing"    },
-  { id: "whale",       weight: 0.28, sellDelay: 45,  sellPct: 0.40, sellRounds: 3, phase: "whale"    },
-  { id: "liquidator",  weight: 0.08, sellDelay: 60,  sellPct: 0.90, sellRounds: 2, phase: "exit"     },
-  { id: "recycler",    weight: 0.04, sellDelay: 90,  sellPct: 0.80, sellRounds: 1, phase: "recycle"  },
+  { id: "early1",   weight: 0.18, buyDelay: 3,   sellDelay: 45,  sellPct: 0.80, sellRounds: 2, phase: "early"  },
+  { id: "early2",   weight: 0.15, buyDelay: 7,   sellDelay: 55,  sellPct: 0.75, sellRounds: 2, phase: "early"  },
+  { id: "mid1",     weight: 0.20, buyDelay: 14,  sellDelay: 70,  sellPct: 0.65, sellRounds: 3, phase: "mid"    },
+  { id: "mid2",     weight: 0.17, buyDelay: 22,  sellDelay: 80,  sellPct: 0.60, sellRounds: 2, phase: "mid"    },
+  { id: "late1",    weight: 0.16, buyDelay: 35,  sellDelay: 100, sellPct: 0.70, sellRounds: 3, phase: "late"   },
+  { id: "late2",    weight: 0.14, buyDelay: 50,  sellDelay: 120, sellPct: 0.85, sellRounds: 2, phase: "late"   },
 ];
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -82,32 +82,35 @@ class FleetTrader extends EventEmitter {
     const useFleet = totalSol >= 0.3;
 
     if (useFleet) {
-      const selectedRoles = totalSol < 0.5
-        ? ROLES.filter(r => ["momentum", "whale"].includes(r.id))
-        : totalSol < 2
-          ? ROLES.filter(r => ["sniper", "accumulator", "momentum", "whale", "liquidator"].includes(r.id))
+      // Select roles based on budget — fewer wallets for smaller budgets
+      const selectedRoles = totalSol < 0.6
+        ? ROLES.filter(r => ["early1", "mid1", "late1"].includes(r.id))
+        : totalSol < 1.5
+          ? ROLES.filter(r => ["early1", "early2", "mid1", "mid2", "late1"].includes(r.id))
           : ROLES;
       const totalWeight = selectedRoles.reduce((s, r) => s + r.weight, 0);
+
+      // Reserve 0.02 SOL for dev wallet fees, rest goes to fleet
+      const fleetBudget = totalSol - 0.02;
+
       for (const role of selectedRoles) {
-        const count = role.id === "sniper" ? Math.max(1, Math.min(5, sniperCount)) : 1;
-        const perWalletWeight = (role.weight / totalWeight) / count;
-        for (let n = 0; n < count; n++) {
-          const kp = Keypair.generate();
-          fleetWallets.push({
-            keypair: kp, pubkey: kp.publicKey.toBase58(),
-            role: role.id, roleConfig: { ...role, isSniper: role.id === "sniper" },
-            tokenShare: perWalletWeight, allocation: 0.005,
-            funded: false, solSpent: 0, solRecovered: 0, trades: [],
-          });
-        }
+        const kp = Keypair.generate();
+        const walletBudget = (role.weight / totalWeight) * fleetBudget;
+        fleetWallets.push({
+          keypair: kp, pubkey: kp.publicKey.toBase58(),
+          role: role.id, roleConfig: { ...role },
+          tokenShare: role.weight / totalWeight,
+          allocation: walletBudget, // actual SOL this wallet will buy with
+          funded: false, solSpent: 0, solRecovered: 0, trades: [],
+        });
       }
-      console.log(`[FLEET] Generated ${fleetWallets.length} wallets (token distribution):`);
-      for (const w of fleetWallets) console.log(`  [${w.role}] ${w.pubkey.slice(0, 8)}... -> ${(w.tokenShare * 100).toFixed(1)}% tokens`);
-      await this._fundWalletsMinimal(masterKp, fleetWallets);
+      console.log(`[FLEET] Generated ${fleetWallets.length} wallets (organic buy strategy):`);
+      for (const w of fleetWallets) console.log(`  [${w.role}] ${w.pubkey.slice(0, 8)}... -> ${w.allocation.toFixed(4)} SOL (buy in ${w.roleConfig.buyDelay}s)`);
+      await this._fundWallets(masterKp, fleetWallets);
     } else {
       fleetWallets.push({
         keypair: masterKp, pubkey: masterKp.publicKey.toBase58(), role: "solo",
-        roleConfig: { id: "solo", sellDelay: 8, sellPct: 1.80, sellRounds: 2, phase: "solo" },
+        roleConfig: { id: "solo", buyDelay: 0, sellDelay: 15, sellPct: 0.90, sellRounds: 3, phase: "solo" },
         tokenShare: 1.0, allocation: totalSol, funded: true, solSpent: 0, solRecovered: 0, trades: [],
       });
     }
@@ -128,6 +131,26 @@ class FleetTrader extends EventEmitter {
     return { ok: true, ca, wallets: fleetWallets.length, phase: "starting", walletKeys };
   }
 
+  // Fund each wallet with its buy allocation + fee buffer
+  async _fundWallets(master, wallets) {
+    for (const w of wallets) {
+      if (w.keypair.publicKey.equals(master.publicKey)) { w.funded = true; continue; }
+      try {
+        const fundAmount = Math.floor((w.allocation + 0.003) * LAMPORTS_PER_SOL); // allocation + fee buffer
+        const tx = new Transaction().add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 50_000 }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 }),
+          SystemProgram.transfer({ fromPubkey: master.publicKey, toPubkey: w.keypair.publicKey, lamports: fundAmount }),
+        );
+        await sendAndConfirmTransaction(this.connection, tx, [master], { skipPreflight: true, commitment: "confirmed" });
+        w.funded = true;
+        console.log(`[FLEET] [${w.role}] Funded ${(fundAmount / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
+      } catch (e) { console.error(`[FLEET] [${w.role}] Fund failed: ${e.message}`); }
+      await sleep(300);
+    }
+  }
+
+  // Legacy: minimal funding for token-transfer-only strategies  
   async _fundWalletsMinimal(master, wallets) {
     for (const w of wallets) {
       if (w.keypair.publicKey.equals(master.publicKey)) { w.funded = true; continue; }
@@ -146,10 +169,10 @@ class FleetTrader extends EventEmitter {
   }
 
   // ═══════════════════════════════════════
-  // SMART FLEET — the new strategy
-  // Phase 1: Dev sells 35% → volume + SOL recovery
-  // Phase 2: Distribute remaining tokens to fleet
-  // Phase 3: Fleet sells at staggered intervals
+  // ORGANIC FLEET v4
+  // Phase 1: Each wallet buys independently from bonding curve (staggered, looks like real users)
+  // Phase 2: Fleet sells at staggered intervals (take profit)
+  // Phase 3: Hold (optional re-accumulate)
   // ═══════════════════════════════════════
   async _runSmartFleet(session) {
     const { ca, mint, masterKp, fleetWallets } = session;
@@ -158,106 +181,76 @@ class FleetTrader extends EventEmitter {
     try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); }
     catch (e) { console.error("[FLEET] Failed to fetch global:", e.message); session.phase = "error"; return; }
 
-    // ── PHASE 1: Dev sells 35% for volume + SOL recovery ──
-    session.phase = "dev_selling";
-    this.emit("phase", { ca, phase: "dev_selling" });
-    console.log(`[FLEET] Phase 1: Dev selling 35% of tokens...`);
-
-    let devTokenBalance = new BN(0);
-    try {
-      const ata = getAssociatedTokenAddressSync(mint, masterKp.publicKey, true);
-      const account = await getAccount(this.connection, ata);
-      devTokenBalance = new BN(account.amount.toString());
-      console.log(`[FLEET] Dev token balance: ${devTokenBalance.toString()}`);
-    } catch (e) { console.error("[FLEET] Dev has no tokens:", e.message); }
-
-    if (!devTokenBalance.isZero() && session.running) {
-      const sellChunks = 2 + Math.floor(Math.random() * 2);
-      const totalSellTokens = devTokenBalance.muln(350).divn(1000); // 35%
-      let soldSoFar = new BN(0);
-
-      for (let i = 0; i < sellChunks && session.running; i++) {
-        const remaining = totalSellTokens.sub(soldSoFar);
-        if (remaining.isZero()) break;
-        const chunkPct = 1.0 / (sellChunks - i);
-        const chunkAmount = remaining.muln(Math.floor(chunkPct * 1000)).divn(1000);
-        try {
-          const sellState = await this.onlineSdk.fetchSellState(mint, masterKp.publicKey);
-          const { bondingCurveAccountInfo, bondingCurve } = sellState;
-          const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
-          const solOut = getSellSolAmountFromTokenAmount({ global, feeConfig, mintSupply, bondingCurve, amount: chunkAmount });
-          const instructions = await this.sdk.sellInstructions({ global, bondingCurveAccountInfo, bondingCurve, mint, user: masterKp.publicKey, amount: chunkAmount, solAmount: solOut, slippage: 50 });
-          const tx = new Transaction();
-          tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 150_000 }), ...instructions);
-          const sig = await sendAndConfirmTransaction(this.connection, tx, [masterKp], { skipPreflight: true, commitment: "confirmed" });
-          const solAmount = parseFloat(solOut.toString()) / 1e9;
-          soldSoFar = soldSoFar.add(chunkAmount);
-          session.tradeCount++; session.totalSolRecovered += solAmount;
-          this.emit("trade", { ca, role: "dev", side: "sell", sol: solAmount, sig });
-          console.log(`[FLEET] [dev] SELL chunk ${i + 1}/${sellChunks} -> ${solAmount.toFixed(4)} SOL | sig: ${sig?.slice(0, 12)}`);
-        } catch (e) { console.error(`[FLEET] [dev] Sell chunk ${i + 1} failed:`, e.message); }
-        await sleep(2000 + Math.random() * 3000);
-      }
-    }
-
-    // ── PHASE 2: Distribute remaining tokens to fleet ──
-    if (fleetWallets.length > 1 && session.running) {
-      session.phase = "distributing";
-      this.emit("phase", { ca, phase: "distributing" });
-      console.log(`[FLEET] Phase 2: Distributing tokens to ${fleetWallets.length} wallets...`);
-
-      try {
-        const ata = getAssociatedTokenAddressSync(mint, masterKp.publicKey, true);
-        const account = await getAccount(this.connection, ata);
-        devTokenBalance = new BN(account.amount.toString());
-      } catch { devTokenBalance = new BN(0); }
-
-      if (!devTokenBalance.isZero()) {
-        const distributeTotal = devTokenBalance.muln(900).divn(1000); // distribute 90%, keep 10%
-
-        for (const wallet of fleetWallets) {
-          if (wallet.keypair.publicKey.equals(masterKp.publicKey)) continue;
-          if (!wallet.funded || !session.running) continue;
-          const tokenAmount = distributeTotal.muln(Math.floor(wallet.tokenShare * 10000)).divn(10000);
-          if (tokenAmount.isZero()) continue;
-          try {
-            const fromAta = getAssociatedTokenAddressSync(mint, masterKp.publicKey, true);
-            const toAta = getAssociatedTokenAddressSync(mint, wallet.keypair.publicKey, true);
-            const tx = new Transaction();
-            tx.add(
-              ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
-              ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 }),
-              createAssociatedTokenAccountInstruction(masterKp.publicKey, toAta, wallet.keypair.publicKey, mint),
-              createTransferInstruction(fromAta, toAta, masterKp.publicKey, BigInt(tokenAmount.toString())),
-            );
-            const sig = await sendAndConfirmTransaction(this.connection, tx, [masterKp], { skipPreflight: true, commitment: "confirmed" });
-            console.log(`[FLEET] [${wallet.role}] Received tokens | sig: ${sig?.slice(0, 12)}`);
-          } catch (e) { console.error(`[FLEET] [${wallet.role}] Token transfer failed: ${e.message}`); }
-          await sleep(400);
-        }
-      }
-    }
-
-    // ── PHASE 3: Fleet sells at staggered intervals ──
-    session.phase = "trading";
-    this.emit("phase", { ca, phase: "trading" });
-    console.log(`[FLEET] Phase 3: Fleet selling at staggered intervals...`);
-
     const isSolo = fleetWallets.length === 1 && fleetWallets[0].keypair.publicKey.equals(masterKp.publicKey);
-    // In solo mode, master IS the fleet — include it. In multi-wallet mode, master already sold in Phase 1.
+
+    // ── PHASE 1: Staggered buys from multiple wallets (organic activity) ──
+    session.phase = "buying";
+    this.emit("phase", { ca, phase: "buying" });
+    console.log(`[FLEET] Phase 1: Staggered buys from ${fleetWallets.length} wallet(s)...`);
+
+    if (isSolo) {
+      // Solo mode: dev already bought on create, skip to selling
+      console.log(`[FLEET] Solo mode — dev already holds tokens from creation buy`);
+    } else {
+      // Each wallet buys independently with randomized timing
+      const buyPromises = fleetWallets.filter(w => w.funded).map(async (wallet) => {
+        const baseDelay = (wallet.roleConfig.buyDelay || 10) * 1000;
+        const jitter = Math.random() * baseDelay * 0.5; // ±50% randomization
+        await sleep(baseDelay + jitter);
+        if (!session.running) return;
+
+        // Buy with ~90% of allocation (keep 10% for sell tx fees)
+        const buyAmount = wallet.allocation * 0.90;
+        if (buyAmount < 0.01) { console.log(`[FLEET] [${wallet.role}] Skip buy — too small (${buyAmount.toFixed(4)} SOL)`); return; }
+
+        // Refetch global for fresh bonding curve state
+        try {
+          global = await this.onlineSdk.fetchGlobal();
+          feeConfig = await this.onlineSdk.fetchFeeConfig();
+        } catch {}
+
+        try {
+          console.log(`[FLEET] [${wallet.role}] BUY ${buyAmount.toFixed(4)} SOL...`);
+          const result = await this._executeBuy(wallet, mint, global, feeConfig, buyAmount);
+          if (result.ok) {
+            wallet.solSpent += buyAmount;
+            wallet.trades.push({ side: "buy", solIn: buyAmount, sig: result.sig, time: Date.now() });
+            session.tradeCount++; session.totalSolSpent += buyAmount;
+            this.emit("trade", { ca, role: wallet.role, side: "buy", sol: buyAmount, sig: result.sig });
+            console.log(`[FLEET] [${wallet.role}] BUY OK -> ${buyAmount.toFixed(4)} SOL | sig: ${result.sig?.slice(0, 12)}`);
+          } else {
+            console.error(`[FLEET] [${wallet.role}] Buy failed:`, result.error);
+          }
+        } catch (e) { console.error(`[FLEET] [${wallet.role}] Buy error:`, e.message); }
+      });
+      await Promise.allSettled(buyPromises);
+      console.log(`[FLEET] Phase 1 complete — ${session.tradeCount} buys across ${fleetWallets.filter(w => w.funded).length} wallets`);
+    }
+
+    // ── PHASE 2: Sell at staggered intervals ──
+    if (!session.running) return;
+    session.phase = "selling";
+    this.emit("phase", { ca, phase: "selling" });
+    console.log(`[FLEET] Phase 2: Staggered sells...`);
+
+    // Refetch global before sell phase
+    try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+
     const sellWallets = isSolo
       ? fleetWallets.filter(w => w.funded)
-      : fleetWallets.filter(w => w.funded && !w.keypair.publicKey.equals(masterKp.publicKey));
+      : fleetWallets.filter(w => w.funded);
+    // In v4 all wallets sell (they all hold tokens from their own buys)
 
-    console.log(`[FLEET] Phase 3: ${sellWallets.length} wallet(s) selling${isSolo ? " (solo mode)" : ""}...`);
+    console.log(`[FLEET] Phase 2: ${sellWallets.length} wallet(s) selling...`);
 
-    const promises = sellWallets.map(async (wallet) => {
+    const sellPromises = sellWallets.map(async (wallet) => {
       const delay = (wallet.roleConfig.sellDelay || 30) * 1000;
-      await sleep(delay + Math.random() * delay * 0.3);
+      const jitter = Math.random() * delay * 0.3;
+      await sleep(delay + jitter);
       if (!session.running) return;
       return this._runSellLoop(session, wallet, global, feeConfig);
     });
-    await Promise.allSettled(promises);
+    await Promise.allSettled(sellPromises);
 
     if (session.running) { session.phase = "holding"; this.emit("phase", { ca, phase: "holding" }); }
   }
