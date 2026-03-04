@@ -318,38 +318,90 @@ class FleetTrader extends EventEmitter {
     else if (devKeypair?.secretKey) masterKp = Keypair.fromSecretKey(typeof devKeypair.secretKey === "string" ? bs58.decode(devKeypair.secretKey) : devKeypair.secretKey);
     else return { ok: false, error: "No keypair" };
 
-    console.log(`[FLEET] Launching on ${ca.slice(0, 8)}... | Budget: ${totalSol} SOL | Strategy: SMART DISTRIBUTION`);
+    console.log(`[FLEET] Launching on ${ca.slice(0, 8)}... | Budget: ${totalSol} SOL | Strategy: ${fleetConfig.existingCA ? "APE" : "CREATE"}`);
 
     const fleetWallets = [];
-    const useFleet = totalSol >= 0.3;
+    const isApe = !!fleetConfig.existingCA;
+    const conviction = fleetConfig.radarScore || 50; // 0-100 from radar
+    const useFleet = totalSol >= 0.15; // lower threshold for ape (smaller positions OK)
 
     if (useFleet) {
-      // Select roles based on budget — fewer wallets for smaller budgets
-      const selectedRoles = totalSol < 0.6
-        ? ROLES.filter(r => ["early1", "mid1", "late1"].includes(r.id))
-        : totalSol < 1.5
-          ? ROLES.filter(r => ["early1", "early2", "mid1", "mid2", "late1"].includes(r.id))
-          : ROLES;
-      const totalWeight = selectedRoles.reduce((s, r) => s + r.weight, 0);
+      let walletCount, walletConfigs;
 
-      // Reserve 0.02 SOL for dev wallet fees, rest goes to fleet
-      const fleetBudget = totalSol - 0.02;
+      if (isApe) {
+        // ═══ APE MODE: conviction-driven wallet count ═══
+        // Axiom: bet proportional to your edge (Kelly Criterion)
+        // Higher conviction → more wallets → more exposure → faster entry
+        // Lower conviction → fewer wallets → scout position → quick exit
+        if (conviction >= 80) {
+          walletCount = Math.min(7, Math.max(3, Math.floor(totalSol / 0.08))); // 5-7 wallets
+        } else if (conviction >= 55) {
+          walletCount = Math.min(4, Math.max(2, Math.floor(totalSol / 0.12))); // 3-4 wallets
+        } else {
+          walletCount = Math.min(2, Math.max(1, Math.floor(totalSol / 0.15))); // 1-2 wallets
+        }
+        walletCount = Math.min(walletCount, 7); // hard cap
 
-      for (const role of selectedRoles) {
+        // Kelly-adjusted sizing: higher conviction → more even distribution
+        // Lower conviction → heavy on first wallet (scout), light on rest
+        walletConfigs = [];
+        for (let i = 0; i < walletCount; i++) {
+          const isScout = i === 0;
+          // Stagger: 1-2s between wallets (tight enough to snipe, loose enough to not bundle)
+          const buyDelay = 1 + i * (conviction >= 80 ? 1.5 : conviction >= 55 ? 2.5 : 4);
+          // Sell timing: scouts exit first, later wallets hold longer
+          const sellDelay = conviction >= 80 ? (20 + i * 15) : conviction >= 55 ? (15 + i * 12) : (10 + i * 8);
+          // Weight: Kelly-proportional. High conviction = even. Low = front-loaded.
+          const kellyFactor = conviction / 100; // 0-1
+          const evenWeight = 1 / walletCount;
+          const frontWeight = isScout ? 0.4 : 0.6 / (walletCount - 1);
+          const weight = kellyFactor * evenWeight + (1 - kellyFactor) * frontWeight;
+
+          walletConfigs.push({
+            id: `ape${i + 1}`,
+            weight,
+            buyDelay: Math.round(buyDelay),
+            sellDelay: Math.round(sellDelay),
+            sellPct: conviction >= 80 ? 0.85 : conviction >= 55 ? 0.80 : 0.90, // low conviction = exit harder
+            sellRounds: conviction >= 80 ? 3 : 2,
+            phase: isScout ? "scout" : "fleet",
+          });
+        }
+        console.log(`[FLEET] APE conviction:${conviction} → ${walletCount} wallets (Kelly-sized)`);
+
+      } else {
+        // ═══ CREATE MODE: organic staggered roles ═══
+        const selectedRoles = totalSol < 0.6
+          ? ROLES.filter(r => ["early1", "mid1", "late1"].includes(r.id))
+          : totalSol < 1.5
+            ? ROLES.filter(r => ["early1", "early2", "mid1", "mid2", "late1"].includes(r.id))
+            : ROLES;
+        walletConfigs = selectedRoles;
+      }
+
+      // Normalize weights and allocate SOL
+      const totalWeight = walletConfigs.reduce((s, r) => s + r.weight, 0);
+      const fleetBudget = totalSol - 0.02; // reserve for master fees
+
+      for (const role of walletConfigs) {
         const kp = Keypair.generate();
         const walletBudget = (role.weight / totalWeight) * fleetBudget;
         fleetWallets.push({
           keypair: kp, pubkey: kp.publicKey.toBase58(),
           role: role.id, roleConfig: { ...role },
           tokenShare: role.weight / totalWeight,
-          allocation: walletBudget, // actual SOL this wallet will buy with
+          allocation: walletBudget,
           funded: false, solSpent: 0, solRecovered: 0, trades: [],
         });
       }
-      console.log(`[FLEET] Generated ${fleetWallets.length} wallets (organic buy strategy):`);
-      for (const w of fleetWallets) console.log(`  [${w.role}] ${w.pubkey.slice(0, 8)}... -> ${w.allocation.toFixed(4)} SOL (buy in ${w.roleConfig.buyDelay}s)`);
+
+      const modeLabel = isApe ? "conviction-scaled ape" : "organic buy";
+      console.log(`[FLEET] Generated ${fleetWallets.length} wallets (${modeLabel}):`);
+      for (const w of fleetWallets) console.log(`  [${w.role}] ${w.pubkey.slice(0, 8)}... -> ${w.allocation.toFixed(4)} SOL (buy:${w.roleConfig.buyDelay}s sell:${w.roleConfig.sellDelay}s)`);
       await this._fundWallets(masterKp, fleetWallets);
+
     } else {
+      // ═══ SOLO MODE: single wallet ═══
       fleetWallets.push({
         keypair: masterKp, pubkey: masterKp.publicKey.toBase58(), role: "solo",
         roleConfig: { id: "solo", buyDelay: 0, sellDelay: 15, sellPct: 0.90, sellRounds: 3, phase: "solo" },
