@@ -909,6 +909,35 @@ app.get("/api/sessions", apiLimiter, async (req, res) => {
   res.json({ sessions, count: sessions.length });
 });
 
+// Delete a single session (clears from Redis + memory)
+app.post("/api/session/delete", apiLimiter, async (req, res) => {
+  try {
+    const { sessionId, wallet } = req.body;
+    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
+    const session = await sessionManager.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
+    // Stop fleet if running
+    if (session.tokenCA) { try { orch.stop(session.tokenCA); } catch {} }
+    await sessionManager.delete(sessionId);
+    console.log(`[SESSION] Deleted ${sessionId} for ${wallet.slice(0, 8)}`);
+    res.json({ ok: true, deleted: sessionId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Clear ALL sessions for a user
+app.post("/api/sessions/clear", apiLimiter, async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+    // Stop all running fleets first
+    try { await orch.closeAll(); } catch {}
+    const count = await sessionManager.deleteAllForUser(wallet);
+    console.log(`[SESSION] Cleared ${count} sessions for ${wallet.slice(0, 8)}`);
+    res.json({ ok: true, cleared: count });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Resume/view a previously launched session — shows wallet balances and recovery options
 app.post("/api/session/resume", apiLimiter, async (req, res) => {
   try {
