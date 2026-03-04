@@ -1371,7 +1371,7 @@ app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, 
         const balance = await connection.getBalance(kp.publicKey);
         const balSol = balance / LAMPORTS_PER_SOL;
 
-        if (balance <= 10000) {
+        if (balance <= 5000) {
           results.push({ role: w.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: 0, status: "empty" });
           continue;
         }
@@ -1382,12 +1382,9 @@ app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, 
           continue;
         }
 
-        // Reserve: 5000 base + small priority for landing
-        const RECOVER_RESERVE = 10000;
-        const sweepLamports = balance - RECOVER_RESERVE;
+        // Send balance - 5000 (base fee). Account goes to 0 → no rent issue.
+        const sweepLamports = balance - 5000;
         const tx = new Transaction().add(
-          ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }),
-          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 25_000 }),
           SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: destination, lamports: sweepLamports })
         );
 
@@ -1460,17 +1457,16 @@ app.post("/api/session/force-recover", apiLimiter, async (req, res) => {
         const balance = await connection.getBalance(kp.publicKey);
         const balSol = balance / LAMPORTS_PER_SOL;
 
-        // Reserve: 5000 base fee + priority fee (200K CU × 100K µL / 1M = 20K) + margin
-        const FEE_RESERVE = 30000; // ~0.00003 SOL
-        if (balance <= FEE_RESERVE) {
+        // Need at least base tx fee (5000 lamports) to sweep
+        if (balance <= 5000) {
           results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, status: "dust", swept: 0 });
           continue;
         }
 
-        const sweepLamports = balance - FEE_RESERVE;
+        // Send balance - 5000 (base fee). Account goes to 0 → deleted. No rent issue.
+        // NO priority fee — avoids leaving nonzero sub-rent-exempt remainder
+        const sweepLamports = balance - 5000;
         const tx = new Transaction().add(
-          ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
-          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 }),
           SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: destination, lamports: sweepLamports })
         );
 
@@ -1693,11 +1689,9 @@ app.post("/api/session/sell-sweep", apiLimiter, requireVerifiedWallet, async (re
     if (devKeypair && !devKeypair.publicKey.equals(new PublicKey(wallet))) {
       try {
         const masterBal = await connection.getBalance(devKeypair.publicKey);
-        const sweepAmount = masterBal - 10000; // base fee + margin
+        const sweepAmount = masterBal - 5000; // base fee only, account goes to 0
         if (sweepAmount > 0) {
           const tx = new Transaction().add(
-            ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }),
-            ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 25_000 }),
             SystemProgram.transfer({ fromPubkey: devKeypair.publicKey, toPubkey: new PublicKey(wallet), lamports: sweepAmount })
           );
           await sendAndConfirmTransaction(connection, tx, [devKeypair], { skipPreflight: true, commitment: "confirmed" });
