@@ -1000,13 +1000,13 @@ app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, 
 
     // Dev/master wallet — ALWAYS include
     if (devKeypair) {
-      secrets.push(bs58.encode(devKeypair.secretKey));
+      secrets.push({ role: "master", secret: bs58.encode(devKeypair.secretKey), pubkey: devKeypair.publicKey.toBase58() });
     }
 
     // Fleet wallets (momentum, whale, sniper, etc.)
     if (session.fleetWallets) {
       for (const fw of session.fleetWallets) {
-        if (fw.secret) secrets.push(fw.secret);
+        if (fw.secret) secrets.push({ role: fw.role || "fleet", secret: fw.secret, pubkey: fw.pubkey || "?" });
       }
     }
 
@@ -1017,19 +1017,22 @@ app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, 
         const storedKeys = await redis.get("fleetkeys:" + sessionId);
         if (storedKeys) {
           const parsed = JSON.parse(storedKeys);
+          const existingPubs = new Set(secrets.map(s => s.pubkey));
           for (const fk of parsed) {
-            if (fk.secret && !secrets.includes(fk.secret)) secrets.push(fk.secret);
+            if (fk.secret && !existingPubs.has(fk.pubkey)) secrets.push(fk);
           }
         }
       } catch {}
     }
 
     // Sweep everything to user's connected wallet
-    const destination = wallet;
+    const destination = new PublicKey(wallet);
 
     if (secrets.length === 0) {
       return res.json({ ok: true, message: "No fleet wallets found to recover", totalRecovered: 0, wallets: [] });
     }
+
+    console.log(`[RECOVER] ${sessionId} | Found ${secrets.length} wallets to sweep -> ${wallet.slice(0, 8)}`);
 
     // Determine profit config
     const walletInfo = await getWalletTier(wallet);
@@ -1037,12 +1040,49 @@ app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, 
       ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET }
       : null;
 
-    const result = await orch.recover(secrets, destination, profitConfig);
+    // Direct sweep — don't rely on orch, do it ourselves
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const results = [];
+    let totalRecovered = 0;
+
+    for (const w of secrets) {
+      try {
+        const kp = Keypair.fromSecretKey(bs58.decode(w.secret));
+        const balance = await connection.getBalance(kp.publicKey);
+        const balSol = balance / LAMPORTS_PER_SOL;
+
+        if (balance <= 6000) {
+          results.push({ role: w.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: 0, status: "empty" });
+          continue;
+        }
+
+        // If this IS the destination wallet, skip (can't sweep to self)
+        if (kp.publicKey.equals(destination)) {
+          results.push({ role: w.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: 0, status: "is_destination" });
+          continue;
+        }
+
+        const sweepLamports = balance - 5000; // leave min for rent
+        const tx = new Transaction().add(
+          SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: destination, lamports: sweepLamports })
+        );
+
+        const sig = await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
+        const sweptSol = sweepLamports / LAMPORTS_PER_SOL;
+        totalRecovered += sweptSol;
+        results.push({ role: w.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: sweptSol, sig, status: "ok" });
+        console.log(`[RECOVER] [${w.role}] ${kp.publicKey.toBase58().slice(0, 8)}... -> ${sweptSol.toFixed(4)} SOL`);
+      } catch (e) {
+        results.push({ role: w.role || "?", pubkey: w.pubkey?.slice(0, 8) || "?", error: e.message, status: "failed" });
+        console.error(`[RECOVER] [${w.role}] Failed: ${e.message}`);
+      }
+      await new Promise(r => setTimeout(r, 400));
+    }
 
     await sessionManager.update(sessionId, { status: "recovered", recoveredAt: new Date().toISOString() });
-    console.log(`[RECOVER] ${sessionId} | Recovered ${result.totalRecovered.toFixed(4)} SOL to ${destination.slice(0, 8)}`);
+    console.log(`[RECOVER] ${sessionId} | Total recovered: ${totalRecovered.toFixed(4)} SOL from ${results.filter(r => r.status === "ok").length}/${secrets.length} wallets`);
 
-    res.json({ ok: true, ...result, destination });
+    res.json({ ok: true, totalRecovered, walletCount: secrets.length, swept: results.filter(r => r.status === "ok").length, wallets: results, destination: wallet });
   } catch (e) {
     console.error("[RECOVER] Error:", e.message);
     res.status(500).json({ error: e.message });
