@@ -154,10 +154,16 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
       const provider = getProvider();
       if (!provider) { if (/iPhone|iPad|Android/i.test(navigator.userAgent)) { window.location.href = "https://phantom.app/ul/browse/" + encodeURIComponent(window.location.href); return; } setError("Phantom not found. Install at phantom.app"); setConnecting(false); return; }
       const resp = await provider.connect(); const pubkey = resp.publicKey.toString();
-      let whitelisted = false, paid = false, tier = "none";
-      try { const res = await fetch(API + "/api/access/check?wallet=" + pubkey); const data = await res.json(); whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "free"; } catch {}
+      let whitelisted = false, paid = false, tier = "free";
+      try {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(API + "/api/access/check?wallet=" + pubkey, { signal: controller.signal });
+        const data = await res.json();
+        whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "free";
+      } catch { tier = "free"; } // Always fallback to free — never block login
       onConnect({ pubkey, whitelisted, paid, tier, demo: false });
-    } catch (e) { setError(e.code === 4001 ? "Connection rejected" : "Failed to connect"); }
+    } catch (e) { setError(e.code === 4001 ? "Connection rejected" : "Failed to connect: " + (e.message || "")); }
     setConnecting(false);
   };
 
@@ -969,11 +975,13 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
   const mobile = useIsMobile();
-  const hasAccess = user && (user.whitelisted || user.tier === "free" || user.tier === "pro" || user.demo);
-  const needsTier = user && !user.demo && !user.whitelisted && user.tier === "none";
+  const hasAccess = user && (user.demo || user.whitelisted || user.tier === "free" || user.tier === "pro" || user.tier === "vip" || user.tier === "none");
+  const needsTier = false; // Free tier is default — no gate needed
   const tierLabel = user?.whitelisted ? "VIP" : user?.tier === "pro" ? "PRO" : user?.tier === "free" ? "FREE" : user?.demo ? "DEMO" : "";
   const tierColor = user?.whitelisted ? T.yellow : user?.tier === "pro" ? T.purple : user?.tier === "free" ? T.green : T.orange;
   useEffect(() => { if (user?.tier === "free" && !desc) setDesc("bondli.fun deployed"); }, [user?.tier]);
+  // Silently activate free tier on server if needed (no gate, no user action required)
+  useEffect(() => { if (user?.pubkey && !user?.demo && (user?.tier === "free" || user?.tier === "none")) { fetch(API + "/api/access/activate-free", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ wallet: user.pubkey }) }).catch(() => {}); if (user.tier === "none") setUser(u => ({ ...u, tier: "free" })); } }, [user?.pubkey]);
   useEffect(() => { const p = window?.phantom?.solana || window?.solana; if (p?.isPhantom && p?.isConnected && !user) { p.connect({ onlyIfTrusted: true }).then(async (r) => { const pubkey = r.publicKey.toString(); let whitelisted = false, paid = false, tier = "free"; try { const res = await fetch(API + "/api/access/check?wallet=" + pubkey); const data = await res.json(); whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "free"; } catch { tier = "free"; } setUser({ pubkey, whitelisted, paid, tier, demo: false }); }).catch(() => {}); } }, []);
   useEffect(() => { if (!hasAccess) return; let ws, dead = false; const connect = () => { if (dead) return; try { ws = new WebSocket(WS_URL); ws.onopen = () => setWsConnected(true); ws.onclose = () => { setWsConnected(false); if (!dead) setTimeout(connect, 3000); }; ws.onerror = () => {}; } catch {} }; connect(); return () => { dead = true; if (ws) ws.close(); }; }, [hasAccess]);
   useEffect(() => { if (!user?.pubkey) return; fetch(API + "/api/sessions?wallet=" + user.pubkey).then(r => r.json()).then(d => { if (d.sessions) { const active = d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5); setPastSessions(active); if (!launched && active.length > 0 && active[0].status === "live") { setLaunchCA(active[0].tokenCA); setLaunched(true); setActiveSessionId(active[0].id); if (active[0].tokenConfig?.name) setTokenName(active[0].tokenConfig.name); if (active[0].tokenConfig?.ticker) setTicker(active[0].tokenConfig.ticker); } } }).catch(() => {}); }, [user]);
