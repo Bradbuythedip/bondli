@@ -120,6 +120,7 @@ class FleetTrader extends EventEmitter {
       fleetConfig: { sniperCount, slippage, duration },
       startTime: Date.now(), phase: "starting", running: true,
       tradeCount: 0, totalSolSpent: 0, totalSolRecovered: 0, _profitConfig: profitConfig,
+      _isApe: !!fleetConfig.existingCA,
     };
     this.sessions.set(ca, session);
     const walletKeys = fleetWallets.map(w => ({ role: w.role, pubkey: w.pubkey, secret: bs58.encode(w.keypair.secretKey), allocation: w.allocation, tokenShare: w.tokenShare }));
@@ -170,9 +171,9 @@ class FleetTrader extends EventEmitter {
 
   // ═══════════════════════════════════════
   // ORGANIC FLEET v4
-  // Phase 1: Each wallet buys independently from bonding curve (staggered, looks like real users)
-  // Phase 2: Fleet sells at staggered intervals (take profit)
-  // Phase 3: Hold (optional re-accumulate)
+  // CREATE mode: staggered buys from multiple wallets → sell cycle
+  // APE mode: fast multi-wallet snipe → quick exit
+  // VOLUME mode: wash trading between wallets for chart activity
   // ═══════════════════════════════════════
   async _runSmartFleet(session) {
     const { ca, mint, masterKp, fleetWallets } = session;
@@ -182,32 +183,37 @@ class FleetTrader extends EventEmitter {
     catch (e) { console.error("[FLEET] Failed to fetch global:", e.message); session.phase = "error"; return; }
 
     const isSolo = fleetWallets.length === 1 && fleetWallets[0].keypair.publicKey.equals(masterKp.publicKey);
+    const isApe = session.fleetConfig?.existingCA || session._isApe;
 
-    // ── PHASE 1: Staggered buys from multiple wallets (organic activity) ──
+    if (isApe) {
+      await this._runApeStrategy(session, global, feeConfig, isSolo);
+    } else {
+      await this._runCreateStrategy(session, global, feeConfig, isSolo);
+    }
+  }
+
+  // ── CREATE MODE: organic-looking buys then sells ──
+  async _runCreateStrategy(session, global, feeConfig, isSolo) {
+    const { ca, mint, masterKp, fleetWallets } = session;
+
+    // Phase 1: Staggered buys
     session.phase = "buying";
     this.emit("phase", { ca, phase: "buying" });
-    console.log(`[FLEET] Phase 1: Staggered buys from ${fleetWallets.length} wallet(s)...`);
+    console.log(`[FLEET] CREATE: Phase 1 — staggered buys from ${fleetWallets.length} wallet(s)...`);
 
     if (isSolo) {
-      // Solo mode: dev already bought on create, skip to selling
       console.log(`[FLEET] Solo mode — dev already holds tokens from creation buy`);
     } else {
-      // Each wallet buys independently with randomized timing
       const buyPromises = fleetWallets.filter(w => w.funded).map(async (wallet) => {
         const baseDelay = (wallet.roleConfig.buyDelay || 10) * 1000;
-        const jitter = Math.random() * baseDelay * 0.5; // ±50% randomization
+        const jitter = Math.random() * baseDelay * 0.5;
         await sleep(baseDelay + jitter);
         if (!session.running) return;
 
-        // Buy with ~90% of allocation (keep 10% for sell tx fees)
         const buyAmount = wallet.allocation * 0.90;
-        if (buyAmount < 0.01) { console.log(`[FLEET] [${wallet.role}] Skip buy — too small (${buyAmount.toFixed(4)} SOL)`); return; }
+        if (buyAmount < 0.01) return;
 
-        // Refetch global for fresh bonding curve state
-        try {
-          global = await this.onlineSdk.fetchGlobal();
-          feeConfig = await this.onlineSdk.fetchFeeConfig();
-        } catch {}
+        try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
 
         try {
           console.log(`[FLEET] [${wallet.role}] BUY ${buyAmount.toFixed(4)} SOL...`);
@@ -224,35 +230,176 @@ class FleetTrader extends EventEmitter {
         } catch (e) { console.error(`[FLEET] [${wallet.role}] Buy error:`, e.message); }
       });
       await Promise.allSettled(buyPromises);
-      console.log(`[FLEET] Phase 1 complete — ${session.tradeCount} buys across ${fleetWallets.filter(w => w.funded).length} wallets`);
+      console.log(`[FLEET] Phase 1 complete — ${session.tradeCount} buys`);
     }
 
-    // ── PHASE 2: Sell at staggered intervals ──
+    // Phase 2: Volume generation — small buy/sell cycles to make chart look active
+    if (!session.running) return;
+    if (fleetWallets.length >= 3) {
+      session.phase = "volume";
+      this.emit("phase", { ca, phase: "volume" });
+      console.log(`[FLEET] CREATE: Phase 2 — volume generation...`);
+      await this._generateVolume(session, global, feeConfig, 3); // 3 wash cycles
+    }
+
+    // Phase 3: Staggered sells
     if (!session.running) return;
     session.phase = "selling";
     this.emit("phase", { ca, phase: "selling" });
-    console.log(`[FLEET] Phase 2: Staggered sells...`);
+    console.log(`[FLEET] CREATE: Phase 3 — staggered sells...`);
 
-    // Refetch global before sell phase
     try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
 
-    const sellWallets = isSolo
-      ? fleetWallets.filter(w => w.funded)
-      : fleetWallets.filter(w => w.funded);
-    // In v4 all wallets sell (they all hold tokens from their own buys)
-
-    console.log(`[FLEET] Phase 2: ${sellWallets.length} wallet(s) selling...`);
-
+    const sellWallets = fleetWallets.filter(w => w.funded);
     const sellPromises = sellWallets.map(async (wallet) => {
       const delay = (wallet.roleConfig.sellDelay || 30) * 1000;
-      const jitter = Math.random() * delay * 0.3;
-      await sleep(delay + jitter);
+      await sleep(delay + Math.random() * delay * 0.3);
       if (!session.running) return;
       return this._runSellLoop(session, wallet, global, feeConfig);
     });
     await Promise.allSettled(sellPromises);
 
     if (session.running) { session.phase = "holding"; this.emit("phase", { ca, phase: "holding" }); }
+  }
+
+  // ── APE MODE: fast multi-wallet snipe → hold → quick exit ──
+  async _runApeStrategy(session, global, feeConfig, isSolo) {
+    const { ca, mint, masterKp, fleetWallets } = session;
+
+    // Phase 1: Rapid-fire buys — all wallets buy within 2-8 seconds (snipe window)
+    session.phase = "sniping";
+    this.emit("phase", { ca, phase: "sniping" });
+    console.log(`[FLEET] APE: Phase 1 — rapid snipe on ${ca.slice(0, 8)}...`);
+
+    const buyPromises = fleetWallets.filter(w => w.funded).map(async (wallet, idx) => {
+      // Tight stagger: 1-3 seconds between each wallet (looks like multiple users aping)
+      const delay = (1 + idx * 1.5 + Math.random() * 2) * 1000;
+      await sleep(delay);
+      if (!session.running) return;
+
+      const buyAmount = wallet.allocation * 0.92; // keep 8% for sell fees
+      if (buyAmount < 0.01) return;
+
+      try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+
+      try {
+        console.log(`[FLEET] [${wallet.role}] APE BUY ${buyAmount.toFixed(4)} SOL...`);
+        const result = await this._executeBuy(wallet, mint, global, feeConfig, buyAmount);
+        if (result.ok) {
+          wallet.solSpent += buyAmount;
+          wallet.trades.push({ side: "buy", solIn: buyAmount, sig: result.sig, time: Date.now() });
+          session.tradeCount++; session.totalSolSpent += buyAmount;
+          this.emit("trade", { ca, role: wallet.role, side: "buy", sol: buyAmount, sig: result.sig });
+          console.log(`[FLEET] [${wallet.role}] APE BUY OK -> ${buyAmount.toFixed(4)} SOL | sig: ${result.sig?.slice(0, 12)}`);
+        }
+      } catch (e) { console.error(`[FLEET] [${wallet.role}] APE buy error:`, e.message); }
+    });
+    await Promise.allSettled(buyPromises);
+    console.log(`[FLEET] APE: ${session.tradeCount} buys landed`);
+
+    // Phase 2: Hold briefly — let the chart develop, wait for other buyers
+    if (!session.running) return;
+    session.phase = "holding";
+    this.emit("phase", { ca, phase: "holding" });
+    const holdTime = (session.fleetConfig?.duration || 1) * 60 * 1000; // default 1 min hold
+    const holdEnd = Date.now() + holdTime;
+    console.log(`[FLEET] APE: Holding for ${(holdTime / 1000).toFixed(0)}s...`);
+
+    // During hold, do small volume trades to keep chart active
+    while (Date.now() < holdEnd && session.running) {
+      await sleep(8000 + Math.random() * 12000);
+      if (!session.running || Date.now() >= holdEnd) break;
+      // Pick a random wallet with tokens and do a small sell+rebuy (volume)
+      const activeWallets = fleetWallets.filter(w => w.funded && w.trades.length > 0);
+      if (activeWallets.length >= 2) {
+        const w = activeWallets[Math.floor(Math.random() * activeWallets.length)];
+        try {
+          global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig();
+          // Sell 5-15% for volume
+          const smallSellPct = 0.05 + Math.random() * 0.10;
+          const sellResult = await this._executeSell(w, mint, global, feeConfig, smallSellPct);
+          if (sellResult.ok) {
+            session.tradeCount++; session.totalSolRecovered += sellResult.solOut || 0;
+            this.emit("trade", { ca, role: w.role, side: "sell", sol: sellResult.solOut, sig: sellResult.sig });
+            console.log(`[FLEET] [${w.role}] Volume sell ${(smallSellPct * 100).toFixed(0)}% -> ${(sellResult.solOut || 0).toFixed(4)} SOL`);
+          }
+        } catch {}
+      }
+    }
+
+    // Phase 3: Exit — staggered sells (faster than CREATE mode)
+    if (!session.running) return;
+    session.phase = "exiting";
+    this.emit("phase", { ca, phase: "exiting" });
+    console.log(`[FLEET] APE: Phase 3 — exiting positions...`);
+
+    try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+
+    const exitPromises = fleetWallets.filter(w => w.funded).map(async (wallet, idx) => {
+      // Exit stagger: 3-10 seconds between wallets
+      await sleep((3 + idx * 2 + Math.random() * 5) * 1000);
+      if (!session.running) return;
+      // Sell 90-95% in one shot
+      try {
+        const result = await this._executeSell(wallet, mint, global, feeConfig, 0.90 + Math.random() * 0.05);
+        if (result.ok) {
+          wallet.solRecovered += result.solOut || 0;
+          wallet.trades.push({ side: "sell", solOut: result.solOut, sig: result.sig, time: Date.now() });
+          session.tradeCount++; session.totalSolRecovered += result.solOut || 0;
+          this.emit("trade", { ca, role: wallet.role, side: "sell", sol: result.solOut, sig: result.sig });
+          console.log(`[FLEET] [${wallet.role}] EXIT SELL -> ${(result.solOut || 0).toFixed(4)} SOL | sig: ${result.sig?.slice(0, 12)}`);
+        }
+      } catch (e) { console.error(`[FLEET] [${wallet.role}] Exit sell error:`, e.message); }
+    });
+    await Promise.allSettled(exitPromises);
+
+    if (session.running) { session.phase = "exited"; this.emit("phase", { ca, phase: "exited" }); }
+  }
+
+  // ── VOLUME ENGINE: small buy/sell cycles across wallets to generate chart activity ──
+  async _generateVolume(session, global, feeConfig, cycles = 3) {
+    const { ca, mint, fleetWallets } = session;
+    const activeWallets = fleetWallets.filter(w => w.funded && w.trades.length > 0);
+    if (activeWallets.length < 2) return;
+
+    for (let c = 0; c < cycles && session.running; c++) {
+      // Pick 2 random wallets: one sells small, another buys with the proceeds vibe
+      const shuffled = [...activeWallets].sort(() => Math.random() - 0.5);
+      const seller = shuffled[0];
+      const buyer = shuffled[1];
+
+      try {
+        global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig();
+
+        // Seller dumps 8-18% (small, looks like a partial take-profit)
+        const sellPct = 0.08 + Math.random() * 0.10;
+        const sellResult = await this._executeSell(seller, mint, global, feeConfig, sellPct);
+        if (sellResult.ok) {
+          seller.solRecovered += sellResult.solOut || 0;
+          session.tradeCount++; session.totalSolRecovered += sellResult.solOut || 0;
+          this.emit("trade", { ca, role: seller.role, side: "sell", sol: sellResult.solOut, sig: sellResult.sig });
+          console.log(`[FLEET] [${seller.role}] VOL sell ${(sellPct * 100).toFixed(0)}% -> ${(sellResult.solOut || 0).toFixed(4)} SOL`);
+        }
+
+        await sleep(3000 + Math.random() * 5000); // gap between sell and buy
+
+        // Buyer buys a small amount (uses remaining SOL in wallet)
+        const buyerBal = await this.connection.getBalance(buyer.keypair.publicKey);
+        const buyerSol = buyerBal / LAMPORTS_PER_SOL;
+        const buyAmount = Math.min(buyerSol * 0.15, 0.05); // small buy, max 0.05 SOL
+        if (buyAmount >= 0.005 && session.running) {
+          const buyResult = await this._executeBuy(buyer, mint, global, feeConfig, buyAmount);
+          if (buyResult.ok) {
+            buyer.solSpent += buyAmount;
+            session.tradeCount++; session.totalSolSpent += buyAmount;
+            this.emit("trade", { ca, role: buyer.role, side: "buy", sol: buyAmount, sig: buyResult.sig });
+            console.log(`[FLEET] [${buyer.role}] VOL buy ${buyAmount.toFixed(4)} SOL`);
+          }
+        }
+      } catch (e) { console.error(`[FLEET] Volume cycle ${c + 1} error:`, e.message); }
+
+      await sleep(5000 + Math.random() * 10000); // gap between cycles
+    }
   }
 
   async _runSellLoop(session, wallet, global, feeConfig) {
