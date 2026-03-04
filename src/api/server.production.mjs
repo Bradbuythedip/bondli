@@ -1400,12 +1400,24 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
 
         console.log(`[LAUNCH] Starting fleet with ${session.fleetBudget} SOL on ${tokenCA}`);
         
+        // Look up radar/analysis score for conviction-based wallet sizing
+        let radarScore = 50; // default medium conviction
+        if (existingCA) {
+          const radarToken = radar.pool.get(tokenCA);
+          if (radarToken) {
+            // Use the best score from any radar tab
+            const allScored = radar.movers.hot?.find(t => t.ca === tokenCA) || radar.movers.new?.find(t => t.ca === tokenCA) || radar.movers.graduating?.find(t => t.ca === tokenCA);
+            if (allScored) radarScore = allScored.score;
+          }
+          console.log(`[LAUNCH] APE conviction: ${radarScore}/100`);
+        }
+
         orchResult = await orch.launch(tokenCA, {
           totalSol: session.fleetBudget,
           devKeypair,
           sessionId: session.id,
           force: true,
-          fleetConfig: { ...(session.fleetConfig || {}), existingCA: !!existingCA },
+          fleetConfig: { ...(session.fleetConfig || {}), existingCA: !!existingCA, radarScore },
           profitConfig: (session.tier === "free") ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET } : null,
         });
         console.log(`[LAUNCH] Fleet started:`, JSON.stringify(orchResult).slice(0, 300));
