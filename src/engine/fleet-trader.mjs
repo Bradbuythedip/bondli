@@ -35,7 +35,9 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ═══════════════════════════════════════
 async function skimSweep(connection, sourceKp, destinationPubkey, profitConfig, solInputForThisWallet = 0) {
   const balance = await connection.getBalance(sourceKp.publicKey);
-  const available = balance - 6000;
+  // Reserve: 5000 base fee + priority fee (100K CU × 50K µL / 1M = 5K) + margin
+  const FEE_RESERVE = 15000; // ~0.000015 SOL
+  const available = balance - FEE_RESERVE;
   if (available <= 0) return { swept: 0, skimmed: 0, sig: null };
   const balanceSol = available / LAMPORTS_PER_SOL;
   let skimLamports = 0;
