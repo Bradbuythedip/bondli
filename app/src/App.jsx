@@ -961,47 +961,9 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
 
   const dw = session?.devWallet || "";
 
-  // ═══════════════ LIVE — show CA + chart ═══════════════
+  // ═══════════════ LIVE — parent handles full dashboard ═══════════════
   if (step === "live" || (launched && tokenCA)) {
-    const ca = tokenCA || "";
-    return (
-      <div>
-        {ca ? (
-          <div style={{ padding: mobile ? 14 : 18, background: T.surface, borderRadius: 14, border: "2px solid " + T.green + "44", marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-              <span style={{ color: T.green }}>{"\u2705"}</span>
-              <span style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 14 }}>Token Live on pump.fun</span>
-            </div>
-            <div style={{ fontFamily: mono, fontSize: 11, color: T.text, wordBreak: "break-all", background: T.bg, padding: "8px 10px", borderRadius: 8, border: "1px solid " + T.border, marginBottom: 8, cursor: "pointer" }} onClick={() => copyText(ca)}>{ca} <span style={{ color: T.faint, fontSize: 10 }}>{copied ? "\u2713 copied" : "click to copy"}</span></div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {[
-                { label: "pump.fun", url: "https://pump.fun/coin/" + ca, c: T.green },
-                { label: "Solscan", url: "https://solscan.io/token/" + ca },
-                { label: "DexScreener", url: "https://dexscreener.com/solana/" + ca },
-                { label: "Photon", url: "https://photon-sol.tinyastro.io/en/lp/" + ca },
-              ].map(l => (
-                <a key={l.label} href={l.url} target="_blank" rel="noopener noreferrer" style={{ flex: 1, minWidth: 65, textAlign: "center", padding: "7px 4px", background: (l.c || T.mid) + "12", borderRadius: 6, border: "1px solid " + (l.c || T.mid) + "22", color: l.c || T.mid, fontFamily: mono, fontSize: 10, fontWeight: 700, textDecoration: "none" }}>
-                  {l.label}
-                </a>
-              ))}
-            </div>
-          </div>
-        ) : (
-          <div style={{ padding: "14px 18px", background: T.greenGhost, borderRadius: 12, border: "1px solid " + T.green + "33", marginBottom: 12, display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ color: T.green, animation: "pulse 2s infinite", fontSize: 14 }}>{"\u25CF"}</span>
-            <span style={{ fontFamily: mono, fontWeight: 700, color: T.green, fontSize: 13 }}>Engine Running</span>
-          </div>
-        )}
-
-        {ca && (
-          <div style={{ borderRadius: 12, overflow: "hidden", border: "1px solid " + T.border, marginBottom: 12, background: "#0d0d0d" }}>
-            <iframe src={"https://pump.fun/coin/" + ca} style={{ width: "100%", height: mobile ? 380 : 520, border: "none", display: "block" }} title="Chart" />
-          </div>
-        )}
-
-        <KeyBox />
-      </div>
-    );
+    return null; // parent App renders the full live dashboard with fleet wallets, trade feed, controls
   }
 
   // ═══════════════ LAUNCHING — progress ═══════════════
