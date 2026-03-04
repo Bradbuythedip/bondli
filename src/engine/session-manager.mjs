@@ -274,4 +274,30 @@ export class SessionManager {
     }
     return results.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   }
+
+  // Delete a single session
+  async delete(sessionId) {
+    this.sessions.delete(sessionId);
+    if (this.redis) {
+      try {
+        await this.redis.del("session:" + sessionId);
+        await this.redis.del("fleetkeys:" + sessionId);
+      } catch {}
+    }
+    return true;
+  }
+
+  // Delete all sessions for a user
+  async deleteAllForUser(userWallet) {
+    let count = 0;
+    const toDelete = [];
+    for (const [id, session] of this.sessions) {
+      if (session.userWallet === userWallet) toDelete.push(id);
+    }
+    for (const id of toDelete) {
+      await this.delete(id);
+      count++;
+    }
+    return count;
+  }
 }
