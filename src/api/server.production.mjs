@@ -1095,7 +1095,7 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
           devKeypair,
           sessionId: session.id,
           force: true,
-          fleetConfig: session.fleetConfig || {},
+          fleetConfig: { ...(session.fleetConfig || {}), existingCA: !!existingCA },
           profitConfig: (session.tier === "free") ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET } : null,
         });
         console.log(`[LAUNCH] Fleet started:`, JSON.stringify(orchResult).slice(0, 300));
@@ -1515,7 +1515,7 @@ app.post("/api/batch-deploy", apiLimiter, requireVerifiedWallet, async (req, res
     const connection = new Connection(CONFIG.RPC_URL, "confirmed");
     const delay = Math.max(2000, delayMs || 5000); // min 2s between deploys
 
-    // Resolve master keypair
+    // Resolve master keypair (funding source)
     let masterKp;
     if (masterSeed) {
       try { masterKp = Keypair.fromSecretKey(bs58.decode(masterSeed)); } catch {}
@@ -1524,44 +1524,54 @@ app.post("/api/batch-deploy", apiLimiter, requireVerifiedWallet, async (req, res
 
     // Upload metadata ONCE (reuse for all)
     console.log(`[BATCH] Starting ${count} deploys for ${tokenConfig.name} ($${tokenConfig.ticker})`);
+    console.log(`[BATCH] Key rotation: each token gets a fresh creator wallet`);
 
     // SSE-style: send results as they come via JSON array
     const results = [];
-    let metadataUri = null;
 
     for (let i = 0; i < count; i++) {
       try {
-        // Generate fresh mint keypair for each token
-        const mintKp = Keypair.generate();
-        
-        const result = await createToken(connection, masterKp, {
+        // Generate fresh creator keypair for each deploy (key rotation)
+        const creatorKp = Keypair.generate();
+        const creatorPubkey = creatorKp.publicKey.toBase58();
+
+        // Fund the fresh creator from master (creation fee + optional dev buy)
+        const fundAmount = Math.floor(0.05 * LAMPORTS_PER_SOL); // 0.05 SOL for creation + fees
+        const fundTx = new Transaction().add(
+          SystemProgram.transfer({ fromPubkey: masterKp.publicKey, toPubkey: creatorKp.publicKey, lamports: fundAmount })
+        );
+        await sendAndConfirmTransaction(connection, fundTx, [masterKp], { skipPreflight: true, commitment: "confirmed" });
+        console.log(`[BATCH] [${i + 1}] Funded creator ${creatorPubkey.slice(0, 8)}... with 0.05 SOL`);
+
+        const result = await createToken(connection, creatorKp, {
           ...tokenConfig,
-          // Vary name slightly to avoid exact duplicates
           name: count > 1 ? `${tokenConfig.name} ${String.fromCharCode(65 + (i % 26))}` : tokenConfig.name,
         }, {
           devBuySol: 0,
-          jitoTip: jitoTip || 0.003, // higher tip for batch speed
+          jitoTip: jitoTip || 0.003,
         });
 
         results.push({
           index: i + 1,
           ok: true,
-          ca: result.tokenCA || result.mintAddress || mintKp.publicKey.toBase58(),
+          ca: result.tokenCA || result.mintAddress || result.mint,
+          creator: creatorPubkey,
+          creatorSecret: bs58.encode(creatorKp.secretKey),
           txSig: result.txSig,
-          pumpUrl: "https://pump.fun/coin/" + (result.tokenCA || result.mintAddress || mintKp.publicKey.toBase58()),
+          pumpUrl: "https://pump.fun/coin/" + (result.tokenCA || result.mintAddress || result.mint),
         });
-        console.log(`[BATCH] ${i + 1}/${count} deployed: ${results[results.length - 1].ca?.slice(0, 8)}...`);
+        console.log(`[BATCH] ${i + 1}/${count} deployed: ${results[results.length - 1].ca?.slice(0, 8)}... (creator: ${creatorPubkey.slice(0, 8)})`);
       } catch (e) {
         results.push({ index: i + 1, ok: false, error: e.message });
         console.error(`[BATCH] ${i + 1}/${count} failed: ${e.message}`);
       }
 
-      // Delay between deploys (avoid rate limit)
-      if (i < count - 1) await new Promise(r => setTimeout(r, delay));
+      // Delay between deploys (avoid rate limit + looks more natural)
+      if (i < count - 1) await new Promise(r => setTimeout(r, delay + Math.random() * 2000));
     }
 
-    console.log(`[BATCH] Complete: ${results.filter(r => r.ok).length}/${count} succeeded`);
-    res.json({ ok: true, total: count, succeeded: results.filter(r => r.ok).length, results });
+    console.log(`[BATCH] Complete: ${results.filter(r => r.ok).length}/${count} succeeded | ${count} unique creators`);
+    res.json({ ok: true, total: count, succeeded: results.filter(r => r.ok).length, results, rotatedKeys: true });
   } catch (e) {
     console.error("[BATCH] Error:", e.message);
     res.status(500).json({ error: e.message });
