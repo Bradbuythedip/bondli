@@ -668,7 +668,7 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
               </div>
               {/* Stats row */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1, background: T.border + "33", margin: "0 14px", borderRadius: 8, overflow: "hidden" }}>
-                {[{ k: "MCap", v: "$" + fmt(selected.mcap), c: selected.mcap > 5000 ? T.green : T.dim }, { k: "Bonded", v: (selected.bp || 0).toFixed(1) + "%", c: selected.bp > 20 ? T.green : T.faint }, { k: "Replies", v: String(selected.replies || 0), c: T.dim }].map(s => (
+                {[{ k: "MCap", v: selected.mcap ? "$" + fmt(selected.mcap) : "\u2014", c: selected.mcap > 5000 ? T.green : T.dim }, { k: "Bonded", v: (selected.bp || 0).toFixed(1) + "%", c: selected.bp > 20 ? T.green : T.faint }, { k: "Buys", v: String(selected.buys || 0), c: T.green }, { k: "Sells", v: String(selected.sells || 0), c: T.red }, { k: "Volume", v: (selected.solVol || 0).toFixed(1) + " SOL", c: T.dim }, { k: "Replies", v: String(selected.replies || 0), c: T.dim }].map(s => (
                   <div key={s.k} style={{ background: T.surface, padding: "8px 4px", textAlign: "center" }}>
                     <div style={{ fontSize: 14, fontFamily: "monospace", fontWeight: 800, color: s.c }}>{s.v}</div>
                     <div style={{ fontSize: 9, color: T.faint, fontFamily: "monospace" }}>{s.k}</div>
@@ -704,7 +704,8 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
                 <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, marginTop: 1 }}>{t.name}{t.created ? " \u00B7 " + ago(t.created) : ""}</div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
-                <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: t.verdict === "APE" ? T.green : T.dim }}>${fmt(t.mcap)}</div>
+                <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: t.verdict === "APE" ? T.green : T.dim }}>{t.buys || 0}b / {t.sells || 0}s</div>
+                <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint }}>{(t.solVol || 0).toFixed(1)} SOL</div>
                 {t.bp > 0 && <div style={{ width: 40, height: 2, background: T.border, borderRadius: 1, marginTop: 3, marginLeft: "auto" }}><div style={{ height: 2, background: T.green, width: Math.min(100, t.bp) + "%", borderRadius: 1 }} /></div>}
               </div>
             </div>
