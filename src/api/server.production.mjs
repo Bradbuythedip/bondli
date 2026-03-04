@@ -547,7 +547,8 @@ function computeMovers() {
     const twitterBonus = t.twitterValid ? 5 : 0;             // valid twitter format +5
     const websiteBonus = t.websiteLive ? 5 : (t.websiteValid ? 2 : 0); // live site +5, valid URL +2
     const imageDupePenalty = t.imageDupe ? -20 : 0;           // reused image = likely scam
-    const socialTotal = socialBonus + twitterBonus + websiteBonus + imageDupePenalty;
+    const bundlePenalty = (t.bundleScore || 0) >= 60 ? -30 : (t.bundleScore || 0) >= 40 ? -18 : (t.bundleScore || 0) >= 20 ? -8 : 0;
+    const socialTotal = socialBonus + twitterBonus + websiteBonus + imageDupePenalty + bundlePenalty;
 
     // ── NEW score: fresh tokens with early traction ──
     let newScore = 0;
@@ -612,7 +613,7 @@ function computeMovers() {
       mcapSol: Math.round(t.mcapSol * 100) / 100,
       mcapUsd: Math.round((t.mcapSol || 0) * 170),
       bp: Math.round((t.bp || 0) * 10) / 10,
-      dev: t.dev, created: t.created,
+      dev: t.devShort || t.dev, created: t.created,
       description: t.description || "", source: "ws",
       // Social intel
       twitter: t.twitter || "", twitterHandle: t.twitterHandle || null, twitterValid: !!t.twitterValid,
@@ -621,6 +622,10 @@ function computeMovers() {
       socialCount: t.socialCount || 0,
       imageDupe: !!t.imageDupe,
       imageOriginal: t.imageOriginal || null,
+      // Bundle detection
+      bundleScore: t.bundleScore || 0,
+      bundleFlags: t.bundleFlags || [],
+      bundled: (t.bundleScore || 0) >= 40, // boolean shortcut
     };
 
     allScored.push({ ...base, scores });
@@ -643,6 +648,104 @@ function computeMovers() {
     .sort((a, b) => b.score - a.score).slice(0, 10);
 
   radar.updated = now;
+}
+
+// ═══════════════════════════════════════
+// BUNDLE DETECTION — analyzes early trades for coordinated buying patterns
+// Runs on every new trade for the first 30 trades per token
+// ═══════════════════════════════════════
+function analyzeBundle(t) {
+  const trades = t.earlyTrades;
+  const flags = [];
+  let score = 0;
+
+  const buys = trades.filter(tr => tr.type === "buy");
+  const sells = trades.filter(tr => tr.type === "sell");
+  if (buys.length === 0) { t.bundleScore = 0; t.bundleFlags = []; return; }
+
+  const createdAt = t.created;
+
+  // ── 1. Rapid buys after creation (within 2s) ──
+  const instantBuys = buys.filter(b => b.time - createdAt < 2000);
+  if (instantBuys.length >= 3) {
+    score += 30;
+    flags.push(`${instantBuys.length} buys in <2s`);
+  } else if (instantBuys.length >= 2) {
+    score += 15;
+    flags.push(`${instantBuys.length} buys in <2s`);
+  }
+
+  // ── 2. Same-second buys (likely same block/bundle) ──
+  const timeGroups = {};
+  for (const b of buys) {
+    const sec = Math.floor(b.time / 1000);
+    timeGroups[sec] = (timeGroups[sec] || 0) + 1;
+  }
+  const maxSameSecond = Math.max(0, ...Object.values(timeGroups));
+  if (maxSameSecond >= 3) {
+    score += 25;
+    flags.push(`${maxSameSecond} buys same second`);
+  } else if (maxSameSecond >= 2) {
+    score += 10;
+  }
+
+  // ── 3. Identical buy amounts (coordinated sizing) ──
+  const amounts = buys.map(b => Math.round(b.sol * 10000)); // round to 4 decimals
+  const amountCounts = {};
+  for (const a of amounts) amountCounts[a] = (amountCounts[a] || 0) + 1;
+  const maxSameAmount = Math.max(0, ...Object.values(amountCounts));
+  if (maxSameAmount >= 3 && buys.length >= 4) {
+    score += 20;
+    flags.push(`${maxSameAmount}× identical amount`);
+  } else if (maxSameAmount >= 2 && buys.length >= 3) {
+    score += 8;
+  }
+
+  // ── 4. All buys no sells in first 10 trades ──
+  const first10 = trades.slice(0, 10);
+  const first10Buys = first10.filter(tr => tr.type === "buy").length;
+  const first10Sells = first10.filter(tr => tr.type === "sell").length;
+  if (first10.length >= 6 && first10Sells === 0) {
+    score += 15;
+    flags.push("0 sells in first " + first10.length);
+  }
+
+  // ── 5. Dev wallet buying again (after create) ──
+  const devBuys = buys.filter(b => b.wallet === t.dev);
+  if (devBuys.length >= 2) {
+    score += 10;
+    flags.push("dev multi-buy");
+  }
+
+  // ── 6. Low unique wallet ratio ──
+  const uniqueWallets = new Set(buys.map(b => b.wallet)).size;
+  const walletRatio = uniqueWallets / buys.length;
+  if (buys.length >= 5 && walletRatio < 0.4) {
+    score += 15;
+    flags.push(`${uniqueWallets}/${buys.length} unique wallets`);
+  } else if (buys.length >= 5 && walletRatio < 0.6) {
+    score += 8;
+    flags.push(`low diversity: ${uniqueWallets}/${buys.length}`);
+  }
+
+  // ── 7. Tiny buy amounts from many wallets (dust buys to inflate buyer count) ──
+  const dustBuys = buys.filter(b => b.sol < 0.01);
+  if (dustBuys.length >= 3 && dustBuys.length / buys.length > 0.5) {
+    score += 12;
+    flags.push(`${dustBuys.length} dust buys (<0.01 SOL)`);
+  }
+
+  // ── 8. Wallet reuse (same wallet buying multiple times quickly) ──
+  const walletBuyCounts = {};
+  for (const b of buys) walletBuyCounts[b.wallet] = (walletBuyCounts[b.wallet] || 0) + 1;
+  const maxWalletBuys = Math.max(0, ...Object.values(walletBuyCounts));
+  if (maxWalletBuys >= 3) {
+    score += 10;
+    flags.push(`1 wallet bought ${maxWalletBuys}×`);
+  }
+
+  t.bundleScore = Math.min(100, score);
+  t.bundleFlags = flags;
 }
 
 function connectPumpPortalWS() {
@@ -688,12 +791,17 @@ function connectPumpPortalWS() {
         if (!radar.pool.has(ca)) {
           radar.pool.set(ca, {
             name: msg.name || "?", ticker: msg.symbol || "?",
-            dev: msg.traderPublicKey?.slice(0, 8) || "",
+            dev: msg.traderPublicKey || "",
+            devShort: (msg.traderPublicKey || "").slice(0, 8),
             created: Date.now(), buys: 0, sells: 0, solVol: 0,
             mcapSol: msg.marketCapSol || 0, lastTrade: Date.now(),
             uri: msg.uri || "", image: "", description: "",
             bp: msg.vSolInBondingCurve ? Math.max(0, ((msg.vSolInBondingCurve - 30) / 55) * 100) : 0,
             vSol: msg.vSolInBondingCurve || 0,
+            // Bundle detection — track early trades
+            earlyTrades: [],      // first 30 trades with wallet + amount + time
+            bundleScore: 0,       // 0-100: higher = more likely bundled
+            bundleFlags: [],      // human-readable flags
           });
           // Subscribe to this token's trades
           if (radar.subbed.size < radar.MAX_TRACKED) {
@@ -716,9 +824,26 @@ function connectPumpPortalWS() {
           if (msg.txType === "buy") t.buys++;
           else t.sells++;
           // PumpPortal sends solAmount already in SOL (not lamports!)
-          t.solVol += Math.abs(msg.solAmount || 0);
+          const tradeSol = Math.abs(msg.solAmount || 0);
+          t.solVol += tradeSol;
           t.mcapSol = msg.marketCapSol || t.mcapSol;
           t.lastTrade = Date.now();
+
+          // Record early trades for bundle detection (first 30)
+          if (t.earlyTrades.length < 30) {
+            t.earlyTrades.push({
+              time: Date.now(),
+              type: msg.txType,
+              wallet: msg.traderPublicKey || "",
+              walletShort: (msg.traderPublicKey || "").slice(0, 8),
+              sol: tradeSol,
+              sig: (msg.signature || "").slice(0, 12),
+            });
+            // Re-analyze bundle score after each early trade
+            if (t.earlyTrades.length >= 3) {
+              analyzeBundle(t);
+            }
+          }
           // Price history for charting (keep last 200 points)
           if (!t.priceHistory) t.priceHistory = [];
           t.priceHistory.push({
@@ -928,6 +1053,16 @@ app.get("/api/radar/token/:ca", apiLimiter, async (req, res) => {
         buys: wsData?.buys || 0, sells: wsData?.sells || 0,
         solVol: Math.round((wsData?.solVol || 0) * 100) / 100,
         mcapSol: wsData?.mcapSol || 0,
+        // Bundle detection
+        bundleScore: wsData?.bundleScore || 0,
+        bundleFlags: wsData?.bundleFlags || [],
+        bundled: (wsData?.bundleScore || 0) >= 40,
+        // Socials
+        twitter: wsData?.twitter || "", twitterHandle: wsData?.twitterHandle || null, twitterValid: !!wsData?.twitterValid,
+        website: wsData?.website || "", websiteValid: !!wsData?.websiteValid, websiteLive: !!wsData?.websiteLive,
+        telegram: wsData?.telegram || "",
+        socialCount: wsData?.socialCount || 0,
+        imageDupe: !!wsData?.imageDupe, imageOriginal: wsData?.imageOriginal || null,
       });
     }
   } catch {}
@@ -939,10 +1074,20 @@ app.get("/api/radar/token/:ca", apiLimiter, async (req, res) => {
       mcap: Math.round((wsData.mcapSol || 0) * 170),
       bp: Math.round((wsData.bp || 0) * 10) / 10,
       replies: 0, complete: false,
-      creator: wsData.dev,
+      creator: wsData.devShort || wsData.dev,
       buys: wsData.buys, sells: wsData.sells,
       solVol: Math.round((wsData.solVol || 0) * 100) / 100,
       mcapSol: Math.round((wsData.mcapSol || 0) * 100) / 100,
+      // Bundle detection
+      bundleScore: wsData.bundleScore || 0,
+      bundleFlags: wsData.bundleFlags || [],
+      bundled: (wsData.bundleScore || 0) >= 40,
+      // Socials
+      twitter: wsData.twitter || "", twitterHandle: wsData.twitterHandle || null, twitterValid: !!wsData.twitterValid,
+      website: wsData.website || "", websiteValid: !!wsData.websiteValid, websiteLive: !!wsData.websiteLive,
+      telegram: wsData.telegram || "",
+      socialCount: wsData.socialCount || 0,
+      imageDupe: !!wsData.imageDupe, imageOriginal: wsData.imageOriginal || null,
     });
   }
   res.json({ ok: false, error: "Token not found", ca });
