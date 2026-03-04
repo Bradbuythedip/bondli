@@ -17,15 +17,16 @@ import { EventEmitter } from "events";
 
 // ═══════════════════════════════════════
 // WALLET ROLES v3 — sell-focused, tokens distributed from dev
+// Delays shortened: pump.fun tokens move fast, ~2 min total cycle
 // ═══════════════════════════════════════
 const ROLES = [
-  { id: "sniper",      weight: 0.08, sellDelay: 3,   sellPct: 0.95, sellRounds: 1, phase: "snipe"    },
-  { id: "accumulator", weight: 0.12, sellDelay: 20,  sellPct: 0.60, sellRounds: 2, phase: "accum"    },
-  { id: "momentum",    weight: 0.22, sellDelay: 45,  sellPct: 0.70, sellRounds: 3, phase: "momentum" },
-  { id: "swing",       weight: 0.18, sellDelay: 90,  sellPct: 0.50, sellRounds: 2, phase: "swing"    },
-  { id: "whale",       weight: 0.28, sellDelay: 150, sellPct: 0.40, sellRounds: 3, phase: "whale"    },
-  { id: "liquidator",  weight: 0.08, sellDelay: 240, sellPct: 0.90, sellRounds: 2, phase: "exit"     },
-  { id: "recycler",    weight: 0.04, sellDelay: 300, sellPct: 0.80, sellRounds: 1, phase: "recycle"  },
+  { id: "sniper",      weight: 0.08, sellDelay: 2,   sellPct: 0.95, sellRounds: 1, phase: "snipe"    },
+  { id: "accumulator", weight: 0.12, sellDelay: 8,   sellPct: 0.60, sellRounds: 2, phase: "accum"    },
+  { id: "momentum",    weight: 0.22, sellDelay: 15,  sellPct: 0.70, sellRounds: 3, phase: "momentum" },
+  { id: "swing",       weight: 0.18, sellDelay: 30,  sellPct: 0.50, sellRounds: 2, phase: "swing"    },
+  { id: "whale",       weight: 0.28, sellDelay: 45,  sellPct: 0.40, sellRounds: 3, phase: "whale"    },
+  { id: "liquidator",  weight: 0.08, sellDelay: 60,  sellPct: 0.90, sellRounds: 2, phase: "exit"     },
+  { id: "recycler",    weight: 0.04, sellDelay: 90,  sellPct: 0.80, sellRounds: 1, phase: "recycle"  },
 ];
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -107,7 +108,7 @@ class FleetTrader extends EventEmitter {
     } else {
       fleetWallets.push({
         keypair: masterKp, pubkey: masterKp.publicKey.toBase58(), role: "solo",
-        roleConfig: { id: "solo", sellDelay: 30, sellPct: 0.50, sellRounds: 3, phase: "solo" },
+        roleConfig: { id: "solo", sellDelay: 8, sellPct: 1.80, sellRounds: 2, phase: "solo" },
         tokenShare: 1.0, allocation: totalSol, funded: true, solSpent: 0, solRecovered: 0, trades: [],
       });
     }
@@ -243,7 +244,15 @@ class FleetTrader extends EventEmitter {
     this.emit("phase", { ca, phase: "trading" });
     console.log(`[FLEET] Phase 3: Fleet selling at staggered intervals...`);
 
-    const promises = fleetWallets.filter(w => w.funded && !w.keypair.publicKey.equals(masterKp.publicKey)).map(async (wallet) => {
+    const isSolo = fleetWallets.length === 1 && fleetWallets[0].keypair.publicKey.equals(masterKp.publicKey);
+    // In solo mode, master IS the fleet — include it. In multi-wallet mode, master already sold in Phase 1.
+    const sellWallets = isSolo
+      ? fleetWallets.filter(w => w.funded)
+      : fleetWallets.filter(w => w.funded && !w.keypair.publicKey.equals(masterKp.publicKey));
+
+    console.log(`[FLEET] Phase 3: ${sellWallets.length} wallet(s) selling${isSolo ? " (solo mode)" : ""}...`);
+
+    const promises = sellWallets.map(async (wallet) => {
       const delay = (wallet.roleConfig.sellDelay || 30) * 1000;
       await sleep(delay + Math.random() * delay * 0.3);
       if (!session.running) return;
@@ -317,16 +326,35 @@ class FleetTrader extends EventEmitter {
     session.running = false; session.phase = "closing";
     this.emit("phase", { ca, phase: "closing" });
     await sleep(3000);
+    // Fetch global/feeConfig with retry — critical for selling tokens
     let global, feeConfig;
-    try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); break; }
+      catch (e) { console.error(`[FLEET] fetchGlobal attempt ${attempt + 1}/3 failed:`, e.message); await sleep(1000); }
+    }
+    if (!global || !feeConfig) console.error("[FLEET] WARNING: Could not fetch global/feeConfig — fleet tokens will NOT be sold!");
+
+    // Sell all remaining tokens from each wallet
     for (const wallet of session.fleetWallets) {
       try {
         let tokenBalance;
         try { const ata = getAssociatedTokenAddressSync(session.mint, wallet.keypair.publicKey, true); const account = await getAccount(this.connection, ata); tokenBalance = new BN(account.amount.toString()); }
         catch { tokenBalance = new BN(0); }
-        if (!tokenBalance.isZero() && global && feeConfig) {
-          const result = await this._executeSell(wallet, session.mint, global, feeConfig, 1.0);
-          if (result.ok) { wallet.solRecovered += result.solOut || 0; session.totalSolRecovered += result.solOut || 0; }
+        if (tokenBalance.isZero()) {
+          console.log(`[FLEET] [${wallet.role}] Close: no tokens to sell`);
+          continue;
+        }
+        if (!global || !feeConfig) {
+          console.error(`[FLEET] [${wallet.role}] Close: SKIPPING sell — no global/feeConfig (${tokenBalance.toString()} tokens stranded!)`);
+          continue;
+        }
+        console.log(`[FLEET] [${wallet.role}] Close: selling ${tokenBalance.toString()} tokens...`);
+        const result = await this._executeSell(wallet, session.mint, global, feeConfig, 1.0);
+        if (result.ok) {
+          wallet.solRecovered += result.solOut || 0; session.totalSolRecovered += result.solOut || 0;
+          console.log(`[FLEET] [${wallet.role}] Close: SOLD -> ${(result.solOut || 0).toFixed(4)} SOL | sig: ${result.sig?.slice(0, 12)}`);
+        } else {
+          console.error(`[FLEET] [${wallet.role}] Close: sell returned not ok:`, result.error);
         }
       } catch (e) { console.error(`[FLEET] [${wallet.role}] Close sell failed:`, e.message); }
       await sleep(500);
