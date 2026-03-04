@@ -696,6 +696,23 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
                   <div style={{ fontFamily: "monospace", fontSize: 14, color: T.green, fontWeight: 700 }}>${selected.ticker}</div>
                   <div style={{ fontFamily: "monospace", fontSize: 11, color: T.dim, marginTop: 4, lineHeight: 1.4, maxHeight: 48, overflow: "hidden" }}>{selected.description || "No description"}</div>
                   {selected.creator && <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, marginTop: 3 }}>dev: {selected.creator.slice(0, 12)}...</div>}
+                  {/* Social badges */}
+                  <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
+                    {selected.twitter && (
+                      <a href={selected.twitter.startsWith("http") ? selected.twitter : "https://x.com/" + (selected.twitterHandle || "")} target="_blank" rel="noopener" style={{ fontSize: 9, fontFamily: "monospace", color: selected.twitterValid ? "#1DA1F2" : T.faint, background: "#1DA1F222", padding: "2px 6px", borderRadius: 4, textDecoration: "none", border: "1px solid #1DA1F233" }}>{"\u{1D54F}"} {selected.twitterHandle || "twitter"}{selected.twitterValid ? "" : " ?"}</a>
+                    )}
+                    {selected.website && (
+                      <a href={selected.website} target="_blank" rel="noopener" style={{ fontSize: 9, fontFamily: "monospace", color: selected.websiteLive ? T.green : selected.websiteValid ? T.dim : T.faint, background: T.green + "11", padding: "2px 6px", borderRadius: 4, textDecoration: "none", border: "1px solid " + T.green + "22" }}>{"\u{1F310}"} {selected.websiteLive ? "live" : selected.websiteValid ? "site" : "?"}</a>
+                    )}
+                    {selected.telegram && (
+                      <a href={selected.telegram.startsWith("http") ? selected.telegram : "https://t.me/" + selected.telegram} target="_blank" rel="noopener" style={{ fontSize: 9, fontFamily: "monospace", color: "#229ED9", background: "#229ED922", padding: "2px 6px", borderRadius: 4, textDecoration: "none", border: "1px solid #229ED933" }}>{"\u2708"} TG</a>
+                    )}
+                    {selected.socialCount === 0 && <span style={{ fontSize: 9, fontFamily: "monospace", color: T.faint, opacity: 0.6 }}>no socials</span>}
+                  </div>
+                  {/* Image dupe warning */}
+                  {selected.imageDupe && (
+                    <div style={{ marginTop: 4, fontSize: 9, fontFamily: "monospace", color: T.red, background: T.red + "10", padding: "3px 6px", borderRadius: 4, border: "1px solid " + T.red + "22" }}>{"\u26A0"} Reused image — seen on {selected.imageOriginal?.ticker || "another token"} ({selected.imageOriginal?.seen || "multiple"} times)</div>
+                  )}
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1, background: T.border + "33", margin: "0 14px", borderRadius: 8, overflow: "hidden" }}>
@@ -730,7 +747,11 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
                   <span style={{ fontFamily: "monospace", fontSize: 8, fontWeight: 700, color: vc(t.verdict), background: vc(t.verdict) + "12", border: "1px solid " + vc(t.verdict) + "33", borderRadius: 3, padding: "1px 5px" }}>{t.verdict}</span>
                   <span style={{ fontFamily: "monospace", fontSize: 9, color: T.green, fontWeight: 700 }}>{t.score}</span>
                 </div>
-                <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, marginTop: 1 }}>{t.name}{t.created ? " \u00B7 " + ago(t.created) : ""}</div>
+                <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, marginTop: 1 }}>
+                  {t.name}{t.created ? " \u00B7 " + ago(t.created) : ""}
+                  {t.socialCount > 0 && <span style={{ marginLeft: 4 }}>{t.twitter ? "\u{1D54F}" : ""}{t.website ? "\u{1F310}" : ""}{t.telegram ? "\u2708" : ""}</span>}
+                  {t.imageDupe && <span style={{ marginLeft: 4, color: T.red, fontSize: 8, fontWeight: 700 }}>{"\u26A0"}DUPE IMG</span>}
+                </div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
                 <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: t.verdict === "APE" ? T.green : T.dim }}>{t.buys || 0}b / {t.sells || 0}s</div>
