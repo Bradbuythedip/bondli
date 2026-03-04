@@ -152,18 +152,28 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
     setConnecting(true); setError("");
     try {
       const provider = getProvider();
-      if (!provider) { if (/iPhone|iPad|Android/i.test(navigator.userAgent)) { window.location.href = "https://phantom.app/ul/browse/" + encodeURIComponent(window.location.href); return; } setError("Phantom not found. Install at phantom.app"); setConnecting(false); return; }
-      const resp = await provider.connect(); const pubkey = resp.publicKey.toString();
-      let whitelisted = false, paid = false, tier = "free";
-      try {
-        const controller = new AbortController();
-        setTimeout(() => controller.abort(), 5000);
-        const res = await fetch(API + "/api/access/check?wallet=" + pubkey, { signal: controller.signal });
-        const data = await res.json();
-        whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "free";
-      } catch { tier = "free"; } // Always fallback to free — never block login
-      onConnect({ pubkey, whitelisted, paid, tier, demo: false });
-    } catch (e) { setError(e.code === 4001 ? "Connection rejected" : "Failed to connect: " + (e.message || "")); }
+      if (!provider) {
+        if (/iPhone|iPad|Android/i.test(navigator.userAgent)) {
+          window.location.href = "https://phantom.app/ul/browse/" + encodeURIComponent(window.location.href);
+          return;
+        }
+        setError("Phantom not found. Install at phantom.app");
+        setConnecting(false);
+        return;
+      }
+      const resp = await provider.connect();
+      const pubkey = resp.publicKey.toString();
+      // Log in IMMEDIATELY — don't wait for API
+      onConnect({ pubkey, whitelisted: false, paid: false, tier: "free", demo: false });
+      // Then check tier in background (non-blocking)
+      fetch(API + "/api/access/check?wallet=" + pubkey)
+        .then(r => r.json())
+        .then(data => {
+          if (data.tier && data.tier !== "free") {
+            onConnect({ pubkey, whitelisted: !!data.whitelisted, paid: !!data.paid, tier: data.tier || "free", demo: false });
+          }
+        }).catch(() => {});
+    } catch (e) { setError(e.code === 4001 ? "Connection rejected" : "Failed to connect"); }
     setConnecting(false);
   };
 
@@ -982,7 +992,7 @@ export default function App() {
   useEffect(() => { if (user?.tier === "free" && !desc) setDesc("bondli.fun deployed"); }, [user?.tier]);
   // Silently activate free tier on server if needed (no gate, no user action required)
   useEffect(() => { if (user?.pubkey && !user?.demo && (user?.tier === "free" || user?.tier === "none")) { fetch(API + "/api/access/activate-free", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ wallet: user.pubkey }) }).catch(() => {}); if (user.tier === "none") setUser(u => ({ ...u, tier: "free" })); } }, [user?.pubkey]);
-  useEffect(() => { const p = window?.phantom?.solana || window?.solana; if (p?.isPhantom && p?.isConnected && !user) { p.connect({ onlyIfTrusted: true }).then(async (r) => { const pubkey = r.publicKey.toString(); let whitelisted = false, paid = false, tier = "free"; try { const res = await fetch(API + "/api/access/check?wallet=" + pubkey); const data = await res.json(); whitelisted = !!data.whitelisted; paid = !!data.paid; tier = data.tier || "free"; } catch { tier = "free"; } setUser({ pubkey, whitelisted, paid, tier, demo: false }); }).catch(() => {}); } }, []);
+  useEffect(() => { const p = window?.phantom?.solana || window?.solana; if (p?.isPhantom && p?.isConnected && !user) { p.connect({ onlyIfTrusted: true }).then((r) => { const pubkey = r.publicKey.toString(); setUser({ pubkey, whitelisted: false, paid: false, tier: "free", demo: false }); fetch(API + "/api/access/check?wallet=" + pubkey).then(r => r.json()).then(data => { if (data.tier || data.whitelisted) setUser(u => ({ ...u, whitelisted: !!data.whitelisted, paid: !!data.paid, tier: data.tier || "free" })); }).catch(() => {}); }).catch(() => {}); } }, []);
   useEffect(() => { if (!hasAccess) return; let ws, dead = false; const connect = () => { if (dead) return; try { ws = new WebSocket(WS_URL); ws.onopen = () => setWsConnected(true); ws.onclose = () => { setWsConnected(false); if (!dead) setTimeout(connect, 3000); }; ws.onerror = () => {}; } catch {} }; connect(); return () => { dead = true; if (ws) ws.close(); }; }, [hasAccess]);
   useEffect(() => { if (!user?.pubkey) return; fetch(API + "/api/sessions?wallet=" + user.pubkey).then(r => r.json()).then(d => { if (d.sessions) { const active = d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5); setPastSessions(active); if (!launched && active.length > 0 && active[0].status === "live") { setLaunchCA(active[0].tokenCA); setLaunched(true); setActiveSessionId(active[0].id); if (active[0].tokenConfig?.name) setTokenName(active[0].tokenConfig.name); if (active[0].tokenConfig?.ticker) setTicker(active[0].tokenConfig.ticker); } } }).catch(() => {}); }, [user]);
   useEffect(() => { if (!launched || !launchCA) return; const iv = setInterval(async () => { try { const res = await fetch(API + "/api/fleet", { headers: { "X-Wallet": user?.pubkey } }); if (res.ok) { const data = await res.json(); setFleetStatus(data); if (data.curveProgress) setCurveProgress(data.curveProgress); } } catch {} }, 3000); return () => clearInterval(iv); }, [launched, launchCA]);
@@ -1083,14 +1093,14 @@ export default function App() {
                 </div>
 
                 {/* ═══ LINKS ═══ */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
                   {[{ l: "pump.fun", u: "https://pump.fun/coin/" + launchCA, c: T.green }, { l: "Solscan", u: "https://solscan.io/token/" + launchCA }, { l: "DexScreener", u: "https://dexscreener.com/solana/" + launchCA }, { l: "Photon", u: "https://photon-sol.tinyastro.io/en/lp/" + launchCA }].map(x => (
                     <a key={x.l} href={x.u} target="_blank" rel="noopener" style={{ textAlign: "center", padding: "8px 4px", background: T.surface, borderRadius: 8, border: "1px solid " + T.border, color: x.c || T.mid, fontFamily: mono, fontSize: mobile ? 10 : 12, fontWeight: 700, textDecoration: "none" }}>{x.l}</a>
                   ))}
                 </div>
 
                 {/* ═══ STATS ═══ */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
+                <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr 1fr" : "1fr 1fr 1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
                   {[
                     { k: "Phase", v: fleetStatus?.phase || "init", c: T.green },
                     { k: "Wallets", v: fleetStatus?.activeWallets || 0, c: T.green },
@@ -1215,7 +1225,7 @@ export default function App() {
                   ) : (<>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase" }}>SOL Budget</span><span style={{ fontFamily: mono, fontSize: 28, fontWeight: 900, color: T.green }}>{totalSol}</span></div>
                   <input type="range" min={0.5} max={50} step={0.1} value={totalSol} onChange={e => setTotalSol(Number(e.target.value))} style={{ width: "100%", accentColor: T.green, marginBottom: 12 }} />
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 12, overflow: "hidden" }}><NumInput label="Snipers" value={sniperCount} onChange={setSniperCount} min={1} max={5} T={T} /><NumInput label="Slippage %" value={slippage} onChange={setSlippage} min={1} max={50} T={T} /><NumInput label="Duration m" value={duration} onChange={setDuration} min={5} max={240} step={5} T={T} /><div style={{ background: T.bg, borderRadius: 12, border: "1px solid " + T.border, padding: "10px 10px", minWidth: 0 }}><div style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>Jito Tip</div><input type="number" value={jitoTip} onChange={e => setJitoTip(Math.max(0.0001, Math.min(0.1, Number(e.target.value))))} step={0.0005} min={0.0001} max={0.1} style={{ width: "100%", height: 34, background: T.surface, border: "1px solid " + T.border, borderRadius: 8, color: T.green, fontFamily: mono, fontSize: 15, fontWeight: 800, textAlign: "center", outline: "none", boxSizing: "border-box" }} /></div></div>
+                  <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 12, overflow: "hidden" }}><NumInput label="Snipers" value={sniperCount} onChange={setSniperCount} min={1} max={5} T={T} /><NumInput label="Slippage %" value={slippage} onChange={setSlippage} min={1} max={50} T={T} /><NumInput label="Duration m" value={duration} onChange={setDuration} min={5} max={240} step={5} T={T} /><div style={{ background: T.bg, borderRadius: 12, border: "1px solid " + T.border, padding: "10px 10px", minWidth: 0 }}><div style={{ fontSize: 11, fontFamily: mono, fontWeight: 700, color: T.faint, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>Jito Tip</div><input type="number" value={jitoTip} onChange={e => setJitoTip(Math.max(0.0001, Math.min(0.1, Number(e.target.value))))} step={0.0005} min={0.0001} max={0.1} style={{ width: "100%", height: 34, background: T.surface, border: "1px solid " + T.border, borderRadius: 8, color: T.green, fontFamily: mono, fontSize: 15, fontWeight: 800, textAlign: "center", outline: "none", boxSizing: "border-box" }} /></div></div>
                   <div style={{ display: "grid", gridTemplateColumns: isApe ? "repeat(3, 1fr)" : "repeat(4, 1fr)", gap: 2, background: T.border + "44", borderRadius: 8, overflow: "hidden" }}>{(isApe ? [{ k: "Fleet", v: totalSol.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }] : [{ k: "Dev Buy", v: preview.devBuy.toFixed(2) }, { k: "Fleet", v: preview.fleet.toFixed(2) }, { k: "Wallets", v: walletCount + sniperCount - 1 }, { k: "Snipers", v: sniperCount }]).map(s => (<div key={s.k} style={{ background: T.bg, padding: "8px 4px", textAlign: "center" }}><div style={{ fontSize: 18, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.k}</div></div>))}</div>
                   </>)}
                 </Section>
