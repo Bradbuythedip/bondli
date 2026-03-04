@@ -218,14 +218,14 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
       }
       const resp = await provider.connect();
       const pubkey = resp.publicKey.toString();
-      // Log in IMMEDIATELY — don't wait for API
+      // Log in IMMEDIATELY with free tier — don't block on API
       onConnect({ pubkey, whitelisted: false, paid: false, tier: "free", demo: false });
-      // Then check tier in background (non-blocking)
+      // Background: check actual tier and update
       fetch(API + "/api/access/check?wallet=" + pubkey)
         .then(r => r.json())
         .then(data => {
-          if (data.tier && data.tier !== "free") {
-            onConnect({ pubkey, whitelisted: !!data.whitelisted, paid: !!data.paid, tier: data.tier || "free", demo: false });
+          if (data.tier) {
+            onConnect({ pubkey, whitelisted: !!data.whitelisted, paid: !!data.paid, tier: data.tier, demo: false });
           }
         }).catch(() => {});
     } catch (e) { setError(e.code === 4001 ? "Connection rejected" : "Failed to connect"); }
