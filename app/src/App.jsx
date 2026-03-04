@@ -561,11 +561,11 @@ function PriceChart({ trades, mobile, T, ca }) {
 // ═══════════════════════════════════════
 // RADAR — Live new pairs scanner
 // ═══════════════════════════════════════
-function RadarFeed({ T, mobile, onApe }) {
+function RadarFeed({ T, mobile, onApe, isVip }) {
   const [tokens, setTokens] = useState([]);
-  const [koth, setKoth] = useState(null);
+  const [wsAlive, setWsAlive] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [tab, setTab] = useState("new"); // "new" | "hot"
 
   useEffect(() => {
     let alive = true;
@@ -576,61 +576,71 @@ function RadarFeed({ T, mobile, onApe }) {
           if (r.ok) {
             const d = await r.json();
             if (d.tokens) setTokens(d.tokens);
-            if (d.koth?.[0]) setKoth(d.koth[0]);
+            setWsAlive(d.wsAlive || false);
             setLoading(false);
           }
         } catch {}
-        await new Promise(r => setTimeout(r, autoRefresh ? 8000 : 30000));
+        await new Promise(r => setTimeout(r, 4000)); // fast poll — WS data is real-time
       }
     };
     poll();
     return () => { alive = false; };
-  }, [autoRefresh]);
+  }, []);
 
-  const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "K" : n?.toFixed(0) || "0";
-  const verdictColor = v => v === "APE" ? "#00ff88" : v === "WATCH" ? "#ffaa00" : "#555";
-
-  if (loading) return <div style={{ padding: 40, textAlign: "center", fontFamily: "monospace", color: "#444", animation: "pulse 2s infinite" }}>{"\uD83D\uDCE1"} Scanning pump.fun...</div>;
+  const fmt = n => !n || n === 0 ? "—" : n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "K" : n.toFixed(0);
+  const verdictColor = v => v === "APE" ? T.green : v === "WATCH" ? "#ffaa00" : T.faint;
+  const timeAgo = ts => { if (!ts) return ""; const s = Math.floor((Date.now() - ts) / 1000); if (s < 60) return s + "s ago"; if (s < 3600) return Math.floor(s / 60) + "m ago"; return Math.floor(s / 3600) + "h ago"; };
+  const feed = tab === "hot" ? [...tokens].filter(t => t.score >= 20).sort((a, b) => b.score - a.score) : tokens;
 
   return (
     <div>
-      {/* KOTH banner */}
-      {koth && (
-        <div onClick={() => onApe(koth.ca)} style={{ background: "#ffaa0010", border: "1px solid #ffaa0033", borderRadius: 10, padding: "10px 14px", marginBottom: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 16 }}>{"\uD83D\uDC51"}</span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 800, color: "#ffaa00" }}>KING OF THE HILL</div>
-            <div style={{ fontFamily: "monospace", fontSize: 11, color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{koth.ticker} — ${fmt(koth.mcap)} — {koth.bp?.toFixed(0)}% bonded</div>
-          </div>
-          <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 800, color: "#ffaa00", border: "1px solid #ffaa00", borderRadius: 6, padding: "3px 8px", flexShrink: 0 }}>APE</span>
+      {/* Status bar */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", borderBottom: "1px solid " + T.border }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ width: 7, height: 7, borderRadius: "50%", background: wsAlive ? T.green : T.red, boxShadow: wsAlive ? "0 0 6px " + T.green : "none", animation: wsAlive ? "pulse 2s infinite" : "none" }} />
+          <span style={{ fontFamily: "monospace", fontSize: 10, color: wsAlive ? T.green : T.red }}>{wsAlive ? "LIVE" : "connecting..."}</span>
+          <span style={{ fontFamily: "monospace", fontSize: 10, color: T.faint }}>{"\u00B7"} {tokens.length} tokens</span>
         </div>
-      )}
-      {/* Auto-refresh toggle */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, padding: "0 4px" }}>
-        <span style={{ fontFamily: "monospace", fontSize: 11, color: "#555" }}>{tokens.length} pairs found</span>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => setAutoRefresh(!autoRefresh)}>
-          <div style={{ width: 28, height: 14, borderRadius: 7, background: autoRefresh ? "#00e67644" : "#333", padding: 1 }}><div style={{ width: 12, height: 12, borderRadius: "50%", background: autoRefresh ? "#00e676" : "#555", transform: autoRefresh ? "translateX(14px)" : "translateX(0)", transition: "all .2s" }} /></div>
-          <span style={{ fontFamily: "monospace", fontSize: 9, color: "#555" }}>Auto</span>
+        <div style={{ display: "flex", gap: 4 }}>
+          {[{ id: "new", l: "New" }, { id: "hot", l: "\uD83D\uDD25 Hot" }].map(t => (
+            <button key={t.id} onClick={() => setTab(t.id)} style={{ padding: "3px 10px", background: tab === t.id ? T.green + "15" : "none", border: "1px solid " + (tab === t.id ? T.green + "44" : "transparent"), borderRadius: 6, fontFamily: "monospace", fontSize: 10, fontWeight: 700, color: tab === t.id ? T.green : T.faint, cursor: "pointer" }}>{t.l}</button>
+          ))}
         </div>
       </div>
-      {/* Token feed */}
-      {tokens.map(t => (
-        <div key={t.ca} onClick={() => onApe(t.ca)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderBottom: "1px solid #ffffff08", cursor: "pointer", transition: "background .15s" }} onMouseEnter={e => e.currentTarget.style.background = "#ffffff05"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
-          {t.image && <img src={t.image} style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => e.target.style.display = "none"} />}
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: "#ddd" }}>{t.ticker}</span>
-              <span style={{ fontFamily: "monospace", fontSize: 9, fontWeight: 700, color: verdictColor(t.verdict), border: "1px solid " + verdictColor(t.verdict) + "44", borderRadius: 4, padding: "1px 5px" }}>{t.verdict}</span>
-              {t.score >= 50 && <span style={{ fontFamily: "monospace", fontSize: 8, color: "#00e676" }}>{"\uD83D\uDD25"}{t.score}</span>}
+      {/* Token cards */}
+      {loading ? (
+        <div style={{ padding: 40, textAlign: "center", fontFamily: "monospace", fontSize: 13, color: T.faint, animation: "pulse 2s infinite" }}>{"\uD83D\uDCE1"} Connecting to PumpPortal...</div>
+      ) : feed.length === 0 ? (
+        <div style={{ padding: 30, textAlign: "center", fontFamily: "monospace", fontSize: 12, color: T.faint }}>{tab === "hot" ? "No hot tokens yet — waiting for traction signals" : "Waiting for new tokens..."}</div>
+      ) : (
+        <div style={{ maxHeight: mobile ? 320 : 400, overflowY: "auto" }}>
+          {feed.slice(0, 24).map((t, i) => (
+            <div key={t.ca} onClick={() => onApe(t.ca)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: "1px solid " + T.border + "33", cursor: "pointer", transition: "background .15s", background: i === 0 && tab === "new" ? T.green + "06" : "transparent" }} onMouseEnter={e => e.currentTarget.style.background = T.green + "08"} onMouseLeave={e => e.currentTarget.style.background = i === 0 && tab === "new" ? T.green + "06" : "transparent"}>
+              {/* Image or placeholder */}
+              {t.image ? <img src={t.image} style={{ width: 34, height: 34, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: 34, height: 34, borderRadius: 8, background: T.border + "44", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontSize: 12, color: T.faint }}>{(t.ticker || "?")[0]}</div>}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                  <span style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: T.text }}>${t.ticker || "?"}</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 8, fontWeight: 700, color: verdictColor(t.verdict), background: verdictColor(t.verdict) + "12", border: "1px solid " + verdictColor(t.verdict) + "33", borderRadius: 3, padding: "1px 5px" }}>{t.verdict}</span>
+                  {t.score >= 40 && <span style={{ fontFamily: "monospace", fontSize: 8, color: T.green }}>{"\uD83D\uDD25"}{t.score}</span>}
+                </div>
+                <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 1 }}>
+                  {t.name || ""}{t.dev ? " \u00B7 dev:" + t.dev : ""}{t.created ? " \u00B7 " + timeAgo(t.created) : ""}
+                </div>
+              </div>
+              <div style={{ textAlign: "right", flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                {t.mcap > 0 ? <span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 800, color: t.mcap > 5000 ? T.green : T.dim }}>${fmt(t.mcap)}</span> : <span style={{ fontFamily: "monospace", fontSize: 9, color: T.faint }}>new</span>}
+                {t.bp > 0 && <span style={{ fontFamily: "monospace", fontSize: 8, color: T.faint }}>{t.bp.toFixed(0)}%</span>}
+              </div>
+              {/* Ape button on hover feel */}
+              <div style={{ fontFamily: "monospace", fontSize: 10, fontWeight: 800, color: T.green, padding: "4px 8px", border: "1px solid " + T.green + "33", borderRadius: 6, flexShrink: 0, opacity: 0.7 }}>{"\u2197"}</div>
             </div>
-            <div style={{ fontFamily: "monospace", fontSize: 10, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name} {t.description ? "— " + t.description.slice(0, 40) : ""}</div>
-          </div>
-          <div style={{ textAlign: "right", flexShrink: 0 }}>
-            <div style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 800, color: t.mcap > 5000 ? "#00e676" : "#666" }}>${fmt(t.mcap)}</div>
-            <div style={{ fontFamily: "monospace", fontSize: 9, color: "#555" }}>{t.bp?.toFixed(0)}%{t.replies > 0 ? " \u00B7 " + t.replies + " replies" : ""}</div>
-          </div>
+          ))}
         </div>
-      ))}
+      )}
+      <div style={{ textAlign: "center", padding: "6px", fontFamily: "monospace", fontSize: 8, color: T.faint }}>
+        pumpportal.fun websocket {"\u00B7"} click any token to ape
+      </div>
     </div>
   );
 }
@@ -1104,7 +1114,7 @@ export default function App() {
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState(""); const [activeSessionId, setActiveSessionId] = useState("");
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
-  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false); const [wizardMode, setWizardMode] = useState("create"); // "create" | "ape" | "radar"
+  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
   const mobile = useIsMobile();
@@ -1317,31 +1327,20 @@ export default function App() {
 
             ) : (
               <div>
-                <h1 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 24 : 34, textAlign: "center", marginBottom: 4, color: T.text }}>Launch on <span style={{ color: T.green }}>pump.fun</span></h1>
-                <p style={{ textAlign: "center", fontSize: mobile ? 13 : 15, color: T.dim, fontFamily: mono, marginBottom: 12 }}>create, ape, or scan for opportunities</p>
-                {/* Mode tabs */}
-                <div style={{ display: "flex", justifyContent: "center", gap: 4, marginBottom: mobile ? 16 : 24 }}>
-                  {[{ id: "create", label: "\u2728 Create", desc: "new token" }, { id: "ape", label: "\uD83D\uDE80 Ape", desc: "existing CA" }, { id: "radar", label: "\uD83D\uDCE1 Radar", desc: "live scanner" }].map(m => (
-                    <button key={m.id} onClick={() => { setWizardMode(m.id); if (m.id === "ape" || m.id === "create") setExistingCA(""); }} style={{ flex: 1, maxWidth: 160, padding: "10px 8px", background: wizardMode === m.id ? T.green + "12" : T.surface, border: "1px solid " + (wizardMode === m.id ? T.green : T.border), borderRadius: 10, cursor: "pointer", textAlign: "center" }}>
-                      <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 800, color: wizardMode === m.id ? T.green : T.mid }}>{m.label}</div>
-                      <div style={{ fontFamily: mono, fontSize: 9, color: T.faint, marginTop: 2 }}>{m.desc}</div>
-                    </button>
-                  ))}
-                </div>
-                {wizardMode === "radar" ? (
-                  <div>
-                    <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden", marginBottom: 12 }}>
-                      <div style={{ padding: "12px 16px", borderBottom: "1px solid " + T.border, display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 16 }}>{"\uD83D\uDCE1"}</span>
-                        <span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>Live Scanner</span>
-                        <span style={{ fontFamily: mono, fontSize: 10, color: T.green, animation: "pulse 2s infinite" }}>{"\u25CF"} LIVE</span>
-                      </div>
-                      <RadarFeed T={T} mobile={mobile} onApe={(ca) => { setExistingCA(ca); setWizardMode("ape"); analyzeCA(ca); }} />
+                {/* ═══ RADAR — always visible ═══ */}
+                <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden", marginBottom: 14 }}>
+                  <div style={{ padding: "12px 16px", borderBottom: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 16 }}>{"\uD83D\uDCE1"}</span>
+                      <span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>Radar</span>
+                      <span style={{ fontFamily: mono, fontSize: 10, color: T.green, animation: "pulse 2s infinite" }}>{"\u25CF"} LIVE</span>
                     </div>
-                    <ReferralPanel user={user} T={T} mobile={mobile} />
+                    {user?.tier !== "pro" && !user?.whitelisted && <span style={{ fontFamily: mono, fontSize: 9, color: T.faint, background: T.border, borderRadius: 4, padding: "2px 6px" }}>VIP: auto-ape coming soon</span>}
                   </div>
-                ) : (
-                <div>
+                  <RadarFeed T={T} mobile={mobile} isVip={user?.tier === "pro" || user?.whitelisted} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); }} />
+                </div>
+
+                {/* ═══ LAUNCH — unified create + ape ═══ */}
                 <Section n="1" title="Wallet" done={!!seed} T={T} mobile={mobile}>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     <div onClick={() => setSeed("")} style={{ padding: mobile ? 16 : 20, background: !seed ? T.green + "10" : T.bg, border: "1px solid " + (!seed ? T.green : T.border), borderRadius: 12, cursor: "pointer", textAlign: "center" }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: !seed ? T.green : T.mid }}>Generate Fresh</div><div style={{ fontSize: 13, color: T.faint, fontFamily: mono, marginTop: 4 }}>Deposit SOL to fund</div></div>
@@ -1375,10 +1374,10 @@ export default function App() {
                       {[{ k: "MCap", v: "$" + mcapFmt(d.usd_market_cap || 0) }, { k: "Vol 1h", v: "$" + mcapFmt(d.vol1h || 0) }, { k: "Buys/Sells", v: (d.txns1h?.buys || 0) + "/" + (d.txns1h?.sells || 0) }, { k: "Liq", v: "$" + mcapFmt(d.liquidity || 0) }].map(s => (<div key={s.k} style={{ background: T.surface, padding: "8px 4px", textAlign: "center" }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>{s.k}</div></div>))}
                     </div>
                     <div style={{ padding: "8px 16px", borderTop: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                      <button onClick={() => setShowChart(!showChart)} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: mono, fontSize: 12, color: T.mid, display: "flex", alignItems: "center", gap: 4 }}>{showChart ? "▲ Hide" : "▼ Show"} Chart</button>
+                      <button onClick={() => setShowChart(!showChart)} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: mono, fontSize: 12, color: T.mid, display: "flex", alignItems: "center", gap: 4 }}>{showChart ? "\u25B2 Hide" : "\u25BC Show"} Chart</button>
                       <div style={{ display: "flex", gap: 8 }}>
-                        <a href={"https://pump.fun/coin/" + caAnalysis.ca} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.green, textDecoration: "none" }}>pump.fun ↗</a>
-                        <a href={"https://dexscreener.com/solana/" + caAnalysis.ca} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.dim, textDecoration: "none" }}>dex ↗</a>
+                        <a href={"https://pump.fun/coin/" + caAnalysis.ca} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.green, textDecoration: "none" }}>pump.fun {"\u2197"}</a>
+                        <a href={"https://dexscreener.com/solana/" + caAnalysis.ca} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.dim, textDecoration: "none" }}>dex {"\u2197"}</a>
                       </div>
                     </div>
                     {showChart && (<iframe src={"https://dexscreener.com/solana/" + caAnalysis.ca + "?embed=1&theme=dark&trades=0&info=0"} style={{ width: "100%", height: mobile ? 300 : 420, border: "none", display: "block" }} title="Chart" />)}
@@ -1388,17 +1387,17 @@ export default function App() {
                 <Section n="3" title="Configure" T={T} mobile={mobile}>
                   {!isApe && (<div style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 14px", background: T.bg, borderRadius: 10, border: "1px solid " + T.border, cursor: "pointer", marginBottom: 12 }} onClick={() => setDeployOnly(!deployOnly)}>
                     <div style={{ width: 40, height: 22, borderRadius: 11, padding: 2, background: deployOnly ? T.yellow : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", transform: deployOnly ? "translateX(18px)" : "translateX(0)", transition: "transform .2s" }} /></div>
-                    <div><div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: deployOnly ? T.yellow : T.text }}>Deploy Only</div><div style={{ fontSize: 11, color: T.dim }}>Create token on pump.fun — no buy, no fleet</div></div>
+                    <div><div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: deployOnly ? T.yellow : T.text }}>Deploy Only</div><div style={{ fontSize: 11, color: T.dim }}>Create token on pump.fun {"\u2014"} no buy, no fleet</div></div>
                   </div>)}
                   {deployOnly ? (
                     <div style={{ padding: "14px", background: T.yellow + "08", borderRadius: 10, border: "1px solid " + T.yellow + "22" }}>
-                      <div style={{ fontFamily: mono, fontSize: 12, color: T.yellow, marginBottom: 8 }}>{"\u26A0"} Deploy only — 0.02 SOL creation fee per token</div>
+                      <div style={{ fontFamily: mono, fontSize: 12, color: T.yellow, marginBottom: 8 }}>{"\u26A0"} Deploy only {"\u2014"} 0.02 SOL creation fee per token</div>
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
                         <NumInput label="Batch Count" value={batchCount} onChange={setBatchCount} min={1} max={20} T={T} />
                         <NumInput label="Delay sec" value={batchDelay} onChange={setBatchDelay} min={2} max={30} T={T} />
                       </div>
                       <div style={{ fontFamily: mono, fontSize: 11, color: T.dim }}>
-                        {batchCount > 1 ? `Deploy ${batchCount} tokens over ~${(batchCount * batchDelay).toFixed(0)}s — cost ~${(batchCount * 0.02).toFixed(2)} SOL` : "Single deploy — token will appear on pump.fun immediately"}
+                        {batchCount > 1 ? `Deploy ${batchCount} tokens over ~${(batchCount * batchDelay).toFixed(0)}s` : "Single deploy"}
                       </div>
                     </div>
                   ) : (<>
@@ -1431,7 +1430,6 @@ export default function App() {
                   </div>))}
                 </div>)}
                 {user?.tier === "free" && <div style={{ marginTop: 8 }}><ReferralPanel user={user} T={T} mobile={mobile} /></div>}
-                </div>)}
               </div>
             )}
           </div>
