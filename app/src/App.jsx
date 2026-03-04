@@ -457,60 +457,239 @@ function mcapFmt(n) { return n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n
 function PriceChart({ trades, mobile, T, ca }) {
   const [mcap, setMcap] = useState(null);
   const [bp, setBp] = useState(0);
-  const [chartMode, setChartMode] = useState("dex"); // "dex" or "pump"
+  const [chartMode, setChartMode] = useState("live");
+  const [age, setAge] = useState(0);
+  const canvasRef = useRef(null);
+  const histRef = useRef([]);
 
   useEffect(() => {
     if (!ca) return;
     let alive = true;
+    const born = Date.now();
     const poll = async () => {
       while (alive) {
         try {
           const r = await fetch(window.__BONDLI_API + "/api/price/" + ca);
           if (r.ok) {
             const d = await r.json();
-            if (d.mcap) setMcap(d.mcap);
-            if (d.bp) setBp(d.bp);
+            if (d.mcap) { setMcap(d.mcap); setBp(d.bp || 0); histRef.current.push({ t: Date.now(), m: d.mcap, b: d.bp || 0 }); if (histRef.current.length > 200) histRef.current.shift(); drawCanvas(); }
           }
         } catch {}
-        await new Promise(r => setTimeout(r, 5000));
+        setAge(Math.floor((Date.now() - born) / 1000));
+        await new Promise(r => setTimeout(r, 3000));
       }
     };
     poll();
-    return () => { alive = false; };
+    const autoSwitch = setTimeout(() => { setChartMode("dex"); }, 32000);
+    return () => { alive = false; clearTimeout(autoSwitch); };
   }, [ca]);
 
-  const fmt = n => n >= 1e6 ? (n/1e6).toFixed(2) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "K" : n?.toFixed(0) || "—";
+  const fmtMcap = n => n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "K" : Math.round(n).toString();
+  const fmt = n => n >= 1e6 ? (n/1e6).toFixed(2) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "K" : n?.toFixed(0) || "\u2014";
+
+  const drawCanvas = () => {
+    const canvas = canvasRef.current;
+    const hist = histRef.current;
+    if (!canvas || hist.length < 2) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.offsetWidth, H = canvas.offsetHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    ctx.scale(dpr, dpr);
+    const pad = { top: 28, right: 50, bottom: 18, left: 6 };
+    const mcaps = hist.map(p => p.m);
+    const mn = Math.min(...mcaps) * 0.92, mx = Math.max(...mcaps) * 1.08, rng = mx - mn || 1;
+    const tMin = hist[0].t, tMax = hist[hist.length - 1].t, tRng = tMax - tMin || 1;
+    const toX = t => pad.left + ((t - tMin) / tRng) * (W - pad.left - pad.right);
+    const toY = m => pad.top + (1 - (m - mn) / rng) * (H - pad.top - pad.bottom);
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = "#ffffff06"; ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 3; i++) { const y = pad.top + (i / 3) * (H - pad.top - pad.bottom); ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke(); ctx.fillStyle = "#555"; ctx.font = "9px monospace"; ctx.textAlign = "right"; ctx.fillText("$" + fmtMcap(mx - (i / 3) * rng), W - 2, y + 3); }
+    const last = mcaps[mcaps.length - 1], first = mcaps[0];
+    const up = last >= first, col = up ? "#00ff88" : "#ff4444";
+    ctx.save(); ctx.shadowColor = col; ctx.shadowBlur = 6;
+    ctx.beginPath(); ctx.moveTo(toX(hist[0].t), toY(hist[0].m));
+    for (let i = 1; i < hist.length; i++) ctx.lineTo(toX(hist[i].t), toY(hist[i].m));
+    ctx.strokeStyle = col + "50"; ctx.lineWidth = 3; ctx.stroke(); ctx.restore();
+    ctx.beginPath(); ctx.moveTo(toX(hist[0].t), toY(hist[0].m));
+    for (let i = 1; i < hist.length; i++) ctx.lineTo(toX(hist[i].t), toY(hist[i].m));
+    ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
+    const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
+    grad.addColorStop(0, col + "15"); grad.addColorStop(1, col + "00");
+    ctx.beginPath(); ctx.moveTo(toX(hist[0].t), H - pad.bottom);
+    for (const p of hist) ctx.lineTo(toX(p.t), toY(p.m));
+    ctx.lineTo(toX(hist[hist.length - 1].t), H - pad.bottom); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+    const lx = toX(hist[hist.length - 1].t), ly = toY(last);
+    ctx.beginPath(); ctx.arc(lx, ly, 4, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+    const pct = first > 0 ? ((last - first) / first * 100) : 0;
+    ctx.fillStyle = "#ccc"; ctx.font = "bold 12px monospace"; ctx.textAlign = "left";
+    ctx.fillText("MCap $" + fmtMcap(last), pad.left + 2, 16);
+    ctx.fillStyle = col; ctx.fillText((pct >= 0 ? "\u25B2" : "\u25BC") + Math.abs(pct).toFixed(1) + "%", pad.left + 140, 16);
+    const bpVal = hist[hist.length - 1]?.b || 0;
+    if (bpVal > 0) { const bW = W - pad.left - pad.right; ctx.fillStyle = "#ffffff08"; ctx.fillRect(pad.left, H - 4, bW, 2); ctx.fillStyle = col + "88"; ctx.fillRect(pad.left, H - 4, bW * Math.min(1, bpVal / 100), 2); }
+  };
 
   return (
     <div>
-      {/* MCap + bonding progress bar */}
       <div style={{ padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {mcap && <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 800, color: "#00e676" }}>${fmt(mcap)}</span>}
           {bp > 0 && <span style={{ fontFamily: "monospace", fontSize: 10, color: "#888" }}>{bp.toFixed(1)}% bonded</span>}
+          {chartMode === "live" && age < 35 && <span style={{ fontFamily: "monospace", fontSize: 9, color: "#555", animation: "pulse 2s infinite" }}>DexScreener in {Math.max(0, 30 - age)}s</span>}
         </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={() => setChartMode("dex")} style={{ background: chartMode === "dex" ? "#00e67622" : "none", border: "1px solid " + (chartMode === "dex" ? "#00e676" : "#333"), borderRadius: 6, padding: "3px 8px", fontFamily: "monospace", fontSize: 10, color: chartMode === "dex" ? "#00e676" : "#666", cursor: "pointer" }}>DexScreener</button>
-          <button onClick={() => setChartMode("pump")} style={{ background: chartMode === "pump" ? "#00e67622" : "none", border: "1px solid " + (chartMode === "pump" ? "#00e676" : "#333"), borderRadius: 6, padding: "3px 8px", fontFamily: "monospace", fontSize: 10, color: chartMode === "pump" ? "#00e676" : "#666", cursor: "pointer" }}>pump.fun</button>
+        <div style={{ display: "flex", gap: 4 }}>
+          {["live", "dex", "pump"].map(m => (
+            <button key={m} onClick={() => setChartMode(m)} style={{ background: chartMode === m ? "#00e67622" : "none", border: "1px solid " + (chartMode === m ? "#00e676" : "#333"), borderRadius: 6, padding: "3px 6px", fontFamily: "monospace", fontSize: 9, color: chartMode === m ? "#00e676" : "#666", cursor: "pointer" }}>{m === "live" ? "\u2764\uFE0F" : m === "dex" ? "DEX" : "PF"}</button>
+          ))}
         </div>
       </div>
-      {/* Bonding progress bar */}
       {bp > 0 && <div style={{ height: 3, background: "#1a1a2a", margin: "0 14px 4px" }}><div style={{ height: 3, background: bp >= 100 ? "#ffaa00" : "#00e676", width: Math.min(100, bp) + "%", borderRadius: 2, transition: "width 1s" }} /></div>}
-      {/* Chart iframe */}
-      {chartMode === "dex" ? (
-        <iframe
-          src={"https://dexscreener.com/solana/" + ca + "?embed=1&theme=dark&trades=0&info=0"}
-          style={{ width: "100%", height: mobile ? 280 : 400, border: "none", display: "block" }}
-          title="DexScreener Chart"
-          allow="clipboard-write"
-        />
+      {chartMode === "live" ? (
+        <div style={{ position: "relative" }}>
+          <canvas ref={canvasRef} style={{ width: "100%", height: mobile ? 200 : 280, display: "block", background: "#050505" }} />
+          {histRef.current.length < 2 && <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", fontFamily: "monospace", fontSize: 12, color: "#444", animation: "pulse 2s infinite" }}>\u2764 Collecting data...</div>}
+        </div>
+      ) : chartMode === "dex" ? (
+        <iframe src={"https://dexscreener.com/solana/" + ca + "?embed=1&theme=dark&trades=0&info=0"} style={{ width: "100%", height: mobile ? 280 : 400, border: "none", display: "block" }} title="DexScreener" allow="clipboard-write" />
       ) : (
-        <iframe
-          src={"https://pump.fun/coin/" + ca}
-          style={{ width: "100%", height: mobile ? 320 : 440, border: "none", display: "block" }}
-          title="pump.fun"
-        />
+        <iframe src={"https://pump.fun/coin/" + ca} style={{ width: "100%", height: mobile ? 320 : 440, border: "none", display: "block" }} title="pump.fun" />
       )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════
+// RADAR — Live new pairs scanner
+// ═══════════════════════════════════════
+function RadarFeed({ T, mobile, onApe }) {
+  const [tokens, setTokens] = useState([]);
+  const [koth, setKoth] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      while (alive) {
+        try {
+          const r = await fetch(window.__BONDLI_API + "/api/radar");
+          if (r.ok) {
+            const d = await r.json();
+            if (d.tokens) setTokens(d.tokens);
+            if (d.koth?.[0]) setKoth(d.koth[0]);
+            setLoading(false);
+          }
+        } catch {}
+        await new Promise(r => setTimeout(r, autoRefresh ? 8000 : 30000));
+      }
+    };
+    poll();
+    return () => { alive = false; };
+  }, [autoRefresh]);
+
+  const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "K" : n?.toFixed(0) || "0";
+  const verdictColor = v => v === "APE" ? "#00ff88" : v === "WATCH" ? "#ffaa00" : "#555";
+
+  if (loading) return <div style={{ padding: 40, textAlign: "center", fontFamily: "monospace", color: "#444", animation: "pulse 2s infinite" }}>{"\uD83D\uDCE1"} Scanning pump.fun...</div>;
+
+  return (
+    <div>
+      {/* KOTH banner */}
+      {koth && (
+        <div onClick={() => onApe(koth.ca)} style={{ background: "#ffaa0010", border: "1px solid #ffaa0033", borderRadius: 10, padding: "10px 14px", marginBottom: 10, cursor: "pointer", display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 16 }}>{"\uD83D\uDC51"}</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 800, color: "#ffaa00" }}>KING OF THE HILL</div>
+            <div style={{ fontFamily: "monospace", fontSize: 11, color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{koth.ticker} — ${fmt(koth.mcap)} — {koth.bp?.toFixed(0)}% bonded</div>
+          </div>
+          <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 800, color: "#ffaa00", border: "1px solid #ffaa00", borderRadius: 6, padding: "3px 8px", flexShrink: 0 }}>APE</span>
+        </div>
+      )}
+      {/* Auto-refresh toggle */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, padding: "0 4px" }}>
+        <span style={{ fontFamily: "monospace", fontSize: 11, color: "#555" }}>{tokens.length} pairs found</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }} onClick={() => setAutoRefresh(!autoRefresh)}>
+          <div style={{ width: 28, height: 14, borderRadius: 7, background: autoRefresh ? "#00e67644" : "#333", padding: 1 }}><div style={{ width: 12, height: 12, borderRadius: "50%", background: autoRefresh ? "#00e676" : "#555", transform: autoRefresh ? "translateX(14px)" : "translateX(0)", transition: "all .2s" }} /></div>
+          <span style={{ fontFamily: "monospace", fontSize: 9, color: "#555" }}>Auto</span>
+        </div>
+      </div>
+      {/* Token feed */}
+      {tokens.map(t => (
+        <div key={t.ca} onClick={() => onApe(t.ca)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderBottom: "1px solid #ffffff08", cursor: "pointer", transition: "background .15s" }} onMouseEnter={e => e.currentTarget.style.background = "#ffffff05"} onMouseLeave={e => e.currentTarget.style.background = "none"}>
+          {t.image && <img src={t.image} style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => e.target.style.display = "none"} />}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: "#ddd" }}>{t.ticker}</span>
+              <span style={{ fontFamily: "monospace", fontSize: 9, fontWeight: 700, color: verdictColor(t.verdict), border: "1px solid " + verdictColor(t.verdict) + "44", borderRadius: 4, padding: "1px 5px" }}>{t.verdict}</span>
+              {t.score >= 50 && <span style={{ fontFamily: "monospace", fontSize: 8, color: "#00e676" }}>{"\uD83D\uDD25"}{t.score}</span>}
+            </div>
+            <div style={{ fontFamily: "monospace", fontSize: 10, color: "#555", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name} {t.description ? "— " + t.description.slice(0, 40) : ""}</div>
+          </div>
+          <div style={{ textAlign: "right", flexShrink: 0 }}>
+            <div style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 800, color: t.mcap > 5000 ? "#00e676" : "#666" }}>${fmt(t.mcap)}</div>
+            <div style={{ fontFamily: "monospace", fontSize: 9, color: "#555" }}>{t.bp?.toFixed(0)}%{t.replies > 0 ? " \u00B7 " + t.replies + " replies" : ""}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════
+// REFERRAL PANEL
+// ═══════════════════════════════════════
+function ReferralPanel({ user, T, mobile }) {
+  const [refData, setRefData] = useState(null);
+  const [refInput, setRefInput] = useState("");
+  const [applying, setApplying] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    if (!user?.pubkey) return;
+    fetch(window.__BONDLI_API + "/api/referral/" + user.pubkey).then(r => r.json()).then(d => setRefData(d)).catch(() => {});
+    // Check URL for ref param
+    const params = new URLSearchParams(window.location.search);
+    const ref = params.get("ref");
+    if (ref) setRefInput(ref);
+  }, [user?.pubkey]);
+
+  const applyRef = async () => {
+    if (!refInput || applying) return;
+    setApplying(true); setMsg("");
+    try {
+      const r = await fetch(window.__BONDLI_API + "/api/referral/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ wallet: user?.pubkey, refCode: refInput }) });
+      const d = await r.json();
+      if (d.ok) { setMsg("Referral applied!"); setRefData(prev => ({ ...prev })); }
+      else setMsg(d.error || "Invalid code");
+    } catch { setMsg("Error"); }
+    setApplying(false);
+  };
+
+  const shareUrl = refData?.referralCode ? window.location.origin + "?ref=" + refData.referralCode : "";
+
+  return (
+    <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18 }}>
+      <div style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: T.text, marginBottom: 10 }}>{"\uD83D\uDC65"} Referrals</div>
+      {refData?.referralCode ? (
+        <div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            <div style={{ flex: 1, background: T.bg, border: "1px solid " + T.border, borderRadius: 8, padding: "8px 12px", fontFamily: "monospace", fontSize: 13, color: T.green, fontWeight: 800 }}>{refData.referralCode}</div>
+            <button onClick={() => { navigator.clipboard?.writeText(shareUrl); setMsg("Link copied!"); setTimeout(() => setMsg(""), 2000); }} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 8, padding: "8px 12px", fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: T.green, cursor: "pointer", flexShrink: 0 }}>{"\uD83D\uDCCB"} Copy Link</button>
+          </div>
+          <div style={{ display: "flex", gap: 12, fontFamily: "monospace", fontSize: 11, color: T.dim }}>
+            <span>Referrals: <span style={{ color: T.green, fontWeight: 800 }}>{refData.referralCount || 0}</span></span>
+            <span>Earned: <span style={{ color: T.green, fontWeight: 800 }}>{(refData.referralEarnings || 0).toFixed(4)} SOL</span></span>
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontFamily: "monospace", fontSize: 11, color: T.dim }}>Loading...</div>
+      )}
+      {/* Apply someone else's referral */}
+      <div style={{ marginTop: 12, display: "flex", gap: 6 }}>
+        <input value={refInput} onChange={e => setRefInput(e.target.value)} placeholder="Enter referral code..." style={{ flex: 1, padding: "8px 10px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: "monospace", fontSize: 12, outline: "none" }} />
+        <button onClick={applyRef} disabled={applying} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 8, padding: "8px 12px", fontFamily: "monospace", fontSize: 11, fontWeight: 700, color: T.green, cursor: applying ? "wait" : "pointer" }}>{applying ? "..." : "Apply"}</button>
+      </div>
+      {msg && <div style={{ marginTop: 6, fontFamily: "monospace", fontSize: 11, color: msg.includes("!") ? T.green : T.red }}>{msg}</div>}
     </div>
   );
 }
@@ -925,7 +1104,7 @@ export default function App() {
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState(""); const [activeSessionId, setActiveSessionId] = useState("");
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
-  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false);
+  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false); const [wizardMode, setWizardMode] = useState("create"); // "create" | "ape" | "radar"
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
   const mobile = useIsMobile();
@@ -1139,7 +1318,30 @@ export default function App() {
             ) : (
               <div>
                 <h1 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 24 : 34, textAlign: "center", marginBottom: 4, color: T.text }}>Launch on <span style={{ color: T.green }}>pump.fun</span></h1>
-                <p style={{ textAlign: "center", fontSize: mobile ? 13 : 15, color: T.dim, fontFamily: mono, marginBottom: mobile ? 20 : 28 }}>create a token or ape an existing one</p>
+                <p style={{ textAlign: "center", fontSize: mobile ? 13 : 15, color: T.dim, fontFamily: mono, marginBottom: 12 }}>create, ape, or scan for opportunities</p>
+                {/* Mode tabs */}
+                <div style={{ display: "flex", justifyContent: "center", gap: 4, marginBottom: mobile ? 16 : 24 }}>
+                  {[{ id: "create", label: "\u2728 Create", desc: "new token" }, { id: "ape", label: "\uD83D\uDE80 Ape", desc: "existing CA" }, { id: "radar", label: "\uD83D\uDCE1 Radar", desc: "live scanner" }].map(m => (
+                    <button key={m.id} onClick={() => { setWizardMode(m.id); if (m.id === "ape" || m.id === "create") setExistingCA(""); }} style={{ flex: 1, maxWidth: 160, padding: "10px 8px", background: wizardMode === m.id ? T.green + "12" : T.surface, border: "1px solid " + (wizardMode === m.id ? T.green : T.border), borderRadius: 10, cursor: "pointer", textAlign: "center" }}>
+                      <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 800, color: wizardMode === m.id ? T.green : T.mid }}>{m.label}</div>
+                      <div style={{ fontFamily: mono, fontSize: 9, color: T.faint, marginTop: 2 }}>{m.desc}</div>
+                    </button>
+                  ))}
+                </div>
+                {wizardMode === "radar" ? (
+                  <div>
+                    <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden", marginBottom: 12 }}>
+                      <div style={{ padding: "12px 16px", borderBottom: "1px solid " + T.border, display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 16 }}>{"\uD83D\uDCE1"}</span>
+                        <span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>Live Scanner</span>
+                        <span style={{ fontFamily: mono, fontSize: 10, color: T.green, animation: "pulse 2s infinite" }}>{"\u25CF"} LIVE</span>
+                      </div>
+                      <RadarFeed T={T} mobile={mobile} onApe={(ca) => { setExistingCA(ca); setWizardMode("ape"); analyzeCA(ca); }} />
+                    </div>
+                    <ReferralPanel user={user} T={T} mobile={mobile} />
+                  </div>
+                ) : (
+                <div>
                 <Section n="1" title="Wallet" done={!!seed} T={T} mobile={mobile}>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     <div onClick={() => setSeed("")} style={{ padding: mobile ? 16 : 20, background: !seed ? T.green + "10" : T.bg, border: "1px solid " + (!seed ? T.green : T.border), borderRadius: 12, cursor: "pointer", textAlign: "center" }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: !seed ? T.green : T.mid }}>Generate Fresh</div><div style={{ fontSize: 13, color: T.faint, fontFamily: mono, marginTop: 4 }}>Deposit SOL to fund</div></div>
@@ -1227,6 +1429,8 @@ export default function App() {
                       {sessionDetail.wallets && sessionDetail.wallets.map((w, i) => (<div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontFamily: mono, fontSize: 11, color: T.mid }}><span style={{ width: 70, color: T.faint, textTransform: "capitalize" }}>{w.role}</span><span>{w.pubkey}...</span><span style={{ marginLeft: "auto", fontWeight: 700, color: w.balance > 0 ? T.green : T.faint }}>{w.balance.toFixed(4)} SOL</span></div>))}
                     </div>)}
                   </div>))}
+                </div>)}
+                {user?.tier === "free" && <div style={{ marginTop: 8 }}><ReferralPanel user={user} T={T} mobile={mobile} /></div>}
                 </div>)}
               </div>
             )}
