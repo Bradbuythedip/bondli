@@ -140,23 +140,24 @@ input,textarea,button{font-size:16px}
 `;
 
 // === RED PILL ===
-const BondliLogo = ({ size = 34 }) => (
-  <svg width={size} height={size * 1.4} viewBox="0 0 30 42" style={{ filter: "drop-shadow(0 2px 8px rgba(220,20,20,.45))" }}>
-    <defs>
-      <linearGradient id="bL1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#ff5555"/><stop offset="50%" stopColor="#dd1818"/><stop offset="100%" stopColor="#881010"/></linearGradient>
-      <linearGradient id="bL2" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#ff4040" stopOpacity="0.95"/><stop offset="100%" stopColor="#771010" stopOpacity="0.9"/></linearGradient>
-      <linearGradient id="bLs" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#ff9999" stopOpacity="0.4"/><stop offset="100%" stopColor="#ff4444" stopOpacity="0"/></linearGradient>
-    </defs>
-    {/* Right half — main red */}
-    <path d="M15,2 Q23,2 26,8 L27,20 L27,22 L26,34 Q23,40 15,40 L15,2 Z" fill="url(#bL1)"/>
-    {/* Left half — slightly lighter for depth */}
-    <path d="M15,2 Q7,2 4,8 L3,20 L3,22 L4,34 Q7,40 15,40 L15,2 Z" fill="url(#bL2)"/>
-    {/* Shine highlight */}
-    <path d="M10,4 Q7,6 6,12 L8,10 Q10,5 14,4 Z" fill="url(#bLs)"/>
-    {/* Subtle edge */}
-    <path d="M15,2 Q7,2 4,8 L3,20" stroke="#ff999933" strokeWidth="0.5" fill="none"/>
-  </svg>
-);
+let _logoId = 0;
+const BondliLogo = ({ size = 34 }) => {
+  const id = useState(() => ++_logoId)[0];
+  const g1 = `bL1_${id}`, g2 = `bL2_${id}`, gs = `bLs_${id}`;
+  return (
+    <svg width={size} height={size * 1.4} viewBox="0 0 30 42" style={{ filter: "drop-shadow(0 2px 8px rgba(220,20,20,.45))" }}>
+      <defs>
+        <linearGradient id={g1} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#ff5555"/><stop offset="50%" stopColor="#dd1818"/><stop offset="100%" stopColor="#881010"/></linearGradient>
+        <linearGradient id={g2} x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#ff4040" stopOpacity="0.95"/><stop offset="100%" stopColor="#771010" stopOpacity="0.9"/></linearGradient>
+        <linearGradient id={gs} x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#ff9999" stopOpacity="0.4"/><stop offset="100%" stopColor="#ff4444" stopOpacity="0"/></linearGradient>
+      </defs>
+      <path d={`M15,2 Q23,2 26,8 L27,20 L27,22 L26,34 Q23,40 15,40 L15,2 Z`} fill={`url(#${g1})`}/>
+      <path d={`M15,2 Q7,2 4,8 L3,20 L3,22 L4,34 Q7,40 15,40 L15,2 Z`} fill={`url(#${g2})`}/>
+      <path d={`M10,4 Q7,6 6,12 L8,10 Q10,5 14,4 Z`} fill={`url(#${gs})`}/>
+      <path d="M15,2 Q7,2 4,8 L3,20" stroke="#ff999933" strokeWidth="0.5" fill="none"/>
+    </svg>
+  );
+};
 const RedPill = BondliLogo; // backward compat
 
 // === ICONS ===
