@@ -43,7 +43,8 @@ import { getSellSolAmountFromTokenAmount } from "@pump-fun/pump-sdk";
 // ═══════════════════════════════════════
 const PRO_FEE_SOL = parseFloat(process.env.PRO_FEE_SOL || "10");
 const FREE_PROFIT_CUT = parseFloat(process.env.FREE_PROFIT_CUT || "25"); // percent
-const PLATFORM_WALLET = process.env.PLATFORM_WALLET || "anal.sol";
+const PLATFORM_WALLET = process.env.PLATFORM_WALLET || ""; // MUST be set to actual base58 pubkey in env
+if (!PLATFORM_WALLET) console.warn("[WARN] PLATFORM_WALLET not set! Set to your actual Solana pubkey, not SNS name.");
 
 function getWhitelist() {
   const raw = process.env.WHITELISTED_WALLETS || "";
