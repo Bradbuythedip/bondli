@@ -478,6 +478,16 @@ app.get("/api/fleet", apiLimiter, (req, res) => {
   // Start price polling if not already
   if (ca && !priceHistory.has(ca)) startPricePolling(ca);
 
+  // GameState snapshot for UI
+  let gameStateData = null;
+  if (session?.gameState?.alive) {
+    gameStateData = session.gameState.snapshot();
+  }
+
+  // WS-derived chart from radar (if this CA is being tracked by radar too)
+  const radarToken = radar.pool.get(ca);
+  const wsChart = radarToken?.priceHistory || [];
+
   res.json({
     ok: true,
     phase: first.phase,
@@ -489,7 +499,9 @@ app.get("/api/fleet", apiLimiter, (req, res) => {
     activeWallets: first.activeWallets,
     wallets,
     trades: allTrades.slice(0, 50),
-    priceHistory: (priceHistory.get(ca) || []).slice(-120), // last 120 points (~6 min)
+    priceHistory: (priceHistory.get(ca) || []).slice(-120),
+    wsChart: wsChart.slice(-200), // WS-derived price points with buy/sell markers
+    gameState: gameStateData,
     ca,
   });
 });
@@ -707,6 +719,18 @@ function connectPumpPortalWS() {
           t.solVol += Math.abs(msg.solAmount || 0);
           t.mcapSol = msg.marketCapSol || t.mcapSol;
           t.lastTrade = Date.now();
+          // Price history for charting (keep last 200 points)
+          if (!t.priceHistory) t.priceHistory = [];
+          t.priceHistory.push({
+            t: Date.now(),
+            mcap: Math.round((msg.marketCapSol || t.mcapSol) * 170),
+            mcapSol: msg.marketCapSol || t.mcapSol,
+            type: msg.txType,
+            sol: Math.abs(msg.solAmount || 0),
+            bp: msg.vSolInBondingCurve ? Math.max(0, ((msg.vSolInBondingCurve - 30) / 55) * 100) : t.bp,
+            wallet: (msg.traderPublicKey || "").slice(0, 8),
+          });
+          if (t.priceHistory.length > 200) t.priceHistory = t.priceHistory.slice(-200);
           // Bonding curve progress from vSolInBondingCurve
           // Curve starts at ~30 SOL virtual, graduates at ~85 SOL
           if (msg.vSolInBondingCurve) {
@@ -862,6 +886,23 @@ app.get("/api/radar", apiLimiter, (req, res) => {
     subbedCount: radar.subbed.size,
     updated: radar.updated,
     enabled: radar.enabled,
+  });
+});
+
+// Chart data — returns WS-derived price history for any tracked token
+app.get("/api/chart/:ca", apiLimiter, (req, res) => {
+  const ca = req.params.ca;
+  const t = radar.pool.get(ca);
+  if (!t || !t.priceHistory || t.priceHistory.length === 0) {
+    return res.json({ ok: true, ca, points: [], source: "none" });
+  }
+  res.json({
+    ok: true, ca,
+    points: t.priceHistory,
+    name: t.name, ticker: t.ticker,
+    mcapSol: t.mcapSol, bp: t.bp,
+    buys: t.buys, sells: t.sells,
+    source: "ws",
   });
 });
 
