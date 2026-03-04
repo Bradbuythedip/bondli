@@ -3,7 +3,7 @@
 import express from "express";
 import { createServer } from "http";
 import { WebSocketServer } from "ws";
-import { Connection, PublicKey, LAMPORTS_PER_SOL, SystemProgram, Transaction, Keypair, sendAndConfirmTransaction } from "@solana/web3.js";
+import { Connection, PublicKey, LAMPORTS_PER_SOL, SystemProgram, Transaction, Keypair, sendAndConfirmTransaction, ComputeBudgetProgram } from "@solana/web3.js";
 import bs58 from "bs58";
 
 // Engine
@@ -1085,6 +1085,85 @@ app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, 
     res.json({ ok: true, totalRecovered, walletCount: secrets.length, swept: results.filter(r => r.status === "ok").length, wallets: results, destination: wallet });
   } catch (e) {
     console.error("[RECOVER] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// EMERGENCY: Force sweep all wallets in a session directly to user
+// This is a standalone sweep that doesn't depend on orch
+app.post("/api/session/force-recover", apiLimiter, async (req, res) => {
+  try {
+    const { sessionId, wallet } = req.body;
+    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
+
+    const session = await sessionManager.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
+
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const destination = new PublicKey(wallet);
+    const results = [];
+    let totalRecovered = 0;
+
+    // Collect ALL possible keypairs
+    const keypairs = [];
+
+    // Dev/master
+    const devKeypair = await sessionManager.getDevKeypair(sessionId);
+    if (devKeypair) keypairs.push({ role: "master", kp: devKeypair });
+
+    // Fleet wallets from session
+    if (session.fleetWallets) {
+      for (const fw of session.fleetWallets) {
+        if (fw.secret) {
+          try {
+            keypairs.push({ role: fw.role || "fleet", kp: Keypair.fromSecretKey(bs58.decode(fw.secret)) });
+          } catch (e) { console.error(`[FORCE-RECOVER] Bad secret for ${fw.role}: ${e.message}`); }
+        }
+      }
+    }
+
+    console.log(`[FORCE-RECOVER] ${sessionId} | Found ${keypairs.length} keypairs | Destination: ${wallet.slice(0, 8)}`);
+
+    for (const { role, kp } of keypairs) {
+      try {
+        // Skip if this IS the destination
+        if (kp.publicKey.equals(destination)) {
+          results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), status: "is_destination", swept: 0 });
+          continue;
+        }
+
+        const balance = await connection.getBalance(kp.publicKey);
+        const balSol = balance / LAMPORTS_PER_SOL;
+
+        if (balance <= 6000) {
+          results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, status: "empty", swept: 0 });
+          continue;
+        }
+
+        const sweepLamports = balance - 5000;
+        const tx = new Transaction().add(
+          ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+          ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100_000 }),
+          SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: destination, lamports: sweepLamports })
+        );
+
+        const sig = await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
+        const sweptSol = sweepLamports / LAMPORTS_PER_SOL;
+        totalRecovered += sweptSol;
+        results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: sweptSol, sig, status: "ok" });
+        console.log(`[FORCE-RECOVER] [${role}] ${kp.publicKey.toBase58().slice(0, 8)} -> ${sweptSol.toFixed(4)} SOL ✓`);
+      } catch (e) {
+        results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), status: "failed", error: e.message });
+        console.error(`[FORCE-RECOVER] [${role}] FAILED: ${e.message}`);
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    console.log(`[FORCE-RECOVER] Done: ${totalRecovered.toFixed(4)} SOL recovered from ${results.filter(r => r.status === "ok").length}/${keypairs.length} wallets`);
+    res.json({ ok: true, totalRecovered, wallets: results, destination: wallet });
+  } catch (e) {
+    console.error("[FORCE-RECOVER] Error:", e.message, e.stack);
     res.status(500).json({ error: e.message });
   }
 });
