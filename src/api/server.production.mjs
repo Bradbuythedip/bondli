@@ -504,6 +504,65 @@ app.get("/api/price/:ca", apiLimiter, async (req, res) => {
   } catch { res.json({ mcap: 0 }); }
 });
 
+// ═══════════════════════════════════════
+// RADAR — Live new pairs + movers scanner
+// Polls pump.fun API for new tokens and king of the hill
+// ═══════════════════════════════════════
+let radarCache = { tokens: [], updated: 0, koth: [], trending: [] };
+const RADAR_TTL = 8000; // refresh every 8s
+
+async function refreshRadar() {
+  try {
+    const [newRes, kothRes] = await Promise.allSettled([
+      fetch("https://frontend-api-v2.pump.fun/coins?offset=0&limit=20&sort=created_timestamp&order=DESC&includeNsfw=false", { signal: AbortSignal.timeout(6000) }),
+      fetch("https://frontend-api-v2.pump.fun/coins/king-of-the-hill?includeNsfw=false", { signal: AbortSignal.timeout(6000) }),
+    ]);
+
+    if (newRes.status === "fulfilled" && newRes.value.ok) {
+      const coins = await newRes.value.json();
+      radarCache.tokens = (Array.isArray(coins) ? coins : []).map(c => ({
+        ca: c.mint, name: c.name, ticker: c.symbol, image: c.image_uri,
+        mcap: c.usd_market_cap || 0, bp: c.bonding_curve_progress || 0,
+        created: c.created_timestamp, complete: c.complete || false,
+        replies: c.reply_count || 0, description: (c.description || "").slice(0, 100),
+        dev: c.creator?.slice(0, 8),
+        // Quick score: volume proxy from mcap + replies + freshness
+        score: Math.min(100, Math.round(
+          (Math.min(c.usd_market_cap || 0, 50000) / 500) + // mcap weight (max 100)
+          Math.min((c.reply_count || 0) * 2, 30) + // social weight
+          (c.bonding_curve_progress > 5 ? 10 : 0) + // traction bonus
+          (c.bonding_curve_progress > 20 ? 15 : 0) // strong traction
+        )),
+        verdict: (c.usd_market_cap || 0) > 10000 && (c.bonding_curve_progress || 0) > 10 ? "APE" :
+          (c.usd_market_cap || 0) > 3000 ? "WATCH" : "NEW",
+      }));
+    }
+
+    if (kothRes.status === "fulfilled" && kothRes.value.ok) {
+      const koth = await kothRes.value.json();
+      radarCache.koth = (Array.isArray(koth) ? koth : koth ? [koth] : []).map(c => ({
+        ca: c.mint, name: c.name, ticker: c.symbol, image: c.image_uri,
+        mcap: c.usd_market_cap || 0, bp: c.bonding_curve_progress || 0,
+        complete: c.complete || false,
+      }));
+    }
+
+    radarCache.updated = Date.now();
+  } catch (e) {
+    console.error("[RADAR] Refresh error:", e.message);
+  }
+}
+
+app.get("/api/radar", apiLimiter, async (req, res) => {
+  if (Date.now() - radarCache.updated > RADAR_TTL) await refreshRadar();
+  res.json({
+    ok: true,
+    tokens: radarCache.tokens,
+    koth: radarCache.koth,
+    updated: radarCache.updated,
+  });
+});
+
 app.get("/api/config", apiLimiter, (req, res) => {
   res.json({
     dryRun: CONFIG.DRY_RUN,
