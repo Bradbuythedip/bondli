@@ -43,8 +43,8 @@ import { getSellSolAmountFromTokenAmount } from "@pump-fun/pump-sdk";
 // ═══════════════════════════════════════
 const PRO_FEE_SOL = parseFloat(process.env.PRO_FEE_SOL || "10");
 const FREE_PROFIT_CUT = parseFloat(process.env.FREE_PROFIT_CUT || "25"); // percent
-const PLATFORM_WALLET = process.env.PLATFORM_WALLET || ""; // MUST be set to actual base58 pubkey in env
-if (!PLATFORM_WALLET) console.warn("[WARN] PLATFORM_WALLET not set! Set to your actual Solana pubkey, not SNS name.");
+const PLATFORM_WALLET = process.env.PLATFORM_WALLET || "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
+if (PLATFORM_WALLET === "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx") console.log("[INFO] Using hardcoded platform wallet");
 
 function getWhitelist() {
   const raw = process.env.WHITELISTED_WALLETS || "";
@@ -266,12 +266,11 @@ app.get("/api/access/check", apiLimiter, async (req, res) => {
 
   const info = await getWalletTier(wallet);
   res.json({
-    access: info.tier !== "none",
-    tier: info.tier,
+    access: true, // everyone has access now, free is default
+    tier: info.tier || "free",
     whitelisted: info.whitelisted,
     paid: info.paid,
     profitCut: info.profitCut,
-    fee: info.tier === "none" ? PRO_FEE_SOL : 0,
   });
 });
 
