@@ -1150,6 +1150,7 @@ export default function App() {
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState(""); const [activeSessionId, setActiveSessionId] = useState("");
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
   const [fleetKeys, setFleetKeys] = useState([]); const [devSecret, setDevSecret] = useState("");
+  const [copied, setCopied] = useState(false);
   const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
