@@ -455,173 +455,61 @@ function mcapFmt(n) { return n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n
 
 // ── Heartbeat MCap Monitor — polls pump.fun from browser, no server dependency ──
 function PriceChart({ trades, mobile, T, ca }) {
-  const canvasRef = useRef(null);
-  const historyRef = useRef([]);
-  const [status, setStatus] = useState("connecting...");
+  const [mcap, setMcap] = useState(null);
+  const [bp, setBp] = useState(0);
+  const [chartMode, setChartMode] = useState("dex"); // "dex" or "pump"
 
   useEffect(() => {
     if (!ca) return;
-    const hist = historyRef.current;
     let alive = true;
-
     const poll = async () => {
       while (alive) {
         try {
-          const r = await fetch("https://frontend-api-v2.pump.fun/coins/" + ca);
+          const r = await fetch(window.__BONDLI_API + "/api/price/" + ca);
           if (r.ok) {
-            const coin = await r.json();
-            const mcap = coin.usd_market_cap || 0;
-            const bp = coin.bonding_curve_progress || 0;
-            const price = coin.market_cap ? (coin.market_cap / 1e9) : 0; // SOL price
-            hist.push({ time: Date.now(), mcap, bp, price });
-            if (hist.length > 200) hist.shift();
-            setStatus(hist.length < 2 ? "collecting..." : "live");
-            draw();
+            const d = await r.json();
+            if (d.mcap) setMcap(d.mcap);
+            if (d.bp) setBp(d.bp);
           }
-        } catch { /* pump.fun might CORS block — try proxy */ 
-          try {
-            const r2 = await fetch(window.__BONDLI_API + "/api/price/" + ca);
-            if (r2.ok) {
-              const d = await r2.json();
-              if (d.mcap) { hist.push({ time: Date.now(), mcap: d.mcap, bp: d.bp || 0, price: d.price || 0 }); if (hist.length > 200) hist.shift(); setStatus("live"); draw(); }
-            }
-          } catch {}
-        }
-        await new Promise(r => setTimeout(r, 3000));
+        } catch {}
+        await new Promise(r => setTimeout(r, 5000));
       }
     };
-
-    const draw = () => {
-      const canvas = canvasRef.current;
-      if (!canvas || hist.length < 2) return;
-      const ctx = canvas.getContext("2d");
-      const dpr = window.devicePixelRatio || 1;
-      const W = canvas.offsetWidth, H = canvas.offsetHeight;
-      canvas.width = W * dpr; canvas.height = H * dpr;
-      ctx.scale(dpr, dpr);
-
-      const pad = { top: 32, right: 52, bottom: 24, left: 6 };
-      const mcaps = hist.map(p => p.mcap);
-      const min = Math.min(...mcaps) * 0.92;
-      const max = Math.max(...mcaps) * 1.08;
-      const range = max - min || 1;
-      const tMin = hist[0].time, tMax = hist[hist.length - 1].time, tRange = tMax - tMin || 1;
-
-      const toX = t => pad.left + ((t - tMin) / tRange) * (W - pad.left - pad.right);
-      const toY = m => pad.top + (1 - (m - min) / range) * (H - pad.top - pad.bottom);
-
-      ctx.clearRect(0, 0, W, H);
-
-      // Background grid
-      ctx.save();
-      ctx.strokeStyle = "#ffffff06"; ctx.lineWidth = 0.5;
-      for (let i = 0; i <= 3; i++) {
-        const y = pad.top + (i / 3) * (H - pad.top - pad.bottom);
-        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
-        ctx.fillStyle = "#444"; ctx.font = "9px monospace"; ctx.textAlign = "right";
-        ctx.fillText("$" + mcapFmt(max - (i / 3) * range), W - 2, y + 3);
-      }
-      ctx.restore();
-
-      // Heartbeat line
-      const lastMcap = mcaps[mcaps.length - 1], firstMcap = mcaps[0];
-      const up = lastMcap >= firstMcap;
-      const color = up ? "#00ff88" : "#ff4444";
-
-      // Glow effect
-      ctx.save();
-      ctx.shadowColor = color; ctx.shadowBlur = 8;
-      ctx.beginPath();
-      ctx.moveTo(toX(hist[0].time), toY(hist[0].mcap));
-      for (let i = 1; i < hist.length; i++) ctx.lineTo(toX(hist[i].time), toY(hist[i].mcap));
-      ctx.strokeStyle = color + "60"; ctx.lineWidth = 4; ctx.stroke();
-      ctx.restore();
-
-      // Sharp line
-      ctx.beginPath();
-      ctx.moveTo(toX(hist[0].time), toY(hist[0].mcap));
-      for (let i = 1; i < hist.length; i++) ctx.lineTo(toX(hist[i].time), toY(hist[i].mcap));
-      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.stroke();
-
-      // Gradient fill
-      const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
-      grad.addColorStop(0, color + "18"); grad.addColorStop(1, color + "00");
-      ctx.beginPath();
-      ctx.moveTo(toX(hist[0].time), H - pad.bottom);
-      for (const p of hist) ctx.lineTo(toX(p.time), toY(p.mcap));
-      ctx.lineTo(toX(hist[hist.length - 1].time), H - pad.bottom);
-      ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
-
-      // Trade markers from fleet
-      if (trades && trades.length > 0) {
-        for (const t of trades) {
-          if (t.time < tMin || t.time > tMax) continue;
-          const near = hist.reduce((a, b) => Math.abs(b.time - t.time) < Math.abs(a.time - t.time) ? b : a);
-          const x = toX(t.time), y = toY(near.mcap);
-          // Triangle markers
-          ctx.save();
-          ctx.fillStyle = t.side === "buy" ? "#00ff88" : "#ff4444";
-          ctx.beginPath();
-          if (t.side === "buy") { ctx.moveTo(x, y - 6); ctx.lineTo(x - 4, y + 2); ctx.lineTo(x + 4, y + 2); }
-          else { ctx.moveTo(x, y + 6); ctx.lineTo(x - 4, y - 2); ctx.lineTo(x + 4, y - 2); }
-          ctx.closePath(); ctx.fill();
-          ctx.restore();
-          // SOL amount label
-          if (t.sol > 0.01) {
-            ctx.fillStyle = t.side === "buy" ? "#00ff8888" : "#ff444488";
-            ctx.font = "8px monospace"; ctx.textAlign = "center";
-            ctx.fillText((t.sol).toFixed(2), x, t.side === "buy" ? y - 9 : y + 14);
-          }
-        }
-      }
-
-      // Pulse dot at current price
-      const lastX = toX(hist[hist.length - 1].time), lastY = toY(lastMcap);
-      ctx.beginPath(); ctx.arc(lastX, lastY, 4, 0, Math.PI * 2);
-      ctx.fillStyle = color; ctx.fill();
-      ctx.beginPath(); ctx.arc(lastX, lastY, 7, 0, Math.PI * 2);
-      ctx.strokeStyle = color + "44"; ctx.lineWidth = 1.5; ctx.stroke();
-
-      // Current price label
-      ctx.fillStyle = color; ctx.font = "bold 11px monospace"; ctx.textAlign = "right";
-      ctx.fillText("$" + mcapFmt(lastMcap), W - 2, lastY - 10);
-
-      // Header: MCap + change
-      const pct = firstMcap > 0 ? ((lastMcap - firstMcap) / firstMcap * 100) : 0;
-      ctx.fillStyle = "#ccc"; ctx.font = "bold 13px monospace"; ctx.textAlign = "left";
-      ctx.fillText("MCap $" + mcapFmt(lastMcap), pad.left + 2, 16);
-      ctx.fillStyle = color; ctx.font = "bold 12px monospace";
-      ctx.fillText((pct >= 0 ? "\u25B2" : "\u25BC") + " " + Math.abs(pct).toFixed(1) + "%", pad.left + 150, 16);
-
-      // Bonding progress
-      const bp = hist[hist.length - 1]?.bp || 0;
-      if (bp > 0) {
-        const bW = W - pad.left - pad.right;
-        ctx.fillStyle = "#ffffff08"; ctx.fillRect(pad.left, H - 6, bW, 3);
-        ctx.fillStyle = color + "88"; ctx.fillRect(pad.left, H - 6, bW * Math.min(1, bp / 100), 3);
-        ctx.fillStyle = "#555"; ctx.font = "8px monospace"; ctx.textAlign = "left";
-        ctx.fillText(bp.toFixed(1) + "% bonded", pad.left, H - 9);
-      }
-
-      // Time labels
-      ctx.fillStyle = "#333"; ctx.font = "8px monospace"; ctx.textAlign = "left";
-      const ago = Math.round((tMax - tMin) / 1000);
-      ctx.fillText(ago + "s ago", pad.left, H - pad.bottom + 14);
-      ctx.textAlign = "right";
-      ctx.fillText("now", W - pad.right, H - pad.bottom + 14);
-    };
-
     poll();
     return () => { alive = false; };
   }, [ca]);
 
+  const fmt = n => n >= 1e6 ? (n/1e6).toFixed(2) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "K" : n?.toFixed(0) || "—";
+
   return (
-    <div style={{ position: "relative" }}>
-      <canvas ref={canvasRef} style={{ width: "100%", height: mobile ? 200 : 280, display: "block", background: "#050505", borderRadius: 0 }} />
-      {status !== "live" && (
-        <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", fontFamily: "monospace", fontSize: 12, color: "#444" }}>
-          {status === "connecting..." ? "\u23F3 Connecting to pump.fun..." : "\u2764 Collecting heartbeat..."}
+    <div>
+      {/* MCap + bonding progress bar */}
+      <div style={{ padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {mcap && <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 800, color: "#00e676" }}>${fmt(mcap)}</span>}
+          {bp > 0 && <span style={{ fontFamily: "monospace", fontSize: 10, color: "#888" }}>{bp.toFixed(1)}% bonded</span>}
         </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => setChartMode("dex")} style={{ background: chartMode === "dex" ? "#00e67622" : "none", border: "1px solid " + (chartMode === "dex" ? "#00e676" : "#333"), borderRadius: 6, padding: "3px 8px", fontFamily: "monospace", fontSize: 10, color: chartMode === "dex" ? "#00e676" : "#666", cursor: "pointer" }}>DexScreener</button>
+          <button onClick={() => setChartMode("pump")} style={{ background: chartMode === "pump" ? "#00e67622" : "none", border: "1px solid " + (chartMode === "pump" ? "#00e676" : "#333"), borderRadius: 6, padding: "3px 8px", fontFamily: "monospace", fontSize: 10, color: chartMode === "pump" ? "#00e676" : "#666", cursor: "pointer" }}>pump.fun</button>
+        </div>
+      </div>
+      {/* Bonding progress bar */}
+      {bp > 0 && <div style={{ height: 3, background: "#1a1a2a", margin: "0 14px 4px" }}><div style={{ height: 3, background: bp >= 100 ? "#ffaa00" : "#00e676", width: Math.min(100, bp) + "%", borderRadius: 2, transition: "width 1s" }} /></div>}
+      {/* Chart iframe */}
+      {chartMode === "dex" ? (
+        <iframe
+          src={"https://dexscreener.com/solana/" + ca + "?embed=1&theme=dark&trades=0&info=0"}
+          style={{ width: "100%", height: mobile ? 280 : 400, border: "none", display: "block" }}
+          title="DexScreener Chart"
+          allow="clipboard-write"
+        />
+      ) : (
+        <iframe
+          src={"https://pump.fun/coin/" + ca}
+          style={{ width: "100%", height: mobile ? 320 : 440, border: "none", display: "block" }}
+          title="pump.fun"
+        />
       )}
     </div>
   );
@@ -1161,9 +1049,9 @@ export default function App() {
                   </div>
                   <PriceChart trades={(fleetStatus?.trades || []).slice(0, 30)} mobile={mobile} T={T} ca={launchCA} />
                   <div style={{ padding: "6px 12px", background: T.bg, borderTop: "1px solid " + T.border, display: "flex", gap: 8, justifyContent: "center" }}>
-                    <span style={{ fontSize: 11, fontFamily: mono, color: T.faint }}>Live from bonding curve</span>
                     <a href={"https://pump.fun/coin/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.green, textDecoration: "none" }}>pump.fun {"\u2197"}</a>
-                    <a href={"https://dexscreener.com/solana/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.dim, textDecoration: "none" }}>dex {"\u2197"}</a>
+                    <a href={"https://dexscreener.com/solana/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.dim, textDecoration: "none" }}>dexscreener {"\u2197"}</a>
+                    <a href={"https://solscan.io/token/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.dim, textDecoration: "none" }}>solscan {"\u2197"}</a>
                   </div>
                 </div>
 
