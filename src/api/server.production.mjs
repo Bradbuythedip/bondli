@@ -50,24 +50,25 @@ function getWhitelist() {
   return new Set(raw.split(",").map(w => w.trim()).filter(Boolean));
 }
 
-// tier: "free" | "pro" | "none"
+// tier: "free" | "pro" | "vip"
 // whitelisted wallets bypass everything
 async function getWalletTier(wallet) {
   // Platform wallet is always VIP
-  if (wallet === PLATFORM_WALLET) return { tier: "pro", whitelisted: true, paid: true, profitCut: 0 };
+  if (wallet === PLATFORM_WALLET) return { tier: "vip", whitelisted: true, paid: true, profitCut: 0 };
 
   const whitelist = getWhitelist();
-  if (whitelist.has(wallet)) return { tier: "pro", whitelisted: true, paid: true, profitCut: 0 };
+  if (whitelist.has(wallet)) return { tier: "vip", whitelisted: true, paid: true, profitCut: 0 };
 
   const redis = getRedis();
   if (redis) {
     try {
       const tier = await redis.get("tier:" + wallet);
       if (tier === "pro") return { tier: "pro", whitelisted: false, paid: true, profitCut: 0 };
-      if (tier === "free") return { tier: "free", whitelisted: false, paid: false, profitCut: FREE_PROFIT_CUT };
+      if (tier === "vip") return { tier: "vip", whitelisted: true, paid: true, profitCut: 0 };
     } catch {}
   }
-  return { tier: "none", whitelisted: false, paid: false, profitCut: 0 };
+  // Default is FREE — never return "none"
+  return { tier: "free", whitelisted: false, paid: false, profitCut: FREE_PROFIT_CUT };
 }
 
 async function setWalletTier(wallet, tier) {
@@ -143,12 +144,11 @@ async function initServices() {
   console.log("[INIT] All services ready (userStore, sessionStore, sessionManager)");
 }
 
-// Simple wallet auth — checks X-Wallet header + tier access
+// Simple wallet auth — checks X-Wallet header
 async function walletAuth(req, res, next) {
   const wallet = req.headers["x-wallet"] || req.body?.wallet || req.query?.wallet;
   if (!wallet) return res.status(401).json({ error: "Wallet required. Pass X-Wallet header." });
   const info = await getWalletTier(wallet);
-  if (info.tier === "none") return res.status(403).json({ error: "No access. Choose a tier first." });
   req.user = { wallet, tier: info.tier, whitelisted: info.whitelisted, profitCut: info.profitCut };
   next();
 }
@@ -1390,6 +1390,20 @@ app.get("/api/admin/stats", async (req, res) => {
   if (!userStore) return res.json({});
   const stats = await userStore.platformStats();
   res.json(stats);
+});
+
+// Admin: set wallet tier (persists in Redis)
+app.post("/api/admin/set-tier", async (req, res) => {
+  if (req.headers["x-admin-secret"] !== CONFIG.API_SECRET) return res.status(403).json({ error: "Forbidden" });
+  const { wallet, tier } = req.body;
+  if (!wallet || !tier) return res.status(400).json({ error: "wallet and tier required" });
+  if (!["free", "pro", "vip"].includes(tier)) return res.status(400).json({ error: "tier must be free, pro, or vip" });
+  const redis = getRedis();
+  if (!redis) return res.status(503).json({ error: "Redis not connected" });
+  await redis.set("tier:" + wallet, tier);
+  if (userStore) await userStore.setTier(wallet, tier);
+  console.log(`[ADMIN] Set tier: ${wallet.slice(0, 8)}... -> ${tier}`);
+  res.json({ ok: true, wallet, tier });
 });
 
 // ═══════════════════════════════════════
