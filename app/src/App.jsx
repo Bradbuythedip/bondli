@@ -3,9 +3,64 @@ import { useState, useEffect, useRef, useMemo, createContext, useContext } from 
 const API = "https://bondli-production.up.railway.app";
 window.__BONDLI_API = API;
 const WS_URL = "wss://bondli-production.up.railway.app/ws";
-const PLATFORM_WALLET = "anal.sol";
+const PLATFORM_WALLET = "anal.sol"; // Display name — actual pubkey set in env
 const PRO_FEE_SOL = 10;
 const FREE_PROFIT_CUT = 25; // percent
+
+// === DETERMINISTIC AVATAR + USERNAME FROM WALLET ===
+function hashWallet(pubkey) {
+  let h = 0;
+  for (let i = 0; i < pubkey.length; i++) { h = ((h << 5) - h + pubkey.charCodeAt(i)) | 0; }
+  return Math.abs(h);
+}
+
+function walletColor(pubkey) {
+  const h = hashWallet(pubkey);
+  const hue = h % 360;
+  return `hsl(${hue}, 70%, 55%)`;
+}
+
+function walletUsername(pubkey) {
+  const adj = ["Red","Blue","Green","Dark","Fast","Neon","Wild","Cold","Hyper","Degen","Based","Chad","Sigma","Alpha","Giga","Turbo","Stealth","Quantum","Cosmic","Iron"];
+  const noun = ["Pill","Ape","Frog","Degen","Bull","Wolf","Fox","Shark","Whale","Sniper","Bot","Node","Ghost","Flame","Wave","Storm","Byte","Pulse","Core","Flux"];
+  const h = hashWallet(pubkey);
+  return adj[h % adj.length] + noun[(h >> 8) % noun.length] + (h % 100);
+}
+
+// SVG avatar — geometric shape from wallet hash
+function WalletAvatar({ pubkey, size = 28 }) {
+  const h = hashWallet(pubkey || "demo");
+  const hue = h % 360;
+  const hue2 = (hue + 120) % 360;
+  const shape = h % 4; // 0=diamond, 1=hexagon, 2=circle+cross, 3=triangle
+  const s = size;
+  const c = s / 2;
+
+  const shapes = [
+    // Diamond
+    `M${c},${s*0.1} L${s*0.85},${c} L${c},${s*0.9} L${s*0.15},${c} Z`,
+    // Hexagon
+    `M${c},${s*0.1} L${s*0.85},${s*0.3} L${s*0.85},${s*0.7} L${c},${s*0.9} L${s*0.15},${s*0.7} L${s*0.15},${s*0.3} Z`,
+    // Rounded square
+    `M${s*0.2},${s*0.15} Q${s*0.15},${s*0.15} ${s*0.15},${s*0.2} L${s*0.15},${s*0.8} Q${s*0.15},${s*0.85} ${s*0.2},${s*0.85} L${s*0.8},${s*0.85} Q${s*0.85},${s*0.85} ${s*0.85},${s*0.8} L${s*0.85},${s*0.2} Q${s*0.85},${s*0.15} ${s*0.8},${s*0.15} Z`,
+    // Triangle
+    `M${c},${s*0.1} L${s*0.88},${s*0.85} L${s*0.12},${s*0.85} Z`,
+  ];
+
+  return (
+    <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`}>
+      <defs>
+        <linearGradient id={`ag${h}`} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor={`hsl(${hue},75%,55%)`} />
+          <stop offset="100%" stopColor={`hsl(${hue2},70%,40%)`} />
+        </linearGradient>
+      </defs>
+      <path d={shapes[shape]} fill={`url(#ag${h})`} />
+      {/* Inner detail */}
+      <circle cx={c} cy={c} r={s*0.15} fill={`hsl(${hue},60%,70%)`} opacity="0.4" />
+    </svg>
+  );
+}
 
 // === THEMES ===
 const dark = {
@@ -981,7 +1036,7 @@ export default function App() {
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState(""); const [activeSessionId, setActiveSessionId] = useState("");
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
-  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false);
+  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
   const mobile = useIsMobile();
@@ -1064,14 +1119,34 @@ export default function App() {
               <button onClick={() => setShowSettings(!showSettings)} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: T.dim, fontSize: 14 }}>{"\u2699"}</button>
               <ThemeToggle isDark={isDark} toggle={toggleTheme} mobile={mobile} />
               {tierLabel && <span style={{ padding: "3px 8px", borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 700, background: tierColor + "18", color: tierColor, border: "1px solid " + tierColor + "33" }}>{tierLabel}</span>}
-              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", background: T.surface, borderRadius: 10, border: "1px solid " + T.border }}>
-                <span style={{ fontFamily: mono, fontSize: 12, color: T.mid }}>{user.demo ? "demo" : (user.pubkey || "").slice(0, 4) + ".." + (user.pubkey || "").slice(-4)}</span>
-                <button onClick={disconnect} style={{ background: "none", border: "none", cursor: "pointer", color: T.dim, fontSize: 11, fontFamily: mono }}>{"\u2715"}</button>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: T.surface, borderRadius: 10, border: "1px solid " + T.border }}>
+                <WalletAvatar pubkey={user.pubkey || "demo"} size={22} />
+                <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, maxWidth: mobile ? 80 : 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.demo ? "demo" : walletUsername(user.pubkey || "")}</span>
+                <button onClick={disconnect} style={{ background: "none", border: "none", cursor: "pointer", color: T.dim, fontSize: 11, fontFamily: mono, padding: 0, marginLeft: 2 }}>{"\u2715"}</button>
               </div>
             </div>
           </header>
           {showSettings && (<div style={{ maxWidth: 680, margin: "0 auto", padding: mobile ? "12px 14px" : "16px 24px" }}><div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 16 : 22 }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>{"\u2699"} Settings</span><button onClick={() => setShowSettings(false)} style={{ background: "none", border: "none", color: T.dim, cursor: "pointer", fontFamily: mono }}>{"\u2715"}</button></div><div style={{ display: "flex", flexDirection: "column", gap: 14 }}><div><Label>RPC URL</Label><Input value={rpc} onChange={setRpc} placeholder="https://mainnet.helius-rpc.com/?api-key=..." big /></div><div style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: T.bg, borderRadius: 10, border: "1px solid " + T.border, cursor: "pointer" }} onClick={() => setUseAtlas(!useAtlas)}><div style={{ width: 40, height: 22, borderRadius: 11, padding: 2, background: useAtlas ? T.green : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", transform: useAtlas ? "translateX(18px)" : "translateX(0)", transition: "transform .2s" }} /></div><div><div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.text }}>Helius Atlas</div><div style={{ fontSize: 11, color: T.dim }}>Staked connections</div></div></div></div></div></div>)}
-          {user.tier === "free" && !user.whitelisted && (<div style={{ background: T.green + "08", borderBottom: "1px solid " + T.green + "22", padding: "6px 20px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}><span style={{ fontSize: 12, fontFamily: mono, color: T.green }}>{FREE_PROFIT_CUT}% profit share</span><button onClick={() => setUser({ ...user, tier: "none" })} style={{ background: T.green, color: T.bg, border: "none", borderRadius: 6, padding: "3px 10px", fontFamily: mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Upgrade</button></div>)}
+          {user.tier === "free" && !user.whitelisted && (<div style={{ background: T.green + "08", borderBottom: "1px solid " + T.green + "22", padding: "6px 20px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}><span style={{ fontSize: 12, fontFamily: mono, color: T.green }}>{FREE_PROFIT_CUT}% profit share</span><button onClick={() => setShowUpgrade(true)} style={{ background: T.green, color: T.bg, border: "none", borderRadius: 6, padding: "3px 10px", fontFamily: mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Upgrade</button></div>)}
+          {showUpgrade && (<div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowUpgrade(false)}><div onClick={e => e.stopPropagation()} style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 20, padding: mobile ? 24 : 36, maxWidth: 440, width: "100%" }}>
+            <h3 style={{ fontFamily: sans, fontWeight: 900, fontSize: 22, color: T.text, marginBottom: 8, textAlign: "center" }}>Upgrade to Pro</h3>
+            <p style={{ fontSize: 14, color: T.dim, textAlign: "center", marginBottom: 20 }}>Send <span style={{ color: T.green, fontWeight: 800 }}>{PRO_FEE_SOL} SOL</span> to the address below, then paste the tx signature.</p>
+            <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: "10px 14px", marginBottom: 14, wordBreak: "break-all", fontSize: 12, fontFamily: mono, color: T.green, cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(PLATFORM_WALLET); toast("Copied!", "success"); }}>{PLATFORM_WALLET} <span style={{ color: T.faint, fontSize: 10 }}>tap to copy</span></div>
+            <input value={upgradeTxSig} onChange={e => setUpgradeTxSig(e.target.value)} placeholder="Paste transaction signature..." style={{ width: "100%", padding: "12px 14px", background: T.bg, border: "1px solid " + T.border, borderRadius: 10, color: T.text, fontFamily: mono, fontSize: 13, outline: "none", boxSizing: "border-box", marginBottom: 12 }} />
+            {upgradeError && <p style={{ fontSize: 13, color: T.red, fontFamily: mono, marginBottom: 10, textAlign: "center" }}>{upgradeError}</p>}
+            <button onClick={async () => {
+              if (!upgradeTxSig || upgradeTxSig.length < 20) { setUpgradeError("Paste a valid tx signature"); return; }
+              setUpgradeVerifying(true); setUpgradeError("");
+              try {
+                const res = await fetch(API + "/api/access/activate-pro", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ wallet: user?.pubkey, txSig: upgradeTxSig }) });
+                const data = await res.json();
+                if (data.ok) { setUser(u => ({ ...u, tier: "pro", paid: true })); setShowUpgrade(false); toast("Upgraded to Pro!", "success"); }
+                else setUpgradeError(data.error || "Payment not verified");
+              } catch { setUpgradeError("Network error"); }
+              setUpgradeVerifying(false);
+            }} disabled={upgradeVerifying} style={{ width: "100%", padding: "14px", background: "linear-gradient(135deg, #534bb1, #551bf9)", border: "none", borderRadius: 12, color: "#fff", fontFamily: mono, fontSize: 15, fontWeight: 800, cursor: upgradeVerifying ? "wait" : "pointer", opacity: upgradeVerifying ? 0.6 : 1 }}>{upgradeVerifying ? "Verifying..." : "Verify Payment"}</button>
+            <button onClick={() => setShowUpgrade(false)} style={{ width: "100%", marginTop: 8, padding: "10px", background: "none", border: "1px solid " + T.border, borderRadius: 10, color: T.dim, fontFamily: mono, fontSize: 13, cursor: "pointer" }}>Cancel</button>
+          </div></div>)}
           <div style={{ maxWidth: launched ? 1100 : 760, margin: "0 auto", padding: mobile ? "16px 12px" : "28px 24px", position: "relative", zIndex: 1 }}>
             {launched && launchCA ? (
               <div>
