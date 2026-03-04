@@ -780,6 +780,13 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
                   {selected.imageDupe && (
                     <div style={{ marginTop: 4, fontSize: 9, fontFamily: "monospace", color: T.red, background: T.red + "10", padding: "3px 6px", borderRadius: 4, border: "1px solid " + T.red + "22" }}>{"\u26A0"} Reused image — seen on {selected.imageOriginal?.ticker || "another token"} ({selected.imageOriginal?.seen || "multiple"} times)</div>
                   )}
+                  {/* Bundle warning */}
+                  {selected.bundleScore > 0 && (
+                    <div style={{ marginTop: 4, fontSize: 9, fontFamily: "monospace", color: selected.bundled ? "#ff6600" : "#ffaa00", background: (selected.bundled ? "#ff6600" : "#ffaa00") + "10", padding: "4px 6px", borderRadius: 4, border: "1px solid " + (selected.bundled ? "#ff6600" : "#ffaa00") + "22" }}>
+                      {selected.bundled ? "\u26A0 LIKELY BUNDLED" : "\u26A0 Bundle risk"} ({selected.bundleScore}/100)
+                      {selected.bundleFlags?.length > 0 && <span style={{ opacity: 0.8 }}> — {selected.bundleFlags.join(", ")}</span>}
+                    </div>
+                  )}
                 </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1, background: T.border + "33", margin: "0 14px", borderRadius: 8, overflow: "hidden" }}>
@@ -822,6 +829,8 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
                   {t.name}{t.created ? " \u00B7 " + ago(t.created) : ""}
                   {t.socialCount > 0 && <span style={{ marginLeft: 4 }}>{t.twitter ? "\u{1D54F}" : ""}{t.website ? "\u{1F310}" : ""}{t.telegram ? "\u2708" : ""}</span>}
                   {t.imageDupe && <span style={{ marginLeft: 4, color: T.red, fontSize: 8, fontWeight: 700 }}>{"\u26A0"}DUPE IMG</span>}
+                  {t.bundled && <span style={{ marginLeft: 4, color: "#ff6600", fontSize: 8, fontWeight: 700, background: "#ff660015", padding: "0 3px", borderRadius: 2 }}>{"\u26A0"}BUNDLED</span>}
+                  {!t.bundled && t.bundleScore > 0 && t.bundleScore >= 20 && <span style={{ marginLeft: 4, color: "#ffaa00", fontSize: 7, opacity: 0.8 }}>b:{t.bundleScore}</span>}
                 </div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
