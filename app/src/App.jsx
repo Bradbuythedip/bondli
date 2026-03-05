@@ -698,7 +698,7 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
 // ═══════════════════════════════════════
 function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
   const mono = "'SF Mono',SFMono-Regular,ui-monospace,'Cascadia Mono',Menlo,monospace";
-  const [tabs, setTabs] = useState({ new: [], hot: [], graduating: [] });
+  const [tabs, setTabs] = useState({ new: [], hot: [], graduating: [], momentum: [] });
   const [activeTab, setActiveTab] = useState("hot");
   const [wsAlive, setWsAlive] = useState(false);
   const [poolSize, setPoolSize] = useState(0);
@@ -710,9 +710,13 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
   const [search, setSearch] = useState("");
 
   const allTokens = tabs[activeTab] || [];
+  // Deduplicate by CA — keep highest score
+  const dedupMap = new Map();
+  for (const t of allTokens) { if (!dedupMap.has(t.ca) || dedupMap.get(t.ca).score < t.score) dedupMap.set(t.ca, t); }
+  const dedupedTokens = [...dedupMap.values()].sort((a, b) => b.score - a.score);
   const tokens = search.length >= 2
-    ? allTokens.filter(t => (t.ticker || "").toLowerCase().includes(search.toLowerCase()) || (t.name || "").toLowerCase().includes(search.toLowerCase()) || (t.ca || "").toLowerCase().startsWith(search.toLowerCase()))
-    : allTokens;
+    ? dedupedTokens.filter(t => (t.ticker || "").toLowerCase().includes(search.toLowerCase()) || (t.name || "").toLowerCase().includes(search.toLowerCase()) || (t.ca || "").toLowerCase().startsWith(search.toLowerCase()))
+    : dedupedTokens;
 
   const fetchRadar = async () => {
     try {
@@ -757,36 +761,40 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
     { id: "hot", label: "\uD83D\uDD25 Hot" },
     { id: "new", label: "\u{1F195} New" },
     { id: "graduating", label: "\uD83C\uDF93 Grad" },
+    { id: "momentum", label: "\uD83D\uDCC8 Momentum" },
   ];
 
   // ── Token Card ──
   const TokenCard = ({ t, i }) => (
     <div onClick={() => handleSelect(t.ca)} style={{
-      background: T.surface, border: "1px solid " + T.border, borderRadius: 14,
+      background: T.surface, border: "1px solid " + T.border, borderRadius: 12,
       overflow: "hidden", cursor: "pointer", transition: "all .2s",
+      animation: "fadeUp .3s ease " + Math.min(i * 0.04, 0.5) + "s both",
     }}
       onMouseEnter={e => { e.currentTarget.style.borderColor = T.green + "55"; e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px " + T.green + "08"; }}
       onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}
     >
-      <div style={{ position: "relative", width: "100%", aspectRatio: "1", background: T.bg, overflow: "hidden" }}>
-        {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 40, color: T.faint + "44", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
-        <div style={{ position: "absolute", top: 6, right: 6, background: vc(t.verdict) + "dd", color: "#000", fontFamily: mono, fontSize: 10, fontWeight: 900, padding: "2px 7px", borderRadius: 5 }}>{t.verdict} {t.score}</div>
-        {i < 3 && <div style={{ position: "absolute", top: 6, left: 6, background: T.green + "dd", color: "#000", fontFamily: mono, fontSize: 10, fontWeight: 900, padding: "2px 6px", borderRadius: 5 }}>#{i + 1}</div>}
-        {t.bundled && <div style={{ position: "absolute", bottom: 6, left: 6, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 8, fontWeight: 800, padding: "2px 5px", borderRadius: 3 }}>{"\u26A0"} BUNDLED</div>}
-        {t.imageDupe && <div style={{ position: "absolute", bottom: 6, right: 6, background: T.red + "cc", color: "#fff", fontFamily: mono, fontSize: 8, fontWeight: 800, padding: "2px 5px", borderRadius: 3 }}>{"\u26A0"} DUPE</div>}
+      <div style={{ position: "relative", width: "100%", aspectRatio: "1.1", background: T.bg, overflow: "hidden" }}>
+        {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 32, color: T.faint + "44", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
+        <div style={{ position: "absolute", top: 5, right: 5, background: vc(t.verdict) + "dd", color: "#000", fontFamily: mono, fontSize: 9, fontWeight: 900, padding: "2px 6px", borderRadius: 4 }}>{t.verdict} {t.score}</div>
+        {i < 3 && <div style={{ position: "absolute", top: 5, left: 5, background: T.green + "dd", color: "#000", fontFamily: mono, fontSize: 9, fontWeight: 900, padding: "1px 5px", borderRadius: 4 }}>#{i + 1}</div>}
+        {t.bundled && <div style={{ position: "absolute", bottom: 5, left: 5, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}>{"\u26A0"}BUNDLED</div>}
+        {t.imageDupe && <div style={{ position: "absolute", bottom: 5, right: 5, background: T.red + "cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}>DUPE</div>}
+        {/* Momentum price change overlay */}
+        {t.priceChange?.h1 != null && <div style={{ position: "absolute", bottom: 5, left: 5, background: t.priceChange.h1 >= 0 ? "#00ff8899" : "#ff444499", color: "#fff", fontFamily: mono, fontSize: 9, fontWeight: 800, padding: "2px 5px", borderRadius: 4 }}>{t.priceChange.h1 > 0 ? "+" : ""}{t.priceChange.h1.toFixed(1)}% 1h</div>}
       </div>
-      <div style={{ padding: "8px 10px 10px" }}>
-        <div style={{ fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name || t.ticker}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
-          <span style={{ fontFamily: mono, fontSize: 11, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
-          {t.dev && <span style={{ fontFamily: mono, fontSize: 8, color: T.faint }}>{"\u{1F464}"} {t.dev}</span>}
-          <span style={{ fontFamily: mono, fontSize: 8, color: T.faint }}>{ago(t.created)}</span>
-          {t.socialCount > 0 && <span style={{ fontSize: 9 }}>{t.twitter ? "\u{1D54F}" : ""}{t.website ? "\u{1F310}" : ""}{t.telegram ? "\u2708" : ""}</span>}
+      <div style={{ padding: "6px 8px 8px" }}>
+        <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 800, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name || t.ticker}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 3, marginTop: 1 }}>
+          <span style={{ fontFamily: mono, fontSize: 10, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
+          {t.age && <span style={{ fontFamily: mono, fontSize: 7, color: T.faint }}>{t.age >= 24 ? Math.floor(t.age/24) + "d" : t.age + "h"}</span>}
+          {!t.age && t.created && <span style={{ fontFamily: mono, fontSize: 7, color: T.faint }}>{ago(t.created)}</span>}
+          {t.socialCount > 0 && <span style={{ fontSize: 8 }}>{t.twitter ? "\u{1D54F}" : ""}{t.website ? "\u{1F310}" : ""}</span>}
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
-          <span style={{ fontFamily: mono, fontSize: 11, fontWeight: 800, color: T.green }}>MC ${fmt(t.mcapUsd)}</span>
-          {t.bp > 0 && <div style={{ width: 36, height: 3, background: T.border, borderRadius: 2, overflow: "hidden" }}><div style={{ height: 3, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 2 }} /></div>}
-          <span style={{ fontFamily: mono, fontSize: 10, color: T.dim }}>{t.buys}b/{t.sells}s</span>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+          <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 800, color: T.green }}>MC ${fmt(t.mcapUsd)}</span>
+          {t.bp > 0 && t.bp < 100 && <div style={{ width: 28, height: 2, background: T.border, borderRadius: 1, overflow: "hidden" }}><div style={{ height: 2, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 1 }} /></div>}
+          <span style={{ fontFamily: mono, fontSize: 9, color: T.dim }}>{t.buys}b/{t.sells}s</span>
         </div>
       </div>
     </div>
@@ -867,7 +875,7 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
           {selected?.error && <div style={{ padding: "14px 16px", margin: "10px 16px", background: T.red + "10", borderRadius: 12, fontFamily: mono, fontSize: 12, color: T.red, display: "flex", justifyContent: "space-between" }}><span>{selected.error}</span><button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: T.red, cursor: "pointer" }}>{"\u2715"}</button></div>}
 
           {/* Card Grid */}
-          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(220px, 1fr))", gap: mobile ? 8 : 14, padding: mobile ? "12px 10px" : "16px 20px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(168px, 1fr))", gap: mobile ? 6 : 10, padding: mobile ? "10px 8px" : "14px 16px" }}>
             {tokens.map((t, i) => <TokenCard key={t.ca} t={t} i={i} />)}
           </div>
         </div>
