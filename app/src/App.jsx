@@ -699,7 +699,7 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
 function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
   const mono = "'SF Mono',SFMono-Regular,ui-monospace,'Cascadia Mono',Menlo,monospace";
   const [tabs, setTabs] = useState({ new: [], hot: [], graduating: [], momentum: [] });
-  const [activeTab, setActiveTab] = useState("hot");
+  const [activeTab, setActiveTab] = useState("momentum");
   const [wsAlive, setWsAlive] = useState(false);
   const [poolSize, setPoolSize] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -766,10 +766,10 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
   const ago = ts => { if (!ts) return ""; const s = Math.floor((Date.now() - ts) / 1000); return s < 60 ? s + "s" : s < 3600 ? Math.floor(s/60) + "m" : Math.floor(s/3600) + "h"; };
 
   const TAB_CONFIG = [
-    { id: "hot", label: "\uD83D\uDD25 Hot" },
-    { id: "new", label: "\u{1F195} New" },
-    { id: "graduating", label: "\uD83C\uDF93 Grad" },
-    { id: "momentum", label: "\uD83D\uDCC8 Momentum" },
+    { id: "momentum", label: "Momentum", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg> },
+    { id: "hot", label: "Hot", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 23c-4.97 0-9-3.58-9-8 0-5.5 7-13.5 9-15.5 2 2 9 10 9 15.5 0 4.42-4.03 8-9 8zm-1-9.5c-1.5 2-2 3.5-2 4.5 0 1.93 1.57 3.5 3 3.5s3-1.57 3-3.5c0-1-.5-2.5-2-4.5l-1-1.5-1 1.5z"/></svg> },
+    { id: "new", label: "New", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v4m0 12v4m10-10h-4M6 12H2m15.07-7.07l-2.83 2.83M9.76 14.24l-2.83 2.83m12.14 0l-2.83-2.83M9.76 9.76L6.93 6.93"/></svg> },
+    { id: "graduating", label: "Grad", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zm0 14.27L4.58 13.1 4 13.45V18l8 4.35L20 18v-4.55l-.58-.35L12 17.27z"/></svg> },
   ];
 
   // ── Token Card ──
@@ -837,7 +837,7 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
           {TAB_CONFIG.map(tab => {
             const count = (tabs[tab.id] || []).length;
             const isActive = activeTab === tab.id;
-            return (<button key={tab.id} onClick={() => { setActiveTab(tab.id); setSelected(null); setSearch(""); }} style={{ padding: "10px 14px", background: "none", border: "none", borderBottom: isActive ? "2px solid " + T.green : "2px solid transparent", fontFamily: mono, fontSize: 13, fontWeight: 700, color: isActive ? T.green : T.dim, cursor: "pointer" }}>{tab.label}{count > 0 && <span style={{ marginLeft: 4, fontSize: 10, opacity: 0.7 }}>{count}</span>}</button>);
+            return (<button key={tab.id} onClick={() => { setActiveTab(tab.id); setSelected(null); setSearch(""); }} style={{ padding: "10px 14px", background: "none", border: "none", borderBottom: isActive ? "2px solid " + T.green : "2px solid transparent", fontFamily: mono, fontSize: 12, fontWeight: 700, color: isActive ? T.green : T.dim, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}><span style={{ display: "flex", alignItems: "center" }}>{tab.icon}</span>{tab.label}{count > 0 && <span style={{ fontSize: 10, opacity: 0.7, fontWeight: 800 }}>{count}</span>}</button>);
           })}
           <div style={{ flex: 1 }} />
           <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder={"\u{1F50D} Search..."} style={{ width: mobile ? 110 : 200, padding: "6px 10px", margin: "4px 8px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: mono, fontSize: 11, outline: "none" }} />
