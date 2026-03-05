@@ -514,6 +514,23 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
             if (d.points?.length) wsRef.current = d.points;
           }
         } catch {}
+        // DexScreener fallback (browser can hit this directly, no Cloudflare issue)
+        if (wsRef.current.length < 3 && histRef.current.length < 3) {
+          try {
+            const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca);
+            if (r.ok) {
+              const d = await r.json();
+              const pair = (d.pairs || []).find(p => p.chainId === "solana");
+              if (pair) {
+                const mc = pair.marketCap || pair.fdv || 0;
+                if (mc > 0) {
+                  setMcap(mc); setBp(pair.dexId === "pumpfun" ? 0 : 100);
+                  histRef.current.push({ t: Date.now(), mcap: mc, bp: pair.dexId === "pumpfun" ? 0 : 100 });
+                }
+              }
+            }
+          } catch {}
+        }
         drawCanvas();
         setAge(Math.floor((Date.now() - born) / 1000));
         await new Promise(r => setTimeout(r, 3000));
