@@ -903,6 +903,43 @@ class FleetTrader extends EventEmitter {
     }
   }
 
+  // Jito bundle endpoint for MEV protection
+  async _sendWithJito(tx, signers) {
+    const JITO_ENDPOINTS = [
+      "https://mainnet.block-engine.jito.wtf/api/v1/transactions",
+      "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/transactions",
+      "https://ny.mainnet.block-engine.jito.wtf/api/v1/transactions",
+    ];
+    const endpoint = JITO_ENDPOINTS[Math.floor(Math.random() * JITO_ENDPOINTS.length)];
+    
+    tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
+    tx.feePayer = signers[0].publicKey;
+    tx.sign(...signers);
+    const serialized = tx.serialize();
+    const base58Tx = bs58.encode(serialized);
+    
+    try {
+      const r = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "sendTransaction", params: [base58Tx] }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        if (data.result) {
+          // Wait for confirmation
+          await this.connection.confirmTransaction(data.result, "confirmed");
+          return data.result;
+        }
+      }
+    } catch (e) {
+      console.warn(`[FLEET] Jito send failed (${endpoint.split("/")[2]}): ${e.message} — falling back to standard`);
+    }
+    // Fallback to standard send
+    return await sendAndConfirmTransaction(this.connection, tx, signers, { skipPreflight: true, commitment: "confirmed", maxRetries: 3 });
+  }
+
   async _executeBuy(wallet, mint, global, feeConfig, solAmount) {
     const { keypair } = wallet;
     const buyState = await this.onlineSdk.fetchBuyState(mint, keypair.publicKey);
@@ -914,7 +951,8 @@ class FleetTrader extends EventEmitter {
     const instructions = await this.sdk.buyInstructions({ global, bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo, mint, user: keypair.publicKey, amount: tokenAmount, solAmount: solBN, slippage: 25 });
     const tx = new Transaction();
     tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 150_000 }), ...instructions);
-    const sig = await sendAndConfirmTransaction(this.connection, tx, [keypair], { skipPreflight: true, commitment: "confirmed", maxRetries: 3 });
+    // Use Jito for MEV protection on buys (most vulnerable to sandwich)
+    const sig = await this._sendWithJito(tx, [keypair]);
     return { ok: true, sig, tokens: tokenAmount.toString() };
   }
 
@@ -933,6 +971,7 @@ class FleetTrader extends EventEmitter {
     const instructions = await this.sdk.sellInstructions({ global, bondingCurveAccountInfo, bondingCurve, mint, user: keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 50 });
     const tx = new Transaction();
     tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 150_000 }), ...instructions);
+    // Standard send for sells (less vulnerable to MEV, speed matters more)
     const sig = await sendAndConfirmTransaction(this.connection, tx, [keypair], { skipPreflight: true, commitment: "confirmed", maxRetries: 3 });
     return { ok: true, sig, solOut: parseFloat(solOut.toString()) / 1e9, tokens: sellAmount.toString() };
   }
