@@ -771,10 +771,32 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
 
   const handleSelect = async (ca) => {
     if (selected?.ca === ca) { setSelected(null); return; }
+    
+    // First: check if we already have this token's data in our tabs (no API call needed)
+    const allTabTokens = [...(tabs.hot || []), ...(tabs.new || []), ...(tabs.graduating || []), ...(tabs.momentum || [])];
+    const localToken = allTabTokens.find(t => t.ca === ca);
+    
+    if (localToken) {
+      // We already have enough data to show the detail panel
+      setSelected({ ok: true, ca, ...localToken });
+      // Optionally fetch richer detail in background (non-blocking)
+      fetch(window.__BONDLI_API + "/api/radar/token/" + ca)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.ok) setSelected(prev => prev?.ca === ca ? { ...prev, ...d } : prev); })
+        .catch(() => {});
+      return;
+    }
+    
+    // Fallback: no local data, must fetch
     setSelected({ ca, loading: true });
     try {
       const r = await fetch(window.__BONDLI_API + "/api/radar/token/" + ca);
-      if (r.ok) { const d = await r.json(); setSelected(d.ok ? d : { ca, error: d.error || "Failed" }); }
+      if (r.ok) {
+        const d = await r.json();
+        setSelected(d.ok ? d : { ca, error: d.error || "Failed" });
+      } else {
+        setSelected({ ca, error: "Server error" });
+      }
     } catch { setSelected({ ca, error: "Network error" }); }
   };
 
