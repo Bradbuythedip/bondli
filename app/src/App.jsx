@@ -819,7 +819,7 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: fullScreen ? "14px 20px" : "10px 14px", borderBottom: "1px solid " + T.border }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 18 }}>{"\uD83D\uDCE1"}</span>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={T.green} strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10" opacity="0.3"/><circle cx="12" cy="12" r="6" opacity="0.5"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="6"/></svg>
           <span style={{ fontFamily: mono, fontSize: fullScreen ? 18 : 15, fontWeight: 800, color: T.text }}>Radar</span>
           <div style={{ width: 8, height: 8, borderRadius: "50%", background: !enabled ? T.faint : wsAlive ? T.green : T.red, boxShadow: enabled && wsAlive ? "0 0 8px " + T.green : "none" }} />
           {enabled && poolSize > 0 && <span style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>{poolSize} scanned</span>}
@@ -1568,8 +1568,8 @@ export default function App() {
                 {/* ═══ TOP TAB BAR ═══ */}
                 <div style={{ display: "flex", marginBottom: 16, background: T.surface, borderRadius: 12, border: "1px solid " + T.border, overflow: "hidden" }}>
                   {[
-                    { id: "trade", label: "\uD83D\uDE80 Deploy" },
-                    { id: "radar", label: "\uD83D\uDCE1 Radar" },
+                    { id: "trade", label: "Deploy", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> },
+                    { id: "radar", label: "Radar", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/></svg> },
                   ].map(t => (
                     <button key={t.id} onClick={() => setAppTab(t.id)} style={{
                       flex: 1, padding: mobile ? "12px 8px" : "14px 16px",
@@ -1577,7 +1577,8 @@ export default function App() {
                       border: "none", borderBottom: appTab === t.id ? "3px solid " + T.green : "3px solid transparent",
                       fontFamily: mono, fontSize: mobile ? 14 : 16, fontWeight: 800,
                       color: appTab === t.id ? T.green : T.dim, cursor: "pointer", transition: "all .15s",
-                    }}>{t.label}</button>
+                      display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                    }}><span style={{ display: "flex", alignItems: "center" }}>{t.icon}</span>{t.label}</button>
                   ))}
                 </div>
 
