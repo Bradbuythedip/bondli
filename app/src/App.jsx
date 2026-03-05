@@ -529,90 +529,133 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
 
   const drawCanvas = () => {
     const canvas = canvasRef.current;
-    // Prefer WS chart data (has buy/sell markers), fall back to polled mcap
     const ws = wsRef.current;
     const hist = ws.length >= 3 ? ws.map(p => ({ t: p.t, m: p.mcap || (p.mcapSol || 0) * 170, type: p.type, sol: p.sol, bp: p.bp })) : histRef.current.map(p => ({ t: p.t, m: p.mcap, type: null, sol: 0, bp: p.bp }));
     if (!canvas || hist.length < 2) return;
 
+    const isDark = T?.mode === "dark" || T?.bg === "#0a0a0a" || !T?.bg || T?.bg?.startsWith("#0");
     const ctx = canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
     const W = canvas.offsetWidth, H = canvas.offsetHeight;
     canvas.width = W * dpr; canvas.height = H * dpr;
     ctx.scale(dpr, dpr);
-    const pad = { top: 28, right: 50, bottom: 22, left: 6 };
+    const pad = { top: 30, right: 52, bottom: 24, left: 8 };
     const mcaps = hist.map(p => p.m).filter(m => m > 0);
     if (mcaps.length < 2) return;
     const mn = Math.min(...mcaps) * 0.92, mx = Math.max(...mcaps) * 1.08, rng = mx - mn || 1;
     const tMin = hist[0].t, tMax = hist[hist.length - 1].t, tRng = tMax - tMin || 1;
     const toX = t => pad.left + ((t - tMin) / tRng) * (W - pad.left - pad.right);
     const toY = m => pad.top + (1 - (m - mn) / rng) * (H - pad.top - pad.bottom);
-    ctx.clearRect(0, 0, W, H);
+
+    // Background
+    ctx.fillStyle = isDark ? "#050508" : "#fafafa";
+    ctx.fillRect(0, 0, W, H);
 
     // Grid lines
-    ctx.strokeStyle = "#ffffff06"; ctx.lineWidth = 0.5;
-    for (let i = 0; i <= 4; i++) { const y = pad.top + (i / 4) * (H - pad.top - pad.bottom); ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke(); ctx.fillStyle = "#555"; ctx.font = "9px monospace"; ctx.textAlign = "right"; ctx.fillText("$" + fmtMcap(mx - (i / 4) * rng), W - 2, y + 3); }
+    const gridColor = isDark ? "#ffffff06" : "#00000008";
+    const labelColor = isDark ? "#555" : "#999";
+    ctx.strokeStyle = gridColor; ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.top + (i / 4) * (H - pad.top - pad.bottom);
+      ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+      ctx.fillStyle = labelColor; ctx.font = "9px monospace"; ctx.textAlign = "right";
+      ctx.fillText("$" + fmtMcap(mx - (i / 4) * rng), W - 2, y + 3);
+    }
 
-    // Price line
+    // Points for curves
     const validHist = hist.filter(p => p.m > 0);
     if (validHist.length < 2) return;
     const last = validHist[validHist.length - 1].m, first = validHist[0].m;
-    const up = last >= first, col = up ? "#00ff88" : "#ff4444";
+    const up = last >= first;
+    const col = up ? "#00ff88" : "#ff4444";
+    const points = validHist.map(p => ({ x: toX(p.t), y: toY(p.m) }));
 
-    // Glow
-    ctx.save(); ctx.shadowColor = col; ctx.shadowBlur = 6;
-    ctx.beginPath(); ctx.moveTo(toX(validHist[0].t), toY(validHist[0].m));
-    for (let i = 1; i < validHist.length; i++) ctx.lineTo(toX(validHist[i].t), toY(validHist[i].m));
-    ctx.strokeStyle = col + "40"; ctx.lineWidth = 3; ctx.stroke(); ctx.restore();
+    // Smooth bezier curve helper
+    const drawSmoothLine = (pts) => {
+      ctx.moveTo(pts[0].x, pts[0].y);
+      if (pts.length === 2) {
+        ctx.lineTo(pts[1].x, pts[1].y);
+        return;
+      }
+      for (let i = 1; i < pts.length; i++) {
+        const prev = pts[i - 1];
+        const curr = pts[i];
+        const cpx = (prev.x + curr.x) / 2;
+        ctx.bezierCurveTo(cpx, prev.y, cpx, curr.y, curr.x, curr.y);
+      }
+    };
 
-    // Main line
-    ctx.beginPath(); ctx.moveTo(toX(validHist[0].t), toY(validHist[0].m));
-    for (let i = 1; i < validHist.length; i++) ctx.lineTo(toX(validHist[i].t), toY(validHist[i].m));
-    ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
+    // Glow line (wider, softer)
+    ctx.save(); ctx.shadowColor = col; ctx.shadowBlur = 8;
+    ctx.beginPath(); drawSmoothLine(points);
+    ctx.strokeStyle = col + "30"; ctx.lineWidth = 4; ctx.stroke(); ctx.restore();
 
-    // Fill under
+    // Main line (smooth)
+    ctx.beginPath(); drawSmoothLine(points);
+    ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.stroke();
+
+    // Gradient fill under curve
     const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
-    grad.addColorStop(0, col + "12"); grad.addColorStop(1, col + "00");
-    ctx.beginPath(); ctx.moveTo(toX(validHist[0].t), H - pad.bottom);
-    for (const p of validHist) ctx.lineTo(toX(p.t), toY(p.m));
-    ctx.lineTo(toX(validHist[validHist.length - 1].t), H - pad.bottom); ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
+    grad.addColorStop(0, col + "18"); grad.addColorStop(0.6, col + "08"); grad.addColorStop(1, col + "00");
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, H - pad.bottom);
+    drawSmoothLine(points);
+    ctx.lineTo(points[points.length - 1].x, H - pad.bottom);
+    ctx.closePath(); ctx.fillStyle = grad; ctx.fill();
 
-    // Buy/sell markers (from WS data)
+    // Buy/sell markers with glow
     for (const p of hist) {
       if (!p.type || p.m <= 0) continue;
       const x = toX(p.t), y = toY(p.m);
       const isBuy = p.type === "buy";
-      const markerSize = Math.min(6, 2 + (p.sol || 0) * 8); // bigger marker = bigger trade
-      ctx.beginPath();
-      ctx.arc(x, y, markerSize, 0, Math.PI * 2);
-      ctx.fillStyle = isBuy ? "#00ff8844" : "#ff444444";
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(x, y, Math.max(1.5, markerSize - 1), 0, Math.PI * 2);
-      ctx.fillStyle = isBuy ? "#00ff88" : "#ff4444";
-      ctx.fill();
+      const markerSize = Math.min(7, 2.5 + (p.sol || 0) * 10);
+      // Outer glow
+      ctx.beginPath(); ctx.arc(x, y, markerSize + 1, 0, Math.PI * 2);
+      ctx.fillStyle = isBuy ? "#00ff8822" : "#ff444422"; ctx.fill();
+      // Inner dot
+      ctx.beginPath(); ctx.arc(x, y, Math.max(2, markerSize - 1), 0, Math.PI * 2);
+      ctx.fillStyle = isBuy ? "#00ff88" : "#ff4444"; ctx.fill();
     }
 
-    // Current price dot
-    const lx = toX(validHist[validHist.length - 1].t), ly = toY(last);
-    ctx.beginPath(); ctx.arc(lx, ly, 4, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+    // Current price dot with pulse ring
+    const lx = points[points.length - 1].x, ly = points[points.length - 1].y;
+    ctx.beginPath(); ctx.arc(lx, ly, 6, 0, Math.PI * 2);
+    ctx.fillStyle = col + "22"; ctx.fill();
+    ctx.beginPath(); ctx.arc(lx, ly, 4, 0, Math.PI * 2);
+    ctx.fillStyle = col; ctx.fill();
 
     // Header text
     const pct = first > 0 ? ((last - first) / first * 100) : 0;
-    ctx.fillStyle = "#ccc"; ctx.font = "bold 12px monospace"; ctx.textAlign = "left";
-    ctx.fillText("MCap $" + fmtMcap(last), pad.left + 2, 16);
-    ctx.fillStyle = col; ctx.fillText((pct >= 0 ? "\u25B2" : "\u25BC") + Math.abs(pct).toFixed(1) + "%", pad.left + 120, 16);
+    const textColor = isDark ? "#ccc" : "#333";
+    ctx.fillStyle = textColor; ctx.font = "bold 13px monospace"; ctx.textAlign = "left";
+    ctx.fillText("MCap $" + fmtMcap(last), pad.left + 2, 18);
+    ctx.fillStyle = col; ctx.font = "bold 12px monospace";
+    ctx.fillText((pct >= 0 ? "\u25B2" : "\u25BC") + Math.abs(pct).toFixed(1) + "%", pad.left + 130, 18);
 
-    // Trade count in corner
+    // Trade count
     const buyCnt = hist.filter(p => p.type === "buy").length;
     const sellCnt = hist.filter(p => p.type === "sell").length;
     if (buyCnt + sellCnt > 0) {
-      ctx.fillStyle = "#666"; ctx.font = "9px monospace"; ctx.textAlign = "right";
-      ctx.fillText(`${buyCnt}b / ${sellCnt}s`, W - pad.right + 45, 16);
+      ctx.fillStyle = labelColor; ctx.font = "10px monospace"; ctx.textAlign = "right";
+      ctx.fillText(`${buyCnt}b / ${sellCnt}s`, W - pad.right + 48, 18);
     }
 
-    // Bonding bar at bottom
+    // Bonding bar
     const bpVal = validHist[validHist.length - 1]?.bp || 0;
-    if (bpVal > 0) { const bW = W - pad.left - pad.right; ctx.fillStyle = "#ffffff08"; ctx.fillRect(pad.left, H - 6, bW, 3); ctx.fillStyle = bpVal >= 80 ? "#ffaa0088" : col + "88"; ctx.fillRect(pad.left, H - 6, bW * Math.min(1, bpVal / 100), 3); ctx.fillStyle = "#555"; ctx.font = "8px monospace"; ctx.textAlign = "left"; ctx.fillText(bpVal.toFixed(0) + "%", pad.left + bW * Math.min(1, bpVal / 100) + 4, H - 1); }
+    if (bpVal > 0) {
+      const bW = W - pad.left - pad.right;
+      const barBg = isDark ? "#ffffff08" : "#00000008";
+      ctx.fillStyle = barBg; ctx.fillRect(pad.left, H - 8, bW, 4);
+      const barCol = bpVal >= 80 ? "#ffaa00" : col;
+      // Rounded bar
+      const barW = bW * Math.min(1, bpVal / 100);
+      ctx.fillStyle = barCol + "88";
+      ctx.beginPath();
+      ctx.roundRect(pad.left, H - 8, barW, 4, 2);
+      ctx.fill();
+      ctx.fillStyle = labelColor; ctx.font = "8px monospace"; ctx.textAlign = "left";
+      ctx.fillText(bpVal.toFixed(0) + "%", pad.left + barW + 4, H - 2);
+    }
   };
 
   return (
@@ -632,7 +675,7 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
       {bp > 0 && <div style={{ height: 3, background: "#1a1a2a", margin: "0 14px 4px" }}><div style={{ height: 3, background: bp >= 100 ? "#ffaa00" : "#00e676", width: Math.min(100, bp) + "%", borderRadius: 2, transition: "width 1s" }} /></div>}
       {chartMode === "live" ? (
         <div style={{ position: "relative" }}>
-          <canvas ref={canvasRef} style={{ width: "100%", height: mobile ? 220 : 300, display: "block", background: "#050505" }} />
+          <canvas ref={canvasRef} style={{ width: "100%", height: mobile ? 220 : 300, display: "block" }} />
           {wsRef.current.length < 2 && histRef.current.length < 2 && <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", fontFamily: "monospace", fontSize: 12, color: "#444", animation: "pulse 2s infinite" }}>{"\u2764"} Collecting trades...</div>}
           {/* Legend */}
           <div style={{ position: "absolute", bottom: 10, left: 14, display: "flex", gap: 10, fontSize: 8, fontFamily: "monospace", color: "#555" }}>
@@ -664,8 +707,12 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [online, setOnline] = useState(0);
+  const [search, setSearch] = useState("");
 
-  const tokens = tabs[activeTab] || [];
+  const allTokens = tabs[activeTab] || [];
+  const tokens = search.length >= 2
+    ? allTokens.filter(t => (t.ticker || "").toLowerCase().includes(search.toLowerCase()) || (t.name || "").toLowerCase().includes(search.toLowerCase()) || (t.ca || "").toLowerCase().startsWith(search.toLowerCase()))
+    : allTokens;
 
   const fetchRadar = async () => {
     try {
@@ -767,6 +814,17 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
         </div>
       )}
 
+      {/* Search */}
+      {enabled && !loading && (
+        <div style={{ padding: "6px 12px", borderBottom: "1px solid " + T.border }}>
+          <input
+            type="text" value={search} onChange={e => setSearch(e.target.value)}
+            placeholder={"\u{1F50D} Search ticker, name, or CA..."}
+            style={{ width: "100%", padding: "8px 12px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: "monospace", fontSize: 12, outline: "none", boxSizing: "border-box" }}
+          />
+        </div>
+      )}
+
       {!enabled ? (
         <div style={{ padding: "30px 20px", textAlign: "center" }}>
           <div style={{ fontFamily: "monospace", fontSize: 13, color: T.faint, marginBottom: 8 }}>Radar paused</div>
@@ -785,7 +843,7 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
           {selected && !selected.loading && !selected.error && (
             <div style={{ background: T.bg, border: "2px solid " + T.green + "33", borderRadius: 14, margin: "8px 10px", overflow: "hidden" }}>
               <div style={{ display: "flex", gap: mobile ? 10 : 14, padding: "14px 14px 10px" }}>
-                {selected.image ? <img src={selected.image} style={{ width: mobile ? 90 : 120, height: mobile ? 90 : 120, borderRadius: 14, objectFit: "cover", flexShrink: 0, border: "2px solid " + T.border }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: mobile ? 90 : 120, height: mobile ? 90 : 120, borderRadius: 14, background: T.surface, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontSize: 32, color: T.faint }}>{(selected.ticker || "?")[0]}</div>}
+                {selected.image ? <img src={selected.image} style={{ width: mobile ? 100 : 130, height: mobile ? 100 : 130, borderRadius: 16, objectFit: "cover", flexShrink: 0, border: "2px solid " + T.border }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: mobile ? 100 : 130, height: mobile ? 100 : 130, borderRadius: 16, background: T.surface, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontSize: 40, color: T.faint, fontWeight: 800 }}>{(selected.ticker || "?")[0]}</div>}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontFamily: "monospace", fontSize: mobile ? 17 : 20, fontWeight: 900, color: T.text }}>{selected.name}</div>
                   <div style={{ fontFamily: "monospace", fontSize: 14, color: T.green, fontWeight: 700 }}>${selected.ticker}</div>
@@ -844,16 +902,16 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
           {selected?.error && <div style={{ padding: "12px 14px", margin: "8px 10px", background: T.red + "10", borderRadius: 10, fontFamily: "monospace", fontSize: 11, color: T.red, display: "flex", justifyContent: "space-between", alignItems: "center" }}><span>{selected.error}</span><button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: T.red, cursor: "pointer" }}>{"\u2715"}</button></div>}
           {/* Ranked token list */}
           {tokens.map((t, i) => (
-            <div key={t.ca} onClick={() => handleSelect(t.ca)} style={{ display: "flex", alignItems: "center", gap: 8, padding: mobile ? "9px 10px" : "10px 12px", borderBottom: "1px solid " + T.border + "22", cursor: "pointer", transition: "background .15s", background: selected?.ca === t.ca ? T.green + "08" : "transparent" }} onMouseEnter={e => e.currentTarget.style.background = T.green + "06"} onMouseLeave={e => e.currentTarget.style.background = selected?.ca === t.ca ? T.green + "08" : "transparent"}>
-              <span style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 800, color: i < 3 ? T.green : T.faint, width: 16, textAlign: "center", flexShrink: 0 }}>{i + 1}</span>
-              {t.image ? <img src={t.image} style={{ width: 34, height: 34, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: 34, height: 34, borderRadius: 8, background: T.border + "44", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontSize: 12, color: T.faint }}>{(t.ticker || "?")[0]}</div>}
+            <div key={t.ca} onClick={() => handleSelect(t.ca)} style={{ display: "flex", alignItems: "center", gap: 10, padding: mobile ? "10px 12px" : "12px 14px", borderBottom: "1px solid " + T.border + "22", cursor: "pointer", transition: "background .15s", background: selected?.ca === t.ca ? T.green + "08" : "transparent" }} onMouseEnter={e => e.currentTarget.style.background = T.green + "06"} onMouseLeave={e => e.currentTarget.style.background = selected?.ca === t.ca ? T.green + "08" : "transparent"}>
+              <span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 800, color: i < 3 ? T.green : T.faint, width: 18, textAlign: "center", flexShrink: 0 }}>{i + 1}</span>
+              {t.image ? <img src={t.image} style={{ width: mobile ? 40 : 46, height: mobile ? 40 : 46, borderRadius: 10, objectFit: "cover", flexShrink: 0, border: "1px solid " + T.border }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: mobile ? 40 : 46, height: mobile ? 40 : 46, borderRadius: 10, background: T.border + "44", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontSize: 16, color: T.faint, fontWeight: 700 }}>{(t.ticker || "?")[0]}</div>}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                  <span style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: T.text }}>${t.ticker}</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 8, fontWeight: 700, color: vc(t.verdict), background: vc(t.verdict) + "12", border: "1px solid " + vc(t.verdict) + "33", borderRadius: 3, padding: "1px 5px" }}>{t.verdict}</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 9, color: T.green, fontWeight: 700 }}>{t.score}</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontFamily: "monospace", fontSize: mobile ? 14 : 15, fontWeight: 800, color: T.text }}>${t.ticker}</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 9, fontWeight: 700, color: vc(t.verdict), background: vc(t.verdict) + "12", border: "1px solid " + vc(t.verdict) + "33", borderRadius: 3, padding: "1px 6px" }}>{t.verdict}</span>
+                  <span style={{ fontFamily: "monospace", fontSize: 10, color: T.green, fontWeight: 700 }}>{t.score}</span>
                 </div>
-                <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, marginTop: 1 }}>
+                <div style={{ fontFamily: "monospace", fontSize: 10, color: T.faint, marginTop: 2 }}>
                   {t.name}{t.created ? " \u00B7 " + ago(t.created) : ""}
                   {t.socialCount > 0 && <span style={{ marginLeft: 4 }}>{t.twitter ? "\u{1D54F}" : ""}{t.website ? "\u{1F310}" : ""}{t.telegram ? "\u2708" : ""}</span>}
                   {t.imageDupe && <span style={{ marginLeft: 4, color: T.red, fontSize: 8, fontWeight: 700 }}>{"\u26A0"}DUPE IMG</span>}
@@ -862,12 +920,12 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
                 </div>
               </div>
               <div style={{ textAlign: "right", flexShrink: 0 }}>
-                <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 800, color: t.verdict === "APE" ? T.green : T.dim }}>{t.buys || 0}b / {t.sells || 0}s</div>
-                <div style={{ fontFamily: "monospace", fontSize: 9, color: t.solVol > 1 ? T.green : T.faint }}>{(t.solVol || 0).toFixed(1)} SOL{t.mcapUsd > 0 ? " \u00B7 $" + fmt(t.mcapUsd) : ""}</div>
+                <div style={{ fontFamily: "monospace", fontSize: mobile ? 13 : 14, fontWeight: 800, color: t.verdict === "APE" ? T.green : T.dim }}>{t.buys || 0}b / {t.sells || 0}s</div>
+                <div style={{ fontFamily: "monospace", fontSize: 10, color: t.solVol > 1 ? T.green : T.faint }}>{(t.solVol || 0).toFixed(1)} SOL{t.mcapUsd > 0 ? " \u00B7 $" + fmt(t.mcapUsd) : ""}</div>
                 {activeTab === "graduating" && t.bp > 0 ? (
-                  <div style={{ fontFamily: "monospace", fontSize: 10, fontWeight: 800, color: t.bp >= 70 ? "#ffaa00" : T.green, marginTop: 1 }}>{t.bp.toFixed(0)}% bonded</div>
+                  <div style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 800, color: t.bp >= 70 ? "#ffaa00" : T.green, marginTop: 2 }}>{t.bp.toFixed(0)}% bonded</div>
                 ) : t.bp > 0 ? (
-                  <div style={{ width: 40, height: 2, background: T.border, borderRadius: 1, marginTop: 3, marginLeft: "auto" }}><div style={{ height: 2, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 1 }} /></div>
+                  <div style={{ width: 44, height: 3, background: T.border, borderRadius: 2, marginTop: 3, marginLeft: "auto" }}><div style={{ height: 3, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 2 }} /></div>
                 ) : null}
               </div>
             </div>
