@@ -732,7 +732,7 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
 
   useEffect(() => {
     let alive = true;
-    const poll = async () => { while (alive) { if (enabled) await fetchRadar(); await new Promise(r => setTimeout(r, 5000)); } };
+    const poll = async () => { while (alive) { if (enabled) await fetchRadar(); await new Promise(r => setTimeout(r, 3000)); } };
     fetchRadar(); poll();
     return () => { alive = false; };
   }, [enabled]);
@@ -867,7 +867,7 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
           {selected?.error && <div style={{ padding: "14px 16px", margin: "10px 16px", background: T.red + "10", borderRadius: 12, fontFamily: mono, fontSize: 12, color: T.red, display: "flex", justifyContent: "space-between" }}><span>{selected.error}</span><button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: T.red, cursor: "pointer" }}>{"\u2715"}</button></div>}
 
           {/* Card Grid */}
-          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(195px, 1fr))", gap: mobile ? 8 : 12, padding: mobile ? "12px 10px" : "16px 20px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(220px, 1fr))", gap: mobile ? 8 : 14, padding: mobile ? "12px 10px" : "16px 20px" }}>
             {tokens.map((t, i) => <TokenCard key={t.ca} t={t} i={i} />)}
           </div>
         </div>
@@ -1438,7 +1438,7 @@ export default function App() {
             }} disabled={upgradeVerifying} style={{ width: "100%", padding: "14px", background: "linear-gradient(135deg, #534bb1, #551bf9)", border: "none", borderRadius: 12, color: "#fff", fontFamily: mono, fontSize: 15, fontWeight: 800, cursor: upgradeVerifying ? "wait" : "pointer", opacity: upgradeVerifying ? 0.6 : 1 }}>{upgradeVerifying ? "Verifying..." : "Verify Payment"}</button>
             <button onClick={() => setShowUpgrade(false)} style={{ width: "100%", marginTop: 8, padding: "10px", background: "none", border: "1px solid " + T.border, borderRadius: 10, color: T.dim, fontFamily: mono, fontSize: 13, cursor: "pointer" }}>Cancel</button>
           </div></div>)}
-          <div style={{ maxWidth: launched ? 1100 : appTab === "radar" ? 1200 : 760, margin: "0 auto", padding: mobile ? "16px 12px" : "28px 24px", position: "relative", zIndex: 1 }}>
+          <div style={{ maxWidth: launched ? 1100 : appTab === "radar" ? 1400 : 760, margin: "0 auto", padding: appTab === "radar" ? (mobile ? "10px 6px" : "16px 12px") : (mobile ? "16px 12px" : "28px 24px"), position: "relative", zIndex: 1 }}>
             {launched && launchCA ? (
               <div>
                 {/* ═══ CHART ═══ */}
