@@ -694,9 +694,10 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
 }
 
 // ═══════════════════════════════════════
-// RADAR — Live new pairs scanner
+// RADAR — Full-screen card grid scanner (pump.fun style)
 // ═══════════════════════════════════════
-function RadarFeed({ T, mobile, onApe, isVip }) {
+function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
+  const mono = "'SF Mono',SFMono-Regular,ui-monospace,'Cascadia Mono',Menlo,monospace";
   const [tabs, setTabs] = useState({ new: [], hot: [], graduating: [] });
   const [activeTab, setActiveTab] = useState("hot");
   const [wsAlive, setWsAlive] = useState(false);
@@ -704,7 +705,6 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
   const [loading, setLoading] = useState(true);
   const [enabled, setEnabled] = useState(true);
   const [selected, setSelected] = useState(null);
-  const [detailLoading, setDetailLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [online, setOnline] = useState(0);
   const [search, setSearch] = useState("");
@@ -732,34 +732,21 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
 
   useEffect(() => {
     let alive = true;
-    const poll = async () => {
-      while (alive) {
-        if (enabled) await fetchRadar();
-        await new Promise(r => setTimeout(r, 5000));
-      }
-    };
-    fetchRadar();
-    poll();
+    const poll = async () => { while (alive) { if (enabled) await fetchRadar(); await new Promise(r => setTimeout(r, 5000)); } };
+    fetchRadar(); poll();
     return () => { alive = false; };
   }, [enabled]);
 
   const handleRefresh = async () => { setRefreshing(true); await fetchRadar(); setTimeout(() => setRefreshing(false), 600); };
-
-  const handleToggle = async () => {
-    try {
-      const r = await fetch(window.__BONDLI_API + "/api/radar/toggle", { method: "POST" });
-      if (r.ok) { const d = await r.json(); setEnabled(d.enabled); }
-    } catch {}
-  };
+  const handleToggle = async () => { try { const r = await fetch(window.__BONDLI_API + "/api/radar/toggle", { method: "POST" }); if (r.ok) { const d = await r.json(); setEnabled(d.enabled); } } catch {} };
 
   const handleSelect = async (ca) => {
     if (selected?.ca === ca) { setSelected(null); return; }
-    setDetailLoading(true); setSelected({ ca, loading: true });
+    setSelected({ ca, loading: true });
     try {
       const r = await fetch(window.__BONDLI_API + "/api/radar/token/" + ca);
       if (r.ok) { const d = await r.json(); setSelected(d.ok ? d : { ca, error: d.error || "Failed" }); }
     } catch { setSelected({ ca, error: "Network error" }); }
-    setDetailLoading(false);
   };
 
   const fmt = n => !n || n === 0 ? "\u2014" : n >= 1e6 ? (n/1e6).toFixed(1) + "M" : n >= 1e3 ? (n/1e3).toFixed(1) + "K" : n.toFixed(0);
@@ -767,172 +754,124 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
   const ago = ts => { if (!ts) return ""; const s = Math.floor((Date.now() - ts) / 1000); return s < 60 ? s + "s" : s < 3600 ? Math.floor(s/60) + "m" : Math.floor(s/3600) + "h"; };
 
   const TAB_CONFIG = [
-    { id: "new", label: "\u{1F195} New", desc: "fresh tokens with early buys" },
-    { id: "hot", label: "\uD83D\uDD25 Hot", desc: "volume spikes right now" },
-    { id: "graduating", label: "\uD83C\uDF93 Graduating", desc: "near bonding completion" },
+    { id: "hot", label: "\uD83D\uDD25 Hot" },
+    { id: "new", label: "\u{1F195} New" },
+    { id: "graduating", label: "\uD83C\uDF93 Grad" },
   ];
 
-  return (
-    <div>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", borderBottom: "1px solid " + T.border }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 15 }}>{"\uD83D\uDCE1"}</span>
-          <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: T.text }}>Radar</span>
-          <div style={{ width: 7, height: 7, borderRadius: "50%", background: !enabled ? T.faint : wsAlive ? T.green : T.red, boxShadow: enabled && wsAlive ? "0 0 6px " + T.green : "none", animation: enabled && wsAlive ? "pulse 2s infinite" : "none" }} />
-          <span style={{ fontFamily: "monospace", fontSize: 10, color: !enabled ? T.faint : wsAlive ? T.green : T.red }}>{!enabled ? "OFF" : wsAlive ? "LIVE" : "..."}</span>
-          {enabled && poolSize > 0 && <span style={{ fontFamily: "monospace", fontSize: 9, color: T.faint }}>{poolSize}</span>}
-          {online > 0 && <span style={{ fontFamily: "monospace", fontSize: 9, color: T.green, opacity: 0.6, display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: T.green, opacity: 0.8 }} />{online}</span>}
+  // ── Token Card ──
+  const TokenCard = ({ t, i }) => (
+    <div onClick={() => handleSelect(t.ca)} style={{
+      background: T.surface, border: "1px solid " + T.border, borderRadius: 14,
+      overflow: "hidden", cursor: "pointer", transition: "all .2s",
+    }}
+      onMouseEnter={e => { e.currentTarget.style.borderColor = T.green + "55"; e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px " + T.green + "08"; }}
+      onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}
+    >
+      <div style={{ position: "relative", width: "100%", aspectRatio: "1", background: T.bg, overflow: "hidden" }}>
+        {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 40, color: T.faint + "44", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
+        <div style={{ position: "absolute", top: 6, right: 6, background: vc(t.verdict) + "dd", color: "#000", fontFamily: mono, fontSize: 10, fontWeight: 900, padding: "2px 7px", borderRadius: 5 }}>{t.verdict} {t.score}</div>
+        {i < 3 && <div style={{ position: "absolute", top: 6, left: 6, background: T.green + "dd", color: "#000", fontFamily: mono, fontSize: 10, fontWeight: 900, padding: "2px 6px", borderRadius: 5 }}>#{i + 1}</div>}
+        {t.bundled && <div style={{ position: "absolute", bottom: 6, left: 6, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 8, fontWeight: 800, padding: "2px 5px", borderRadius: 3 }}>{"\u26A0"} BUNDLED</div>}
+        {t.imageDupe && <div style={{ position: "absolute", bottom: 6, right: 6, background: T.red + "cc", color: "#fff", fontFamily: mono, fontSize: 8, fontWeight: 800, padding: "2px 5px", borderRadius: 3 }}>{"\u26A0"} DUPE</div>}
+      </div>
+      <div style={{ padding: "8px 10px 10px" }}>
+        <div style={{ fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name || t.ticker}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+          <span style={{ fontFamily: mono, fontSize: 11, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
+          {t.dev && <span style={{ fontFamily: mono, fontSize: 8, color: T.faint }}>{"\u{1F464}"} {t.dev}</span>}
+          <span style={{ fontFamily: mono, fontSize: 8, color: T.faint }}>{ago(t.created)}</span>
+          {t.socialCount > 0 && <span style={{ fontSize: 9 }}>{t.twitter ? "\u{1D54F}" : ""}{t.website ? "\u{1F310}" : ""}{t.telegram ? "\u2708" : ""}</span>}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <button onClick={handleRefresh} disabled={refreshing} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "monospace", fontSize: 10, color: T.dim, transition: "all .2s" }}><span style={{ display: "inline-block", transition: "transform .5s", transform: refreshing ? "rotate(360deg)" : "none" }}>{"\u21BB"}</span></button>
-          <div style={{ cursor: "pointer", display: "flex", alignItems: "center" }} onClick={handleToggle}>
-            <div style={{ width: 28, height: 14, borderRadius: 7, background: enabled ? T.green + "44" : T.border, padding: 1, transition: "all .2s" }}><div style={{ width: 12, height: 12, borderRadius: "50%", background: enabled ? T.green : T.faint, transform: enabled ? "translateX(14px)" : "translateX(0)", transition: "all .2s" }} /></div>
-          </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+          <span style={{ fontFamily: mono, fontSize: 11, fontWeight: 800, color: T.green }}>MC ${fmt(t.mcapUsd)}</span>
+          {t.bp > 0 && <div style={{ width: 36, height: 3, background: T.border, borderRadius: 2, overflow: "hidden" }}><div style={{ height: 3, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 2 }} /></div>}
+          <span style={{ fontFamily: mono, fontSize: 10, color: T.dim }}>{t.buys}b/{t.sells}s</span>
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ minHeight: fullScreen ? "calc(100vh - 60px)" : "auto" }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: fullScreen ? "14px 20px" : "10px 14px", borderBottom: "1px solid " + T.border }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 18 }}>{"\uD83D\uDCE1"}</span>
+          <span style={{ fontFamily: mono, fontSize: fullScreen ? 18 : 15, fontWeight: 800, color: T.text }}>Radar</span>
+          <div style={{ width: 8, height: 8, borderRadius: "50%", background: !enabled ? T.faint : wsAlive ? T.green : T.red, boxShadow: enabled && wsAlive ? "0 0 8px " + T.green : "none" }} />
+          {enabled && poolSize > 0 && <span style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>{poolSize} scanned</span>}
+          {online > 0 && <span style={{ fontFamily: mono, fontSize: 10, color: T.green, opacity: 0.5 }}><span style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: T.green, marginRight: 3, verticalAlign: "middle" }} />{online}</span>}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button onClick={handleRefresh} disabled={refreshing} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontFamily: mono, fontSize: 11, color: T.dim }}><span style={{ display: "inline-block", transition: "transform .5s", transform: refreshing ? "rotate(360deg)" : "none" }}>{"\u21BB"}</span></button>
+          <div style={{ cursor: "pointer" }} onClick={handleToggle}><div style={{ width: 32, height: 16, borderRadius: 8, background: enabled ? T.green + "44" : T.border, padding: 1, transition: "all .2s" }}><div style={{ width: 14, height: 14, borderRadius: "50%", background: enabled ? T.green : T.faint, transform: enabled ? "translateX(16px)" : "translateX(0)", transition: "all .2s" }} /></div></div>
         </div>
       </div>
 
-      {/* Tabs */}
+      {/* Tabs + Search inline */}
       {enabled && !loading && (
-        <div style={{ display: "flex", borderBottom: "1px solid " + T.border }}>
+        <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid " + T.border, padding: "0 4px" }}>
           {TAB_CONFIG.map(tab => {
             const count = (tabs[tab.id] || []).length;
             const isActive = activeTab === tab.id;
-            return (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)} style={{
-                flex: 1, padding: "8px 4px", background: isActive ? T.green + "08" : "transparent",
-                border: "none", borderBottom: isActive ? "2px solid " + T.green : "2px solid transparent",
-                fontFamily: "monospace", fontSize: mobile ? 11 : 12, fontWeight: 700,
-                color: isActive ? T.green : T.dim, cursor: "pointer", transition: "all .15s",
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
-              }}>
-                {tab.label}
-                {count > 0 && <span style={{ fontSize: 9, background: isActive ? T.green + "22" : T.border + "66", color: isActive ? T.green : T.faint, borderRadius: 8, padding: "1px 5px", fontWeight: 800 }}>{count}</span>}
-              </button>
-            );
+            return (<button key={tab.id} onClick={() => { setActiveTab(tab.id); setSelected(null); setSearch(""); }} style={{ padding: "10px 14px", background: "none", border: "none", borderBottom: isActive ? "2px solid " + T.green : "2px solid transparent", fontFamily: mono, fontSize: 13, fontWeight: 700, color: isActive ? T.green : T.dim, cursor: "pointer" }}>{tab.label}{count > 0 && <span style={{ marginLeft: 4, fontSize: 10, opacity: 0.7 }}>{count}</span>}</button>);
           })}
-        </div>
-      )}
-
-      {/* Search */}
-      {enabled && !loading && (
-        <div style={{ padding: "6px 12px", borderBottom: "1px solid " + T.border }}>
-          <input
-            type="text" value={search} onChange={e => setSearch(e.target.value)}
-            placeholder={"\u{1F50D} Search ticker, name, or CA..."}
-            style={{ width: "100%", padding: "8px 12px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: "monospace", fontSize: 12, outline: "none", boxSizing: "border-box" }}
-          />
+          <div style={{ flex: 1 }} />
+          <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder={"\u{1F50D} Search..."} style={{ width: mobile ? 110 : 200, padding: "6px 10px", margin: "4px 8px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: mono, fontSize: 11, outline: "none" }} />
         </div>
       )}
 
       {!enabled ? (
-        <div style={{ padding: "30px 20px", textAlign: "center" }}>
-          <div style={{ fontFamily: "monospace", fontSize: 13, color: T.faint, marginBottom: 8 }}>Radar paused</div>
-          <button onClick={handleToggle} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 8, padding: "8px 20px", fontFamily: "monospace", fontSize: 12, fontWeight: 700, color: T.green, cursor: "pointer" }}>Turn On</button>
-        </div>
+        <div style={{ padding: 60, textAlign: "center" }}><div style={{ fontFamily: mono, fontSize: 15, color: T.faint, marginBottom: 12 }}>Radar paused</div><button onClick={handleToggle} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 10, padding: "10px 28px", fontFamily: mono, fontSize: 14, fontWeight: 700, color: T.green, cursor: "pointer" }}>Turn On</button></div>
       ) : loading ? (
-        <div style={{ padding: 40, textAlign: "center", fontFamily: "monospace", fontSize: 13, color: T.faint, animation: "pulse 2s infinite" }}>{"\uD83D\uDCE1"} Scanning for movers...</div>
+        <div style={{ padding: 80, textAlign: "center", fontFamily: mono, fontSize: 15, color: T.faint, animation: "pulse 2s infinite" }}>{"\uD83D\uDCE1"} Scanning...</div>
       ) : tokens.length === 0 ? (
-        <div style={{ padding: "30px 20px", textAlign: "center" }}>
-          <div style={{ fontFamily: "monospace", fontSize: 12, color: T.faint, marginBottom: 4 }}>No {activeTab} movers yet</div>
-          <div style={{ fontFamily: "monospace", fontSize: 10, color: T.faint }}>{poolSize} tokens scanned {"\u2014"} {TAB_CONFIG.find(t => t.id === activeTab)?.desc || ""}</div>
-        </div>
+        <div style={{ padding: 60, textAlign: "center" }}><div style={{ fontFamily: mono, fontSize: 14, color: T.faint }}>No movers yet</div><div style={{ fontFamily: mono, fontSize: 11, color: T.faint, marginTop: 4 }}>{poolSize} tokens scanned{search ? ` — no matches for "${search}"` : ""}</div></div>
       ) : (
         <div>
-          {/* Expanded preview */}
+          {/* Detail panel */}
           {selected && !selected.loading && !selected.error && (
-            <div style={{ background: T.bg, border: "2px solid " + T.green + "33", borderRadius: 14, margin: "8px 10px", overflow: "hidden" }}>
-              <div style={{ display: "flex", gap: mobile ? 10 : 14, padding: "14px 14px 10px" }}>
-                {selected.image ? <img src={selected.image} style={{ width: mobile ? 100 : 130, height: mobile ? 100 : 130, borderRadius: 16, objectFit: "cover", flexShrink: 0, border: "2px solid " + T.border }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: mobile ? 100 : 130, height: mobile ? 100 : 130, borderRadius: 16, background: T.surface, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontSize: 40, color: T.faint, fontWeight: 800 }}>{(selected.ticker || "?")[0]}</div>}
+            <div style={{ background: T.bg, border: "2px solid " + T.green + "33", margin: "16px", borderRadius: 16, overflow: "hidden" }}>
+              <div style={{ display: "flex", gap: mobile ? 12 : 20, padding: mobile ? 16 : "20px 24px" }}>
+                {selected.image ? <img src={selected.image} style={{ width: mobile ? 100 : 150, height: mobile ? 100 : 150, borderRadius: 16, objectFit: "cover", flexShrink: 0, border: "2px solid " + T.border }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: mobile ? 100 : 150, height: mobile ? 100 : 150, borderRadius: 16, background: T.surface, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 48, color: T.faint, fontWeight: 800 }}>{(selected.ticker || "?")[0]}</div>}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: "monospace", fontSize: mobile ? 17 : 20, fontWeight: 900, color: T.text }}>{selected.name}</div>
-                  <div style={{ fontFamily: "monospace", fontSize: 14, color: T.green, fontWeight: 700 }}>${selected.ticker}</div>
-                  <div style={{ fontFamily: "monospace", fontSize: 11, color: T.dim, marginTop: 4, lineHeight: 1.4, maxHeight: 48, overflow: "hidden" }}>{selected.description || "No description"}</div>
-                  {selected.creator && <div style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, marginTop: 3 }}>dev: {selected.creator.slice(0, 12)}...</div>}
-                  {/* Social badges */}
-                  <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
-                    {selected.twitter && (
-                      <a href={selected.twitter.startsWith("http") ? selected.twitter : "https://x.com/" + (selected.twitterHandle || "")} target="_blank" rel="noopener" style={{ fontSize: 9, fontFamily: "monospace", color: selected.twitterValid ? "#1DA1F2" : T.faint, background: "#1DA1F222", padding: "2px 6px", borderRadius: 4, textDecoration: "none", border: "1px solid #1DA1F233" }}>{"\u{1D54F}"} {selected.twitterHandle || "twitter"}{selected.twitterValid ? "" : " ?"}</a>
-                    )}
-                    {selected.website && (
-                      <a href={selected.website} target="_blank" rel="noopener" style={{ fontSize: 9, fontFamily: "monospace", color: selected.websiteLive ? T.green : selected.websiteValid ? T.dim : T.faint, background: T.green + "11", padding: "2px 6px", borderRadius: 4, textDecoration: "none", border: "1px solid " + T.green + "22" }}>{"\u{1F310}"} {selected.websiteLive ? "live" : selected.websiteValid ? "site" : "?"}</a>
-                    )}
-                    {selected.telegram && (
-                      <a href={selected.telegram.startsWith("http") ? selected.telegram : "https://t.me/" + selected.telegram} target="_blank" rel="noopener" style={{ fontSize: 9, fontFamily: "monospace", color: "#229ED9", background: "#229ED922", padding: "2px 6px", borderRadius: 4, textDecoration: "none", border: "1px solid #229ED933" }}>{"\u2708"} TG</a>
-                    )}
-                    {selected.socialCount === 0 && <span style={{ fontSize: 9, fontFamily: "monospace", color: T.faint, opacity: 0.6 }}>no socials</span>}
+                  <div style={{ fontFamily: mono, fontSize: mobile ? 22 : 28, fontWeight: 900, color: T.text }}>{selected.name}</div>
+                  <div style={{ fontFamily: mono, fontSize: 16, color: T.green, fontWeight: 700 }}>${selected.ticker}</div>
+                  <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginTop: 6, lineHeight: 1.5, maxHeight: 54, overflow: "hidden" }}>{selected.description || ""}</div>
+                  {selected.creator && <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 4 }}>dev: {selected.creator.slice(0, 14)}...</div>}
+                  <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
+                    {selected.twitter && <a href={selected.twitter.startsWith("http") ? selected.twitter : "https://x.com/" + (selected.twitterHandle || "")} target="_blank" rel="noopener" style={{ fontSize: 10, fontFamily: mono, color: "#1DA1F2", background: "#1DA1F218", padding: "3px 8px", borderRadius: 6, textDecoration: "none" }}>{"\u{1D54F}"} {selected.twitterHandle || "twitter"}</a>}
+                    {selected.website && <a href={selected.website} target="_blank" rel="noopener" style={{ fontSize: 10, fontFamily: mono, color: selected.websiteLive ? T.green : T.dim, background: T.green + "12", padding: "3px 8px", borderRadius: 6, textDecoration: "none" }}>{"\u{1F310}"} {selected.websiteLive ? "live" : "site"}</a>}
+                    {selected.telegram && <a href={selected.telegram.startsWith("http") ? selected.telegram : "https://t.me/" + selected.telegram} target="_blank" rel="noopener" style={{ fontSize: 10, fontFamily: mono, color: "#229ED9", background: "#229ED918", padding: "3px 8px", borderRadius: 6, textDecoration: "none" }}>{"\u2708"} TG</a>}
                   </div>
-                  {/* Image dupe warning */}
-                  {selected.imageDupe && (
-                    <div style={{ marginTop: 4, fontSize: 9, fontFamily: "monospace", color: T.red, background: T.red + "10", padding: "3px 6px", borderRadius: 4, border: "1px solid " + T.red + "22" }}>{"\u26A0"} Reused image — seen on {selected.imageOriginal?.ticker || "another token"} ({selected.imageOriginal?.seen || "multiple"} times)</div>
-                  )}
-                  {/* Bundle warning */}
-                  {selected.bundleScore > 0 && (
-                    <div style={{ marginTop: 4, fontSize: 9, fontFamily: "monospace", color: selected.bundled ? "#ff6600" : "#ffaa00", background: (selected.bundled ? "#ff6600" : "#ffaa00") + "10", padding: "4px 6px", borderRadius: 4, border: "1px solid " + (selected.bundled ? "#ff6600" : "#ffaa00") + "22" }}>
-                      {selected.bundled ? "\u26A0 LIKELY BUNDLED" : "\u26A0 Bundle risk"} ({selected.bundleScore}/100)
-                      {selected.bundleFlags?.length > 0 && <span style={{ opacity: 0.8 }}> — {selected.bundleFlags.join(", ")}</span>}
-                    </div>
-                  )}
+                  {selected.bundleScore > 0 && <div style={{ marginTop: 6, fontSize: 10, fontFamily: mono, color: selected.bundled ? "#ff6600" : "#ffaa00", background: (selected.bundled ? "#ff6600" : "#ffaa00") + "10", padding: "4px 8px", borderRadius: 6 }}>{selected.bundled ? "\u26A0 BUNDLED" : "\u26A0 Bundle risk"} ({selected.bundleScore}/100){selected.bundleFlags?.length > 0 ? " — " + selected.bundleFlags.join(", ") : ""}</div>}
+                  {selected.imageDupe && <div style={{ marginTop: 4, fontSize: 10, fontFamily: mono, color: T.red, background: T.red + "10", padding: "4px 8px", borderRadius: 6 }}>{"\u26A0"} Reused image</div>}
                 </div>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 1, background: T.border + "33", margin: "0 14px", borderRadius: 8, overflow: "hidden" }}>
-                {[{ k: "MCap", v: selected.mcap ? "$" + fmt(selected.mcap) : (selected.mcapSol ? selected.mcapSol + " SOL" : "\u2014"), c: selected.mcap > 5000 ? T.green : T.dim }, { k: "Bonded", v: (selected.bp || 0).toFixed(1) + "%", c: selected.bp > 20 ? T.green : T.faint }, { k: "Buys", v: String(selected.buys || 0), c: T.green }, { k: "Sells", v: String(selected.sells || 0), c: T.red || "#ff4444" }, { k: "Volume", v: (selected.solVol || 0).toFixed(2) + " SOL", c: selected.solVol > 1 ? T.green : T.dim }, { k: "Replies", v: String(selected.replies || 0), c: T.dim }].map(s => (
-                  <div key={s.k} style={{ background: T.surface, padding: "8px 4px", textAlign: "center" }}>
-                    <div style={{ fontSize: 14, fontFamily: "monospace", fontWeight: 800, color: s.c }}>{s.v}</div>
-                    <div style={{ fontSize: 9, color: T.faint, fontFamily: "monospace" }}>{s.k}</div>
-                  </div>
-                ))}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr 1fr", gap: 1, background: T.border + "33", margin: "0 16px" }}>
+                {[{ k: "MCap", v: selected.mcap ? "$" + fmt(selected.mcap) : "\u2014", c: T.green }, { k: "Bonded", v: (selected.bp || 0).toFixed(1) + "%", c: selected.bp > 20 ? T.green : T.faint }, { k: "Buys", v: String(selected.buys || 0), c: T.green }, { k: "Sells", v: String(selected.sells || 0), c: "#ff4444" }, { k: "Volume", v: (selected.solVol || 0).toFixed(1) + " SOL", c: T.green }, { k: "Replies", v: String(selected.replies || 0), c: T.dim }].map(s => (<div key={s.k} style={{ background: T.surface, padding: "10px 6px", textAlign: "center" }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 800, color: s.c }}>{s.v}</div><div style={{ fontSize: 9, color: T.faint, fontFamily: mono, marginTop: 2 }}>{s.k}</div></div>))}
               </div>
-              {selected.bp > 0 && <div style={{ height: 3, background: T.border, margin: "8px 14px 0" }}><div style={{ height: 3, background: selected.bp >= 80 ? "#ffaa00" : T.green, width: Math.min(100, selected.bp) + "%", borderRadius: 2 }} /></div>}
-              {/* Mini WS chart */}
-              <div style={{ margin: "8px 14px 0", borderRadius: 8, overflow: "hidden", border: "1px solid " + T.border }}>
-                <PriceChart trades={[]} mobile={true} T={T} ca={selected.ca} />
-              </div>
-              <div onClick={() => { navigator.clipboard?.writeText(selected.ca); }} style={{ margin: "8px 14px", background: T.surface, borderRadius: 8, padding: "6px 10px", fontFamily: "monospace", fontSize: 10, color: T.faint, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.ca} <span style={{ color: T.dim }}>{"\u2398"} copy</span></div>
-              <div style={{ display: "flex", gap: 6, padding: "6px 14px 12px", flexWrap: "wrap" }}>
-                <button onClick={() => { onApe(selected.ca); setSelected(null); }} style={{ flex: 1, padding: "10px", background: T.green + "18", border: "1px solid " + T.green, borderRadius: 10, fontFamily: "monospace", fontSize: 14, fontWeight: 900, color: T.green, cursor: "pointer" }}>{"\uD83D\uDE80"} APE</button>
-                <a href={"https://pump.fun/coin/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "10px 10px", border: "1px solid " + T.border, borderRadius: 10, fontFamily: "monospace", fontSize: 10, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>pump {"\u2197"}</a>
-                <a href={"https://dexscreener.com/solana/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "10px 10px", border: "1px solid " + T.border, borderRadius: 10, fontFamily: "monospace", fontSize: 10, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>dex {"\u2197"}</a>
-                <a href={"https://solscan.io/token/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "10px 10px", border: "1px solid " + T.border, borderRadius: 10, fontFamily: "monospace", fontSize: 10, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>scan {"\u2197"}</a>
-                <button onClick={() => setSelected(null)} style={{ padding: "10px 12px", background: "none", border: "1px solid " + T.border, borderRadius: 10, fontFamily: "monospace", fontSize: 11, color: T.faint, cursor: "pointer" }}>{"\u2715"}</button>
+              {selected.bp > 0 && <div style={{ height: 4, background: T.border, margin: "8px 16px 0", borderRadius: 2 }}><div style={{ height: 4, background: selected.bp >= 80 ? "#ffaa00" : T.green, width: Math.min(100, selected.bp) + "%", borderRadius: 2 }} /></div>}
+              <div style={{ margin: "10px 16px 0", borderRadius: 10, overflow: "hidden", border: "1px solid " + T.border }}><PriceChart trades={[]} mobile={true} T={T} ca={selected.ca} /></div>
+              <div onClick={() => { navigator.clipboard?.writeText(selected.ca); }} style={{ margin: "10px 16px", background: T.surface, borderRadius: 8, padding: "8px 12px", fontFamily: mono, fontSize: 11, color: T.faint, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.ca} <span style={{ color: T.dim }}>{"\u2398"} copy</span></div>
+              <div style={{ display: "flex", gap: 8, padding: "0 16px 16px" }}>
+                <button onClick={() => { onApe(selected.ca); setSelected(null); }} style={{ flex: 1, padding: "14px", background: T.green + "18", border: "2px solid " + T.green, borderRadius: 12, fontFamily: mono, fontSize: 16, fontWeight: 900, color: T.green, cursor: "pointer" }}>{"\uD83D\uDE80"} APE</button>
+                <a href={"https://pump.fun/coin/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "14px", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 11, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>pump{"\u2197"}</a>
+                <a href={"https://dexscreener.com/solana/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "14px", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 11, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>dex{"\u2197"}</a>
+                <button onClick={() => setSelected(null)} style={{ padding: "14px", background: "none", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 14, color: T.faint, cursor: "pointer" }}>{"\u2715"}</button>
               </div>
             </div>
           )}
-          {selected?.loading && <div style={{ padding: 20, textAlign: "center", fontFamily: "monospace", fontSize: 12, color: T.dim, animation: "pulse 1s infinite" }}>Loading...</div>}
-          {selected?.error && <div style={{ padding: "12px 14px", margin: "8px 10px", background: T.red + "10", borderRadius: 10, fontFamily: "monospace", fontSize: 11, color: T.red, display: "flex", justifyContent: "space-between", alignItems: "center" }}><span>{selected.error}</span><button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: T.red, cursor: "pointer" }}>{"\u2715"}</button></div>}
-          {/* Ranked token list */}
-          {tokens.map((t, i) => (
-            <div key={t.ca} onClick={() => handleSelect(t.ca)} style={{ display: "flex", alignItems: "center", gap: 10, padding: mobile ? "10px 12px" : "12px 14px", borderBottom: "1px solid " + T.border + "22", cursor: "pointer", transition: "background .15s", background: selected?.ca === t.ca ? T.green + "08" : "transparent" }} onMouseEnter={e => e.currentTarget.style.background = T.green + "06"} onMouseLeave={e => e.currentTarget.style.background = selected?.ca === t.ca ? T.green + "08" : "transparent"}>
-              <span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 800, color: i < 3 ? T.green : T.faint, width: 18, textAlign: "center", flexShrink: 0 }}>{i + 1}</span>
-              {t.image ? <img src={t.image} style={{ width: mobile ? 40 : 46, height: mobile ? 40 : 46, borderRadius: 10, objectFit: "cover", flexShrink: 0, border: "1px solid " + T.border }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: mobile ? 40 : 46, height: mobile ? 40 : 46, borderRadius: 10, background: T.border + "44", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontSize: 16, color: T.faint, fontWeight: 700 }}>{(t.ticker || "?")[0]}</div>}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontFamily: "monospace", fontSize: mobile ? 14 : 15, fontWeight: 800, color: T.text }}>${t.ticker}</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 9, fontWeight: 700, color: vc(t.verdict), background: vc(t.verdict) + "12", border: "1px solid " + vc(t.verdict) + "33", borderRadius: 3, padding: "1px 6px" }}>{t.verdict}</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 10, color: T.green, fontWeight: 700 }}>{t.score}</span>
-                </div>
-                <div style={{ fontFamily: "monospace", fontSize: 10, color: T.faint, marginTop: 2 }}>
-                  {t.name}{t.created ? " \u00B7 " + ago(t.created) : ""}
-                  {t.socialCount > 0 && <span style={{ marginLeft: 4 }}>{t.twitter ? "\u{1D54F}" : ""}{t.website ? "\u{1F310}" : ""}{t.telegram ? "\u2708" : ""}</span>}
-                  {t.imageDupe && <span style={{ marginLeft: 4, color: T.red, fontSize: 8, fontWeight: 700 }}>{"\u26A0"}DUPE IMG</span>}
-                  {t.bundled && <span style={{ marginLeft: 4, color: "#ff6600", fontSize: 8, fontWeight: 700, background: "#ff660015", padding: "0 3px", borderRadius: 2 }}>{"\u26A0"}BUNDLED</span>}
-                  {!t.bundled && t.bundleScore > 0 && t.bundleScore >= 20 && <span style={{ marginLeft: 4, color: "#ffaa00", fontSize: 7, opacity: 0.8 }}>b:{t.bundleScore}</span>}
-                </div>
-              </div>
-              <div style={{ textAlign: "right", flexShrink: 0 }}>
-                <div style={{ fontFamily: "monospace", fontSize: mobile ? 13 : 14, fontWeight: 800, color: t.verdict === "APE" ? T.green : T.dim }}>{t.buys || 0}b / {t.sells || 0}s</div>
-                <div style={{ fontFamily: "monospace", fontSize: 10, color: t.solVol > 1 ? T.green : T.faint }}>{(t.solVol || 0).toFixed(1)} SOL{t.mcapUsd > 0 ? " \u00B7 $" + fmt(t.mcapUsd) : ""}</div>
-                {activeTab === "graduating" && t.bp > 0 ? (
-                  <div style={{ fontFamily: "monospace", fontSize: 11, fontWeight: 800, color: t.bp >= 70 ? "#ffaa00" : T.green, marginTop: 2 }}>{t.bp.toFixed(0)}% bonded</div>
-                ) : t.bp > 0 ? (
-                  <div style={{ width: 44, height: 3, background: T.border, borderRadius: 2, marginTop: 3, marginLeft: "auto" }}><div style={{ height: 3, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 2 }} /></div>
-                ) : null}
-              </div>
-            </div>
-          ))}
+          {selected?.loading && <div style={{ padding: 40, textAlign: "center", fontFamily: mono, fontSize: 14, color: T.dim, animation: "pulse 1s infinite" }}>Loading...</div>}
+          {selected?.error && <div style={{ padding: "14px 16px", margin: "10px 16px", background: T.red + "10", borderRadius: 12, fontFamily: mono, fontSize: 12, color: T.red, display: "flex", justifyContent: "space-between" }}><span>{selected.error}</span><button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: T.red, cursor: "pointer" }}>{"\u2715"}</button></div>}
+
+          {/* Card Grid */}
+          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(195px, 1fr))", gap: mobile ? 8 : 12, padding: mobile ? "12px 10px" : "16px 20px" }}>
+            {tokens.map((t, i) => <TokenCard key={t.ca} t={t} i={i} />)}
+          </div>
         </div>
       )}
-      <div style={{ textAlign: "center", padding: "6px", fontFamily: "monospace", fontSize: 8, color: T.faint }}>{TAB_CONFIG.find(t => t.id === activeTab)?.desc || ""} {"\u00B7"} auto-refresh 5s</div>
     </div>
   );
 }
@@ -1372,6 +1311,7 @@ export default function App() {
   const [fleetKeys, setFleetKeys] = useState([]); const [devSecret, setDevSecret] = useState("");
   const [copied, setCopied] = useState(false);
   const [onlineCount, setOnlineCount] = useState(0);
+  const [appTab, setAppTab] = useState("radar"); // "radar" or "trade"
   const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
@@ -1498,7 +1438,7 @@ export default function App() {
             }} disabled={upgradeVerifying} style={{ width: "100%", padding: "14px", background: "linear-gradient(135deg, #534bb1, #551bf9)", border: "none", borderRadius: 12, color: "#fff", fontFamily: mono, fontSize: 15, fontWeight: 800, cursor: upgradeVerifying ? "wait" : "pointer", opacity: upgradeVerifying ? 0.6 : 1 }}>{upgradeVerifying ? "Verifying..." : "Verify Payment"}</button>
             <button onClick={() => setShowUpgrade(false)} style={{ width: "100%", marginTop: 8, padding: "10px", background: "none", border: "1px solid " + T.border, borderRadius: 10, color: T.dim, fontFamily: mono, fontSize: 13, cursor: "pointer" }}>Cancel</button>
           </div></div>)}
-          <div style={{ maxWidth: launched ? 1100 : 760, margin: "0 auto", padding: mobile ? "16px 12px" : "28px 24px", position: "relative", zIndex: 1 }}>
+          <div style={{ maxWidth: launched ? 1100 : appTab === "radar" ? 1200 : 760, margin: "0 auto", padding: mobile ? "16px 12px" : "28px 24px", position: "relative", zIndex: 1 }}>
             {launched && launchCA ? (
               <div>
                 {/* ═══ CHART ═══ */}
@@ -1603,12 +1543,31 @@ export default function App() {
 
             ) : (
               <div>
-                {/* ═══ RADAR ═══ */}
-                <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden", marginBottom: 14 }}>
-                  <RadarFeed T={T} mobile={mobile} isVip={user?.tier === "pro" || user?.whitelisted} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); }} />
+                {/* ═══ TOP TAB BAR ═══ */}
+                <div style={{ display: "flex", marginBottom: 16, background: T.surface, borderRadius: 12, border: "1px solid " + T.border, overflow: "hidden" }}>
+                  {[
+                    { id: "radar", label: "\uD83D\uDCE1 Radar", desc: "Scan tokens" },
+                    { id: "trade", label: "\uD83D\uDE80 Trade", desc: "Launch or Ape" },
+                  ].map(t => (
+                    <button key={t.id} onClick={() => setAppTab(t.id)} style={{
+                      flex: 1, padding: mobile ? "12px 8px" : "14px 16px",
+                      background: appTab === t.id ? T.green + "10" : "transparent",
+                      border: "none", borderBottom: appTab === t.id ? "3px solid " + T.green : "3px solid transparent",
+                      fontFamily: mono, fontSize: mobile ? 14 : 16, fontWeight: 800,
+                      color: appTab === t.id ? T.green : T.dim, cursor: "pointer", transition: "all .15s",
+                    }}>{t.label}</button>
+                  ))}
                 </div>
 
-                {/* ═══ LAUNCH — unified create + ape ═══ */}
+                {/* ═══ RADAR TAB (full width card grid) ═══ */}
+                {appTab === "radar" && (
+                  <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden" }}>
+                    <RadarFeed T={T} mobile={mobile} fullScreen isVip={user?.tier === "pro" || user?.whitelisted} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} />
+                  </div>
+                )}
+
+                {/* ═══ TRADE TAB (wizard) ═══ */}
+                {appTab === "trade" && (<>
                 <Section n="1" title="Wallet" done={!!seed} T={T} mobile={mobile}>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                     <div onClick={() => setSeed("")} style={{ padding: mobile ? 16 : 20, background: !seed ? T.green + "10" : T.bg, border: "1px solid " + (!seed ? T.green : T.border), borderRadius: 12, cursor: "pointer", textAlign: "center" }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: !seed ? T.green : T.mid }}>Generate Fresh</div><div style={{ fontSize: 13, color: T.faint, fontFamily: mono, marginTop: 4 }}>Deposit SOL to fund</div></div>
@@ -1712,6 +1671,7 @@ export default function App() {
                     </div>)}
                   </div>))}
                 </div>)}
+                </>)}
                 {user?.tier === "free" && <div style={{ marginTop: 8 }}><ReferralPanel user={user} T={T} mobile={mobile} /></div>}
               </div>
             )}
