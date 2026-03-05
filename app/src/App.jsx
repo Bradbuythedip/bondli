@@ -271,6 +271,31 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
         </div>
       </section>
 
+      {/* HOW IT WORKS */}
+      <section style={{ maxWidth: 800, margin: "0 auto", padding: mobile ? "0 16px 40px" : "0 40px 60px", position: "relative", zIndex: 1 }}>
+        <h2 style={{ textAlign: "center", fontFamily: sans, fontWeight: 900, fontSize: mobile ? 22 : 30, marginBottom: 8, color: T.text }}>How it works</h2>
+        <p style={{ textAlign: "center", fontSize: 15, color: T.dim, marginBottom: mobile ? 20 : 32 }}>Three steps. One red pill.</p>
+        <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr", gap: mobile ? 12 : 16 }}>
+          {[
+            { n: "1", title: "Scan", desc: "Radar watches every new pump.fun token in real-time. Scores them on volume, buy pressure, socials, and bundle detection. Three tabs: New, Hot, Graduating.", color: T.green },
+            { n: "2", title: "Deploy or Ape", desc: "Launch your own token with organic-looking multi-wallet buys. Or snipe an existing CA — wallet count scales with conviction score (Kelly Criterion).", color: T.yellow },
+            { n: "3", title: "AI Trades", desc: "GameState engine watches every trade on your token. Detects whales, dev dumps, cascades. Adjusts sell timing using Nash equilibrium — ride pumps, exit dumps.", color: T.red },
+          ].map(s => (
+            <div key={s.n} style={{ background: T.surface, border: "2px solid " + s.color + "22", borderRadius: 18, padding: mobile ? 20 : 24, textAlign: "center" }}>
+              <div style={{ width: 40, height: 40, borderRadius: "50%", background: s.color + "15", border: "2px solid " + s.color + "33", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px", fontFamily: mono, fontSize: 18, fontWeight: 900, color: s.color }}>{s.n}</div>
+              <h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 800, marginBottom: 8, color: T.text }}>{s.title}</h3>
+              <p style={{ fontSize: 13, color: T.dim, lineHeight: 1.6 }}>{s.desc}</p>
+            </div>
+          ))}
+        </div>
+        <div style={{ marginTop: mobile ? 16 : 24, background: T.bg, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 16 : 20 }}>
+          <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.green, marginBottom: 8 }}>TL;DR</div>
+          <p style={{ fontSize: 14, color: T.mid, lineHeight: 1.7, margin: 0 }}>
+            Bondli turns one wallet into a coordinated fleet of 1-7 AI wallets. Each buys independently on the bonding curve (looks organic, not bundled). A game theory engine monitors every opponent trade in real-time and auto-adjusts: ride momentum when whales buy in, exit instantly when devs dump. Radar scans every new pump.fun token and scores them on 15+ signals including socials, bundle detection, and volume spikes — so you only ape into tokens worth aping.
+          </p>
+        </div>
+      </section>
+
       {/* PRICING */}
       <section style={{ maxWidth: 800, margin: "0 auto", padding: mobile ? "20px 16px 40px" : "20px 40px 60px", position: "relative", zIndex: 1 }}>
         <h2 style={{ textAlign: "center", fontFamily: sans, fontWeight: 900, fontSize: mobile ? 22 : 30, marginBottom: 8, color: T.text }}>Simple pricing</h2>
@@ -1526,7 +1551,7 @@ export default function App() {
                     <div style={{ padding: mobile ? 16 : 20, background: seed ? T.green + "10" : T.bg, border: "1px solid " + (seed ? T.green : T.border), borderRadius: 12 }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: seed ? T.green : T.mid, textAlign: "center", marginBottom: 8 }}>Master Wallet</div><Input value={seed} onChange={setSeed} placeholder="bs58 private key" type="password" /></div>
                   </div>
                 </Section>
-                <Section n="2" title="Token" done={canLaunch} subtitle={isApe ? "aping CA" : canLaunch ? "creating new" : ""} T={T} mobile={mobile}>
+                <Section n={"\u2714"} title={isApe ? "Ape" : "Token"} done={canLaunch} subtitle={isApe ? "existing CA" : canLaunch ? "ready" : ""} T={T} mobile={mobile}>
                   <div style={{ marginBottom: 10 }}><Label>paste CA to ape</Label><Input value={existingCA} onChange={handleCAChange} onKeyDown={handleCAKeyDown} placeholder="pump.fun CA... (Enter to analyze)" big />{existingCA.length >= 32 && !caAnalysis && (<div style={{ textAlign: "right", marginTop: 4 }}><span style={{ fontSize: 12, fontFamily: mono, color: T.green, cursor: "pointer", padding: "4px 10px", background: T.green + "10", borderRadius: 6 }} onClick={() => analyzeCA(existingCA)}>{"\u21B5"} Analyze</span></div>)}</div>
                   {caAnalysis?.loading && (<div style={{ padding: 20, textAlign: "center", fontFamily: mono, fontSize: 14, color: T.dim, animation: "pulse 1.5s infinite" }}>Analyzing {existingCA.slice(0, 8)}...</div>)}
                   {caAnalysis?.error && (<div style={{ marginBottom: 10 }}><div style={{ padding: "10px 14px", background: T.red + "10", border: "1px solid " + T.red + "33", borderRadius: 10, fontFamily: mono, fontSize: 13, color: T.red, display: "flex", alignItems: "center", gap: 8 }}><span style={{ flex: 1 }}>{caAnalysis.error}</span><button onClick={() => analyzeCA(existingCA)} style={{ background: T.red + "20", border: "1px solid " + T.red + "44", borderRadius: 6, padding: "4px 10px", color: T.red, fontFamily: mono, fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>Retry</button></div></div>)}
@@ -1534,7 +1559,8 @@ export default function App() {
                     <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", gap: 10, borderBottom: "1px solid " + T.border }}>
                       {d.image_uri && <img src={d.image_uri} style={{ width: 36, height: 36, borderRadius: 8, flexShrink: 0 }} alt="" />}
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontFamily: mono, fontSize: 17, fontWeight: 800, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name} <span style={{ color: T.green, fontSize: 14 }}>${d.symbol}</span></div>
+                        <div style={{ fontFamily: mono, fontSize: 16, fontWeight: 800, color: T.text, lineHeight: 1.2 }}>{d.name}</div>
+                        <div style={{ fontFamily: mono, fontSize: 13, color: T.green, fontWeight: 700 }}>${d.symbol}</div>
                         <div style={{ fontFamily: mono, fontSize: 12, color: T.mid, marginTop: 2 }}>{d.priceUsd ? "$" + Number(d.priceUsd).toFixed(6) : ""} {d.priceChange1h != null && (<span style={{ color: d.priceChange1h >= 0 ? T.green : T.red, fontWeight: 700 }}>{d.priceChange1h > 0 ? "+" : ""}{Number(d.priceChange1h).toFixed(1)}% 1h</span>)}</div>
                       </div>
                       <div style={{ textAlign: "center", flexShrink: 0 }}>
@@ -1543,14 +1569,28 @@ export default function App() {
                       </div>
                     </div>
                     {d.factors && (<div style={{ padding: "10px 16px", display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: "6px 14px" }}>
-                      {d.factors.map(f => (<div key={f.name} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ fontSize: 11, fontFamily: mono, color: T.dim, width: 80, flexShrink: 0 }}>{f.name}</span>
-                        <div style={{ flex: 1, height: 6, background: T.border + "44", borderRadius: 3, overflow: "hidden" }}><div style={{ width: (f.score / 20 * 100) + "%", height: "100%", borderRadius: 3, background: f.score >= 14 ? T.green : f.score >= 8 ? T.yellow : T.red }} /></div>
-                        <span style={{ fontSize: 10, fontFamily: mono, color: T.faint, width: 72, textAlign: "right", flexShrink: 0 }}>{f.detail}</span>
-                      </div>))}
+                      {d.factors.map(f => {
+                        const maxScore = 20;
+                        const pct = Math.max(0, Math.min(100, f.score / maxScore * 100));
+                        const isGraduated = f.name === "Bonded" && (f.detail === "graduated" || f.detail === "Grad");
+                        const barColor = isGraduated ? T.yellow : f.score >= 14 ? T.green : f.score >= 8 ? T.yellow : T.red;
+                        const barWidth = isGraduated ? 100 : pct;
+                        return (
+                          <div key={f.name} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: 11, fontFamily: mono, color: T.dim, width: 85, flexShrink: 0 }}>{f.name}</span>
+                            <div style={{ flex: 1, height: 6, background: T.border + "44", borderRadius: 3, overflow: "hidden" }}><div style={{ width: barWidth + "%", height: "100%", borderRadius: 3, background: barColor }} /></div>
+                            <span style={{ fontSize: 10, fontFamily: mono, color: isGraduated ? T.yellow : T.faint, fontWeight: isGraduated ? 700 : 400, width: 78, textAlign: "right", flexShrink: 0 }}>{f.detail}</span>
+                          </div>
+                        );
+                      })}
                     </div>)}
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 1, background: T.border + "33" }}>
-                      {[{ k: "MCap", v: "$" + mcapFmt(d.usd_market_cap || 0) }, { k: "Vol 1h", v: "$" + mcapFmt(d.vol1h || 0) }, { k: "Buys/Sells", v: (d.txns1h?.buys || 0) + "/" + (d.txns1h?.sells || 0) }, { k: "Bonded", v: d.complete ? "Grad" : (d.bp || 0).toFixed(1) + "%" }].map(s => (<div key={s.k} style={{ background: T.surface, padding: "8px 4px", textAlign: "center" }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 800, color: T.green }}>{s.v}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>{s.k}</div></div>))}
+                      {[
+                        { k: "MCap", v: "$" + mcapFmt(d.usd_market_cap || 0), c: T.green },
+                        { k: "Vol 1h", v: "$" + mcapFmt(d.vol1h || 0), c: (d.vol1h || 0) > 10000 ? T.green : T.dim },
+                        { k: "Buys/Sells", v: (d.txns1h?.buys || 0) + "/" + (d.txns1h?.sells || 0), c: (d.txns1h?.buys || 0) > (d.txns1h?.sells || 0) ? T.green : T.red },
+                        { k: "Bonded", v: d.complete ? "Grad" : (d.bp || 0).toFixed(1) + "%", c: d.complete ? T.yellow : T.green },
+                      ].map(s => (<div key={s.k} style={{ background: T.surface, padding: "8px 4px", textAlign: "center" }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 800, color: s.c }}>{s.v}</div><div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>{s.k}</div></div>))}
                     </div>
                     <div style={{ padding: "8px 16px", borderTop: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                       <button onClick={() => setShowChart(!showChart)} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: mono, fontSize: 12, color: T.mid, display: "flex", alignItems: "center", gap: 4 }}>{showChart ? "\u25B2 Hide" : "\u25BC Show"} Chart</button>
