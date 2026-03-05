@@ -257,18 +257,15 @@ class GameState {
   }
 }
 
-// ═══════════════════════════════════════
-// WALLET ROLES v4 — organic buy-first strategy
-// Each wallet BUYS from bonding curve independently (looks like real users)
-// Then sells at staggered intervals
-// ═══════════════════════════════════════
+// WALLET ROLES v5 — buy timing matters less now (CREATE strategy controls waves)
+// sellPct is max sell per round BEFORE holdback deduction
 const ROLES = [
-  { id: "early1",   weight: 0.18, buyDelay: 3,   sellDelay: 45,  sellPct: 0.80, sellRounds: 2, phase: "early"  },
-  { id: "early2",   weight: 0.15, buyDelay: 7,   sellDelay: 55,  sellPct: 0.75, sellRounds: 2, phase: "early"  },
-  { id: "mid1",     weight: 0.20, buyDelay: 14,  sellDelay: 70,  sellPct: 0.65, sellRounds: 3, phase: "mid"    },
-  { id: "mid2",     weight: 0.17, buyDelay: 22,  sellDelay: 80,  sellPct: 0.60, sellRounds: 2, phase: "mid"    },
-  { id: "late1",    weight: 0.16, buyDelay: 35,  sellDelay: 100, sellPct: 0.70, sellRounds: 3, phase: "late"   },
-  { id: "late2",    weight: 0.14, buyDelay: 50,  sellDelay: 120, sellPct: 0.85, sellRounds: 2, phase: "late"   },
+  { id: "early1",   weight: 0.18, buyDelay: 3,   sellDelay: 0,   sellPct: 0.60, sellRounds: 3, phase: "early"  },
+  { id: "early2",   weight: 0.15, buyDelay: 7,   sellDelay: 0,   sellPct: 0.55, sellRounds: 3, phase: "early"  },
+  { id: "mid1",     weight: 0.20, buyDelay: 14,  sellDelay: 0,   sellPct: 0.50, sellRounds: 3, phase: "mid"    },
+  { id: "mid2",     weight: 0.17, buyDelay: 22,  sellDelay: 0,   sellPct: 0.50, sellRounds: 2, phase: "mid"    },
+  { id: "late1",    weight: 0.16, buyDelay: 35,  sellDelay: 0,   sellPct: 0.55, sellRounds: 3, phase: "late"   },
+  { id: "late2",    weight: 0.14, buyDelay: 50,  sellDelay: 0,   sellPct: 0.65, sellRounds: 2, phase: "late"   },
 ];
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -497,74 +494,204 @@ class FleetTrader extends EventEmitter {
     }
   }
 
-  // ── CREATE MODE: organic-looking buys then sells ──
+  // ── CREATE MODE v5: Attract buyers THEN capitalize ──
+  // Phase 1: Staggered buys (30-90s spread, looks organic)
+  // Phase 2: Late bundle boost (if no snipers, burst buy to create momentum)
+  // Phase 3: Volume generation (3-5 MINUTES, paint the chart)
+  // Phase 4: Sell INTO demand (only sell when GameState sees real buyers)
+  // Phase 5: Hold remainder for potential moonshot
   async _runCreateStrategy(session, global, feeConfig, isSolo) {
-    const { ca, mint, masterKp, fleetWallets } = session;
+    const { ca, mint, masterKp, fleetWallets, gameState } = session;
+    const funded = fleetWallets.filter(w => w.funded);
 
-    // Phase 1: Staggered buys
+    // ═══ PHASE 1: Staggered buys (first 60s) ═══
     session.phase = "buying";
     this.emit("phase", { ca, phase: "buying" });
-    console.log(`[FLEET] CREATE: Phase 1 — staggered buys from ${fleetWallets.length} wallet(s)...`);
+    console.log(`[FLEET] CREATE v5: Phase 1 — staggered buys from ${funded.length} wallets over 60s...`);
 
     if (isSolo) {
-      console.log(`[FLEET] Solo mode — dev already holds tokens from creation buy`);
+      console.log(`[FLEET] Solo mode — dev holds from creation buy`);
     } else {
-      const buyPromises = fleetWallets.filter(w => w.funded).map(async (wallet) => {
-        const baseDelay = (wallet.roleConfig.buyDelay || 10) * 1000;
-        const jitter = Math.random() * baseDelay * 0.5;
-        await sleep(baseDelay + jitter);
+      // Split wallets into waves: first 2-3 buy early, rest buy later
+      const wave1 = funded.slice(0, Math.min(3, Math.ceil(funded.length * 0.4)));
+      const wave2 = funded.slice(wave1.length);
+
+      // Wave 1: first buys at 5-15 seconds (early organic discovery)
+      console.log(`[FLEET] Wave 1: ${wave1.length} wallets buying in 5-15s...`);
+      for (const wallet of wave1) {
+        const delay = 5000 + Math.random() * 10000;
+        await sleep(delay);
         if (!session.running) return;
-
-        const buyAmount = wallet.allocation * 0.90;
-        if (buyAmount < 0.01) return;
-
         try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
-
+        const buyAmount = wallet.allocation * 0.88;
+        if (buyAmount < 0.01) continue;
         try {
-          console.log(`[FLEET] [${wallet.role}] BUY ${buyAmount.toFixed(4)} SOL...`);
           const result = await this._executeBuy(wallet, mint, global, feeConfig, buyAmount);
           if (result.ok) {
             wallet.solSpent += buyAmount;
             wallet.trades.push({ side: "buy", solIn: buyAmount, sig: result.sig, time: Date.now() });
             session.tradeCount++; session.totalSolSpent += buyAmount;
             this.emit("trade", { ca, role: wallet.role, side: "buy", sol: buyAmount, sig: result.sig });
-            console.log(`[FLEET] [${wallet.role}] BUY OK -> ${buyAmount.toFixed(4)} SOL | sig: ${result.sig?.slice(0, 12)}`);
-          } else {
-            console.error(`[FLEET] [${wallet.role}] Buy failed:`, result.error);
+            console.log(`[FLEET] [${wallet.role}] W1 BUY ${buyAmount.toFixed(4)} SOL ✓`);
           }
         } catch (e) { console.error(`[FLEET] [${wallet.role}] Buy error:`, e.message); }
-      });
-      await Promise.allSettled(buyPromises);
-      console.log(`[FLEET] Phase 1 complete — ${session.tradeCount} buys`);
-    }
+      }
 
-    // Phase 2: Volume generation — small buy/sell cycles to make chart look active
-    if (!session.running) return;
-    if (fleetWallets.length >= 3) {
+      // ═══ PHASE 2: Sniper check + late bundle ═══
+      // Wait 10s then check if external buyers showed up
+      await sleep(10000);
+      if (!session.running) return;
+
+      let hasExternalBuyers = false;
+      if (gameState?.alive) {
+        const gs = gameState.snapshot();
+        hasExternalBuyers = gs.uniqueBuyers > 0;
+        console.log(`[FLEET] Sniper check: ${gs.uniqueBuyers} external buyers, ${gs.opponents} opponents`);
+      }
+
+      if (!hasExternalBuyers && wave2.length > 0) {
+        // No snipers → late bundle: burst-buy with wave 2 to create momentum spike
+        session.phase = "boosting";
+        this.emit("phase", { ca, phase: "boosting" });
+        console.log(`[FLEET] CREATE v5: Phase 2 — NO SNIPERS → late bundle boost with ${wave2.length} wallets!`);
+
+        // Rapid succession: 2-4 seconds apart (creates visible green candle burst)
+        for (const wallet of wave2) {
+          await sleep(2000 + Math.random() * 2000);
+          if (!session.running) return;
+          try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+          const buyAmount = wallet.allocation * 0.88;
+          if (buyAmount < 0.01) continue;
+          try {
+            const result = await this._executeBuy(wallet, mint, global, feeConfig, buyAmount);
+            if (result.ok) {
+              wallet.solSpent += buyAmount;
+              wallet.trades.push({ side: "buy", solIn: buyAmount, sig: result.sig, time: Date.now() });
+              session.tradeCount++; session.totalSolSpent += buyAmount;
+              this.emit("trade", { ca, role: wallet.role, side: "buy", sol: buyAmount, sig: result.sig });
+              console.log(`[FLEET] [${wallet.role}] BOOST BUY ${buyAmount.toFixed(4)} SOL ✓`);
+            }
+          } catch (e) { console.error(`[FLEET] [${wallet.role}] Boost buy error:`, e.message); }
+        }
+        console.log(`[FLEET] Late bundle complete — ${session.tradeCount} total buys`);
+      } else if (wave2.length > 0) {
+        // Snipers found → stagger wave 2 slowly (organic follow-up buyers)
+        console.log(`[FLEET] Snipers detected → staggering wave 2 over 30-60s`);
+        for (const wallet of wave2) {
+          await sleep(8000 + Math.random() * 15000);
+          if (!session.running) return;
+          try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+          const buyAmount = wallet.allocation * 0.88;
+          if (buyAmount < 0.01) continue;
+          try {
+            const result = await this._executeBuy(wallet, mint, global, feeConfig, buyAmount);
+            if (result.ok) {
+              wallet.solSpent += buyAmount;
+              wallet.trades.push({ side: "buy", solIn: buyAmount, sig: result.sig, time: Date.now() });
+              session.tradeCount++; session.totalSolSpent += buyAmount;
+              this.emit("trade", { ca, role: wallet.role, side: "buy", sol: buyAmount, sig: result.sig });
+              console.log(`[FLEET] [${wallet.role}] W2 BUY ${buyAmount.toFixed(4)} SOL ✓`);
+            }
+          } catch (e) { console.error(`[FLEET] [${wallet.role}] Buy error:`, e.message); }
+        }
+      }
+
+      // ═══ PHASE 3: Volume generation (3-5 MINUTES) ═══
+      // This is the critical phase — paint the chart to attract real buyers
+      if (!session.running) return;
       session.phase = "volume";
       this.emit("phase", { ca, phase: "volume" });
-      console.log(`[FLEET] CREATE: Phase 2 — coordinated volume generation...`);
-      await this._generateVolume(session, global, feeConfig, 5); // 5 coordinated cycles
+
+      // Run volume for at least 3 minutes (time-based, not cycle-based)
+      const volumeEnd = Date.now() + (3 * 60 * 1000) + Math.random() * (2 * 60 * 1000); // 3-5 min
+      let volCycle = 0;
+      console.log(`[FLEET] CREATE v5: Phase 3 — volume generation for ${Math.round((volumeEnd - Date.now()) / 60000)}min...`);
+
+      while (Date.now() < volumeEnd && session.running) {
+        // Check GameState — abort volume if dump detected
+        if (gameState?.alive) {
+          const gs = gameState.snapshot();
+          if (gs.signal === "SELL_NOW") {
+            console.log(`[FLEET] ⚡ SELL_NOW during volume — aborting, going to sell phase`);
+            break;
+          }
+          if (volCycle % 3 === 0) {
+            console.log(`[FLEET] [VOL] cycle ${volCycle} | ${gs.uniqueBuyers} ext buyers | ${gs.buyPressure}% bp | ${gs.signal}`);
+          }
+        }
+
+        await this._generateVolume(session, global, feeConfig, 1);
+        volCycle++;
+        
+        // Refresh global between cycles
+        try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+      }
+
+      console.log(`[FLEET] Volume phase done — ${volCycle} cycles, ${session.tradeCount} total trades`);
     }
 
-    // Phase 3: Staggered sells
+    // ═══ PHASE 4: Sell INTO demand (only when real buyers are active) ═══
     if (!session.running) return;
     session.phase = "selling";
     this.emit("phase", { ca, phase: "selling" });
-    console.log(`[FLEET] CREATE: Phase 3 — staggered sells...`);
+    console.log(`[FLEET] CREATE v5: Phase 4 — sell into demand...`);
 
     try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
 
-    const sellWallets = fleetWallets.filter(w => w.funded);
-    const sellPromises = sellWallets.map(async (wallet) => {
-      const delay = (wallet.roleConfig.sellDelay || 30) * 1000;
-      await sleep(delay + Math.random() * delay * 0.3);
-      if (!session.running) return;
-      return this._runSellLoop(session, wallet, global, feeConfig);
-    });
-    await Promise.allSettled(sellPromises);
+    // Sort wallets by sell delay, sell one at a time
+    const sellOrder = [...funded].sort((a, b) => (a.roleConfig.sellDelay || 30) - (b.roleConfig.sellDelay || 30));
 
-    if (session.running) { session.phase = "holding"; this.emit("phase", { ca, phase: "holding" }); }
+    for (let i = 0; i < sellOrder.length && session.running; i++) {
+      const wallet = sellOrder[i];
+
+      // Wait for demand before selling (check GameState)
+      let waitedForDemand = 0;
+      const maxWaitForDemand = 60000; // max 60s waiting per wallet
+      
+      while (waitedForDemand < maxWaitForDemand && session.running) {
+        if (gameState?.alive) {
+          const gs = gameState.snapshot();
+          // Good conditions to sell into:
+          if (gs.signal === "SELL_NOW") break; // emergency — sell regardless
+          if (gs.buyPressure > 45) break;       // buyers are active — sell into them
+          if (gs.uniqueBuyers >= 2) break;       // real people buying
+          if (gs.momentum > 0.1) break;          // price going up — good time to take profit
+        }
+        // If no GameState or just launched, wait then sell anyway
+        if (!gameState?.alive && waitedForDemand > 15000) break;
+        
+        await sleep(5000);
+        waitedForDemand += 5000;
+        
+        if (waitedForDemand % 15000 === 0) {
+          console.log(`[FLEET] [${wallet.role}] Waiting for demand... (${(waitedForDemand/1000).toFixed(0)}s)`);
+        }
+      }
+
+      if (!session.running) break;
+      
+      // Sell this wallet's tokens
+      console.log(`[FLEET] [${wallet.role}] Selling (waited ${(waitedForDemand/1000).toFixed(0)}s for demand)...`);
+      try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+      
+      // Don't sell everything — keep 15-30% for moonshot potential
+      const holdBack = 0.15 + Math.random() * 0.15; // keep 15-30%
+      const sellPct = (wallet.roleConfig.sellPct || 0.70) * (1 - holdBack);
+      
+      await this._runSellLoop(session, wallet, global, feeConfig);
+
+      // Gap between wallets selling (10-25s, looks like different people taking profit)
+      if (i < sellOrder.length - 1) {
+        await sleep(10000 + Math.random() * 15000);
+      }
+    }
+
+    // ═══ PHASE 5: Hold remainder ═══
+    if (session.running) {
+      session.phase = "holding";
+      this.emit("phase", { ca, phase: "holding" });
+      console.log(`[FLEET] CREATE v5: Phase 5 — holding remaining tokens. Close manually when ready.`);
+    }
   }
 
   // ── APE MODE: fast multi-wallet snipe → hold → quick exit ──
