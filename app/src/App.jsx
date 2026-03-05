@@ -696,7 +696,7 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
 // ═══════════════════════════════════════
 // RADAR — Full-screen card grid scanner (pump.fun style)
 // ═══════════════════════════════════════
-function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
+function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
   const mono = "'SF Mono',SFMono-Regular,ui-monospace,'Cascadia Mono',Menlo,monospace";
   const [tabs, setTabs] = useState({ new: [], hot: [], graduating: [], momentum: [] });
   const [activeTab, setActiveTab] = useState("momentum");
@@ -877,8 +877,13 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
               {selected.bp > 0 && <div style={{ height: 4, background: T.border, margin: "8px 16px 0", borderRadius: 2 }}><div style={{ height: 4, background: selected.bp >= 80 ? "#ffaa00" : T.green, width: Math.min(100, selected.bp) + "%", borderRadius: 2 }} /></div>}
               <div style={{ margin: "10px 16px 0", borderRadius: 10, overflow: "hidden", border: "1px solid " + T.border }}><PriceChart trades={[]} mobile={true} T={T} ca={selected.ca} /></div>
               <div onClick={() => { navigator.clipboard?.writeText(selected.ca); }} style={{ margin: "10px 16px", background: T.surface, borderRadius: 8, padding: "8px 12px", fontFamily: mono, fontSize: 11, color: T.faint, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.ca} <span style={{ color: T.dim }}>{"\u2398"} copy</span></div>
+              <div style={{ display: "flex", gap: 6, padding: "0 16px 8px", flexWrap: "wrap" }}>
+                {onQuickApe && [0.05, 0.1, 0.25, 0.5, 1].map(amt => (
+                  <button key={amt} onClick={(e) => { e.stopPropagation(); onQuickApe(selected.ca, amt); }} style={{ padding: "10px 0", flex: 1, minWidth: 50, background: T.green + "12", border: "1px solid " + T.green + "44", borderRadius: 10, fontFamily: mono, fontSize: 12, fontWeight: 800, color: T.green, cursor: "pointer", transition: "all .15s" }} onMouseEnter={e => e.currentTarget.style.background = T.green + "25"} onMouseLeave={e => e.currentTarget.style.background = T.green + "12"}>{amt} SOL</button>
+                ))}
+              </div>
               <div style={{ display: "flex", gap: 8, padding: "0 16px 16px" }}>
-                <button onClick={() => { onApe(selected.ca); setSelected(null); }} style={{ flex: 1, padding: "14px", background: T.green + "18", border: "2px solid " + T.green, borderRadius: 12, fontFamily: mono, fontSize: 16, fontWeight: 900, color: T.green, cursor: "pointer" }}>{"\uD83D\uDE80"} APE</button>
+                <button onClick={() => { onApe(selected.ca); setSelected(null); }} style={{ flex: 1, padding: "12px", background: T.surface, border: "1px solid " + T.green, borderRadius: 12, fontFamily: mono, fontSize: 13, fontWeight: 800, color: T.green, cursor: "pointer" }}>{"\u2699"} Fleet APE</button>
                 <a href={"https://pump.fun/coin/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "14px", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 11, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>pump{"\u2197"}</a>
                 <a href={"https://dexscreener.com/solana/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "14px", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 11, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>dex{"\u2197"}</a>
                 <button onClick={() => setSelected(null)} style={{ padding: "14px", background: "none", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 14, color: T.faint, cursor: "pointer" }}>{"\u2715"}</button>
@@ -1358,6 +1363,83 @@ export default function App() {
   const disconnect = async () => { try { const p = window?.phantom?.solana || window?.solana; await p?.disconnect(); } catch {} setUser(null); };
   const handleTierSelect = (tier) => setUser({ ...user, tier, paid: tier === "pro" });
   const analyzeCA = async (ca) => { if (!ca || ca.length < 32) return; setCaAnalysis({ ca, loading: true, error: null, data: null }); try { const res = await fetch(API + "/api/analyze/" + ca); if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "Not found"); } const coin = await res.json(); setCaAnalysis({ ca, loading: false, error: null, data: coin }); } catch (e) { setCaAnalysis({ ca, loading: false, error: e.message || "Analysis failed", data: null }); } };
+
+  // Quick Ape — one-click buy from connected Phantom wallet (no private key)
+  const quickApe = async (ca, solAmount = 0.1) => {
+    if (!user?.pubkey || user.demo) { toast("Connect wallet first", "error"); return; }
+    const phantom = window?.phantom?.solana || window?.solana;
+    if (!phantom?.isPhantom) { toast("Phantom wallet required", "error"); return; }
+
+    toast("Building transaction...", "info");
+    try {
+      // 1. Server builds unsigned tx
+      const res = await fetch(API + "/api/quick-ape", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: user.pubkey, ca, solAmount }),
+      });
+      const data = await res.json();
+      if (!data.ok) { toast(data.error || "Failed to build tx", "error"); return; }
+
+      // 2. Deserialize and sign with Phantom
+      const { Transaction: SolanaTx } = await import("@solana/web3.js");
+      const txBuffer = Uint8Array.from(atob(data.tx), c => c.charCodeAt(0));
+      const tx = SolanaTx.from(txBuffer);
+
+      toast("Approve in Phantom...", "info");
+      const signed = await phantom.signTransaction(tx);
+
+      // 3. Send signed tx to Solana
+      toast("Sending transaction...", "info");
+      const connection = new (await import("@solana/web3.js")).Connection(API.replace("/api", "").replace("https://", "https://") || "https://api.mainnet-beta.solana.com", "confirmed");
+      const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: true, maxRetries: 3 });
+      await connection.confirmTransaction(sig, "confirmed");
+
+      toast("Aped " + solAmount + " SOL into " + ca.slice(0, 8) + "... ✓", "success");
+      console.log("[QUICK-APE] Success:", sig);
+      return sig;
+    } catch (e) {
+      if (e.message?.includes("User rejected")) { toast("Transaction cancelled", "error"); }
+      else { toast("Ape failed: " + (e.message || "Unknown error"), "error"); }
+      console.error("[QUICK-APE]", e);
+    }
+  };
+
+  // Quick Sell — one-click sell from connected Phantom wallet
+  const quickSell = async (ca, percent = 100) => {
+    if (!user?.pubkey || user.demo) { toast("Connect wallet first", "error"); return; }
+    const phantom = window?.phantom?.solana || window?.solana;
+    if (!phantom?.isPhantom) { toast("Phantom wallet required", "error"); return; }
+
+    toast("Building sell tx...", "info");
+    try {
+      const res = await fetch(API + "/api/quick-sell", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: user.pubkey, ca, percent }),
+      });
+      const data = await res.json();
+      if (!data.ok) { toast(data.error || "Failed to build tx", "error"); return; }
+
+      const { Transaction: SolanaTx } = await import("@solana/web3.js");
+      const txBuffer = Uint8Array.from(atob(data.tx), c => c.charCodeAt(0));
+      const tx = SolanaTx.from(txBuffer);
+
+      toast("Approve sell in Phantom...", "info");
+      const signed = await phantom.signTransaction(tx);
+
+      toast("Sending sell...", "info");
+      const connection = new (await import("@solana/web3.js")).Connection("https://api.mainnet-beta.solana.com", "confirmed");
+      const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: true, maxRetries: 3 });
+      await connection.confirmTransaction(sig, "confirmed");
+
+      toast("Sold " + percent + "% — ~" + (data.estimatedSolOut || 0).toFixed(4) + " SOL ✓", "success");
+      return sig;
+    } catch (e) {
+      if (e.message?.includes("User rejected")) { toast("Cancelled", "error"); }
+      else { toast("Sell failed: " + (e.message || "Unknown error"), "error"); }
+    }
+  };
   const handleCAChange = (v) => { setExistingCA(v); setCaAnalysis(null); };
   const closeSession = async (ca) => {
     if (!ca) { toast("No active session", "error"); return; }
@@ -1585,7 +1667,7 @@ export default function App() {
                 {/* ═══ RADAR TAB (full width card grid) ═══ */}
                 {appTab === "radar" && (
                   <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden" }}>
-                    <RadarFeed T={T} mobile={mobile} fullScreen isVip={user?.tier === "pro" || user?.whitelisted} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} />
+                    <RadarFeed T={T} mobile={mobile} fullScreen isVip={user?.tier === "pro" || user?.whitelisted} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} onQuickApe={quickApe} />
                   </div>
                 )}
 
