@@ -663,6 +663,7 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
   const [selected, setSelected] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [online, setOnline] = useState(0);
 
   const tokens = tabs[activeTab] || [];
 
@@ -676,6 +677,7 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
         setWsAlive(d.wsAlive || false);
         setPoolSize(d.poolSize || 0);
         setEnabled(d.enabled !== false);
+        if (d.online != null) setOnline(d.online);
         setLoading(false);
       }
     } catch {}
@@ -733,6 +735,7 @@ function RadarFeed({ T, mobile, onApe, isVip }) {
           <div style={{ width: 7, height: 7, borderRadius: "50%", background: !enabled ? T.faint : wsAlive ? T.green : T.red, boxShadow: enabled && wsAlive ? "0 0 6px " + T.green : "none", animation: enabled && wsAlive ? "pulse 2s infinite" : "none" }} />
           <span style={{ fontFamily: "monospace", fontSize: 10, color: !enabled ? T.faint : wsAlive ? T.green : T.red }}>{!enabled ? "OFF" : wsAlive ? "LIVE" : "..."}</span>
           {enabled && poolSize > 0 && <span style={{ fontFamily: "monospace", fontSize: 9, color: T.faint }}>{poolSize}</span>}
+          {online > 0 && <span style={{ fontFamily: "monospace", fontSize: 9, color: T.green, opacity: 0.6, display: "flex", alignItems: "center", gap: 3 }}><span style={{ width: 5, height: 5, borderRadius: "50%", background: T.green, opacity: 0.8 }} />{online}</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <button onClick={handleRefresh} disabled={refreshing} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontFamily: "monospace", fontSize: 10, color: T.dim, transition: "all .2s" }}><span style={{ display: "inline-block", transition: "transform .5s", transform: refreshing ? "rotate(360deg)" : "none" }}>{"\u21BB"}</span></button>
@@ -1310,6 +1313,7 @@ export default function App() {
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
   const [fleetKeys, setFleetKeys] = useState([]); const [devSecret, setDevSecret] = useState("");
   const [copied, setCopied] = useState(false);
+  const [onlineCount, setOnlineCount] = useState(0);
   const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
@@ -1324,6 +1328,8 @@ export default function App() {
   useEffect(() => { const p = window?.phantom?.solana || window?.solana; if (p?.isPhantom && p?.isConnected && !user) { p.connect({ onlyIfTrusted: true }).then((r) => { const pubkey = r.publicKey.toString(); setUser({ pubkey, whitelisted: false, paid: false, tier: "free", demo: false }); fetch(API + "/api/access/check?wallet=" + pubkey).then(r => r.json()).then(data => { if (data.tier || data.whitelisted) setUser(u => ({ ...u, whitelisted: !!data.whitelisted, paid: !!data.paid, tier: data.tier || "free" })); }).catch(() => {}); }).catch(() => {}); } }, []);
   useEffect(() => { if (!hasAccess) return; let ws, dead = false; const connect = () => { if (dead) return; try { ws = new WebSocket(WS_URL); ws.onopen = () => setWsConnected(true); ws.onclose = () => { setWsConnected(false); if (!dead) setTimeout(connect, 3000); }; ws.onerror = () => {}; } catch {} }; connect(); return () => { dead = true; if (ws) ws.close(); }; }, [hasAccess]);
   useEffect(() => { if (!user?.pubkey) return; fetch(API + "/api/sessions?wallet=" + user.pubkey).then(r => r.json()).then(d => { if (d.sessions) { const active = d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5); setPastSessions(active); if (!wantsHome && !launched && active.length > 0 && active[0].status === "live") { setLaunchCA(active[0].tokenCA); setLaunched(true); setActiveSessionId(active[0].id); if (active[0].tokenConfig?.name) setTokenName(active[0].tokenConfig.name); if (active[0].tokenConfig?.ticker) setTicker(active[0].tokenConfig.ticker); } } }).catch(() => {}); }, [user]);
+  // Poll online count
+  useEffect(() => { const iv = setInterval(() => { fetch(API + "/api/radar").then(r => r.json()).then(d => { if (d.online != null) setOnlineCount(d.online); }).catch(() => {}); }, 15000); return () => clearInterval(iv); }, []);
   useEffect(() => { if (!launched || !launchCA) return; const iv = setInterval(async () => { try { const res = await fetch(API + "/api/fleet", { headers: { "X-Wallet": user?.pubkey } }); if (res.ok) { const data = await res.json(); setFleetStatus(data); if (data.curveProgress) setCurveProgress(data.curveProgress); } } catch {} }, 3000); return () => clearInterval(iv); }, [launched, launchCA]);
   useEffect(() => { if (!launched) return; const iv = setInterval(() => setCurveProgress(p => Math.min(1, p + Math.random() * 0.004)), 2000); return () => clearInterval(iv); }, [launched]);
   const walletCount = totalSol < 0.5 ? 3 : totalSol < 1 ? 5 : totalSol < 5 ? 9 : totalSol < 10 ? 11 : totalSol < 25 ? 15 : 20;
@@ -1652,7 +1658,7 @@ export default function App() {
               </div>
             )}
           </div>
-          {!mobile && <footer style={{ padding: "12px 28px", borderTop: "1px solid " + T.border, marginTop: 32, display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: T.faint, fontFamily: mono }}><span>BONDLI v3.3</span><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{ color: T.dim, textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@Bondlifun</a><span>{launched ? <span style={{ color: T.green }}>{"\u25CF"} ACTIVE</span> : "\u25CF IDLE"}</span></footer>}
+          {!mobile && <footer style={{ padding: "12px 28px", borderTop: "1px solid " + T.border, marginTop: 32, display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: T.faint, fontFamily: mono }}><span>BONDLI v3.3{onlineCount > 0 ? <span style={{ marginLeft: 10, color: T.green, opacity: 0.5, fontSize: 10 }}><span style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: T.green, marginRight: 3, verticalAlign: "middle", opacity: 0.7 }} />{onlineCount} online</span> : ""}</span><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{ color: T.dim, textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@Bondlifun</a><span>{launched ? <span style={{ color: T.green }}>{"\u25CF"} ACTIVE</span> : "\u25CF IDLE"}</span></footer>}
         </div>
       )}
     </ThemeCtx.Provider>
