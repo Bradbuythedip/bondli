@@ -1293,6 +1293,9 @@ function LaunchFlow({ user, mobile, totalSol, tokenConfig, canLaunch, launched, 
             <div style={{ flex: 1 }}><Input value={txSig} onChange={setTxSig} placeholder="or paste tx sig..." /></div>
             <Btn onClick={manualVerify} small disabled={!txSig} ghost color={T.green}>Go</Btn>
           </div>
+
+          {/* Cancel deploy — go back to idle, discard session */}
+          <button onClick={() => { if (pollRef.current) clearInterval(pollRef.current); setStep("idle"); setSession(null); setError(""); setDevSecret(""); setFleetKeys([]); }} style={{ width: "100%", marginTop: 10, padding: "10px", background: T.red + "10", border: "1px solid " + T.red + "33", borderRadius: 10, fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.red, cursor: "pointer" }}>{"\u2715"} Cancel Deploy</button>
         </div>
       )}
     </div>
@@ -1496,7 +1499,6 @@ export default function App() {
   const closeSession = async (ca) => {
     if (!ca) { toast("No active session", "error"); return; }
     if (isClosing) { toast("Already closing — please wait", "error"); return; }
-    if (!confirm("Close all positions for " + ca.slice(0, 8) + "...?")) return;
     setIsClosing(true);
     try {
       const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca, wallet: user?.pubkey }) });
@@ -1504,6 +1506,33 @@ export default function App() {
       if (data.error) { toast(data.error, "error"); }
       else { toast("Closed! Net: " + (data.netProfit || 0).toFixed(4) + " SOL | Recovered: " + (data.solRecovered || 0).toFixed(4) + " SOL", "success"); setLaunched(false); setLaunchCA(""); setFleetStatus(null); setFleetKeys([]); setDevSecret(""); }
     } catch (e) { toast(e.message, "error"); }
+    setIsClosing(false);
+  };
+
+  const closeAllSessions = async () => {
+    if (isClosing) { toast("Already closing — please wait", "error"); return; }
+    // Gather all active CAs
+    const allCAs = new Set();
+    if (launchCA) allCAs.add(launchCA);
+    for (const s of pastSessions) { if (s.tokenCA && s.status !== "closed") allCAs.add(s.tokenCA); }
+    if (allCAs.size === 0) { toast("No active sessions", "error"); return; }
+    if (!confirm("CLOSE ALL " + allCAs.size + " sessions? This sells all tokens and sweeps all SOL.")) return;
+    setIsClosing(true);
+    toast("Closing " + allCAs.size + " sessions...", "info");
+    let closed = 0, totalRecovered = 0;
+    // Fire all close requests simultaneously
+    const results = await Promise.allSettled([...allCAs].map(async (ca) => {
+      try {
+        const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca, wallet: user?.pubkey }) });
+        const data = await res.json();
+        if (!data.error) { closed++; totalRecovered += data.solRecovered || 0; }
+        return data;
+      } catch (e) { return { error: e.message }; }
+    }));
+    toast("Closed " + closed + "/" + allCAs.size + " sessions | Recovered " + totalRecovered.toFixed(4) + " SOL", closed > 0 ? "success" : "error");
+    setLaunched(false); setLaunchCA(""); setFleetStatus(null); setFleetKeys([]); setDevSecret("");
+    // Refresh sessions list
+    try { const r = await fetch(API + "/api/sessions?wallet=" + user.pubkey); const d = await r.json(); if (d.sessions) setPastSessions(d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5)); } catch {}
     setIsClosing(false);
   };
   const recoverSession = async (sessionId) => {
@@ -1562,7 +1591,7 @@ export default function App() {
               {wsConnected && <span style={{ fontSize: 10, fontFamily: mono, color: T.green, opacity: 0.8 }}>{"\u25CF"} live</span>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: mobile ? 6 : 10 }}>
-              {(launched || pastSessions.length > 0) && (<button onClick={() => closeSession(launchCA || pastSessions[0]?.tokenCA)} disabled={isClosing} style={{ background: T.red + "15", border: "1px solid " + T.red + "44", borderRadius: 8, padding: "5px 10px", cursor: isClosing ? "wait" : "pointer", color: T.red, fontFamily: mono, fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Closing..." : "\u2620 Close"}</button>)}
+              {(launched || pastSessions.length > 0) && (<button onClick={closeAllSessions} disabled={isClosing} style={{ background: T.red + "15", border: "1px solid " + T.red + "44", borderRadius: 8, padding: "5px 10px", cursor: isClosing ? "wait" : "pointer", color: T.red, fontFamily: mono, fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Closing..." : "\u2620 Close All"}</button>)}
               <button onClick={() => setShowSettings(!showSettings)} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: T.dim, fontSize: 14 }}>{"\u2699"}</button>
               <ThemeToggle isDark={isDark} toggle={toggleTheme} mobile={mobile} />
               {tierLabel && <span style={{ padding: "3px 8px", borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 700, background: tierColor + "18", color: tierColor, border: "1px solid " + tierColor + "33" }}>{tierLabel}</span>}
@@ -1691,7 +1720,7 @@ export default function App() {
 
                 {/* ═══ CONTROLS ═══ */}
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={() => closeSession(launchCA)} disabled={isClosing} style={{ flex: 1, padding: "14px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Closing..." : "\u2620 Close All"}</button>
+                  <button onClick={closeAllSessions} disabled={isClosing} style={{ flex: 1, padding: "14px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Closing..." : "\u2620 Close All"}</button>
                   <button onClick={() => sellAndSweep(activeSessionId || pastSessions[0]?.id)} disabled={isSweeping} style={{ flex: 1, padding: "14px", background: T.yellow + "10", border: "1px solid " + T.yellow, color: T.yellow, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isSweeping ? "wait" : "pointer", opacity: isSweeping ? 0.5 : 1 }}>{isSweeping ? "Sweeping..." : "\u21BB Sell & Sweep"}</button>
                   <button onClick={() => { setLaunched(false); setLaunchCA(""); setCaAnalysis(null); setFleetStatus(null); setFleetKeys([]); setDevSecret(""); setWantsHome(true); }} style={{ padding: "14px 20px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 13, borderRadius: 10, cursor: "pointer" }}>New</button>
                 </div>
