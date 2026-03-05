@@ -993,9 +993,10 @@ setInterval(() => {
 }, 120000);
 
 app.get("/api/radar", apiLimiter, (req, res) => {
-  const tab = req.query.tab || "all"; // "new", "hot", "graduating", or "all"
+  const tab = req.query.tab || "all";
+  const online = wss.clients.size; // live connected users
   if (tab !== "all" && radar.movers[tab]) {
-    return res.json({ ok: true, tokens: radar.movers[tab], tab, wsAlive: radar.wsAlive, poolSize: radar.pool.size, subbedCount: radar.subbed.size, updated: radar.updated, enabled: radar.enabled });
+    return res.json({ ok: true, tokens: radar.movers[tab], tab, wsAlive: radar.wsAlive, poolSize: radar.pool.size, subbedCount: radar.subbed.size, updated: radar.updated, enabled: radar.enabled, online });
   }
   res.json({
     ok: true,
@@ -1004,13 +1005,13 @@ app.get("/api/radar", apiLimiter, (req, res) => {
       hot: radar.movers.hot || [],
       graduating: radar.movers.graduating || [],
     },
-    // Backwards compat: "tokens" = hot tab (best default for aping)
     tokens: radar.movers.hot || [],
     wsAlive: radar.wsAlive,
     poolSize: radar.pool.size,
     subbedCount: radar.subbed.size,
     updated: radar.updated,
     enabled: radar.enabled,
+    online,
   });
 });
 
