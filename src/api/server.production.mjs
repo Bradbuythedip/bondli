@@ -427,18 +427,51 @@ async function pollPrice(ca) {
   } catch { return null; }
 }
 
-// Start price polling when fleet launches
+// Start price polling when fleet launches — also subscribe to radar WS for chart data
 function startPricePolling(ca) {
   if (!priceHistory.has(ca)) priceHistory.set(ca, []);
+  
+  // Subscribe this CA to PumpPortal WS for real-time trade data (chart)
+  if (radar.wsRef?.readyState === 1 && !radar.subbed.has(ca)) {
+    radar.wsRef.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [ca] }));
+    radar.subbed.add(ca);
+    // Initialize pool entry if not exists
+    if (!radar.pool.has(ca)) {
+      radar.pool.set(ca, {
+        name: "?", ticker: "?", dev: "", devShort: "",
+        created: Date.now(), buys: 0, sells: 0, solVol: 0,
+        mcapSol: 0, lastTrade: Date.now(), uri: "", image: "",
+        description: "", bp: 0, vSol: 0, earlyTrades: [],
+        bundleScore: 0, bundleFlags: [],
+      });
+    }
+    console.log(`[RADAR] Subscribed launched token ${ca.slice(0, 8)} for chart data`);
+  }
+
   const iv = setInterval(async () => {
+    // Try pump.fun first
     const point = await pollPrice(ca);
     if (point) {
       const hist = priceHistory.get(ca) || [];
       hist.push(point);
       if (hist.length > PRICE_HISTORY_MAX) hist.shift();
       priceHistory.set(ca, hist);
+    } else {
+      // Fallback: try DexScreener for graduated tokens
+      try {
+        const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca, { signal: AbortSignal.timeout(4000) });
+        if (r.ok) {
+          const d = await r.json();
+          const pair = (d.pairs || []).find(p => p.chainId === "solana");
+          if (pair) {
+            const hist = priceHistory.get(ca) || [];
+            hist.push({ time: Date.now(), mcap: pair.marketCap || 0, price: parseFloat(pair.priceUsd || 0), bondingProgress: 100, complete: true });
+            if (hist.length > PRICE_HISTORY_MAX) hist.shift();
+            priceHistory.set(ca, hist);
+          }
+        }
+      } catch {}
     }
-    // Stop polling if no active session
     if (!orch.sessions?.has(ca)) { clearInterval(iv); }
   }, 3000);
   // Initial fetch
