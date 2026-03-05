@@ -527,7 +527,7 @@ const radar = {
   wsRef: null,
   updated: 0,
   enabled: true,
-  MAX_TRACKED: 80,
+  MAX_TRACKED: 120,
   subbed: new Set(),
 };
 
@@ -635,17 +635,17 @@ function computeMovers() {
   radar.movers.new = allScored
     .filter(t => t.scores.new >= 15)
     .map(t => ({ ...t, score: t.scores.new, verdict: t.scores.new >= 55 ? "APE" : t.scores.new >= 25 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score).slice(0, 10);
+    .sort((a, b) => b.score - a.score).slice(0, 20);
 
   radar.movers.hot = allScored
     .filter(t => t.scores.hot >= 15)
     .map(t => ({ ...t, score: t.scores.hot, verdict: t.scores.hot >= 50 ? "APE" : t.scores.hot >= 25 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score).slice(0, 10);
+    .sort((a, b) => b.score - a.score).slice(0, 20);
 
   radar.movers.graduating = allScored
     .filter(t => t.scores.graduating >= 20)
     .map(t => ({ ...t, score: t.scores.graduating, verdict: t.scores.graduating >= 55 ? "APE" : t.scores.graduating >= 30 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score).slice(0, 10);
+    .sort((a, b) => b.score - a.score).slice(0, 20);
 
   radar.updated = now;
 }
