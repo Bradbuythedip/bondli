@@ -708,6 +708,7 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
   const [refreshing, setRefreshing] = useState(false);
   const [online, setOnline] = useState(0);
   const [search, setSearch] = useState("");
+  const seenCAs = useRef(new Set());
 
   const allTokens = tabs[activeTab] || [];
   // Deduplicate by CA — keep highest score
@@ -741,7 +742,7 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
     return () => { alive = false; };
   }, [enabled]);
 
-  const handleRefresh = async () => { setRefreshing(true); await fetchRadar(); setTimeout(() => setRefreshing(false), 600); };
+  const handleRefresh = async () => { setRefreshing(true); seenCAs.current.clear(); await fetchRadar(); setTimeout(() => setRefreshing(false), 600); };
   const handleToggle = async () => { try { const r = await fetch(window.__BONDLI_API + "/api/radar/toggle", { method: "POST" }); if (r.ok) { const d = await r.json(); setEnabled(d.enabled); } } catch {} };
 
   const handleSelect = async (ca) => {
@@ -765,11 +766,14 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
   ];
 
   // ── Token Card ──
-  const TokenCard = ({ t, i }) => (
+  const TokenCard = ({ t, i }) => {
+    const isNew = !seenCAs.current.has(t.ca);
+    if (isNew) seenCAs.current.add(t.ca);
+    return (
     <div onClick={() => handleSelect(t.ca)} style={{
       background: T.surface, border: "1px solid " + T.border, borderRadius: 12,
       overflow: "hidden", cursor: "pointer", transition: "all .2s",
-      animation: "fadeUp .3s ease " + Math.min(i * 0.04, 0.5) + "s both",
+      animation: isNew ? "fadeUp .4s ease " + Math.min(i * 0.05, 0.4) + "s both" : "none",
     }}
       onMouseEnter={e => { e.currentTarget.style.borderColor = T.green + "55"; e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px " + T.green + "08"; }}
       onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}
@@ -799,6 +803,7 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
       </div>
     </div>
   );
+  };
 
   return (
     <div style={{ minHeight: fullScreen ? "calc(100vh - 60px)" : "auto" }}>
@@ -1319,7 +1324,7 @@ export default function App() {
   const [fleetKeys, setFleetKeys] = useState([]); const [devSecret, setDevSecret] = useState("");
   const [copied, setCopied] = useState(false);
   const [onlineCount, setOnlineCount] = useState(0);
-  const [appTab, setAppTab] = useState("radar"); // "radar" or "trade"
+  const [appTab, setAppTab] = useState("trade"); // "trade" or "radar"
   const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
@@ -1554,8 +1559,8 @@ export default function App() {
                 {/* ═══ TOP TAB BAR ═══ */}
                 <div style={{ display: "flex", marginBottom: 16, background: T.surface, borderRadius: 12, border: "1px solid " + T.border, overflow: "hidden" }}>
                   {[
-                    { id: "radar", label: "\uD83D\uDCE1 Radar", desc: "Scan tokens" },
-                    { id: "trade", label: "\uD83D\uDE80 Trade", desc: "Launch or Ape" },
+                    { id: "trade", label: "\uD83D\uDE80 Deploy" },
+                    { id: "radar", label: "\uD83D\uDCE1 Radar" },
                   ].map(t => (
                     <button key={t.id} onClick={() => setAppTab(t.id)} style={{
                       flex: 1, padding: mobile ? "12px 8px" : "14px 16px",
