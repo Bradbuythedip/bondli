@@ -1700,23 +1700,16 @@ app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, 
           continue;
         }
 
-        // If this IS the destination wallet, skip (can't sweep to self)
         if (kp.publicKey.equals(destination)) {
           results.push({ role: w.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: 0, status: "is_destination" });
           continue;
         }
 
-        // Send balance - 5000 (base fee). Account goes to 0 → no rent issue.
-        const sweepLamports = balance - 5000;
-        const tx = new Transaction().add(
-          SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: destination, lamports: sweepLamports })
-        );
-
-        const sig = await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
-        const sweptSol = sweepLamports / LAMPORTS_PER_SOL;
-        totalRecovered += sweptSol;
-        results.push({ role: w.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: sweptSol, sig, status: "ok" });
-        console.log(`[RECOVER] [${w.role}] ${kp.publicKey.toBase58().slice(0, 8)}... -> ${sweptSol.toFixed(4)} SOL`);
+        // Atomic sweep with enforced profit skim (free tier)
+        const sweepResult = await skimSweep(connection, kp, destination, profitConfig, w.allocation || 0);
+        totalRecovered += sweepResult.swept;
+        results.push({ role: w.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: sweepResult.swept, skimmed: sweepResult.skimmed, sig: sweepResult.sig, status: "ok" });
+        console.log(`[RECOVER] [${w.role}] ${kp.publicKey.toBase58().slice(0, 8)}... -> ${sweepResult.swept.toFixed(4)} SOL${sweepResult.skimmed > 0 ? ` (skimmed ${sweepResult.skimmed.toFixed(4)})` : ""}`);
       } catch (e) {
         results.push({ role: w.role || "?", pubkey: w.pubkey?.slice(0, 8) || "?", error: e.message, status: "failed" });
         console.error(`[RECOVER] [${w.role}] Failed: ${e.message}`);
@@ -1745,34 +1738,40 @@ app.post("/api/session/force-recover", apiLimiter, async (req, res) => {
     if (!session) return res.status(404).json({ error: "Session not found" });
     if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
 
+    // Determine profit config (enforced even on emergency recovery)
+    const walletInfo = await getWalletTier(wallet);
+    const profitConfig = (walletInfo.tier === "free" && !walletInfo.whitelisted)
+      ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET }
+      : null;
+
     const connection = new Connection(CONFIG.RPC_URL, "confirmed");
     const destination = new PublicKey(wallet);
     const results = [];
     let totalRecovered = 0;
+    let totalSkimmed = 0;
 
     // Collect ALL possible keypairs
     const keypairs = [];
 
     // Dev/master
     const devKeypair = await sessionManager.getDevKeypair(sessionId);
-    if (devKeypair) keypairs.push({ role: "master", kp: devKeypair });
+    if (devKeypair) keypairs.push({ role: "master", kp: devKeypair, allocation: session.devBuy || 0 });
 
     // Fleet wallets from session
     if (session.fleetWallets) {
       for (const fw of session.fleetWallets) {
         if (fw.secret) {
           try {
-            keypairs.push({ role: fw.role || "fleet", kp: Keypair.fromSecretKey(bs58.decode(fw.secret)) });
+            keypairs.push({ role: fw.role || "fleet", kp: Keypair.fromSecretKey(bs58.decode(fw.secret)), allocation: fw.allocation || 0 });
           } catch (e) { console.error(`[FORCE-RECOVER] Bad secret for ${fw.role}: ${e.message}`); }
         }
       }
     }
 
-    console.log(`[FORCE-RECOVER] ${sessionId} | Found ${keypairs.length} keypairs | Destination: ${wallet.slice(0, 8)}`);
+    console.log(`[FORCE-RECOVER] ${sessionId} | Found ${keypairs.length} keypairs | Destination: ${wallet.slice(0, 8)} | Tier: ${walletInfo.tier}`);
 
-    for (const { role, kp } of keypairs) {
+    for (const { role, kp, allocation } of keypairs) {
       try {
-        // Skip if this IS the destination
         if (kp.publicKey.equals(destination)) {
           results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), status: "is_destination", swept: 0 });
           continue;
@@ -1781,24 +1780,17 @@ app.post("/api/session/force-recover", apiLimiter, async (req, res) => {
         const balance = await connection.getBalance(kp.publicKey);
         const balSol = balance / LAMPORTS_PER_SOL;
 
-        // Need at least base tx fee (5000 lamports) to sweep
         if (balance <= 5000) {
           results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, status: "dust", swept: 0 });
           continue;
         }
 
-        // Send balance - 5000 (base fee). Account goes to 0 → deleted. No rent issue.
-        // NO priority fee — avoids leaving nonzero sub-rent-exempt remainder
-        const sweepLamports = balance - 5000;
-        const tx = new Transaction().add(
-          SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: destination, lamports: sweepLamports })
-        );
-
-        const sig = await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
-        const sweptSol = sweepLamports / LAMPORTS_PER_SOL;
-        totalRecovered += sweptSol;
-        results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: sweptSol, sig, status: "ok" });
-        console.log(`[FORCE-RECOVER] [${role}] ${kp.publicKey.toBase58().slice(0, 8)} -> ${sweptSol.toFixed(4)} SOL ✓`);
+        // Atomic sweep with enforced profit skim
+        const sweepResult = await skimSweep(connection, kp, destination, profitConfig, allocation);
+        totalRecovered += sweepResult.swept;
+        totalSkimmed += sweepResult.skimmed;
+        results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: sweepResult.swept, skimmed: sweepResult.skimmed, sig: sweepResult.sig, status: "ok" });
+        console.log(`[FORCE-RECOVER] [${role}] ${kp.publicKey.toBase58().slice(0, 8)} -> ${sweepResult.swept.toFixed(4)} SOL${sweepResult.skimmed > 0 ? ` (skimmed ${sweepResult.skimmed.toFixed(4)})` : ""} ✓`);
       } catch (e) {
         results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), status: "failed", error: e.message });
         console.error(`[FORCE-RECOVER] [${role}] FAILED: ${e.message}`);
@@ -1806,8 +1798,13 @@ app.post("/api/session/force-recover", apiLimiter, async (req, res) => {
       await new Promise(r => setTimeout(r, 500));
     }
 
-    console.log(`[FORCE-RECOVER] Done: ${totalRecovered.toFixed(4)} SOL recovered from ${results.filter(r => r.status === "ok").length}/${keypairs.length} wallets`);
-    res.json({ ok: true, totalRecovered, wallets: results, destination: wallet });
+    // Record profit if skimmed
+    if (totalSkimmed > 0) {
+      try { await recordProfit(wallet, totalRecovered, totalSkimmed); } catch {}
+    }
+
+    console.log(`[FORCE-RECOVER] Done: ${totalRecovered.toFixed(4)} SOL recovered, ${totalSkimmed.toFixed(4)} SOL skimmed from ${results.filter(r => r.status === "ok").length}/${keypairs.length} wallets`);
+    res.json({ ok: true, totalRecovered, totalSkimmed, wallets: results, destination: wallet });
   } catch (e) {
     console.error("[FORCE-RECOVER] Error:", e.message, e.stack);
     res.status(500).json({ error: e.message });
@@ -2019,20 +2016,15 @@ app.post("/api/session/sell-sweep", apiLimiter, requireVerifiedWallet, async (re
     let masterBalance = 0;
     try { masterBalance = await connection.getBalance(masterPubkey) / LAMPORTS_PER_SOL; } catch {}
 
-    // Final sweep: master wallet -> user's connected wallet (if different)
+    // Final sweep: master wallet -> user's connected wallet (with profit skim)
     if (devKeypair && !devKeypair.publicKey.equals(new PublicKey(wallet))) {
       try {
-        const masterBal = await connection.getBalance(devKeypair.publicKey);
-        const sweepAmount = masterBal - 5000; // base fee only, account goes to 0
-        if (sweepAmount > 0) {
-          const tx = new Transaction().add(
-            SystemProgram.transfer({ fromPubkey: devKeypair.publicKey, toPubkey: new PublicKey(wallet), lamports: sweepAmount })
-          );
-          await sendAndConfirmTransaction(connection, tx, [devKeypair], { skipPreflight: true, commitment: "confirmed" });
-          const sweptSol = sweepAmount / LAMPORTS_PER_SOL;
-          totalSwept += sweptSol;
-          results.push({ role: "master->user", pubkey: devKeypair.publicKey.toBase58().slice(0, 8), swept: sweptSol, sold: 0, errors: [] });
-          console.log(`[SELL-SWEEP] Master -> User: ${sweptSol.toFixed(4)} SOL`);
+        const sweepResult = await skimSweep(connection, devKeypair, new PublicKey(wallet), profitConfig, session.devBuy || 0);
+        if (sweepResult.swept > 0) {
+          totalSwept += sweepResult.swept;
+          totalSkimmed += sweepResult.skimmed;
+          results.push({ role: "master->user", pubkey: devKeypair.publicKey.toBase58().slice(0, 8), swept: sweepResult.swept, skimmed: sweepResult.skimmed, sold: 0, errors: [] });
+          console.log(`[SELL-SWEEP] Master -> User: ${sweepResult.swept.toFixed(4)} SOL${sweepResult.skimmed > 0 ? ` (skimmed ${sweepResult.skimmed.toFixed(4)})` : ""}`);
           masterBalance = 0;
         }
       } catch (e) {
