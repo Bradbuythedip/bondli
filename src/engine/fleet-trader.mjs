@@ -605,7 +605,7 @@ class FleetTrader extends EventEmitter {
       // Run volume for at least 3 minutes (time-based, not cycle-based)
       const volumeEnd = Date.now() + (3 * 60 * 1000) + Math.random() * (2 * 60 * 1000); // 3-5 min
       let volCycle = 0;
-      console.log(`[FLEET] CREATE v5: Phase 3 — volume generation for ${Math.round((volumeEnd - Date.now()) / 60000)}min...`);
+      console.log(`[FLEET] CREATE v5: Phase 3 — parabolic volume for ${Math.round((volumeEnd - Date.now()) / 60000)}min...`);
 
       while (Date.now() < volumeEnd && session.running) {
         // Check GameState — abort volume if dump detected
@@ -616,11 +616,12 @@ class FleetTrader extends EventEmitter {
             break;
           }
           if (volCycle % 3 === 0) {
-            console.log(`[FLEET] [VOL] cycle ${volCycle} | ${gs.uniqueBuyers} ext buyers | ${gs.buyPressure}% bp | ${gs.signal}`);
+            console.log(`[FLEET] [VOL] round ${volCycle} | ${gs.uniqueBuyers} ext buyers | ${gs.buyPressure}% bp | ${gs.signal}`);
           }
         }
 
-        await this._generateVolume(session, global, feeConfig, 1);
+        // Run one full parabola (8 steps = ~30-60s of trades)
+        await this._generateVolume(session, global, feeConfig, 2);
         volCycle++;
         
         // Refresh global between cycles
@@ -806,137 +807,104 @@ class FleetTrader extends EventEmitter {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // VOLUME ENGINE v2 — Coordinated team-based trading
+  // VOLUME ENGINE v3 — Parabolic Build
   //
-  // Wallets are assigned roles within volume phase:
-  //   PAINTERS  — create chart patterns (small buys for green candles,
-  //               tiny sells for "healthy" reds that get bought back)
-  //   ACCUMULATORS — buy dips created by painters (price support signal)
-  //   PUMPERS  — occasional larger buys (whale entry FOMO signal)
+  // Volume builds like a crescendo: small → medium → PEAK → medium
+  // Early cycles:  BUY heavy, tiny sells (accumulation — push price up)
+  // Mid cycles:    BIG buys + BIG sells (peak activity — attract eyeballs)
+  // Late cycles:   Sells catch up (distribute into any real demand)
   //
-  // Net effect: wallets trade tokens between themselves but the chart
-  // pattern looks like organic growing interest. When a real buyer
-  // enters, accumulators are positioned and price has visible support.
+  // Trade timing: 3-8 seconds between each trade (never simultaneous)
+  // Trade sizes:  Follow sin(π * progress) curve — peak in the middle
+  // Different wallet each trade — no wallet does back-to-back
   // ═══════════════════════════════════════════════════════════════
-  async _generateVolume(session, global, feeConfig, cycles = 5) {
+  async _generateVolume(session, global, feeConfig, cycles = 1) {
     const { ca, mint, fleetWallets, gameState } = session;
     const active = fleetWallets.filter(w => w.funded && w.trades.length > 0);
     if (active.length < 2) return;
 
-    // Assign team roles (rotate each cycle for wallet diversity on chain)
-    const assignTeams = () => {
-      const shuffled = [...active].sort(() => Math.random() - 0.5);
-      const teams = { painters: [], accumulators: [], pumpers: [] };
-      shuffled.forEach((w, i) => {
-        if (i === 0) teams.pumpers.push(w);                    // 1 pumper
-        else if (i <= Math.ceil(shuffled.length * 0.4)) teams.painters.push(w);  // ~40% painters
-        else teams.accumulators.push(w);                        // rest accumulate
-      });
-      return teams;
-    };
+    // For multi-cycle calls from CREATE strategy, run the full parabola
+    const totalSteps = Math.max(cycles * 4, 8); // each cycle = ~4 trade actions
+    let lastBuyWallet = null;
+    let lastSellWallet = null;
 
-    console.log(`[VOL] Starting coordinated volume: ${active.length} wallets, ${cycles} cycles`);
+    for (let step = 0; step < totalSteps && session.running; step++) {
+      const progress = step / totalSteps; // 0 → 1
+      
+      // Parabolic intensity: sin curve peaks at 50%
+      const intensity = Math.sin(progress * Math.PI); // 0 → 1 → 0
+      
+      // Buy/sell ratio shifts over time:
+      // Early (0-30%): 80% buys, 20% sells (accumulate)
+      // Mid (30-70%):  55% buys, 45% sells (peak volume, roughly balanced)
+      // Late (70-100%): 30% buys, 70% sells (distribute)
+      const buyBias = progress < 0.3 ? 0.85 : progress < 0.7 ? 0.55 : 0.25;
+      const doBuy = Math.random() < buyBias;
 
-    for (let c = 0; c < cycles && session.running; c++) {
-      const teams = assignTeams();
-
-      // Check GameState — skip volume if sell signal
+      // Check GameState
       if (gameState?.alive) {
         const gs = gameState.snapshot();
-        if (gs.signal === "SELL_NOW") {
-          console.log(`[VOL] ⚡ SELL_NOW — aborting volume phase`);
-          return;
-        }
+        if (gs.signal === "SELL_NOW") { console.log(`[VOL] ⚡ SELL_NOW — aborting`); return; }
       }
 
-      try {
-        global = await this.onlineSdk.fetchGlobal();
-        feeConfig = await this.onlineSdk.fetchFeeConfig();
-      } catch {}
+      try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
 
-      // ── Step 1: Painter creates a small green candle ──
-      const painter = teams.painters[c % teams.painters.length];
-      if (painter && session.running) {
-        const painterBal = await this.connection.getBalance(painter.keypair.publicKey);
-        const painterSol = painterBal / LAMPORTS_PER_SOL;
-        const paintBuy = Math.min(painterSol * 0.12, 0.03 + Math.random() * 0.02); // small, varied
-        if (paintBuy >= 0.005) {
+      // Pick a wallet (never same wallet back-to-back for same action)
+      const shuffled = [...active].sort(() => Math.random() - 0.5);
+
+      if (doBuy) {
+        // ── BUY: size scales with intensity ──
+        const wallet = shuffled.find(w => w !== lastBuyWallet) || shuffled[0];
+        lastBuyWallet = wallet;
+        
+        const walletBal = await this.connection.getBalance(wallet.keypair.publicKey);
+        const walletSol = walletBal / LAMPORTS_PER_SOL;
+        
+        // Base size: 3-8% of wallet balance, scaled by intensity
+        const basePct = 0.03 + intensity * 0.08; // 3% at edges, 11% at peak
+        const buyAmount = Math.min(walletSol * basePct, 0.02 + intensity * 0.08); // cap: 0.02-0.10 SOL
+        
+        if (buyAmount >= 0.005 && walletSol > buyAmount + 0.003) {
           try {
-            const r = await this._executeBuy(painter, mint, global, feeConfig, paintBuy);
+            const r = await this._executeBuy(wallet, mint, global, feeConfig, buyAmount);
             if (r.ok) {
-              painter.solSpent += paintBuy;
-              session.tradeCount++; session.totalSolSpent += paintBuy;
-              this.emit("trade", { ca, role: painter.role, side: "buy", sol: paintBuy, sig: r.sig });
-              console.log(`[VOL] 🎨 [${painter.role}] paint buy ${paintBuy.toFixed(4)} SOL`);
+              wallet.solSpent += buyAmount;
+              session.tradeCount++; session.totalSolSpent += buyAmount;
+              this.emit("trade", { ca, role: wallet.role, side: "buy", sol: buyAmount, sig: r.sig });
+              const phase = progress < 0.3 ? "accumulate" : progress < 0.7 ? "peak" : "taper";
+              console.log(`[VOL] ${step}/${totalSteps} BUY ${buyAmount.toFixed(4)} SOL [${wallet.role}] (${phase} i:${intensity.toFixed(2)})`);
             }
           } catch {}
         }
-        await sleep(2000 + Math.random() * 3000);
-      }
-
-      // ── Step 2: Another painter sells tiny amount (healthy red candle) ──
-      if (session.running && teams.painters.length >= 2) {
-        const seller = teams.painters[(c + 1) % teams.painters.length];
-        const sellPct = 0.03 + Math.random() * 0.05; // 3-8% — tiny sell, just for the red candle
+      } else {
+        // ── SELL: size also scales with intensity, but smaller early ──
+        const wallet = shuffled.find(w => w !== lastSellWallet && w.trades.some(t => t.side === "buy")) || shuffled[0];
+        lastSellWallet = wallet;
+        
+        // Sell percentage of TOKEN holdings: 2-6% early, 5-15% at peak, 8-20% late
+        const earlyPct = 0.02 + intensity * 0.04;
+        const latePct = 0.05 + intensity * 0.15;
+        const sellPct = progress < 0.3 ? earlyPct : progress < 0.7 ? earlyPct * 1.5 : latePct;
+        
         try {
-          const r = await this._executeSell(seller, mint, global, feeConfig, sellPct);
+          const r = await this._executeSell(wallet, mint, global, feeConfig, Math.min(sellPct, 0.20));
           if (r.ok) {
-            seller.solRecovered += r.solOut || 0;
+            wallet.solRecovered += r.solOut || 0;
             session.tradeCount++; session.totalSolRecovered += r.solOut || 0;
-            this.emit("trade", { ca, role: seller.role, side: "sell", sol: r.solOut, sig: r.sig });
-            console.log(`[VOL] 🎨 [${seller.role}] paint sell ${(sellPct * 100).toFixed(0)}% -> ${(r.solOut || 0).toFixed(4)} SOL`);
+            this.emit("trade", { ca, role: wallet.role, side: "sell", sol: r.solOut, sig: r.sig });
+            const phase = progress < 0.3 ? "tiny-red" : progress < 0.7 ? "healthy-red" : "distribute";
+            console.log(`[VOL] ${step}/${totalSteps} SELL ${(sellPct * 100).toFixed(0)}% [${wallet.role}] -> ${(r.solOut || 0).toFixed(4)} SOL (${phase})`);
           }
         } catch {}
-        await sleep(1500 + Math.random() * 2500);
       }
 
-      // ── Step 3: Accumulator buys the dip (price support) ──
-      if (session.running && teams.accumulators.length > 0) {
-        const acc = teams.accumulators[c % teams.accumulators.length];
-        const accBal = await this.connection.getBalance(acc.keypair.publicKey);
-        const accSol = accBal / LAMPORTS_PER_SOL;
-        const accBuy = Math.min(accSol * 0.15, 0.04 + Math.random() * 0.03);
-        if (accBuy >= 0.005) {
-          try {
-            const r = await this._executeBuy(acc, mint, global, feeConfig, accBuy);
-            if (r.ok) {
-              acc.solSpent += accBuy;
-              session.tradeCount++; session.totalSolSpent += accBuy;
-              this.emit("trade", { ca, role: acc.role, side: "buy", sol: accBuy, sig: r.sig });
-              console.log(`[VOL] 📈 [${acc.role}] accumulate ${accBuy.toFixed(4)} SOL (dip buy)`);
-            }
-          } catch {}
-        }
-        await sleep(3000 + Math.random() * 4000);
-      }
-
-      // ── Step 4: Every 2-3 cycles, pumper does a larger buy (whale signal) ──
-      if (session.running && (c % 2 === 1 || Math.random() < 0.3) && teams.pumpers.length > 0) {
-        const pumper = teams.pumpers[0];
-        const pumperBal = await this.connection.getBalance(pumper.keypair.publicKey);
-        const pumperSol = pumperBal / LAMPORTS_PER_SOL;
-        const pumpBuy = Math.min(pumperSol * 0.20, 0.08 + Math.random() * 0.05); // bigger buy
-        if (pumpBuy >= 0.01) {
-          try {
-            const r = await this._executeBuy(pumper, mint, global, feeConfig, pumpBuy);
-            if (r.ok) {
-              pumper.solSpent += pumpBuy;
-              session.tradeCount++; session.totalSolSpent += pumpBuy;
-              this.emit("trade", { ca, role: pumper.role, side: "buy", sol: pumpBuy, sig: r.sig });
-              console.log(`[VOL] 🐋 [${pumper.role}] pump buy ${pumpBuy.toFixed(4)} SOL`);
-            }
-          } catch {}
-        }
-        await sleep(4000 + Math.random() * 6000);
-      }
-
-      // ── Cycle gap — varied timing looks organic ──
-      const cycleGap = 6000 + Math.random() * 14000; // 6-20s between cycles
-      console.log(`[VOL] Cycle ${c + 1}/${cycles} done | next in ${(cycleGap/1000).toFixed(0)}s`);
-      await sleep(cycleGap);
+      // Gap between trades: 3-8 seconds (faster at peak, slower at edges)
+      const baseGap = 3000 + (1 - intensity) * 5000; // 3s at peak, 8s at edges
+      const jitter = Math.random() * 2000;
+      await sleep(baseGap + jitter);
     }
 
-    console.log(`[VOL] Volume phase complete: ${session.tradeCount} total trades`);
+    console.log(`[VOL] Parabola complete: ${totalSteps} steps, ${session.tradeCount} total trades`);
   }
 
   async _runSellLoop(session, wallet, global, feeConfig) {
