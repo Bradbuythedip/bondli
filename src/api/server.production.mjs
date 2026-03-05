@@ -529,6 +529,7 @@ const radar = {
   enabled: true,
   MAX_TRACKED: 120,
   subbed: new Set(),
+  momentumCache: new Map(), // ca -> full token data from DexScreener (for detail endpoint)
 };
 
 function computeMovers() {
@@ -660,7 +661,7 @@ async function fetchDexScreenerMomentum() {
     const results = [];
     const seen = new Set();
 
-    // 1. Top boosted tokens (paid promotions = usually active marketing)
+    // 1. Top boosted tokens (most active paid promotions)
     try {
       const r = await fetch("https://api.dexscreener.com/token-boosts/top/v1", { signal: AbortSignal.timeout(6000) });
       if (r.ok) {
@@ -674,7 +675,21 @@ async function fetchDexScreenerMomentum() {
       }
     } catch {}
 
-    // 2. Latest token profiles (claimed = serious project)
+    // 2. Latest boosted (freshly paid = about to pump)
+    try {
+      const r = await fetch("https://api.dexscreener.com/token-boosts/latest/v1", { signal: AbortSignal.timeout(6000) });
+      if (r.ok) {
+        const data = await r.json();
+        for (const t of (Array.isArray(data) ? data : [])) {
+          if (t.chainId === "solana" && t.tokenAddress && !seen.has(t.tokenAddress)) {
+            seen.add(t.tokenAddress);
+            results.push({ ca: t.tokenAddress, source: "fresh-boost", boosts: t.totalAmount || t.amount || 0, icon: t.icon || "", description: t.description || "" });
+          }
+        }
+      }
+    } catch {}
+
+    // 3. Latest token profiles (claimed = serious)
     try {
       const r = await fetch("https://api.dexscreener.com/token-profiles/latest/v1", { signal: AbortSignal.timeout(6000) });
       if (r.ok) {
@@ -690,14 +705,12 @@ async function fetchDexScreenerMomentum() {
 
     if (results.length === 0) return;
 
-    // 3. Fetch full pair data for each (batch of 10, DexScreener allows comma-separated)
+    // 4. Fetch full pair data in batches of 10
     const batches = [];
-    for (let i = 0; i < results.length; i += 10) {
-      batches.push(results.slice(i, i + 10));
-    }
+    for (let i = 0; i < results.length; i += 10) batches.push(results.slice(i, i + 10));
 
     const momentum = [];
-    for (const batch of batches.slice(0, 3)) { // max 3 batches = 30 tokens
+    for (const batch of batches.slice(0, 5)) { // 5 batches = up to 50 tokens
       try {
         const cas = batch.map(t => t.ca).join(",");
         const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + cas, { signal: AbortSignal.timeout(8000) });
@@ -708,7 +721,7 @@ async function fetchDexScreenerMomentum() {
             const ca = pair.baseToken?.address;
             if (!ca) continue;
 
-            const age = pair.pairCreatedAt ? (Date.now() - pair.pairCreatedAt) / 3600000 : 0; // hours
+            const age = pair.pairCreatedAt ? (Date.now() - pair.pairCreatedAt) / 3600000 : 0;
             const h1 = pair.priceChange?.h1 || 0;
             const h6 = pair.priceChange?.h6 || 0;
             const h24 = pair.priceChange?.h24 || 0;
@@ -718,37 +731,53 @@ async function fetchDexScreenerMomentum() {
             const sells24 = pair.txns?.h24?.sells || 0;
             const liq = pair.liquidity?.usd || 0;
 
-            // Score: prefer 12h+ old tokens with positive momentum shift
             let score = 0;
-            if (age >= 12) score += 15;        // matured
-            else if (age >= 6) score += 10;
+            // Age bonus: older tokens with momentum = real recovery plays
+            if (age >= 168) score += 8;       // 7d+
+            else if (age >= 24) score += 12;  // 1d+
+            else if (age >= 12) score += 15;  // 12h+ sweet spot
             else if (age >= 1) score += 5;
 
-            if (h1 > 10) score += 20;          // pumping now
+            // 1h price change: the momentum signal
+            if (h1 > 20) score += 25;
+            else if (h1 > 10) score += 20;
             else if (h1 > 5) score += 15;
             else if (h1 > 0) score += 8;
-            else if (h1 > -5) score += 3;
 
-            if (vol24 > 50000) score += 20;    // serious volume
-            else if (vol24 > 10000) score += 15;
-            else if (vol24 > 1000) score += 8;
+            // Volume: serious activity
+            if (vol24 > 100000) score += 20;
+            else if (vol24 > 50000) score += 18;
+            else if (vol24 > 10000) score += 12;
+            else if (vol24 > 1000) score += 6;
 
-            if (mcap > 10000 && mcap < 500000) score += 10; // sweet spot
-            else if (mcap >= 500000) score += 5;
+            // MCap sweet spot
+            if (mcap > 10000 && mcap < 500000) score += 10;
+            else if (mcap >= 500000 && mcap < 5000000) score += 6;
+            else if (mcap >= 5000000) score += 3;
 
-            if (buys24 > sells24 * 1.2) score += 10; // buy pressure
-            if (liq > 5000) score += 5;
+            // Buy pressure
+            if (buys24 > sells24 * 1.3) score += 10;
+            else if (buys24 > sells24) score += 5;
 
+            // Liquidity
+            if (liq > 10000) score += 5;
+            else if (liq > 5000) score += 3;
+
+            // Boost bonus
             const boostData = batch.find(b => b.ca === ca);
-            if (boostData?.source === "boosted") score += 8;
+            if (boostData?.source === "fresh-boost") score += 12; // JUST paid = about to pump
+            else if (boostData?.source === "boosted") score += 8;
+            else if (boostData?.source === "profile") score += 4;
 
+            // Socials
             const socials = pair.info?.socials || [];
             const websites = pair.info?.websites || [];
-            score += Math.min(10, socials.length * 3 + websites.length * 3);
+            score += Math.min(8, socials.length * 2 + websites.length * 2);
 
-            if (score < 20) continue;
+            if (score < 15) continue;
 
-            momentum.push({
+            // Store in momentum pool for detail lookups
+            const tokenData = {
               ca,
               name: pair.baseToken?.name || "?",
               ticker: pair.baseToken?.symbol || "?",
@@ -760,7 +789,7 @@ async function fetchDexScreenerMomentum() {
               mcapSol: Math.round(mcap / 170),
               solVol: Math.round((vol24 || 0) / 170),
               buys: buys24, sells: sells24,
-              bp: 100, // graduated if on DexScreener
+              bp: 100,
               priceChange: { h1, h6, h24 },
               vol24: Math.round(vol24),
               liq: Math.round(liq),
@@ -768,6 +797,9 @@ async function fetchDexScreenerMomentum() {
               created: pair.pairCreatedAt || 0,
               dev: "",
               source: "dexscreener",
+              dexUrl: pair.url || "",
+              boosted: boostData?.source === "boosted" || boostData?.source === "fresh-boost",
+              freshBoost: boostData?.source === "fresh-boost",
               twitter: socials.find(s => s.platform === "twitter")?.handle || "",
               website: websites[0]?.url || "",
               socialCount: socials.length + websites.length,
@@ -775,26 +807,26 @@ async function fetchDexScreenerMomentum() {
               imageDupe: false, imageOriginal: null, telegram: "",
               twitterHandle: socials.find(s => s.platform === "twitter")?.handle || null,
               twitterValid: !!socials.find(s => s.platform === "twitter"),
-              websiteValid: websites.length > 0,
-              websiteLive: websites.length > 0,
-            });
+              websiteValid: websites.length > 0, websiteLive: websites.length > 0,
+            };
+            momentum.push(tokenData);
+            // Cache in momentum pool for detail endpoint
+            radar.momentumCache.set(ca, tokenData);
           }
         }
       } catch {}
-      await new Promise(r => setTimeout(r, 200)); // rate limit courtesy
+      await new Promise(r => setTimeout(r, 250));
     }
 
     // Deduplicate by CA (keep highest score)
     const deduped = new Map();
     for (const t of momentum) {
-      if (!deduped.has(t.ca) || deduped.get(t.ca).score < t.score) {
-        deduped.set(t.ca, t);
-      }
+      if (!deduped.has(t.ca) || deduped.get(t.ca).score < t.score) deduped.set(t.ca, t);
     }
 
     radar.movers.momentum = [...deduped.values()]
       .sort((a, b) => b.score - a.score)
-      .slice(0, 20);
+      .slice(0, 40);
 
     console.log(`[RADAR] DexScreener momentum: ${radar.movers.momentum.length} tokens (from ${results.length} candidates)`);
   } catch (e) {
@@ -1250,6 +1282,40 @@ app.get("/api/radar/token/:ca", apiLimiter, async (req, res) => {
       imageDupe: !!wsData.imageDupe, imageOriginal: wsData.imageOriginal || null,
     });
   }
+  // Check momentum cache (DexScreener tokens)
+  const momData = radar.momentumCache.get(ca);
+  if (momData) {
+    return res.json({ ok: true, ...momData });
+  }
+  // Try DexScreener directly as last resort
+  try {
+    const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca, { signal: AbortSignal.timeout(5000) });
+    if (r.ok) {
+      const data = await r.json();
+      const pair = (data.pairs || []).find(p => p.chainId === "solana");
+      if (pair) {
+        return res.json({
+          ok: true, ca, name: pair.baseToken?.name || "?", ticker: pair.baseToken?.symbol || "?",
+          image: pair.info?.imageUrl || "", description: "",
+          mcap: pair.marketCap || pair.fdv || 0, bp: 100,
+          replies: 0, complete: true,
+          creator: "", buys: pair.txns?.h24?.buys || 0, sells: pair.txns?.h24?.sells || 0,
+          solVol: Math.round((pair.volume?.h24 || 0) / 170),
+          mcapSol: Math.round((pair.marketCap || 0) / 170),
+          priceChange: pair.priceChange || {},
+          vol24: Math.round(pair.volume?.h24 || 0),
+          liq: Math.round(pair.liquidity?.usd || 0),
+          bundleScore: 0, bundleFlags: [], bundled: false,
+          twitter: (pair.info?.socials?.find(s => s.platform === "twitter"))?.handle || "",
+          twitterHandle: (pair.info?.socials?.find(s => s.platform === "twitter"))?.handle || null,
+          twitterValid: !!(pair.info?.socials?.find(s => s.platform === "twitter")),
+          website: pair.info?.websites?.[0]?.url || "", websiteValid: (pair.info?.websites?.length || 0) > 0, websiteLive: (pair.info?.websites?.length || 0) > 0,
+          telegram: "", socialCount: (pair.info?.socials?.length || 0) + (pair.info?.websites?.length || 0),
+          imageDupe: false, imageOriginal: null,
+        });
+      }
+    }
+  } catch {}
   res.json({ ok: false, error: "Token not found", ca });
 });
 
