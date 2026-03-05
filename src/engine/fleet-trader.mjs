@@ -543,8 +543,8 @@ class FleetTrader extends EventEmitter {
     if (fleetWallets.length >= 3) {
       session.phase = "volume";
       this.emit("phase", { ca, phase: "volume" });
-      console.log(`[FLEET] CREATE: Phase 2 — volume generation...`);
-      await this._generateVolume(session, global, feeConfig, 3); // 3 wash cycles
+      console.log(`[FLEET] CREATE: Phase 2 — coordinated volume generation...`);
+      await this._generateVolume(session, global, feeConfig, 5); // 5 coordinated cycles
     }
 
     // Phase 3: Staggered sells
@@ -637,21 +637,14 @@ class FleetTrader extends EventEmitter {
         }
       }
 
-      // During hold, do small volume trades
+      // During hold, run coordinated volume to attract real buyers
       if (Date.now() < holdEnd && session.running) {
         const activeWallets = fleetWallets.filter(w => w.funded && w.trades.length > 0);
         if (activeWallets.length >= 2) {
-          const w = activeWallets[Math.floor(Math.random() * activeWallets.length)];
-          try {
-            global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig();
-            const smallSellPct = 0.05 + Math.random() * 0.10;
-            const sellResult = await this._executeSell(w, mint, global, feeConfig, smallSellPct);
-            if (sellResult.ok) {
-              session.tradeCount++; session.totalSolRecovered += sellResult.solOut || 0;
-              this.emit("trade", { ca, role: w.role, side: "sell", sol: sellResult.solOut, sig: sellResult.sig });
-              console.log(`[FLEET] [${w.role}] Volume sell ${(smallSellPct * 100).toFixed(0)}% -> ${(sellResult.solOut || 0).toFixed(4)} SOL`);
-            }
-          } catch {}
+          // Run one volume cycle per hold iteration
+          await this._generateVolume(session, global, feeConfig, 1);
+        } else {
+          await sleep(5000);
         }
       }
     }
@@ -685,50 +678,138 @@ class FleetTrader extends EventEmitter {
     if (session.running) { session.phase = "exited"; this.emit("phase", { ca, phase: "exited" }); }
   }
 
-  // ── VOLUME ENGINE: small buy/sell cycles across wallets to generate chart activity ──
-  async _generateVolume(session, global, feeConfig, cycles = 3) {
-    const { ca, mint, fleetWallets } = session;
-    const activeWallets = fleetWallets.filter(w => w.funded && w.trades.length > 0);
-    if (activeWallets.length < 2) return;
+  // ═══════════════════════════════════════════════════════════════
+  // VOLUME ENGINE v2 — Coordinated team-based trading
+  //
+  // Wallets are assigned roles within volume phase:
+  //   PAINTERS  — create chart patterns (small buys for green candles,
+  //               tiny sells for "healthy" reds that get bought back)
+  //   ACCUMULATORS — buy dips created by painters (price support signal)
+  //   PUMPERS  — occasional larger buys (whale entry FOMO signal)
+  //
+  // Net effect: wallets trade tokens between themselves but the chart
+  // pattern looks like organic growing interest. When a real buyer
+  // enters, accumulators are positioned and price has visible support.
+  // ═══════════════════════════════════════════════════════════════
+  async _generateVolume(session, global, feeConfig, cycles = 5) {
+    const { ca, mint, fleetWallets, gameState } = session;
+    const active = fleetWallets.filter(w => w.funded && w.trades.length > 0);
+    if (active.length < 2) return;
+
+    // Assign team roles (rotate each cycle for wallet diversity on chain)
+    const assignTeams = () => {
+      const shuffled = [...active].sort(() => Math.random() - 0.5);
+      const teams = { painters: [], accumulators: [], pumpers: [] };
+      shuffled.forEach((w, i) => {
+        if (i === 0) teams.pumpers.push(w);                    // 1 pumper
+        else if (i <= Math.ceil(shuffled.length * 0.4)) teams.painters.push(w);  // ~40% painters
+        else teams.accumulators.push(w);                        // rest accumulate
+      });
+      return teams;
+    };
+
+    console.log(`[VOL] Starting coordinated volume: ${active.length} wallets, ${cycles} cycles`);
 
     for (let c = 0; c < cycles && session.running; c++) {
-      // Pick 2 random wallets: one sells small, another buys with the proceeds vibe
-      const shuffled = [...activeWallets].sort(() => Math.random() - 0.5);
-      const seller = shuffled[0];
-      const buyer = shuffled[1];
+      const teams = assignTeams();
+
+      // Check GameState — skip volume if sell signal
+      if (gameState?.alive) {
+        const gs = gameState.snapshot();
+        if (gs.signal === "SELL_NOW") {
+          console.log(`[VOL] ⚡ SELL_NOW — aborting volume phase`);
+          return;
+        }
+      }
 
       try {
-        global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig();
+        global = await this.onlineSdk.fetchGlobal();
+        feeConfig = await this.onlineSdk.fetchFeeConfig();
+      } catch {}
 
-        // Seller dumps 8-18% (small, looks like a partial take-profit)
-        const sellPct = 0.08 + Math.random() * 0.10;
-        const sellResult = await this._executeSell(seller, mint, global, feeConfig, sellPct);
-        if (sellResult.ok) {
-          seller.solRecovered += sellResult.solOut || 0;
-          session.tradeCount++; session.totalSolRecovered += sellResult.solOut || 0;
-          this.emit("trade", { ca, role: seller.role, side: "sell", sol: sellResult.solOut, sig: sellResult.sig });
-          console.log(`[FLEET] [${seller.role}] VOL sell ${(sellPct * 100).toFixed(0)}% -> ${(sellResult.solOut || 0).toFixed(4)} SOL`);
+      // ── Step 1: Painter creates a small green candle ──
+      const painter = teams.painters[c % teams.painters.length];
+      if (painter && session.running) {
+        const painterBal = await this.connection.getBalance(painter.keypair.publicKey);
+        const painterSol = painterBal / LAMPORTS_PER_SOL;
+        const paintBuy = Math.min(painterSol * 0.12, 0.03 + Math.random() * 0.02); // small, varied
+        if (paintBuy >= 0.005) {
+          try {
+            const r = await this._executeBuy(painter, mint, global, feeConfig, paintBuy);
+            if (r.ok) {
+              painter.solSpent += paintBuy;
+              session.tradeCount++; session.totalSolSpent += paintBuy;
+              this.emit("trade", { ca, role: painter.role, side: "buy", sol: paintBuy, sig: r.sig });
+              console.log(`[VOL] 🎨 [${painter.role}] paint buy ${paintBuy.toFixed(4)} SOL`);
+            }
+          } catch {}
         }
+        await sleep(2000 + Math.random() * 3000);
+      }
 
-        await sleep(3000 + Math.random() * 5000); // gap between sell and buy
-
-        // Buyer buys a small amount (uses remaining SOL in wallet)
-        const buyerBal = await this.connection.getBalance(buyer.keypair.publicKey);
-        const buyerSol = buyerBal / LAMPORTS_PER_SOL;
-        const buyAmount = Math.min(buyerSol * 0.15, 0.05); // small buy, max 0.05 SOL
-        if (buyAmount >= 0.005 && session.running) {
-          const buyResult = await this._executeBuy(buyer, mint, global, feeConfig, buyAmount);
-          if (buyResult.ok) {
-            buyer.solSpent += buyAmount;
-            session.tradeCount++; session.totalSolSpent += buyAmount;
-            this.emit("trade", { ca, role: buyer.role, side: "buy", sol: buyAmount, sig: buyResult.sig });
-            console.log(`[FLEET] [${buyer.role}] VOL buy ${buyAmount.toFixed(4)} SOL`);
+      // ── Step 2: Another painter sells tiny amount (healthy red candle) ──
+      if (session.running && teams.painters.length >= 2) {
+        const seller = teams.painters[(c + 1) % teams.painters.length];
+        const sellPct = 0.03 + Math.random() * 0.05; // 3-8% — tiny sell, just for the red candle
+        try {
+          const r = await this._executeSell(seller, mint, global, feeConfig, sellPct);
+          if (r.ok) {
+            seller.solRecovered += r.solOut || 0;
+            session.tradeCount++; session.totalSolRecovered += r.solOut || 0;
+            this.emit("trade", { ca, role: seller.role, side: "sell", sol: r.solOut, sig: r.sig });
+            console.log(`[VOL] 🎨 [${seller.role}] paint sell ${(sellPct * 100).toFixed(0)}% -> ${(r.solOut || 0).toFixed(4)} SOL`);
           }
-        }
-      } catch (e) { console.error(`[FLEET] Volume cycle ${c + 1} error:`, e.message); }
+        } catch {}
+        await sleep(1500 + Math.random() * 2500);
+      }
 
-      await sleep(5000 + Math.random() * 10000); // gap between cycles
+      // ── Step 3: Accumulator buys the dip (price support) ──
+      if (session.running && teams.accumulators.length > 0) {
+        const acc = teams.accumulators[c % teams.accumulators.length];
+        const accBal = await this.connection.getBalance(acc.keypair.publicKey);
+        const accSol = accBal / LAMPORTS_PER_SOL;
+        const accBuy = Math.min(accSol * 0.15, 0.04 + Math.random() * 0.03);
+        if (accBuy >= 0.005) {
+          try {
+            const r = await this._executeBuy(acc, mint, global, feeConfig, accBuy);
+            if (r.ok) {
+              acc.solSpent += accBuy;
+              session.tradeCount++; session.totalSolSpent += accBuy;
+              this.emit("trade", { ca, role: acc.role, side: "buy", sol: accBuy, sig: r.sig });
+              console.log(`[VOL] 📈 [${acc.role}] accumulate ${accBuy.toFixed(4)} SOL (dip buy)`);
+            }
+          } catch {}
+        }
+        await sleep(3000 + Math.random() * 4000);
+      }
+
+      // ── Step 4: Every 2-3 cycles, pumper does a larger buy (whale signal) ──
+      if (session.running && (c % 2 === 1 || Math.random() < 0.3) && teams.pumpers.length > 0) {
+        const pumper = teams.pumpers[0];
+        const pumperBal = await this.connection.getBalance(pumper.keypair.publicKey);
+        const pumperSol = pumperBal / LAMPORTS_PER_SOL;
+        const pumpBuy = Math.min(pumperSol * 0.20, 0.08 + Math.random() * 0.05); // bigger buy
+        if (pumpBuy >= 0.01) {
+          try {
+            const r = await this._executeBuy(pumper, mint, global, feeConfig, pumpBuy);
+            if (r.ok) {
+              pumper.solSpent += pumpBuy;
+              session.tradeCount++; session.totalSolSpent += pumpBuy;
+              this.emit("trade", { ca, role: pumper.role, side: "buy", sol: pumpBuy, sig: r.sig });
+              console.log(`[VOL] 🐋 [${pumper.role}] pump buy ${pumpBuy.toFixed(4)} SOL`);
+            }
+          } catch {}
+        }
+        await sleep(4000 + Math.random() * 6000);
+      }
+
+      // ── Cycle gap — varied timing looks organic ──
+      const cycleGap = 6000 + Math.random() * 14000; // 6-20s between cycles
+      console.log(`[VOL] Cycle ${c + 1}/${cycles} done | next in ${(cycleGap/1000).toFixed(0)}s`);
+      await sleep(cycleGap);
     }
+
+    console.log(`[VOL] Volume phase complete: ${session.tradeCount} total trades`);
   }
 
   async _runSellLoop(session, wallet, global, feeConfig) {
