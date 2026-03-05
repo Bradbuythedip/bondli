@@ -634,19 +634,19 @@ function computeMovers() {
 
   // Sort each tab by its own score, take top 10
   radar.movers.new = allScored
-    .filter(t => t.scores.new >= 15)
-    .map(t => ({ ...t, score: t.scores.new, verdict: t.scores.new >= 55 ? "APE" : t.scores.new >= 25 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score).slice(0, 20);
+    .filter(t => t.scores.new >= 8)
+    .map(t => ({ ...t, score: t.scores.new, verdict: t.scores.new >= 50 ? "APE" : t.scores.new >= 15 ? "WATCH" : "SKIP" }))
+    .sort((a, b) => b.score - a.score).slice(0, 40);
 
   radar.movers.hot = allScored
-    .filter(t => t.scores.hot >= 15)
-    .map(t => ({ ...t, score: t.scores.hot, verdict: t.scores.hot >= 50 ? "APE" : t.scores.hot >= 25 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score).slice(0, 20);
+    .filter(t => t.scores.hot >= 8)
+    .map(t => ({ ...t, score: t.scores.hot, verdict: t.scores.hot >= 45 ? "APE" : t.scores.hot >= 15 ? "WATCH" : "SKIP" }))
+    .sort((a, b) => b.score - a.score).slice(0, 40);
 
   radar.movers.graduating = allScored
-    .filter(t => t.scores.graduating >= 20)
-    .map(t => ({ ...t, score: t.scores.graduating, verdict: t.scores.graduating >= 55 ? "APE" : t.scores.graduating >= 30 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score).slice(0, 20);
+    .filter(t => t.scores.graduating >= 10)
+    .map(t => ({ ...t, score: t.scores.graduating, verdict: t.scores.graduating >= 45 ? "APE" : t.scores.graduating >= 15 ? "WATCH" : "SKIP" }))
+    .sort((a, b) => b.score - a.score).slice(0, 40);
 
   radar.updated = now;
 }
@@ -774,7 +774,7 @@ async function fetchDexScreenerMomentum() {
             const websites = pair.info?.websites || [];
             score += Math.min(8, socials.length * 2 + websites.length * 2);
 
-            if (score < 15) continue;
+            if (score < 10) continue;
 
             // Store in momentum pool for detail lookups
             const tokenData = {
@@ -784,7 +784,7 @@ async function fetchDexScreenerMomentum() {
               image: pair.info?.imageUrl || boostData?.icon || "",
               description: boostData?.description || "",
               score: Math.min(100, score),
-              verdict: score >= 60 ? "APE" : score >= 35 ? "WATCH" : "SKIP",
+              verdict: score >= 50 ? "APE" : score >= 20 ? "WATCH" : "SKIP",
               mcapUsd: Math.round(mcap),
               mcapSol: Math.round(mcap / 170),
               solVol: Math.round((vol24 || 0) / 170),
@@ -1285,10 +1285,11 @@ app.get("/api/radar/token/:ca", apiLimiter, async (req, res) => {
   // Check momentum cache (DexScreener tokens)
   const momData = radar.momentumCache.get(ca);
   if (momData) {
-    return res.json({ ok: true, ...momData });
+    return res.json({ ok: true, ca, ...momData });
   }
   // Try DexScreener directly as last resort
   try {
+    console.log(`[RADAR] Detail fallback: fetching ${ca.slice(0, 8)} from DexScreener...`);
     const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca, { signal: AbortSignal.timeout(5000) });
     if (r.ok) {
       const data = await r.json();
