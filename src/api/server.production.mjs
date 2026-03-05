@@ -651,6 +651,164 @@ function computeMovers() {
 }
 
 // ═══════════════════════════════════════
+// MOMENTUM TAB — DexScreener API for older tokens with volume spikes
+// Fetches boosted tokens + trending profiles, filters Solana pump.fun
+// Finds tokens 12h+ old where momentum is shifting
+// ═══════════════════════════════════════
+async function fetchDexScreenerMomentum() {
+  try {
+    const results = [];
+    const seen = new Set();
+
+    // 1. Top boosted tokens (paid promotions = usually active marketing)
+    try {
+      const r = await fetch("https://api.dexscreener.com/token-boosts/top/v1", { signal: AbortSignal.timeout(6000) });
+      if (r.ok) {
+        const data = await r.json();
+        for (const t of (Array.isArray(data) ? data : [])) {
+          if (t.chainId === "solana" && t.tokenAddress && !seen.has(t.tokenAddress)) {
+            seen.add(t.tokenAddress);
+            results.push({ ca: t.tokenAddress, source: "boosted", boosts: t.totalAmount || t.amount || 0, icon: t.icon || "", description: t.description || "" });
+          }
+        }
+      }
+    } catch {}
+
+    // 2. Latest token profiles (claimed = serious project)
+    try {
+      const r = await fetch("https://api.dexscreener.com/token-profiles/latest/v1", { signal: AbortSignal.timeout(6000) });
+      if (r.ok) {
+        const data = await r.json();
+        for (const t of (Array.isArray(data) ? data : [])) {
+          if (t.chainId === "solana" && t.tokenAddress && !seen.has(t.tokenAddress)) {
+            seen.add(t.tokenAddress);
+            results.push({ ca: t.tokenAddress, source: "profile", icon: t.icon || "", description: t.description || "" });
+          }
+        }
+      }
+    } catch {}
+
+    if (results.length === 0) return;
+
+    // 3. Fetch full pair data for each (batch of 10, DexScreener allows comma-separated)
+    const batches = [];
+    for (let i = 0; i < results.length; i += 10) {
+      batches.push(results.slice(i, i + 10));
+    }
+
+    const momentum = [];
+    for (const batch of batches.slice(0, 3)) { // max 3 batches = 30 tokens
+      try {
+        const cas = batch.map(t => t.ca).join(",");
+        const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + cas, { signal: AbortSignal.timeout(8000) });
+        if (r.ok) {
+          const data = await r.json();
+          for (const pair of (data.pairs || [])) {
+            if (pair.chainId !== "solana") continue;
+            const ca = pair.baseToken?.address;
+            if (!ca) continue;
+
+            const age = pair.pairCreatedAt ? (Date.now() - pair.pairCreatedAt) / 3600000 : 0; // hours
+            const h1 = pair.priceChange?.h1 || 0;
+            const h6 = pair.priceChange?.h6 || 0;
+            const h24 = pair.priceChange?.h24 || 0;
+            const vol24 = pair.volume?.h24 || 0;
+            const mcap = pair.marketCap || pair.fdv || 0;
+            const buys24 = pair.txns?.h24?.buys || 0;
+            const sells24 = pair.txns?.h24?.sells || 0;
+            const liq = pair.liquidity?.usd || 0;
+
+            // Score: prefer 12h+ old tokens with positive momentum shift
+            let score = 0;
+            if (age >= 12) score += 15;        // matured
+            else if (age >= 6) score += 10;
+            else if (age >= 1) score += 5;
+
+            if (h1 > 10) score += 20;          // pumping now
+            else if (h1 > 5) score += 15;
+            else if (h1 > 0) score += 8;
+            else if (h1 > -5) score += 3;
+
+            if (vol24 > 50000) score += 20;    // serious volume
+            else if (vol24 > 10000) score += 15;
+            else if (vol24 > 1000) score += 8;
+
+            if (mcap > 10000 && mcap < 500000) score += 10; // sweet spot
+            else if (mcap >= 500000) score += 5;
+
+            if (buys24 > sells24 * 1.2) score += 10; // buy pressure
+            if (liq > 5000) score += 5;
+
+            const boostData = batch.find(b => b.ca === ca);
+            if (boostData?.source === "boosted") score += 8;
+
+            const socials = pair.info?.socials || [];
+            const websites = pair.info?.websites || [];
+            score += Math.min(10, socials.length * 3 + websites.length * 3);
+
+            if (score < 20) continue;
+
+            momentum.push({
+              ca,
+              name: pair.baseToken?.name || "?",
+              ticker: pair.baseToken?.symbol || "?",
+              image: pair.info?.imageUrl || boostData?.icon || "",
+              description: boostData?.description || "",
+              score: Math.min(100, score),
+              verdict: score >= 60 ? "APE" : score >= 35 ? "WATCH" : "SKIP",
+              mcapUsd: Math.round(mcap),
+              mcapSol: Math.round(mcap / 170),
+              solVol: Math.round((vol24 || 0) / 170),
+              buys: buys24, sells: sells24,
+              bp: 100, // graduated if on DexScreener
+              priceChange: { h1, h6, h24 },
+              vol24: Math.round(vol24),
+              liq: Math.round(liq),
+              age: Math.round(age),
+              created: pair.pairCreatedAt || 0,
+              dev: "",
+              source: "dexscreener",
+              twitter: socials.find(s => s.platform === "twitter")?.handle || "",
+              website: websites[0]?.url || "",
+              socialCount: socials.length + websites.length,
+              bundleScore: 0, bundleFlags: [], bundled: false,
+              imageDupe: false, imageOriginal: null, telegram: "",
+              twitterHandle: socials.find(s => s.platform === "twitter")?.handle || null,
+              twitterValid: !!socials.find(s => s.platform === "twitter"),
+              websiteValid: websites.length > 0,
+              websiteLive: websites.length > 0,
+            });
+          }
+        }
+      } catch {}
+      await new Promise(r => setTimeout(r, 200)); // rate limit courtesy
+    }
+
+    // Deduplicate by CA (keep highest score)
+    const deduped = new Map();
+    for (const t of momentum) {
+      if (!deduped.has(t.ca) || deduped.get(t.ca).score < t.score) {
+        deduped.set(t.ca, t);
+      }
+    }
+
+    radar.movers.momentum = [...deduped.values()]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 20);
+
+    console.log(`[RADAR] DexScreener momentum: ${radar.movers.momentum.length} tokens (from ${results.length} candidates)`);
+  } catch (e) {
+    console.error("[RADAR] DexScreener fetch error:", e.message);
+  }
+}
+
+// Initialize momentum tab
+radar.movers.momentum = [];
+// Fetch DexScreener data every 30s (rate limit: 60/min)
+fetchDexScreenerMomentum();
+setInterval(fetchDexScreenerMomentum, 30000);
+
+// ═══════════════════════════════════════
 // BUNDLE DETECTION — analyzes early trades for coordinated buying patterns
 // Runs on every new trade for the first 30 trades per token
 // ═══════════════════════════════════════
@@ -1001,9 +1159,10 @@ app.get("/api/radar", apiLimiter, (req, res) => {
   res.json({
     ok: true,
     tabs: {
-      new: radar.movers.new || [],
       hot: radar.movers.hot || [],
+      new: radar.movers.new || [],
       graduating: radar.movers.graduating || [],
+      momentum: radar.movers.momentum || [],
     },
     tokens: radar.movers.hot || [],
     wsAlive: radar.wsAlive,
