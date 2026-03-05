@@ -1420,23 +1420,30 @@ export default function App() {
       const data = await res.json();
       if (!data.ok) { toast(data.error || "Failed to build tx", "error"); return; }
 
-      // 2. Deserialize and sign with Phantom
-      const { Transaction: SolanaTx } = await import("@solana/web3.js");
+      // 2. Deserialize and sign+send with Phantom (no @solana/web3.js needed)
       const txBuffer = Uint8Array.from(atob(data.tx), c => c.charCodeAt(0));
-      const tx = SolanaTx.from(txBuffer);
 
       toast("Approve in Phantom...", "info");
-      const signed = await phantom.signTransaction(tx);
+      // Phantom's signAndSendTransaction handles everything
+      const { signature } = await phantom.request({
+        method: "signAndSendTransaction",
+        params: { message: btoa(String.fromCharCode(...txBuffer)) },
+      });
 
-      // 3. Send signed tx to Solana
-      toast("Sending transaction...", "info");
-      const connection = new (await import("@solana/web3.js")).Connection(API.replace("/api", "").replace("https://", "https://") || "https://api.mainnet-beta.solana.com", "confirmed");
-      const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: true, maxRetries: 3 });
-      await connection.confirmTransaction(sig, "confirmed");
+      toast("Confirming...", "info");
+      // Poll server for confirmation instead of using @solana/web3.js Connection
+      let confirmed = false;
+      for (let i = 0; i < 30 && !confirmed; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const check = await fetch(API + "/api/tx-status/" + signature);
+          if (check.ok) { const s = await check.json(); if (s.confirmed) confirmed = true; }
+        } catch {}
+      }
 
       toast("Aped " + solAmount + " SOL into " + ca.slice(0, 8) + "... ✓", "success");
-      console.log("[QUICK-APE] Success:", sig);
-      return sig;
+      console.log("[QUICK-APE] Success:", signature);
+      return signature;
     } catch (e) {
       if (e.message?.includes("User rejected")) { toast("Transaction cancelled", "error"); }
       else { toast("Ape failed: " + (e.message || "Unknown error"), "error"); }
@@ -1460,20 +1467,26 @@ export default function App() {
       const data = await res.json();
       if (!data.ok) { toast(data.error || "Failed to build tx", "error"); return; }
 
-      const { Transaction: SolanaTx } = await import("@solana/web3.js");
       const txBuffer = Uint8Array.from(atob(data.tx), c => c.charCodeAt(0));
-      const tx = SolanaTx.from(txBuffer);
 
       toast("Approve sell in Phantom...", "info");
-      const signed = await phantom.signTransaction(tx);
+      const { signature } = await phantom.request({
+        method: "signAndSendTransaction",
+        params: { message: btoa(String.fromCharCode(...txBuffer)) },
+      });
 
-      toast("Sending sell...", "info");
-      const connection = new (await import("@solana/web3.js")).Connection("https://api.mainnet-beta.solana.com", "confirmed");
-      const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: true, maxRetries: 3 });
-      await connection.confirmTransaction(sig, "confirmed");
+      toast("Confirming sell...", "info");
+      let confirmed = false;
+      for (let i = 0; i < 30 && !confirmed; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const check = await fetch(API + "/api/tx-status/" + signature);
+          if (check.ok) { const s = await check.json(); if (s.confirmed) confirmed = true; }
+        } catch {}
+      }
 
       toast("Sold " + percent + "% — ~" + (data.estimatedSolOut || 0).toFixed(4) + " SOL ✓", "success");
-      return sig;
+      return signature;
     } catch (e) {
       if (e.message?.includes("User rejected")) { toast("Cancelled", "error"); }
       else { toast("Sell failed: " + (e.message || "Unknown error"), "error"); }
