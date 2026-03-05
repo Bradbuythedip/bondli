@@ -36,7 +36,7 @@ import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
 import { createToken } from "../engine/token-creator.mjs";
 import { getAssociatedTokenAddressSync, getAccount } from "@solana/spl-token";
 import BN from "bn.js";
-import { getSellSolAmountFromTokenAmount } from "@pump-fun/pump-sdk";
+import { getSellSolAmountFromTokenAmount, getBuyTokenAmountFromSolAmount, PumpSdk, OnlinePumpSdk } from "@pump-fun/pump-sdk";
 
 // ═══════════════════════════════════════
 // TIER + ACCESS SYSTEM
@@ -1320,7 +1320,128 @@ app.get("/api/radar/token/:ca", apiLimiter, async (req, res) => {
   res.json({ ok: false, error: "Token not found", ca });
 });
 
-// Toggle radar on/off
+// Quick Ape — build unsigned buy tx for Phantom signing (no private key needed)
+app.post("/api/quick-ape", apiLimiter, async (req, res) => {
+  try {
+    const { wallet, ca, solAmount } = req.body;
+    if (!wallet || !ca || !solAmount) return res.status(400).json({ error: "wallet, ca, and solAmount required" });
+    if (solAmount < 0.005 || solAmount > 100) return res.status(400).json({ error: "solAmount must be 0.005-100 SOL" });
+
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const userPubkey = new PublicKey(wallet);
+    const mint = new PublicKey(ca);
+
+    // Use pump SDK to build buy instructions
+    const sdk = new PumpSdk();
+    const onlineSdk = new OnlinePumpSdk(connection);
+    const global = await onlineSdk.fetchGlobal();
+    const feeConfig = await onlineSdk.fetchFeeConfig();
+    const buyState = await onlineSdk.fetchBuyState(mint, userPubkey);
+    const { bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo } = buyState;
+    const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
+    const solBN = new BN(Math.floor(solAmount * 1e9));
+    const tokenAmount = getBuyTokenAmountFromSolAmount({ global, feeConfig, mintSupply, bondingCurve, amount: solBN });
+
+    if (tokenAmount.isZero()) return res.status(400).json({ error: "Would receive 0 tokens at this price" });
+
+    const instructions = await sdk.buyInstructions({
+      global, bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo,
+      mint, user: userPubkey, amount: tokenAmount, solAmount: solBN, slippage: 25,
+    });
+
+    const tx = new Transaction();
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 150_000 }),
+      ...instructions,
+    );
+
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = userPubkey;
+
+    // Serialize unsigned — frontend will sign with Phantom
+    const serialized = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+    const base64Tx = serialized.toString("base64");
+
+    const estimatedTokens = parseFloat(tokenAmount.toString()) / 1e6; // assuming 6 decimals
+    const estimatedMcap = bondingCurve.virtualSolReserves ? Math.round(parseFloat(bondingCurve.virtualSolReserves.toString()) / 1e9 * 170 * 2) : 0;
+
+    console.log(`[QUICK-APE] Built tx for ${wallet.slice(0, 8)} | ${solAmount} SOL -> ${ca.slice(0, 8)} | ~${estimatedTokens.toFixed(0)} tokens`);
+
+    res.json({
+      ok: true,
+      tx: base64Tx,
+      blockhash,
+      lastValidBlockHeight,
+      estimatedTokens: estimatedTokens.toFixed(0),
+      estimatedMcap,
+      ca,
+      solAmount,
+    });
+  } catch (e) {
+    console.error("[QUICK-APE] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Quick Sell — build unsigned sell tx for Phantom signing
+app.post("/api/quick-sell", apiLimiter, async (req, res) => {
+  try {
+    const { wallet, ca, percent } = req.body;
+    if (!wallet || !ca) return res.status(400).json({ error: "wallet and ca required" });
+    const sellPct = Math.min(100, Math.max(1, percent || 100));
+
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const userPubkey = new PublicKey(wallet);
+    const mint = new PublicKey(ca);
+
+    const sdk = new PumpSdk();
+    const onlineSdk = new OnlinePumpSdk(connection);
+    const global = await onlineSdk.fetchGlobal();
+    const feeConfig = await onlineSdk.fetchFeeConfig();
+
+    // Get token balance
+    const ata = getAssociatedTokenAddressSync(mint, userPubkey, true);
+    let tokenBalance;
+    try { const account = await getAccount(connection, ata); tokenBalance = new BN(account.amount.toString()); }
+    catch { return res.status(400).json({ error: "No token balance found" }); }
+    if (tokenBalance.isZero()) return res.status(400).json({ error: "Zero token balance" });
+
+    const sellAmount = tokenBalance.muln(sellPct).divn(100);
+    const sellState = await onlineSdk.fetchSellState(mint, userPubkey);
+    const { bondingCurveAccountInfo, bondingCurve } = sellState;
+    const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
+    const solOut = getSellSolAmountFromTokenAmount({ global, feeConfig, mintSupply, bondingCurve, amount: sellAmount });
+
+    const instructions = await sdk.sellInstructions({
+      global, bondingCurveAccountInfo, bondingCurve,
+      mint, user: userPubkey, amount: sellAmount, solAmount: solOut, slippage: 50,
+    });
+
+    const tx = new Transaction();
+    tx.add(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 150_000 }),
+      ...instructions,
+    );
+
+    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = userPubkey;
+
+    const serialized = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+    const base64Tx = serialized.toString("base64");
+    const solOutNum = parseFloat(solOut.toString()) / 1e9;
+
+    console.log(`[QUICK-SELL] Built tx for ${wallet.slice(0, 8)} | ${sellPct}% of ${ca.slice(0, 8)} | ~${solOutNum.toFixed(4)} SOL out`);
+
+    res.json({ ok: true, tx: base64Tx, blockhash, lastValidBlockHeight, estimatedSolOut: solOutNum, percent: sellPct, ca });
+  } catch (e) {
+    console.error("[QUICK-SELL] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 app.post("/api/radar/toggle", apiLimiter, (req, res) => {
   radar.enabled = !radar.enabled;
   if (!radar.enabled && radar.wsRef) {
