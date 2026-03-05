@@ -709,6 +709,8 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
   const [online, setOnline] = useState(0);
   const [search, setSearch] = useState("");
   const seenCAs = useRef(new Set());
+  const prevCAsRef = useRef(new Set()); // CAs from last render — used to detect truly new entries
+  const lastDataHash = useRef(""); // prevent unnecessary re-renders
 
   const allTokens = tabs[activeTab] || [];
   // Deduplicate by CA — keep highest score
@@ -724,8 +726,13 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
       const r = await fetch(window.__BONDLI_API + "/api/radar");
       if (r.ok) {
         const d = await r.json();
-        if (d.tabs) setTabs(d.tabs);
-        else if (d.tokens) setTabs(prev => ({ ...prev, hot: d.tokens }));
+        // Only update state if data actually changed (prevents unnecessary re-renders)
+        const newTabs = d.tabs || { hot: d.tokens || [], new: [], graduating: [], momentum: [] };
+        const hash = JSON.stringify(Object.keys(newTabs).map(k => (newTabs[k] || []).map(t => t.ca + t.score).join(",")).join("|"));
+        if (hash !== lastDataHash.current) {
+          lastDataHash.current = hash;
+          setTabs(newTabs);
+        }
         setWsAlive(d.wsAlive || false);
         setPoolSize(d.poolSize || 0);
         setEnabled(d.enabled !== false);
@@ -737,12 +744,12 @@ function RadarFeed({ T, mobile, onApe, isVip, fullScreen }) {
 
   useEffect(() => {
     let alive = true;
-    const poll = async () => { while (alive) { if (enabled) await fetchRadar(); await new Promise(r => setTimeout(r, 3000)); } };
+    const poll = async () => { while (alive) { if (enabled) await fetchRadar(); await new Promise(r => setTimeout(r, 4000)); } };
     fetchRadar(); poll();
     return () => { alive = false; };
   }, [enabled]);
 
-  const handleRefresh = async () => { setRefreshing(true); seenCAs.current.clear(); await fetchRadar(); setTimeout(() => setRefreshing(false), 600); };
+  const handleRefresh = async () => { setRefreshing(true); lastDataHash.current = ""; seenCAs.current.clear(); prevCAsRef.current.clear(); await fetchRadar(); setTimeout(() => setRefreshing(false), 600); };
   const handleToggle = async () => { try { const r = await fetch(window.__BONDLI_API + "/api/radar/toggle", { method: "POST" }); if (r.ok) { const d = await r.json(); setEnabled(d.enabled); } } catch {} };
 
   const handleSelect = async (ca) => {
