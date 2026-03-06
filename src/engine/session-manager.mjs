@@ -12,11 +12,17 @@
  *   6. Remaining SOL distributes to fleet
  *   7. Fleet trades autonomously
  *
- * Dev buy formula:
- *   < 1 SOL  → 8% (min 0.05 SOL)
- *   1-5 SOL  → 5%
- *   5-15 SOL → 3.5%
- *   15+ SOL  → 2.5% (max 2 SOL)
+ * Dev buy formula (v3.1 — optimized):
+ *   < 0.5 SOL → 15% (min 0.03, max 0.075)
+ *   0.5-2 SOL → 12% (min 0.06, max 0.24)
+ *   2-5 SOL   → 10% (min 0.15, max 0.5)
+ *   5-15 SOL  → 8%  (min 0.3, max 1.2)
+ *   15+ SOL   → 5%  (min 0.5, max 2.0)
+ *
+ * Axiom: Dev buy creates a VISIBLE candle without moving the curve
+ * so far that fleet pays inflated prices. On pump.fun (~30 SOL virtual
+ * reserves), 0.1 SOL moves price ~0.33%. Old 40-50% formula moved
+ * price 3-6% which made fleet entry expensive and dev buy detectable.
  */
 
 import {
@@ -29,20 +35,27 @@ import bs58 from "bs58";
 import CONFIG from "./config.mjs";
 
 // ═══════════════════════════════════════
-// DEV BUY CALCULATOR
+// DEV BUY CALCULATOR (v3.1 — optimized sweet spot)
+// Target: 0.3-1.5% price impact (visible candle, cheap fleet entry)
 // ═══════════════════════════════════════
 export function calculateDevBuy(totalSol) {
   let pct, min, max;
 
-  // Aggressive dev buy — big initial candle on chart
-  if (totalSol < 1) {
-    pct = 0.50; min = 0.1; max = 0.5;
+  if (totalSol < 0.5) {
+    // Micro budget: 15% — just enough to show on chart
+    pct = 0.15; min = 0.03; max = 0.075;
+  } else if (totalSol < 2) {
+    // Small budget: 12% — visible candle, leaves 88% for fleet
+    pct = 0.12; min = 0.06; max = 0.24;
   } else if (totalSol < 5) {
-    pct = 0.40; min = 0.3; max = 2.0;
+    // Medium budget: 10% — solid candle, 90% fleet
+    pct = 0.10; min = 0.15; max = 0.5;
   } else if (totalSol < 15) {
-    pct = 0.25; min = 1.0; max = 4.0;
+    // Large budget: 8% — enough for attention, 92% fleet
+    pct = 0.08; min = 0.3; max = 1.2;
   } else {
-    pct = 0.15; min = 2.0; max = 8.0;
+    // Whale budget: 5% — don't be the biggest candle
+    pct = 0.05; min = 0.5; max = 2.0;
   }
 
   const raw = totalSol * pct;
@@ -299,5 +312,45 @@ export class SessionManager {
       count++;
     }
     return count;
+  }
+
+  // ═══════════════════════════════════════
+  // GET BY WALLET — returns all sessions for a user (with fleet keys)
+  // CRITICAL: /api/positions and /api/quick-sell depend on this method.
+  // Without it, fleet wallets are never scanned for token holdings.
+  // ═══════════════════════════════════════
+  async getByWallet(userWallet) {
+    const results = [];
+    const seenIds = new Set();
+
+    // Check in-memory sessions
+    for (const [, session] of this.sessions) {
+      if (session.userWallet === userWallet) {
+        results.push(session);
+        seenIds.add(session.id);
+      }
+    }
+
+    // Check Redis for any sessions not in memory
+    if (this.redis) {
+      try {
+        const keys = await this.redis.keys("session:*");
+        for (const key of keys) {
+          const raw = await this.redis.get(key);
+          if (!raw) continue;
+          try {
+            const session = JSON.parse(raw);
+            if (session.userWallet === userWallet && !seenIds.has(session.id)) {
+              results.push(session);
+              seenIds.add(session.id);
+              // Hydrate in-memory cache
+              this.sessions.set(session.id, session);
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+
+    return results;
   }
 }
