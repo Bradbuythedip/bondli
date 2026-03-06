@@ -485,6 +485,8 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
   const [bp, setBp] = useState(0);
   const [chartMode, setChartMode] = useState("live");
   const [timeframe, setTimeframe] = useState(5); // minutes: 5, 10, 30, 60, 0=all
+  const timeframeRef = useRef(5);
+  useEffect(() => { timeframeRef.current = timeframe; drawCanvas(); }, [timeframe]);
   const [age, setAge] = useState(0);
   const canvasRef = useRef(null);
   const histRef = useRef([]);
@@ -551,8 +553,9 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
     let rawHist = ws.length >= 3 ? ws.map(p => ({ t: p.t, m: p.mcap || (p.mcapSol || 0) * 170, type: p.type, sol: p.sol, bp: p.bp })) : histRef.current.map(p => ({ t: p.t, m: p.mcap, type: null, sol: 0, bp: p.bp }));
     
     // Apply timeframe filter
-    if (timeframe > 0 && rawHist.length > 0) {
-      const cutoff = Date.now() - timeframe * 60 * 1000;
+    const tf = timeframeRef.current;
+    if (tf > 0 && rawHist.length > 0) {
+      const cutoff = Date.now() - tf * 60 * 1000;
       rawHist = rawHist.filter(p => p.t >= cutoff);
     }
     const hist = rawHist;
@@ -702,7 +705,7 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
           {/* Chart mode buttons */}
           <div style={{ display: "flex", background: T?.border ? T.border + "44" : "#33333344", borderRadius: 6, overflow: "hidden" }}>
             {["live", "dex", "pump"].map(m => (
-              <button key={m} onClick={() => setChartMode(m)} style={{ background: chartMode === m ? (T?.green || "#00e676") : "transparent", border: "none", padding: "4px 8px", fontFamily: "monospace", fontSize: 10, color: chartMode === m ? "#000" : "#888", cursor: "pointer", fontWeight: chartMode === m ? 800 : 400, transition: "all .15s" }}>{m === "live" ? "\u2764" : m === "dex" ? "DEX" : "PF"}</button>
+              <button key={m} onClick={() => setChartMode(m)} style={{ background: chartMode === m ? (T?.green || "#00e676") : "transparent", border: "none", padding: "4px 8px", fontFamily: "monospace", fontSize: 10, color: chartMode === m ? "#000" : "#888", cursor: "pointer", fontWeight: chartMode === m ? 800 : 400, transition: "all .15s" }}>{m === "live" ? "\u2764" : m === "dex" ? "DEX" : "GT"}</button>
             ))}
           </div>
         </div>
@@ -722,7 +725,9 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
       ) : chartMode === "dex" ? (
         <iframe src={"https://dexscreener.com/solana/" + ca + "?embed=1&theme=dark&trades=0&info=0"} style={{ width: "100%", height: mobile ? 280 : 400, border: "none", display: "block" }} title="DexScreener" allow="clipboard-write" />
       ) : (
-        <iframe src={"https://pump.fun/coin/" + ca} style={{ width: "100%", height: mobile ? 320 : 440, border: "none", display: "block" }} title="pump.fun" />
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 30, gap: 12 }}>
+          <iframe src={"https://www.geckoterminal.com/solana/pools/" + ca + "?embed=1&info=0&swaps=0&grayscale=0&light_chart=0"} style={{ width: "100%", height: mobile ? 280 : 400, border: "none", display: "block", borderRadius: 8 }} title="GeckoTerminal" allow="clipboard-write" />
+        </div>
       )}
     </div>
   );
