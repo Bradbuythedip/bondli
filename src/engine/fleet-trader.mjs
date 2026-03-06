@@ -119,45 +119,73 @@ class GameState {
     }
     if (msg.marketCapSol) this.mcapSol = msg.marketCapSol;
 
+    // Track cumulative observed volume (for 2% volume cap)
+    if (!isOurs) this.observedVolume = (this.observedVolume || 0) + sol;
+
     // ── Compute signals ──
     this._computeSignals(now);
   }
 
   _computeSignals(now) {
-    const window30s = this.trades.filter(t => now - t.time < 30000 && !t.isOurs);
-    const window60s = this.trades.filter(t => now - t.time < 60000 && !t.isOurs);
-    const window10s = this.trades.filter(t => now - t.time < 10000 && !t.isOurs);
+    // ── Exponential decay weighting (replaces flat windows) ──
+    // w(t) = exp(-λ · age_seconds)
+    // Fast λ=0.1 (half-life ~7s): buy pressure, momentum, cascade detection
+    // Medium λ=0.02 (half-life ~35s): volume rate, unique buyers
+    // Slow λ=0.005 (half-life ~140s): dev selling detection
+    const FAST = 0.1, MED = 0.02, SLOW = 0.005;
+    const decay = (age, lambda) => Math.exp(-lambda * (age / 1000));
 
-    // Buy pressure: ratio of buys in last 30s
-    const buys30 = window30s.filter(t => t.type === "buy").length;
-    const sells30 = window30s.filter(t => t.type === "sell").length;
-    this.buyPressure = (buys30 + sells30) > 0 ? buys30 / (buys30 + sells30) : 0.5;
+    const external = this.trades.filter(t => !t.isOurs);
 
-    // Momentum: net SOL flow in last 30s (buys positive, sells negative)
-    const buyVol = window30s.filter(t => t.type === "buy").reduce((s, t) => s + t.sol, 0);
-    const sellVol = window30s.filter(t => t.type === "sell").reduce((s, t) => s + t.sol, 0);
-    this.momentum = buyVol - sellVol;
+    // Decay-weighted buy pressure (fast — reacts in seconds)
+    let wBuys = 0, wSells = 0;
+    for (const t of external) {
+      const w = decay(now - t.time, FAST);
+      if (w < 0.01) continue; // prune negligible
+      if (t.type === "buy") wBuys += w;
+      else wSells += w;
+    }
+    this.buyPressure = (wBuys + wSells) > 0.01 ? wBuys / (wBuys + wSells) : 0.5;
 
-    // Volume rate: SOL per minute
-    const vol60 = window60s.reduce((s, t) => s + t.sol, 0);
-    this.volumeRate = vol60; // already per 60s
+    // Decay-weighted momentum: net SOL flow (fast)
+    let wBuyVol = 0, wSellVol = 0;
+    for (const t of external) {
+      const w = decay(now - t.time, FAST);
+      if (w < 0.01) continue;
+      if (t.type === "buy") wBuyVol += t.sol * w;
+      else wSellVol += t.sol * w;
+    }
+    this.momentum = wBuyVol - wSellVol;
 
-    // Unique buyers in last 2 min
+    // Decay-weighted volume rate (medium — smoothed over ~35s)
+    let wVol = 0;
+    for (const t of external) {
+      const w = decay(now - t.time, MED);
+      if (w < 0.005) continue;
+      wVol += t.sol * w;
+    }
+    this.volumeRate = wVol;
+
+    // Unique buyers in last 2 min (unchanged — count, not weight)
     const window2m = this.trades.filter(t => now - t.time < 120000 && !t.isOurs && t.type === "buy");
     this.uniqueBuyers = new Set(window2m.map(t => t.wallet)).size;
 
-    // Whale alert: any single buy > 0.5 SOL in last 15s
-    this.whaleAlert = window30s.some(t => t.type === "buy" && t.sol > 0.5 && now - t.time < 15000);
+    // Whale alert: high-weight recent large buy (fast decay, >0.5 SOL, weight > 0.5 = ~7s old)
+    this.whaleAlert = external.some(t => t.type === "buy" && t.sol > 0.5 && decay(now - t.time, FAST) > 0.5);
 
-    // Dev selling: check if creator/dev wallet is selling
+    // Dev selling: any dev sell with medium-decay weight > 0.3 (~40s old)
     if (this.devWallet) {
-      this.devSelling = window60s.some(t => t.type === "sell" && t.wallet.startsWith(this.devWallet));
+      this.devSelling = external.some(t => t.type === "sell" && t.wallet.startsWith(this.devWallet) && decay(now - t.time, SLOW) > 0.3);
     }
 
-    // Dump cascade: 3+ sells from different wallets in 10s
-    const sells10 = window10s.filter(t => t.type === "sell");
-    const uniqueSellers10 = new Set(sells10.map(t => t.wallet)).size;
-    this.dumpCascade = uniqueSellers10 >= 3;
+    // Dump cascade: 3+ unique sellers with high fast-decay weight (recent cluster)
+    const recentSells = external.filter(t => t.type === "sell" && decay(now - t.time, FAST) > 0.3);
+    const uniqueSellers = new Set(recentSells.map(t => t.wallet)).size;
+    this.dumpCascade = uniqueSellers >= 3;
+
+    // ── Cumulative observed volume (for volume cap enforcement) ──
+    this.observedVolume = (this.observedVolume || 0);
+    // Updated in _processTrade, not here
 
     // ── Derive strategic signal using Nash equilibrium logic ──
     // Nash insight: each player's optimal strategy depends on what others are doing
@@ -253,6 +281,7 @@ class GameState {
       bondingPct: Math.round(this.bondingPct),
       mcapSol: Math.round(this.mcapSol * 100) / 100,
       tradeCount: this.trades.length,
+      observedVolume: Math.round((this.observedVolume || 0) * 100) / 100,
     };
   }
 }
@@ -916,7 +945,15 @@ class FleetTrader extends EventEmitter {
       // Check GameState
       if (gameState?.alive) {
         const gs = gameState.snapshot();
-        if (gs.signal === "SELL_NOW") { console.log(`[VOL] ⚡ SELL_NOW — aborting`); return; }
+        if (gs.signal === "SELL_NOW") { console.log(`[VOL] SELL_NOW — aborting`); return; }
+        // 2% volume cap: if external volume exists, don't let fleet exceed 2% of it
+        // This prevents detection AND prevents moving price against ourselves
+        // Skip check for CREATE mode (we ARE the market) — only apply when observedVolume > 1 SOL
+        if (gs.observedVolume > 1 && session.totalSolSpent > gs.observedVolume * 0.02) {
+          console.log(`[VOL] Volume cap: fleet spent ${session.totalSolSpent.toFixed(4)} SOL > 2% of ${gs.observedVolume.toFixed(2)} observed — throttling buys`);
+          // Still allow sells (distribution), just skip buys
+          if (doBuy) { await sleep(2000); continue; }
+        }
       }
 
       try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
