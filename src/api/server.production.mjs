@@ -34,7 +34,7 @@ import { generateChallenge, verifySolanaSignature, issueAuthToken, requireVerifi
 // Launch Sessions (dev wallet generation + funding)
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
 import { createToken } from "../engine/token-creator.mjs";
-import { getAssociatedTokenAddressSync, getAccount, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { getAssociatedTokenAddressSync, getAccount, TOKEN_PROGRAM_ID, createCloseAccountInstruction } from "@solana/spl-token";
 import BN from "bn.js";
 import { getSellSolAmountFromTokenAmount, getBuyTokenAmountFromSolAmount, PumpSdk, OnlinePumpSdk } from "@pump-fun/pump-sdk";
 
@@ -1802,7 +1802,234 @@ app.post("/api/trading-wallet/export", apiLimiter, requireVerifiedWallet, async 
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Quick Ape — PumpPortal Lightning API (zero signing, just API key)
+// ═══════════════════════════════════════
+// SOL INCINERATOR — Close empty token accounts to reclaim rent
+// Each empty account holds ~0.00203928 SOL in rent
+// Ref: https://sol-incinerator.com/?ref=o1m5aipb
+// ═══════════════════════════════════════
+
+// Scan: find all closeable token accounts in trading wallet + session wallets
+app.post("/api/incinerator/scan", apiLimiter, async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const walletsToScan = new Set();
+
+    // Add trading wallet
+    if (userStore) {
+      const user = await userStore.get(wallet);
+      if (user?.ppWallet) walletsToScan.add(user.ppWallet);
+    }
+
+    // Add session wallets (dev + fleet)
+    try {
+      const sessions = await sessionManager?.getByWallet?.(wallet) || [];
+      for (const s of (Array.isArray(sessions) ? sessions : [])) {
+        if (s.devWallet) walletsToScan.add(s.devWallet);
+        if (s.fleetWallets) {
+          for (const fw of s.fleetWallets) {
+            if (fw.pubkey) walletsToScan.add(fw.pubkey);
+          }
+        }
+      }
+    } catch {}
+
+    if (walletsToScan.size === 0) return res.json({ ok: true, accounts: [], totalReclaimable: 0 });
+
+    const allAccounts = [];
+    let totalReclaimable = 0;
+
+    for (const w of walletsToScan) {
+      try {
+        const pubkey = new PublicKey(w);
+        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+
+        for (const { pubkey: ata, account } of tokenAccounts.value) {
+          const parsed = account.data.parsed?.info;
+          if (!parsed) continue;
+
+          const balance = parsed.tokenAmount?.uiAmount || 0;
+          const rentLamports = account.lamports || 0;
+          const rentSol = rentLamports / LAMPORTS_PER_SOL;
+          const mint = parsed.mint;
+
+          // Closeable: zero balance (empty account, safe to close)
+          if (balance === 0 && rentLamports > 0) {
+            allAccounts.push({
+              tokenAccount: ata.toBase58(),
+              wallet: w.slice(0, 8),
+              walletFull: w,
+              mint,
+              balance: 0,
+              rentLamports,
+              rentSol: +rentSol.toFixed(6),
+              closeable: true,
+              type: "empty",
+            });
+            totalReclaimable += rentSol;
+          }
+        }
+      } catch (e) {
+        console.error(`[INCINERATOR] Scan error for ${w.slice(0, 8)}:`, e.message);
+      }
+    }
+
+    // Sort by rent descending
+    allAccounts.sort((a, b) => b.rentLamports - a.rentLamports);
+
+    console.log(`[INCINERATOR] Scanned ${walletsToScan.size} wallets | Found ${allAccounts.length} closeable accounts | ${totalReclaimable.toFixed(6)} SOL reclaimable`);
+
+    res.json({
+      ok: true,
+      accounts: allAccounts,
+      totalAccounts: allAccounts.length,
+      totalReclaimable: +totalReclaimable.toFixed(6),
+      walletsScanned: walletsToScan.size,
+      incineratorUrl: "https://sol-incinerator.com/?ref=o1m5aipb",
+    });
+  } catch (e) {
+    console.error("[INCINERATOR] Scan error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Close: actually close empty accounts and reclaim rent to the user's wallet
+app.post("/api/incinerator/close", apiLimiter, requireVerifiedWallet, async (req, res) => {
+  try {
+    const { wallet, accounts } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const destination = new PublicKey(wallet);
+
+    // Get signing keys for all wallets we control
+    const signerMap = new Map(); // walletPubkey -> Keypair
+
+    // Trading wallet key
+    if (userStore) {
+      const user = await userStore.get(wallet);
+      if (user?.ppPrivateKey && user.ppPrivateKey !== "") {
+        try {
+          const kp = Keypair.fromSecretKey(bs58.decode(user.ppPrivateKey));
+          signerMap.set(kp.publicKey.toBase58(), kp);
+        } catch {}
+      }
+    }
+
+    // Session wallet keys
+    try {
+      const sessions = await sessionManager?.getByWallet?.(wallet) || [];
+      for (const s of (Array.isArray(sessions) ? sessions : [])) {
+        // Dev keypair
+        try {
+          const devKp = await sessionManager.getDevKeypair(s.id);
+          if (devKp) signerMap.set(devKp.publicKey.toBase58(), devKp);
+        } catch {}
+        // Fleet wallets
+        if (s.fleetWallets) {
+          for (const fw of s.fleetWallets) {
+            if (fw.secret) {
+              try {
+                const kp = Keypair.fromSecretKey(bs58.decode(fw.secret));
+                signerMap.set(kp.publicKey.toBase58(), kp);
+              } catch {}
+            }
+          }
+        }
+      }
+    } catch {}
+
+    if (signerMap.size === 0) return res.status(400).json({ error: "No signing keys available" });
+
+    // If specific accounts provided, use those; otherwise scan for all empty
+    let toClose = accounts || [];
+
+    if (toClose.length === 0) {
+      // Auto-scan all wallets
+      for (const [pubStr, kp] of signerMap) {
+        try {
+          const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: TOKEN_PROGRAM_ID });
+          for (const { pubkey: ata, account } of tokenAccounts.value) {
+            const balance = account.data.parsed?.info?.tokenAmount?.uiAmount || 0;
+            if (balance === 0 && account.lamports > 0) {
+              toClose.push({ tokenAccount: ata.toBase58(), walletFull: pubStr, rentLamports: account.lamports });
+            }
+          }
+        } catch {}
+      }
+    }
+
+    if (toClose.length === 0) return res.json({ ok: true, closed: 0, reclaimed: 0, message: "No empty accounts to close" });
+
+    // Close accounts in batches of 10 (fits in one tx)
+    const BATCH = 10;
+    const results = [];
+    let totalReclaimed = 0;
+
+    for (let i = 0; i < toClose.length; i += BATCH) {
+      const batch = toClose.slice(i, i + BATCH);
+      const tx = new Transaction();
+      const signers = new Set();
+      let batchRent = 0;
+
+      tx.add(
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }),
+        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 })
+      );
+
+      for (const acct of batch) {
+        const ownerPubkey = new PublicKey(acct.walletFull);
+        const signer = signerMap.get(acct.walletFull);
+        if (!signer) continue;
+
+        // createCloseAccountInstruction(account, destination, owner)
+        // Closes the token account and sends rent to destination
+        // createCloseAccountInstruction: closes token account, sends rent to destination
+        tx.add(createCloseAccountInstruction(
+          new PublicKey(acct.tokenAccount), // account to close
+          destination,                       // rent goes here (user's wallet)
+          ownerPubkey,                       // owner of the token account
+          [],                                // multisig (none)
+          TOKEN_PROGRAM_ID
+        ));
+        signers.add(signer);
+        batchRent += (acct.rentLamports || 2039280) / LAMPORTS_PER_SOL;
+      }
+
+      if (tx.instructions.length <= 2) continue; // only compute budget, no close instructions
+
+      try {
+        const uniqueSigners = [...signers];
+        const sig = await sendAndConfirmTransaction(connection, tx, uniqueSigners, {
+          skipPreflight: true, commitment: "confirmed", maxRetries: 3
+        });
+        totalReclaimed += batchRent;
+        results.push({ batch: Math.floor(i / BATCH) + 1, closed: batch.length, reclaimed: +batchRent.toFixed(6), sig });
+        console.log(`[INCINERATOR] Batch ${Math.floor(i / BATCH) + 1}: closed ${batch.length} accounts, reclaimed ${batchRent.toFixed(6)} SOL | sig: ${sig.slice(0, 16)}`);
+      } catch (e) {
+        results.push({ batch: Math.floor(i / BATCH) + 1, error: e.message });
+        console.error(`[INCINERATOR] Batch ${Math.floor(i / BATCH) + 1} failed:`, e.message);
+      }
+
+      if (i + BATCH < toClose.length) await new Promise(r => setTimeout(r, 500));
+    }
+
+    console.log(`[INCINERATOR] Done: ${toClose.length} accounts, ${totalReclaimed.toFixed(6)} SOL reclaimed for ${wallet.slice(0, 8)}`);
+
+    res.json({
+      ok: true,
+      closed: results.reduce((s, r) => s + (r.closed || 0), 0),
+      totalReclaimed: +totalReclaimed.toFixed(6),
+      batches: results,
+      destination: wallet,
+    });
+  } catch (e) {
+    console.error("[INCINERATOR] Close error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
 app.post("/api/quick-ape", apiLimiter, requireVerifiedWallet, async (req, res) => {
   try {
     const { wallet, ca, solAmount } = req.body;
