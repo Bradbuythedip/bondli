@@ -1449,27 +1449,45 @@ app.post("/api/trading-wallet/create", apiLimiter, requireVerifiedWallet, async 
     let tradingWallet, apiKey, privateKey;
 
     try {
-      const ppRes = await fetch("https://pumpportal.fun/api/create-wallet");
-      if (ppRes.ok) {
-        const ppData = await ppRes.json();
-        console.log("[TRADING-WALLET] PumpPortal response keys:", Object.keys(ppData));
+      const ppRes = await fetch("https://pumpportal.fun/api/create-wallet", {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+        signal: AbortSignal.timeout(10000),
+      });
 
-        // PumpPortal returns: walletPublicKey, walletPrivateKey, apiKey
-        // (or possibly: publicKey, privateKey, apiKey)
-        tradingWallet = ppData.walletPublicKey || ppData.wallet_public_key || ppData.publicKey || ppData.wallet || ppData.address;
-        apiKey = ppData.apiKey || ppData.api_key;
-        privateKey = ppData.walletPrivateKey || ppData.wallet_private_key || ppData.privateKey || ppData.private_key;
+      const rawText = await ppRes.text();
+      console.log("[TRADING-WALLET] PumpPortal status:", ppRes.status, "| raw:", rawText.slice(0, 500));
+
+      if (ppRes.ok && rawText.trim().startsWith("{")) {
+        const ppData = JSON.parse(rawText);
+        console.log("[TRADING-WALLET] PumpPortal keys:", Object.keys(ppData));
+
+        // Try every known field name variation
+        tradingWallet = ppData.walletPublicKey || ppData.wallet_public_key || ppData.publicKey || ppData.public_key || ppData.wallet || ppData.address;
+        apiKey = ppData.apiKey || ppData.api_key || ppData.APIkey || ppData.key;
+        privateKey = ppData.walletPrivateKey || ppData.wallet_private_key || ppData.privateKey || ppData.private_key || ppData.secretKey || ppData.secret_key;
+
+        // If fields are nested (e.g. ppData.wallet.publicKey)
+        if (!tradingWallet && ppData.wallet && typeof ppData.wallet === "object") {
+          tradingWallet = ppData.wallet.publicKey || ppData.wallet.address;
+          privateKey = ppData.wallet.privateKey || ppData.wallet.secretKey;
+        }
+
+        if (tradingWallet) {
+          console.log(`[TRADING-WALLET] PumpPortal success: wallet=${tradingWallet.slice(0, 12)}... apiKey=${apiKey ? "yes" : "no"} privateKey=${privateKey ? "yes" : "no"}`);
+        } else {
+          console.error("[TRADING-WALLET] Could not extract wallet from PumpPortal response. Full data:", JSON.stringify(ppData));
+        }
       } else {
-        console.error("[TRADING-WALLET] PumpPortal HTTP " + ppRes.status);
+        console.error("[TRADING-WALLET] PumpPortal non-JSON or error response:", ppRes.status);
       }
     } catch (e) {
       console.error("[TRADING-WALLET] PumpPortal fetch error:", e.message);
     }
 
-    // Fallback: generate our own Solana keypair if PumpPortal fails
-    // Trades will use Local API (trade-local) instead of Lightning API
+    // Fallback: generate our own Solana keypair if PumpPortal failed
     if (!tradingWallet) {
-      console.log("[TRADING-WALLET] PumpPortal unavailable — generating local keypair");
+      console.log("[TRADING-WALLET] Generating local Solana keypair (PumpPortal unavailable)");
       const kp = Keypair.generate();
       tradingWallet = kp.publicKey.toBase58();
       privateKey = bs58.encode(kp.secretKey);
