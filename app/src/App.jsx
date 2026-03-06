@@ -738,7 +738,7 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
 // ═══════════════════════════════════════
 // RADAR — Full-screen card grid scanner (pump.fun style)
 // ═══════════════════════════════════════
-function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScreen, tradingBalance }) {
+function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScreen, tradingBalance, heldMints }) {
   const mono = "'SF Mono',SFMono-Regular,ui-monospace,'Cascadia Mono',Menlo,monospace";
   const [tabs, setTabs] = useState({ new: [], hot: [], graduating: [], momentum: [] });
   const [activeTab, setActiveTab] = useState("momentum");
@@ -953,7 +953,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
                   );
                 })}
               </div>
-              {onQuickSell && (
+              {onQuickSell && heldMints?.has(selected?.ca) && (
                 <div style={{ display: "flex", gap: 5, padding: "0 16px 8px", flexWrap: "wrap" }}>
                   <span style={{ fontFamily: mono, fontSize: 9, color: "#ff4444", fontWeight: 700, alignSelf: "center", marginRight: 2 }}>SELL</span>
                   {[25, 50, 100].map(pct => (
@@ -989,7 +989,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
 // ═══════════════════════════════════════
 // PORTFOLIO — Live positions with P&L + sell buttons + search
 // ═══════════════════════════════════════
-function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tradingBalance }) {
+function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tradingBalance, onPositionsUpdate, getCostBasis }) {
   const [positions, setPositions] = useState([]);
   const [solBal, setSolBal] = useState(tradingBalance || 0);
   const [totalVal, setTotalVal] = useState(0);
@@ -1009,6 +1009,7 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tra
       if (r.ok) {
         const d = await r.json();
         setPositions(d.positions || []);
+        if (onPositionsUpdate) onPositionsUpdate(d.positions || []);
         setSolBal(d.solBalance || 0);
         setTotalVal(d.totalValueUsd || 0);
         setLoading(false);
@@ -1124,8 +1125,24 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tra
                     </div>
                   </div>
 
-                  <div style={{ fontFamily: mono, fontSize: 16, fontWeight: 900, color: isUp ? T.green : "#ff4444", textAlign: "right", flexShrink: 0 }}>
-                    {fmt(p.valueUsd || 0)}
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <div style={{ fontFamily: mono, fontSize: 16, fontWeight: 900, color: isUp ? T.green : "#ff4444" }}>
+                      {fmt(p.valueUsd || 0)}
+                    </div>
+                    {(() => {
+                      const basis = getCostBasis?.(p.mint);
+                      if (!basis) return null;
+                      const costSol = basis.totalSol;
+                      const currentSol = p.valueSol || 0;
+                      const pnlSol = currentSol - costSol;
+                      const pnlPct = costSol > 0 ? ((currentSol / costSol) - 1) * 100 : 0;
+                      const isProfit = pnlSol >= 0;
+                      return (
+                        <div style={{ fontFamily: mono, fontSize: 10, color: isProfit ? T.green : "#ff4444", marginTop: 2 }}>
+                          {isProfit ? "+" : ""}{pnlSol.toFixed(3)} SOL ({isProfit ? "+" : ""}{pnlPct.toFixed(1)}%)
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -1636,6 +1653,25 @@ export default function App() {
   const [tradingBalance, setTradingBalance] = useState(0);
   const [tradingKeys, setTradingKeys] = useState(null);
   const [showTradingSetup, setShowTradingSetup] = useState(false);
+  const [heldMints, setHeldMints] = useState(new Set());
+
+  // P&L cost basis tracking (localStorage)
+  const recordBuy = (ca, solAmount) => {
+    try {
+      const buys = JSON.parse(localStorage.getItem("bondli_buys") || "{}");
+      if (!buys[ca]) buys[ca] = { totalSol: 0, buyCount: 0 };
+      buys[ca].totalSol += solAmount;
+      buys[ca].buyCount++;
+      buys[ca].lastBuy = Date.now();
+      localStorage.setItem("bondli_buys", JSON.stringify(buys));
+    } catch {}
+  };
+  const getCostBasis = (ca) => {
+    try { const buys = JSON.parse(localStorage.getItem("bondli_buys") || "{}"); return buys[ca] || null; } catch { return null; }
+  };
+  const clearCostBasis = (ca) => {
+    try { const buys = JSON.parse(localStorage.getItem("bondli_buys") || "{}"); delete buys[ca]; localStorage.setItem("bondli_buys", JSON.stringify(buys)); } catch {}
+  };
 
   useEffect(() => { if (!user?.pubkey || user.demo) return; fetch(API + "/api/trading-wallet/" + user.pubkey).then(r => r.json()).then(d => { if (d.tradingWallet) { setTradingWallet(d.tradingWallet); setTradingBalance(d.balance || 0); } }).catch(() => {}); 
     // Also load keys for deploy auto-fill
@@ -1658,6 +1694,7 @@ export default function App() {
       if (!d.ok) { toast(d.error || "Buy failed", "error"); return; }
       toast(`Bought ${solAmount} SOL \u2713`, "success");
       setTradingBalance(prev => Math.max(0, prev - solAmount - 0.001));
+      recordBuy(ca, solAmount);
       return d.signature;
     } catch (e) { toast("Failed: " + (e.message || "Error"), "error"); }
   };
@@ -1671,6 +1708,7 @@ export default function App() {
       const d = await r.json();
       if (!d.ok) { toast(d.error || "Sell failed", "error"); return; }
       toast(`Sold ${percent}% \u2713`, "success");
+      if (percent >= 100) clearCostBasis(ca);
       return d.signature;
     } catch (e) { toast("Failed: " + e.message, "error"); }
   };
@@ -1976,13 +2014,13 @@ export default function App() {
                 {/* ═══ RADAR TAB (full width card grid) ═══ */}
                 {appTab === "radar" && (
                   <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden" }}>
-                    <RadarFeed T={T} mobile={mobile} fullScreen isVip={user?.tier === "pro" || user?.whitelisted} tradingBalance={tradingBalance} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} onQuickApe={quickApe} onQuickSell={quickSell} />
+                    <RadarFeed T={T} mobile={mobile} fullScreen isVip={user?.tier === "pro" || user?.whitelisted} tradingBalance={tradingBalance} heldMints={heldMints} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} onQuickApe={quickApe} onQuickSell={quickSell} />
                   </div>
                 )}
 
                 {/* ═══ PORTFOLIO TAB (positions + P&L + sell) ═══ */}
                 {appTab === "portfolio" && (
-                  <PortfolioPanel T={T} mobile={mobile} mono={mono} user={user} quickSell={quickSell} quickApe={quickApe} toast={toast} tradingBalance={tradingBalance} />
+                  <PortfolioPanel T={T} mobile={mobile} mono={mono} user={user} quickSell={quickSell} quickApe={quickApe} toast={toast} tradingBalance={tradingBalance} onPositionsUpdate={(positions) => setHeldMints(new Set(positions.map(p => p.mint)))} getCostBasis={getCostBasis} />
                 )}
 
                 {/* ═══ TRADE TAB (wizard) ═══ */}
