@@ -845,14 +845,14 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
     if (isNew) seenCAs.current.add(t.ca);
     return (
     <div onClick={() => handleSelect(t.ca)} style={{
-      background: T.surface, border: "1px solid " + T.border, borderRadius: 12,
+      background: T.surface, border: "1px solid " + T.border, borderRadius: 10,
       overflow: "hidden", cursor: "pointer", transition: "all .2s",
       animation: isNew ? "fadeUp .4s ease " + Math.min(i * 0.05, 0.4) + "s both" : "none",
     }}
       onMouseEnter={e => { e.currentTarget.style.borderColor = T.green + "55"; e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px " + T.green + "08"; }}
       onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}
     >
-      <div style={{ position: "relative", width: "100%", aspectRatio: "1.1", background: T.bg, overflow: "hidden" }}>
+      <div style={{ position: "relative", width: "100%", aspectRatio: "1", background: T.bg, overflow: "hidden" }}>
         {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 32, color: T.faint + "44", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
         <div style={{ position: "absolute", top: 5, right: 5, background: vc(t.verdict) + "dd", color: "#000", fontFamily: mono, fontSize: 9, fontWeight: 900, padding: "2px 6px", borderRadius: 4 }}>{t.verdict} {t.score}</div>
         {i < 3 && <div style={{ position: "absolute", top: 5, left: 5, background: T.green + "dd", color: "#000", fontFamily: mono, fontSize: 9, fontWeight: 900, padding: "1px 5px", borderRadius: 4 }}>#{i + 1}</div>}
@@ -863,16 +863,16 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
         {/* Momentum price change — always bottom-left, no conflict */}
         {t.priceChange?.h1 != null && <div style={{ position: "absolute", bottom: 5, left: 5, background: t.priceChange.h1 >= 0 ? "#00ff8899" : "#ff444499", color: "#fff", fontFamily: mono, fontSize: 9, fontWeight: 800, padding: "2px 5px", borderRadius: 4 }}>{t.priceChange.h1 > 0 ? "+" : ""}{t.priceChange.h1.toFixed(1)}% 1h</div>}
       </div>
-      <div style={{ padding: "6px 8px 8px" }}>
-        <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 800, color: T.text, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", lineHeight: 1.3, minHeight: "1.3em" }}>{t.name || t.ticker}</div>
+      <div style={{ padding: "5px 7px 6px" }}>
+        <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 800, color: T.text, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 1, WebkitBoxOrient: "vertical", lineHeight: 1.3 }}>{t.name || t.ticker}</div>
         <div style={{ display: "flex", alignItems: "center", gap: 3, marginTop: 1 }}>
-          <span style={{ fontFamily: mono, fontSize: 10, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
+          <span style={{ fontFamily: mono, fontSize: 9, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
           {t.age && <span style={{ fontFamily: mono, fontSize: 7, color: T.faint }}>{t.age >= 24 ? Math.floor(t.age/24) + "d" : t.age + "h"}</span>}
           {!t.age && t.created && <span style={{ fontFamily: mono, fontSize: 7, color: T.faint }}>{ago(t.created)}</span>}
           {t.socialCount > 0 && <span style={{ fontSize: 8 }}>{t.twitter ? "\u{1D54F}" : ""}{t.website ? "\u{1F310}" : ""}</span>}
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-          <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 800, color: T.green }}>MC ${fmt(t.mcapUsd)}</span>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 3 }}>
+          <span style={{ fontFamily: mono, fontSize: 9, fontWeight: 800, color: T.green }}>MC ${fmt(t.mcapUsd)}</span>
           {t.bp > 0 && t.bp < 100 && <div style={{ width: 28, height: 2, background: T.border, borderRadius: 1, overflow: "hidden" }}><div style={{ height: 2, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 1 }} /></div>}
           <span style={{ fontFamily: mono, fontSize: 9, color: T.dim }}>{t.buys}b/{t.sells}s</span>
         </div>
@@ -973,7 +973,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
           {selected?.error && <div style={{ padding: "14px 16px", margin: "10px 16px", background: T.red + "10", borderRadius: 12, fontFamily: mono, fontSize: 12, color: T.red, display: "flex", justifyContent: "space-between" }}><span>{selected.error}</span><button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: T.red, cursor: "pointer" }}>{"\u2715"}</button></div>}
 
           {/* Card Grid */}
-          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(180px, 1fr))", gap: mobile ? 8 : 14, padding: mobile ? "12px 10px" : "16px 18px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(155px, 1fr))", gap: mobile ? 6 : 10, padding: mobile ? "10px 8px" : "14px 14px" }}>
             {tokens.map((t, i) => <TokenCard key={t.ca} t={t} i={i} />)}
           </div>
         </div>
@@ -1637,7 +1637,10 @@ export default function App() {
   const [tradingKeys, setTradingKeys] = useState(null);
   const [showTradingSetup, setShowTradingSetup] = useState(false);
 
-  useEffect(() => { if (!user?.pubkey || user.demo) return; fetch(API + "/api/trading-wallet/" + user.pubkey).then(r => r.json()).then(d => { if (d.tradingWallet) { setTradingWallet(d.tradingWallet); setTradingBalance(d.balance || 0); } }).catch(() => {}); }, [user]);
+  useEffect(() => { if (!user?.pubkey || user.demo) return; fetch(API + "/api/trading-wallet/" + user.pubkey).then(r => r.json()).then(d => { if (d.tradingWallet) { setTradingWallet(d.tradingWallet); setTradingBalance(d.balance || 0); } }).catch(() => {}); 
+    // Also load keys for deploy auto-fill
+    fetch(API + "/api/trading-wallet/export", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) }).then(r => r.json()).then(d => { if (d.ok && d.privateKey) setTradingKeys(d); }).catch(() => {});
+  }, [user]);
 
   const createTradingWallet = async () => { try { toast("Creating trading wallet...", "info"); const r = await fetch(API + "/api/trading-wallet/create", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) }); const d = await r.json(); if (d.ok) { setTradingWallet(d.tradingWallet); setTradingKeys({ apiKey: d.apiKey, privateKey: d.privateKey }); setShowTradingSetup(false); toast("Trading wallet created! Deposit SOL to start.", "success"); } else toast(d.error || "Failed", "error"); } catch { toast("Network error", "error"); } };
 
@@ -1984,11 +1987,19 @@ export default function App() {
 
                 {/* ═══ TRADE TAB (wizard) ═══ */}
                 {appTab === "trade" && (<>
-                <Section n="1" title="Wallet" done={!!seed} T={T} mobile={mobile}>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                    <div onClick={() => setSeed("")} style={{ padding: mobile ? 16 : 20, background: !seed ? T.green + "10" : T.bg, border: "1px solid " + (!seed ? T.green : T.border), borderRadius: 12, cursor: "pointer", textAlign: "center" }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: !seed ? T.green : T.mid }}>Generate Fresh</div><div style={{ fontSize: 13, color: T.faint, fontFamily: mono, marginTop: 4 }}>Deposit SOL to fund</div></div>
-                    <div style={{ padding: mobile ? 16 : 20, background: seed ? T.green + "10" : T.bg, border: "1px solid " + (seed ? T.green : T.border), borderRadius: 12 }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: seed ? T.green : T.mid, textAlign: "center", marginBottom: 8 }}>Master Wallet</div><Input value={seed} onChange={setSeed} placeholder="bs58 private key" type="password" /></div>
-                  </div>
+                <Section n="1" title="Wallet" done={!!tradingKeys?.privateKey || !!seed} T={T} mobile={mobile}>
+                    {tradingKeys?.privateKey ? (
+                      <div style={{ padding: mobile ? 16 : 20, background: T.green + "08", border: "1px solid " + T.green + "44", borderRadius: 12, textAlign: "center" }}>
+                        <div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: T.green }}>Trading Wallet {"\u2713"}</div>
+                        <div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginTop: 4 }}>{tradingWallet?.slice(0, 16)}... {"\u00B7"} {tradingBalance.toFixed(3)} SOL</div>
+                        <div style={{ fontSize: 10, color: T.dim, fontFamily: mono, marginTop: 4 }}>Deploy uses this wallet automatically</div>
+                      </div>
+                    ) : (
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        <div onClick={() => setSeed("")} style={{ padding: mobile ? 16 : 20, background: !seed ? T.green + "10" : T.bg, border: "1px solid " + (!seed ? T.green : T.border), borderRadius: 12, cursor: "pointer", textAlign: "center" }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: !seed ? T.green : T.mid }}>Generate Fresh</div><div style={{ fontSize: 13, color: T.faint, fontFamily: mono, marginTop: 4 }}>Deposit SOL to fund</div></div>
+                        <div style={{ padding: mobile ? 16 : 20, background: seed ? T.green + "10" : T.bg, border: "1px solid " + (seed ? T.green : T.border), borderRadius: 12 }}><div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: seed ? T.green : T.mid, textAlign: "center", marginBottom: 8 }}>Master Wallet</div><Input value={seed} onChange={setSeed} placeholder="bs58 private key" type="password" /></div>
+                      </div>
+                    )}
                 </Section>
                 <Section n={"\u2714"} title={isApe ? "Ape" : "Token"} done={canLaunch} subtitle={isApe ? "existing CA" : canLaunch ? "ready" : ""} T={T} mobile={mobile}>
                   <div style={{ marginBottom: 10 }}><Label>paste CA to ape</Label><Input value={existingCA} onChange={handleCAChange} onKeyDown={handleCAKeyDown} placeholder="pump.fun CA... (Enter to analyze)" big />{existingCA.length >= 32 && !caAnalysis && (<div style={{ textAlign: "right", marginTop: 4 }}><span style={{ fontSize: 12, fontFamily: mono, color: T.green, cursor: "pointer", padding: "4px 10px", background: T.green + "10", borderRadius: 6 }} onClick={() => analyzeCA(existingCA)}>{"\u21B5"} Analyze</span></div>)}</div>
@@ -2066,7 +2077,7 @@ export default function App() {
                   </>)}
                 </Section>
                 <Section n={"\u{1F680}"} title={isApe ? "Start Trading" : "Launch"} highlight={canLaunch} T={T} mobile={mobile}>
-                  <LaunchFlow user={user} mobile={mobile} totalSol={deployOnly ? 0 : totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip, deployOnly, batchCount: deployOnly ? batchCount : 1, batchDelay: deployOnly ? batchDelay : 5 }} onLaunched={(data) => { setWantsHome(false); setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); if (data.walletKeys) setFleetKeys(data.walletKeys); if (data.devSecret) setDevSecret(data.devSecret); }} />
+                  <LaunchFlow user={user} mobile={mobile} totalSol={deployOnly ? 0 : totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={tradingKeys?.privateKey || seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip, deployOnly, batchCount: deployOnly ? batchCount : 1, batchDelay: deployOnly ? batchDelay : 5 }} onLaunched={(data) => { setWantsHome(false); setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); if (data.walletKeys) setFleetKeys(data.walletKeys); if (data.devSecret) setDevSecret(data.devSecret); }} />
                 </Section>
                 {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginTop: 8 }}>
                   <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
