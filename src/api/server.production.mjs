@@ -293,7 +293,7 @@ app.get("/api/positions/:wallet", apiLimiter, async (req, res) => {
     const wallet = req.params.wallet;
     const connection = new Connection(CONFIG.RPC_URL, "confirmed");
 
-    // Collect ALL wallets that might hold tokens for this user
+    // Collect ONLY wallets that Bondli controls (NOT the Phantom login wallet)
     const walletsToScan = new Set();
 
     // 1. PumpPortal trading wallet
@@ -312,7 +312,6 @@ app.get("/api/positions/:wallet", apiLimiter, async (req, res) => {
             if (fw.pubkey) walletsToScan.add(fw.pubkey);
           }
         }
-        // Also get keys from Redis
         try {
           const devKp = await sessionManager.getDevKeypair(s.id);
           if (devKp) walletsToScan.add(devKp.publicKey.toBase58());
@@ -320,8 +319,7 @@ app.get("/api/positions/:wallet", apiLimiter, async (req, res) => {
       }
     } catch {}
 
-    // 3. The Phantom wallet itself
-    walletsToScan.add(wallet);
+    // Do NOT add the Phantom wallet — that's the user's personal wallet, not the trading wallet
 
     if (walletsToScan.size === 0) return res.json({ ok: true, positions: [], balance: 0, noWallet: true });
 
@@ -476,7 +474,7 @@ app.post("/api/sell-all", apiLimiter, requireVerifiedWallet, async (req, res) =>
     if (!wallet) return res.status(400).json({ error: "wallet required" });
     // Inline: find all token mints held
     const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const walletsToScan = new Set([wallet]);
+    const walletsToScan = new Set();
     if (userStore) { const u = await userStore.get(wallet); if (u?.ppWallet) walletsToScan.add(u.ppWallet); }
     try { const ss = await sessionManager?.getByWallet?.(wallet) || []; for (const s of (Array.isArray(ss) ? ss : [])) { if (s.devWallet) walletsToScan.add(s.devWallet); } } catch {}
     const mints = new Set();
