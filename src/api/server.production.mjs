@@ -950,21 +950,50 @@ function computeMovers() {
     allScored.push({ ...base, scores });
   }
 
-  // Sort each tab by its own score, take top 10
-  radar.movers.new = allScored
+  // Sort each tab by its own score, take top entries
+  // DEDUP: Within each tab, if multiple tokens share the same name (copycats),
+  // keep only the one with highest mcap (first mover advantage).
+  // Different CAs with same name = copycat. Keep the original.
+  function dedupByName(tokens) {
+    const byName = new Map(); // normalized name -> best token
+    for (const t of tokens) {
+      const key = (t.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (!key || key.length < 2) { // too short to dedup, keep it
+        if (!byName.has(t.ca)) byName.set(t.ca, t);
+        continue;
+      }
+      const existing = byName.get(key);
+      if (!existing) {
+        byName.set(key, t);
+      } else {
+        // Keep the one with higher mcap (first mover / more established)
+        // If mcap is similar (within 3x), keep higher score
+        const mcapRatio = (t.mcapSol || 0) / Math.max(existing.mcapSol || 0.001, 0.001);
+        if (mcapRatio > 3) {
+          byName.set(key, t); // new one has way higher mcap = it's the real one
+        } else if (mcapRatio > 0.33 && t.score > existing.score) {
+          byName.set(key, t); // similar mcap but better score
+        }
+        // else keep existing (first mover wins)
+      }
+    }
+    return [...byName.values()];
+  }
+
+  radar.movers.new = dedupByName(allScored
     .filter(t => t.scores.new >= 8)
     .map(t => ({ ...t, score: t.scores.new, verdict: t.scores.new >= 50 ? "APE" : t.scores.new >= 15 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score).slice(0, 40);
+    .sort((a, b) => b.score - a.score)).slice(0, 40);
 
-  radar.movers.hot = allScored
+  radar.movers.hot = dedupByName(allScored
     .filter(t => t.scores.hot >= 8)
     .map(t => ({ ...t, score: t.scores.hot, verdict: t.scores.hot >= 45 ? "APE" : t.scores.hot >= 15 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score).slice(0, 40);
+    .sort((a, b) => b.score - a.score)).slice(0, 40);
 
-  radar.movers.graduating = allScored
+  radar.movers.graduating = dedupByName(allScored
     .filter(t => t.scores.graduating >= 10)
     .map(t => ({ ...t, score: t.scores.graduating, verdict: t.scores.graduating >= 45 ? "APE" : t.scores.graduating >= 15 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score).slice(0, 40);
+    .sort((a, b) => b.score - a.score)).slice(0, 40);
 
   radar.updated = now;
 }
@@ -1144,7 +1173,16 @@ async function fetchDexScreenerMomentum() {
       if (!deduped.has(t.ca) || deduped.get(t.ca).score < t.score) deduped.set(t.ca, t);
     }
 
-    radar.movers.momentum = [...deduped.values()]
+    // Also deduplicate by name (copycats) — keep highest mcap per name
+    const byName = new Map();
+    for (const t of deduped.values()) {
+      const key = (t.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (!key || key.length < 2) { byName.set(t.ca, t); continue; }
+      const existing = byName.get(key);
+      if (!existing || (t.mcapUsd || 0) > (existing.mcapUsd || 0)) byName.set(key, t);
+    }
+
+    radar.movers.momentum = [...byName.values()]
       .sort((a, b) => b.score - a.score)
       .slice(0, 40);
 
