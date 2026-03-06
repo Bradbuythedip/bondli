@@ -792,6 +792,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
   const [online, setOnline] = useState(0);
   const [search, setSearch] = useState("");
   const [externalResult, setExternalResult] = useState(null);
+  const [apiSearchResults, setApiSearchResults] = useState([]);
   const seenCAs = useRef(new Set());
   const prevCAsRef = useRef(new Set()); // CAs from last render — used to detect truly new entries
   const lastDataHash = useRef(""); // prevent unnecessary re-renders
@@ -805,25 +806,46 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
     ? dedupedTokens.filter(t => (t.ticker || "").toLowerCase().includes(search.toLowerCase()) || (t.name || "").toLowerCase().includes(search.toLowerCase()) || (t.ca || "").toLowerCase().startsWith(search.toLowerCase()))
     : dedupedTokens;
 
-  // External CA lookup — when search is a full CA (32+ chars) and not found locally
+  // API search — when local filter has <3 results, search the server
   useEffect(() => {
-    if (search.length < 32 || tokens.some(t => t.ca === search)) { setExternalResult(null); return; }
+    if (search.length < 2) { setApiSearchResults([]); setExternalResult(null); return; }
+    const localHits = dedupedTokens.filter(t => (t.ticker || "").toLowerCase().includes(search.toLowerCase()) || (t.name || "").toLowerCase().includes(search.toLowerCase()) || (t.ca || "").toLowerCase().startsWith(search.toLowerCase()));
+    if (localHits.length >= 3) { setApiSearchResults([]); setExternalResult(null); return; }
     let cancelled = false;
-    const lookup = async () => {
+    const timer = setTimeout(async () => {
       try {
-        const r = await fetch(window.__BONDLI_API + "/api/radar/token/" + search);
-        if (r.ok && !cancelled) {
-          const d = await r.json();
-          if (d.ok && !cancelled) setExternalResult({ ca: search, name: d.name || d.ticker || "?", ticker: d.ticker || "?", mcapUsd: d.mcap || 0, buys: d.txns1h?.buys || 0, sells: d.txns1h?.sells || 0, image: d.image_uri, description: d.description, score: d.score || 0, verdict: d.verdict || "?", bp: d.bp || 0, external: true });
+        // For full CA (32+ chars), hit radar/token endpoint
+        if (search.length >= 32) {
+          const r = await fetch(window.__BONDLI_API + "/api/radar/token/" + search);
+          if (r.ok && !cancelled) {
+            const d = await r.json();
+            if (d.ok && !cancelled) setExternalResult({ ca: search, name: d.name || d.ticker || "?", ticker: d.ticker || "?", mcapUsd: d.mcap || 0, buys: d.txns1h?.buys || 0, sells: d.txns1h?.sells || 0, image: d.image_uri, description: d.description, score: d.score || 0, verdict: d.verdict || "?", bp: d.bp || 0, external: true });
+          }
+        }
+        // For text search, hit the search API (same one bags uses)
+        const sr = await fetch(window.__BONDLI_API + "/api/search?q=" + encodeURIComponent(search));
+        if (sr.ok && !cancelled) {
+          const sd = await sr.json();
+          if (sd.results && !cancelled) {
+            setApiSearchResults(sd.results.map(r => ({
+              ca: r.ca, name: r.name, ticker: r.ticker, mcapUsd: r.mcap || 0,
+              buys: r.txns1h?.buys || 0, sells: r.txns1h?.sells || 0,
+              image: r.image, description: r.description || "",
+              score: 0, verdict: "?", bp: 0, external: true,
+              h1Change: r.h1Change,
+            })));
+          }
         }
       } catch {}
-    };
-    lookup();
-    return () => { cancelled = true; };
+    }, 350);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [search]);
 
-  // Merge external result into display
-  const displayTokens = externalResult && !tokens.some(t => t.ca === externalResult.ca) ? [externalResult, ...tokens] : tokens;
+  // Merge: local hits + external CA result + API search results (deduped)
+  const mergedExternal = [...(externalResult ? [externalResult] : []), ...apiSearchResults];
+  const displayTokens = search.length >= 2
+    ? [...tokens, ...mergedExternal.filter(e => !tokens.some(t => t.ca === e.ca))]
+    : tokens;
 
   const fetchRadar = async () => {
     try {
@@ -1128,7 +1150,7 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tra
             {positions.length > 0 && <button onClick={handleSellAll} disabled={sellingAll} style={{ background: "#ff444415", border: "1px solid #ff444444", borderRadius: 8, padding: "6px 12px", fontFamily: mono, fontSize: 10, fontWeight: 800, color: "#ff4444", cursor: sellingAll ? "wait" : "pointer", opacity: sellingAll ? 0.5 : 1 }}>{sellingAll ? "Selling..." : "Close All"}</button>}
           </div>
         </div>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder={"Search Search any token on pump.fun..."} style={{ width: "100%", padding: "10px 14px", background: T.bg, border: "1px solid " + T.border, borderRadius: 10, color: T.text, fontFamily: mono, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder={"Search any token..."} style={{ width: "100%", padding: "10px 14px", background: T.bg, border: "1px solid " + T.border, borderRadius: 10, color: T.text, fontFamily: mono, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
       </div>
 
       {/* Search Results */}
