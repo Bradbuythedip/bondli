@@ -300,112 +300,97 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
       </header>
 
       {/* HERO */}
-      <section style={{ maxWidth: 900, margin: "0 auto", padding: mobile ? "48px 20px 40px" : "80px 40px 60px", textAlign: "center", position: "relative", zIndex: 1 }}>
-        <div style={{ animation: "pillFloat 3s ease infinite", marginBottom: 28, display: "flex", justifyContent: "center" }}><RedPill size={mobile ? 56 : 72} /></div>
-        <h1 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 32 : 56, lineHeight: 1.1, letterSpacing: "-.03em", marginBottom: 20 }}>
-          Take the <span style={{ color: T.red }}>red pill</span>.<br /><span style={{ color: T.green }}>Trade pump.fun</span> with game theory.
+      <section style={{ maxWidth: 800, margin: "0 auto", padding: mobile ? "60px 20px 50px" : "100px 40px 70px", textAlign: "center", position: "relative", zIndex: 1 }}>
+        <div style={{ animation: "pillFloat 3s ease infinite", marginBottom: 32, display: "flex", justifyContent: "center" }}><RedPill size={mobile ? 56 : 72} /></div>
+        <h1 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 34 : 60, lineHeight: 1.05, letterSpacing: "-.03em", marginBottom: 20 }}>
+          <span style={{ color: T.green }}>7 wallets.</span><br />One brain.
         </h1>
-        <p style={{ fontSize: mobile ? 16 : 20, color: T.dim, maxWidth: 600, margin: "0 auto 36px", lineHeight: 1.6 }}>
-          Deploy a fleet of AI wallets that think independently, avoid detection, and trade bonding curves with Bayesian opponent modeling.
+        <p style={{ fontSize: mobile ? 16 : 19, color: T.dim, maxWidth: 480, margin: "0 auto 40px", lineHeight: 1.6, fontFamily: mono }}>
+          Fleet trading engine for pump.fun. Game theory in, SOL out.
         </p>
         {error && <p style={{ fontSize: 14, color: T.red, marginBottom: 14, fontFamily: mono }}>{error}</p>}
         <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap" }}>
-          <Btn onClick={connectPhantom} disabled={connecting} style={{ padding: "16px 32px", fontSize: 18, borderRadius: 14, background: "linear-gradient(135deg, #534bb1, #551bf9)", animation: "glow 3s infinite" }}><Ic.Phantom /> {connecting ? "Connecting..." : "Connect Phantom"}</Btn>
-          <Btn onClick={() => onConnect({ pubkey: "demo", whitelisted: false, paid: false, tier: "demo", demo: true })} ghost color={T.dim} style={{ padding: "16px 28px", fontSize: 16, borderRadius: 14 }}>Demo Mode</Btn>
+          <Btn onClick={connectPhantom} disabled={connecting} style={{ padding: "16px 36px", fontSize: 18, borderRadius: 14, background: "linear-gradient(135deg, #534bb1, #551bf9)", animation: "glow 3s infinite" }}><Ic.Phantom /> {connecting ? "..." : "Connect"}</Btn>
+          <Btn onClick={() => onConnect({ pubkey: "demo", whitelisted: false, paid: false, tier: "demo", demo: true })} ghost color={T.dim} style={{ padding: "16px 28px", fontSize: 16, borderRadius: 14 }}>Demo</Btn>
         </div>
       </section>
 
-      {/* HOW IT WORKS */}
-      <section style={{ maxWidth: 800, margin: "0 auto", padding: mobile ? "0 16px 40px" : "0 40px 60px", position: "relative", zIndex: 1 }}>
-        <h2 style={{ textAlign: "center", fontFamily: sans, fontWeight: 900, fontSize: mobile ? 22 : 30, marginBottom: 8, color: T.text }}>How it works</h2>
-        <p style={{ textAlign: "center", fontSize: 15, color: T.dim, marginBottom: mobile ? 20 : 32 }}>Three steps. One red pill.</p>
-        <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr", gap: mobile ? 12 : 16 }}>
+      {/* WHAT IT DOES — one line each */}
+      <section style={{ maxWidth: 600, margin: "0 auto", padding: mobile ? "0 20px 40px" : "0 40px 50px", position: "relative", zIndex: 1 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
           {[
-            { n: "1", title: "Scan", desc: "Radar watches every new pump.fun token in real-time. Scores them on volume, buy pressure, socials, and bundle detection. Three tabs: New, Hot, Graduating.", color: T.green },
-            { n: "2", title: "Deploy or Ape", desc: "Launch your own token with organic-looking multi-wallet buys. Or snipe an existing CA — wallet count scales with conviction score (Kelly Criterion).", color: T.yellow },
-            { n: "3", title: "AI Trades", desc: "GameState engine watches every trade on your token. Detects whales, dev dumps, cascades. Adjusts sell timing using Nash equilibrium — ride pumps, exit dumps.", color: T.red },
-          ].map(s => (
-            <div key={s.n} style={{ background: T.surface, border: "2px solid " + s.color + "22", borderRadius: 18, padding: mobile ? 20 : 24, textAlign: "center" }}>
-              <div style={{ width: 40, height: 40, borderRadius: "50%", background: s.color + "15", border: "2px solid " + s.color + "33", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px", fontFamily: mono, fontSize: 18, fontWeight: 900, color: s.color }}>{s.n}</div>
-              <h3 style={{ fontFamily: mono, fontSize: 17, fontWeight: 800, marginBottom: 8, color: T.text }}>{s.title}</h3>
-              <p style={{ fontSize: 13, color: T.dim, lineHeight: 1.6 }}>{s.desc}</p>
-            </div>
+            { t: "Radar scans every new token.", c: T.green },
+            { t: "Fleet buys look organic, not bundled.", c: T.green },
+            { t: "Game theory engine reads every trade.", c: T.green },
+            { t: "Sells into demand. Exits before dumps.", c: T.green },
+            { t: "You keep the SOL.", c: T.text },
+          ].map((l, i) => (
+            <div key={i} style={{ padding: "12px 0", borderBottom: i < 4 ? "1px solid " + T.border + "33" : "none", fontFamily: mono, fontSize: mobile ? 14 : 16, color: l.c, fontWeight: i === 4 ? 800 : 500 }}>{l.t}</div>
           ))}
         </div>
-        <div style={{ marginTop: mobile ? 16 : 24, background: T.bg, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 16 : 20 }}>
-          <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.green, marginBottom: 8 }}>TL;DR</div>
-          <p style={{ fontSize: 14, color: T.mid, lineHeight: 1.7, margin: 0 }}>
-            Bondli turns one wallet into a coordinated fleet of 1-7 AI wallets. Each buys independently on the bonding curve (looks organic, not bundled). A game theory engine monitors every opponent trade in real-time and auto-adjusts: ride momentum when whales buy in, exit instantly when devs dump. Radar scans every new pump.fun token and scores them on 15+ signals including socials, bundle detection, and volume spikes — so you only ape into tokens worth aping.
-          </p>
-        </div>
       </section>
 
-      {/* PRICING */}
-      <section style={{ maxWidth: 800, margin: "0 auto", padding: mobile ? "20px 16px 40px" : "20px 40px 60px", position: "relative", zIndex: 1 }}>
-        <h2 style={{ textAlign: "center", fontFamily: sans, fontWeight: 900, fontSize: mobile ? 22 : 30, marginBottom: 8, color: T.text }}>Simple pricing</h2>
-        <p style={{ textAlign: "center", fontSize: 16, color: T.dim, marginBottom: mobile ? 24 : 36 }}>Start free or go pro. No subscriptions.</p>
-        <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr", gap: mobile ? 14 : 20 }}>
-          {/* FREE */}
-          <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 20, padding: mobile ? 24 : 32, transition: "all .3s" }}>
-            <div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.green, textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 12 }}>Free Tier</div>
-            <div style={{ fontFamily: mono, fontSize: mobile ? 36 : 44, fontWeight: 900, color: T.text, marginBottom: 4 }}>0 <span style={{ fontSize: 20, color: T.dim }}>SOL</span></div>
-            <p style={{ fontSize: 15, color: T.dim, marginBottom: 24 }}>{FREE_PROFIT_CUT}% of profits go to Bondli on every close</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {["All 7 wallet roles", "Game theory engine", "Anti-detection", "Rug scanner", FREE_PROFIT_CUT + "% profit share on close"].map((f, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: T.mid }}>
-                  <span style={{ color: T.green, flexShrink: 0 }}><Ic.Check /></span>{f}
-                </div>
-              ))}
-            </div>
-            <Btn onClick={connectPhantom} full disabled={connecting} style={{ marginTop: 24, borderRadius: 12 }} ghost color={T.green}>
-              <Ic.Phantom /> Start Free
-            </Btn>
+      {/* YOU vs THE MARKET — visual comparison */}
+      <section style={{ maxWidth: 700, margin: "0 auto", padding: mobile ? "0 20px 50px" : "0 40px 70px", position: "relative", zIndex: 1 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: mobile ? 10 : 16 }}>
+          <div style={{ background: T.surface, border: "1px solid " + T.red + "33", borderRadius: 16, padding: mobile ? 16 : 24 }}>
+            <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, color: T.red, marginBottom: 12, textTransform: "uppercase", letterSpacing: ".08em" }}>Manual trading</div>
+            {["One wallet = one target", "Visible on-chain fingerprint", "Slow reaction to dumps", "Emotional sells", "Sleep = miss moves"].map((x, i) => (
+              <div key={i} style={{ fontFamily: mono, fontSize: mobile ? 11 : 13, color: T.dim, padding: "6px 0", borderBottom: i < 4 ? "1px solid " + T.border + "15" : "none" }}>{"/"} {x}</div>
+            ))}
           </div>
-          {/* PRO */}
-          <div style={{ background: T.surface, border: "2px solid " + T.green + "44", borderRadius: 20, padding: mobile ? 24 : 32, position: "relative", overflow: "hidden", transition: "all .3s" }}>
-            <div style={{ position: "absolute", top: 16, right: 16, padding: "4px 12px", borderRadius: 8, background: T.green, color: T.bg, fontFamily: mono, fontSize: 11, fontWeight: 800 }}>BEST VALUE</div>
-            <div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.yellow, textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 12 }}><Ic.Crown /> Pro</div>
-            <div style={{ fontFamily: mono, fontSize: mobile ? 36 : 44, fontWeight: 900, color: T.text, marginBottom: 4 }}>{PRO_FEE_SOL} <span style={{ fontSize: 20, color: T.dim }}>SOL</span></div>
-            <p style={{ fontSize: 15, color: T.dim, marginBottom: 24 }}>One-time. Keep 100% of profits forever.</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              {["All 7 wallet roles", "Game theory engine", "Anti-detection", "Rug scanner", "0% profit share \u2014 keep everything", "Priority support"].map((f, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: T.mid }}>
-                  <span style={{ color: T.green, flexShrink: 0 }}><Ic.Check /></span>{f}
-                </div>
-              ))}
-            </div>
-            <Btn onClick={connectPhantom} full disabled={connecting} style={{ marginTop: 24, borderRadius: 12, background: "linear-gradient(135deg, #534bb1, #551bf9)" }}>
-              <Ic.Phantom /> Go Pro
-            </Btn>
+          <div style={{ background: T.surface, border: "1px solid " + T.green + "33", borderRadius: 16, padding: mobile ? 16 : 24 }}>
+            <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, color: T.green, marginBottom: 12, textTransform: "uppercase", letterSpacing: ".08em" }}>Bondli fleet</div>
+            {["7 wallets, 7 strategies", "Gaussian timing, random sizes", "Exits in seconds, not minutes", "Nash equilibrium, not vibes", "24/7 radar never sleeps"].map((x, i) => (
+              <div key={i} style={{ fontFamily: mono, fontSize: mobile ? 11 : 13, color: T.green, padding: "6px 0", borderBottom: i < 4 ? "1px solid " + T.border + "15" : "none" }}>{"+"} {x}</div>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* FEATURES */}
-      <section style={{ maxWidth: 1100, margin: "0 auto", padding: mobile ? "20px 16px 40px" : "20px 40px 60px", position: "relative", zIndex: 1 }}>
-        <h2 style={{ textAlign: "center", fontFamily: sans, fontWeight: 900, fontSize: mobile ? 22 : 30, marginBottom: mobile ? 20 : 32, color: T.text }}>Built for degens, by degens</h2>
-        <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr", gap: mobile ? 14 : 20 }}>
-          {features.map((f, i) => (
-            <div key={i} style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 18, padding: mobile ? 22 : 28, animation: "fadeUp .5s ease " + (i * 0.08) + "s both", transition: "all .3s" }}>
-              <div style={{ width: 48, height: 48, borderRadius: 14, marginBottom: 18, background: T.green + "12", border: "1px solid " + T.green + "22", display: "flex", alignItems: "center", justifyContent: "center", color: T.green }}>{f.icon}</div>
-              <h3 style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, marginBottom: 10, color: T.text }}>{f.title}</h3>
-              <p style={{ fontSize: 14, color: T.dim, lineHeight: 1.6 }}>{f.desc}</p>
+      {/* UNDER THE HOOD — 3 hard facts */}
+      <section style={{ maxWidth: 700, margin: "0 auto", padding: mobile ? "0 20px 50px" : "0 40px 70px", position: "relative", zIndex: 1 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: mobile ? 8 : 14 }}>
+          {[
+            { n: "13", label: "Engine modules", sub: "Fleet, GameState, Radar, Anti-detection..." },
+            { n: "15+", label: "Scoring signals", sub: "Volume, socials, bundles, dev behavior..." },
+            { n: "<2s", label: "Exit latency", sub: "Dump detected to sell broadcast" },
+          ].map((s, i) => (
+            <div key={i} style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 20, textAlign: "center" }}>
+              <div style={{ fontFamily: mono, fontSize: mobile ? 24 : 32, fontWeight: 900, color: T.green }}>{s.n}</div>
+              <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, color: T.text, marginTop: 4 }}>{s.label}</div>
+              <div style={{ fontFamily: mono, fontSize: 9, color: T.faint, marginTop: 4 }}>{s.sub}</div>
             </div>
           ))}
         </div>
       </section>
 
-      {/* BOTTOM CTA */}
-      <section style={{ maxWidth: 800, margin: "0 auto", padding: mobile ? "20px 20px 80px" : "20px 40px 80px", textAlign: "center", position: "relative", zIndex: 1 }}>
-        <div style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 24, padding: mobile ? 28 : 44, boxShadow: T.mode === "dark" ? "0 20px 60px rgba(0,0,0,.4)" : "0 10px 40px rgba(0,0,0,.08)", transition: "all .3s", display: "flex", flexDirection: "column", alignItems: "center" }}>
-          <RedPill size={40} />
-          <h2 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 22 : 30, marginTop: 16, marginBottom: 12, color: T.text }}>Ready to trade smarter?</h2>
-          <p style={{ fontSize: mobile ? 15 : 17, color: T.dim, marginBottom: 28, lineHeight: 1.6 }}>Start free with {FREE_PROFIT_CUT}% profit share, or pay <span style={{ color: T.green, fontWeight: 800 }}>{PRO_FEE_SOL} SOL</span> once to keep everything.</p>
-          <Btn onClick={connectPhantom} disabled={connecting} style={{ padding: "16px 36px", fontSize: 18, borderRadius: 14, background: "linear-gradient(135deg, #534bb1, #551bf9)" }}><Ic.Phantom /> {connecting ? "Connecting..." : "Get Started"}</Btn>
+      {/* PRICING — compact */}
+      <section style={{ maxWidth: 600, margin: "0 auto", padding: mobile ? "0 20px 60px" : "0 40px 80px", position: "relative", zIndex: 1 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 16, padding: mobile ? 20 : 28 }}>
+            <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.green, marginBottom: 8 }}>FREE</div>
+            <div style={{ fontFamily: mono, fontSize: mobile ? 28 : 36, fontWeight: 900, color: T.text }}>0</div>
+            <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginTop: 4 }}>{FREE_PROFIT_CUT}% on close</div>
+            <Btn onClick={connectPhantom} full disabled={connecting} ghost color={T.green} style={{ marginTop: 16, borderRadius: 10, fontSize: 13 }}>Start</Btn>
+          </div>
+          <div style={{ background: T.surface, border: "1px solid " + T.green + "44", borderRadius: 16, padding: mobile ? 20 : 28 }}>
+            <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.yellow, marginBottom: 8 }}>PRO</div>
+            <div style={{ fontFamily: mono, fontSize: mobile ? 28 : 36, fontWeight: 900, color: T.text }}>{PRO_FEE_SOL} <span style={{ fontSize: 14, color: T.dim }}>SOL</span></div>
+            <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginTop: 4 }}>Keep 100% forever</div>
+            <Btn onClick={connectPhantom} full disabled={connecting} style={{ marginTop: 16, borderRadius: 10, fontSize: 13, background: "linear-gradient(135deg, #534bb1, #551bf9)" }}>Go Pro</Btn>
+          </div>
         </div>
       </section>
 
-      <footer style={{ padding: "16px 28px", borderTop: "1px solid " + T.border, display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, color: T.faint, fontFamily: mono }}><span>BONDLI v3.3</span><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{ color: T.dim, textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@Bondlifun</a><span>{PLATFORM_WALLET}</span></footer>
+      {/* ONE-LINER */}
+      <section style={{ maxWidth: 600, margin: "0 auto", padding: mobile ? "0 20px 60px" : "0 40px 80px", textAlign: "center", position: "relative", zIndex: 1 }}>
+        <p style={{ fontFamily: mono, fontSize: mobile ? 15 : 18, color: T.dim, lineHeight: 1.7, fontStyle: "italic" }}>
+          {"\""}The market is a game. Most players don't know the rules. The ones who do are using seven wallets.{"\""}
+        </p>
+      </section>
+
+      <footer style={{ padding: "16px 28px", borderTop: "1px solid " + T.border, display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, color: T.faint, fontFamily: mono }}><span>BONDLI</span><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{ color: T.dim, textDecoration: "none", display: "flex", alignItems: "center", gap: 4 }}><svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>@Bondlifun</a></footer>
     </div>
   );
 }
