@@ -893,27 +893,28 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
       onMouseEnter={e => { e.currentTarget.style.borderColor = T.green + "55"; e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px " + T.green + "08"; }}
       onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}
     >
-      <div style={{ position: "relative", width: "100%", aspectRatio: "1", background: T.bg, overflow: "hidden" }}>
-        {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 32, color: T.faint + "44", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
-        {i < 3 && <div style={{ position: "absolute", top: 5, left: 5, background: T.green + "dd", color: "#000", fontFamily: mono, fontSize: 9, fontWeight: 900, padding: "1px 5px", borderRadius: 4 }}>#{i + 1}</div>}
-        <div style={{ position: "absolute", top: 5, right: 5, background: vc(t.verdict) + "dd", color: "#000", fontFamily: mono, fontSize: 9, fontWeight: 900, padding: "2px 6px", borderRadius: 4 }}>{t.score}</div>
-        {t.bundled && <div style={{ position: "absolute", bottom: 5, left: 5, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}>BUNDLED</div>}
+      <div style={{ position: "relative", width: "100%", aspectRatio: mobile ? "4/3" : "1", background: T.bg, overflow: "hidden" }}>
+        {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: mobile ? 22 : 32, color: T.faint + "44", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
+        {i < 3 && <div style={{ position: "absolute", top: 3, left: 3, background: T.green + "dd", color: "#000", fontFamily: mono, fontSize: 8, fontWeight: 900, padding: "1px 4px", borderRadius: 3 }}>#{i + 1}</div>}
+        <div style={{ position: "absolute", top: 3, right: 3, background: vc(t.verdict) + "dd", color: "#000", fontFamily: mono, fontSize: 8, fontWeight: 900, padding: "1px 5px", borderRadius: 3 }}>{t.score}</div>
+        {t.bundled && <div style={{ position: "absolute", bottom: 3, left: 3, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 3px", borderRadius: 2 }}>BUNDLED</div>}
       </div>
-      <div style={{ padding: "6px 8px 8px" }}>
-        <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 800, color: T.text, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", lineHeight: 1.3 }}>{t.name || t.ticker}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
-          <span style={{ fontFamily: mono, fontSize: 10, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
-          {!t.age && t.created && <span style={{ fontFamily: mono, fontSize: 8, color: T.faint }}>{ago(t.created)}</span>}
-          {t.age && <span style={{ fontFamily: mono, fontSize: 8, color: T.faint }}>{t.age >= 24 ? Math.floor(t.age/24) + "d" : Math.round(t.age) + "h"}</span>}
-          {t.socialCount > 0 && <span style={{ fontFamily: mono, fontSize: 8, color: T.dim }}>{t.twitter ? "X" : ""}{t.website ? " web" : ""}</span>}
+      <div style={{ padding: mobile ? "4px 6px 6px" : "6px 8px 8px" }}>
+        <div style={{ fontFamily: mono, fontSize: mobile ? 11 : 12, fontWeight: 800, color: T.text, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", lineHeight: 1.3 }}>{t.name || t.ticker}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 3, marginTop: 1 }}>
+          <span style={{ fontFamily: mono, fontSize: mobile ? 9 : 10, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
+          {!t.age && t.created && <span style={{ fontFamily: mono, fontSize: 7, color: T.faint }}>{ago(t.created)}</span>}
+          {t.age && <span style={{ fontFamily: mono, fontSize: 7, color: T.faint }}>{t.age >= 24 ? Math.floor(t.age/24) + "d" : Math.round(t.age) + "h"}</span>}
+          {t.socialCount > 0 && <span style={{ fontFamily: mono, fontSize: 7, color: T.dim }}>{t.twitter ? "X" : ""}{t.website ? " web" : ""}</span>}
         </div>
-        {t.description && <div style={{ fontFamily: sans, fontSize: 10, color: T.dim, marginTop: 3, lineHeight: 1.3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{t.description.slice(0, 100)}</div>}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-          <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 800, color: T.green }}>MC {fmt(t.mcapUsd)}</span>
-          <span style={{ fontFamily: mono, fontSize: 9, color: T.dim }}>{t.buys}b/{t.sells}s</span>
+        {t.description && <div style={{ fontFamily: sans, fontSize: mobile ? 9 : 10, color: T.dim, marginTop: 2, lineHeight: 1.2, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: mobile ? 1 : 2, WebkitBoxOrient: "vertical" }}>{t.description.slice(0, 80)}</div>}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 3 }}>
+          <span style={{ fontFamily: mono, fontSize: mobile ? 9 : 10, fontWeight: 800, color: T.green }}>MC {fmt(t.mcapUsd)}</span>
+          <span style={{ fontFamily: mono, fontSize: mobile ? 8 : 9, color: T.dim }}>{t.buys}b/{t.sells}s</span>
         </div>
-        {t.priceChange?.h1 != null && <div style={{ fontFamily: mono, fontSize: 9, fontWeight: 700, color: t.priceChange.h1 >= 0 ? T.green : "#ff4444", marginTop: 2 }}>{t.priceChange.h1 > 0 ? "+" : ""}{t.priceChange.h1.toFixed(1)}% 1h</div>}
-        {t.bp > 0 && t.bp < 100 && <div style={{ marginTop: 3, height: 3, background: T.border, borderRadius: 2, overflow: "hidden" }}><div style={{ height: 3, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 2 }} /></div>}
+        {t.bp > 0 && t.bp < 100 && <div style={{ marginTop: 2, height: 2, background: T.border, borderRadius: 1, overflow: "hidden" }}><div style={{ height: 2, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 1 }} /></div>}
+        {/* Tappable CA copy row — visible on mobile */}
+        <div onClick={e => { e.stopPropagation(); navigator.clipboard?.writeText(t.ca); }} style={{ marginTop: 3, fontFamily: mono, fontSize: 8, color: T.faint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "2px 0", WebkitTapHighlightColor: "transparent" }}>{t.ca?.slice(0, 6)}...{t.ca?.slice(-4)} <span style={{ color: T.dim, fontSize: 7 }}>tap to copy</span></div>
       </div>
     </div>
   );
@@ -931,7 +932,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
           {online > 0 && <span style={{ fontFamily: mono, fontSize: 10, color: T.green, opacity: 0.5 }}><span style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: T.green, marginRight: 3, verticalAlign: "middle" }} />{online}</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button onClick={handleRefresh} disabled={refreshing} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontFamily: mono, fontSize: 11, color: T.dim }}><span style={{ display: "inline-block", transition: "transform .5s", transform: refreshing ? "rotate(360deg)" : "none" }}>"Refresh"</span></button>
+          <button onClick={handleRefresh} disabled={refreshing} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontFamily: mono, fontSize: 11, color: T.dim }}><span style={{ display: "inline-block", transition: "transform .5s", transform: refreshing ? "rotate(360deg)" : "none" }}>{"↻"}</span></button>
           <button onClick={handleToggle} style={{ background: enabled ? T.green + "15" : T.red + "15", border: "1px solid " + (enabled ? T.green + "44" : T.red + "44"), borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontFamily: mono, fontSize: 11, fontWeight: 700, color: enabled ? T.green : T.red, transition: "all .2s" }}>{enabled ? "ON" : "OFF"}</button>
         </div>
       </div>
@@ -942,10 +943,10 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
           {TAB_CONFIG.map(tab => {
             const count = (tabs[tab.id] || []).length;
             const isActive = activeTab === tab.id;
-            return (<button key={tab.id} onClick={() => { setActiveTab(tab.id); setSelected(null); setSearch(""); }} style={{ padding: "10px 14px", background: "none", border: "none", borderBottom: isActive ? "2px solid " + T.green : "2px solid transparent", fontFamily: mono, fontSize: 12, fontWeight: 700, color: isActive ? T.green : T.dim, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}><span style={{ display: "flex", alignItems: "center" }}>{tab.icon}</span>{tab.label}{count > 0 && <span style={{ fontSize: 10, opacity: 0.7, fontWeight: 800 }}>{count}</span>}</button>);
+            return (<button key={tab.id} onClick={() => { setActiveTab(tab.id); setSelected(null); setSearch(""); }} style={{ padding: mobile ? "8px 8px" : "10px 14px", background: "none", border: "none", borderBottom: isActive ? "2px solid " + T.green : "2px solid transparent", fontFamily: mono, fontSize: mobile ? 10 : 12, fontWeight: 700, color: isActive ? T.green : T.dim, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}><span style={{ display: "flex", alignItems: "center" }}>{tab.icon}</span>{tab.label}{count > 0 && <span style={{ fontSize: 9, opacity: 0.7, fontWeight: 800 }}>{count}</span>}</button>);
           })}
           <div style={{ flex: 1 }} />
-          <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder={"Search Search..."} style={{ width: mobile ? 110 : 200, padding: "6px 10px", margin: "4px 8px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: mono, fontSize: 11, outline: "none" }} />
+          <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder={"Search..."} style={{ width: mobile ? 90 : 200, padding: "6px 10px", margin: "4px 8px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: mono, fontSize: 11, outline: "none" }} />
         </div>
       )}
 
@@ -1011,7 +1012,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
           {selected?.error && <div style={{ padding: "14px 16px", margin: "10px 16px", background: T.red + "10", borderRadius: 12, fontFamily: mono, fontSize: 12, color: T.red, display: "flex", justifyContent: "space-between" }}><span>{selected.error}</span><button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: T.red, cursor: "pointer" }}>{"✕"}</button></div>}
 
           {/* Card Grid */}
-          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(155px, 1fr))", gap: mobile ? 6 : 10, padding: mobile ? "10px 8px" : "14px 14px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(155px, 1fr))", gap: mobile ? 4 : 10, padding: mobile ? "6px 4px" : "14px 14px" }}>
             {tokens.map((t, i) => <TokenCard key={t.ca} t={t} i={i} />)}
           </div>
         </div>
