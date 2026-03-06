@@ -484,6 +484,7 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
   const [mcap, setMcap] = useState(null);
   const [bp, setBp] = useState(0);
   const [chartMode, setChartMode] = useState("live");
+  const [timeframe, setTimeframe] = useState(5); // minutes: 5, 10, 30, 60, 0=all
   const [age, setAge] = useState(0);
   const canvasRef = useRef(null);
   const histRef = useRef([]);
@@ -547,7 +548,14 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
   const drawCanvas = () => {
     const canvas = canvasRef.current;
     const ws = wsRef.current;
-    const hist = ws.length >= 3 ? ws.map(p => ({ t: p.t, m: p.mcap || (p.mcapSol || 0) * 170, type: p.type, sol: p.sol, bp: p.bp })) : histRef.current.map(p => ({ t: p.t, m: p.mcap, type: null, sol: 0, bp: p.bp }));
+    let rawHist = ws.length >= 3 ? ws.map(p => ({ t: p.t, m: p.mcap || (p.mcapSol || 0) * 170, type: p.type, sol: p.sol, bp: p.bp })) : histRef.current.map(p => ({ t: p.t, m: p.mcap, type: null, sol: 0, bp: p.bp }));
+    
+    // Apply timeframe filter
+    if (timeframe > 0 && rawHist.length > 0) {
+      const cutoff = Date.now() - timeframe * 60 * 1000;
+      rawHist = rawHist.filter(p => p.t >= cutoff);
+    }
+    const hist = rawHist;
     if (!canvas || hist.length < 2) return;
 
     const isDark = T?.mode === "dark" || T?.bg === "#0a0a0a" || !T?.bg || T?.bg?.startsWith("#0");
@@ -677,15 +685,21 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
 
   return (
     <div>
-      <div style={{ padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ padding: "8px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {mcap && <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 800, color: "#00e676" }}>${fmt(mcap)}</span>}
-          {bp > 0 && <span style={{ fontFamily: "monospace", fontSize: 10, color: "#888" }}>{bp.toFixed(1)}% bonded</span>}
-          {gameState && <span style={{ fontFamily: "monospace", fontSize: 9, padding: "1px 5px", borderRadius: 3, background: gameState.signal === "SELL_NOW" ? "#ff444422" : gameState.signal === "RIDE" ? "#00ff8822" : gameState.signal === "ACCUMULATE" ? "#4488ff22" : "#33333322", color: gameState.signal === "SELL_NOW" ? "#ff4444" : gameState.signal === "RIDE" ? "#00ff88" : gameState.signal === "ACCUMULATE" ? "#4488ff" : "#666", fontWeight: 700 }}>{gameState.signal} {gameState.buyPressure}%bp</span>}
+          {bp > 0 && <span style={{ fontFamily: "monospace", fontSize: 10, color: "#888" }}>{bp.toFixed(1)}%</span>}
+          {gameState && <span style={{ fontFamily: "monospace", fontSize: 9, padding: "1px 5px", borderRadius: 3, background: gameState.signal === "SELL_NOW" ? "#ff444422" : gameState.signal === "RIDE" ? "#00ff8822" : gameState.signal === "ACCUMULATE" ? "#4488ff22" : "#33333322", color: gameState.signal === "SELL_NOW" ? "#ff4444" : gameState.signal === "RIDE" ? "#00ff88" : gameState.signal === "ACCUMULATE" ? "#4488ff" : "#666", fontWeight: 700 }}>{gameState.signal}</span>}
         </div>
-        <div style={{ display: "flex", gap: 4 }}>
+        <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+          {/* Timeframe buttons */}
+          {chartMode === "live" && [{ v: 5, l: "5m" }, { v: 10, l: "10m" }, { v: 30, l: "30m" }, { v: 60, l: "1h" }, { v: 0, l: "All" }].map(tf => (
+            <button key={tf.v} onClick={() => setTimeframe(tf.v)} style={{ background: timeframe === tf.v ? (T?.green || "#00e676") + "22" : "none", border: "1px solid " + (timeframe === tf.v ? (T?.green || "#00e676") : "#333"), borderRadius: 5, padding: "2px 6px", fontFamily: "monospace", fontSize: 9, color: timeframe === tf.v ? (T?.green || "#00e676") : "#666", cursor: "pointer", fontWeight: timeframe === tf.v ? 800 : 400 }}>{tf.l}</button>
+          ))}
+          <span style={{ width: 1, height: 14, background: "#333", margin: "0 2px" }} />
+          {/* Chart mode buttons */}
           {["live", "dex", "pump"].map(m => (
-            <button key={m} onClick={() => setChartMode(m)} style={{ background: chartMode === m ? "#00e67622" : "none", border: "1px solid " + (chartMode === m ? "#00e676" : "#333"), borderRadius: 6, padding: "3px 6px", fontFamily: "monospace", fontSize: 9, color: chartMode === m ? "#00e676" : "#666", cursor: "pointer" }}>{m === "live" ? "\u2764\uFE0F" : m === "dex" ? "DEX" : "PF"}</button>
+            <button key={m} onClick={() => setChartMode(m)} style={{ background: chartMode === m ? "#00e67622" : "none", border: "1px solid " + (chartMode === m ? "#00e676" : "#333"), borderRadius: 5, padding: "2px 6px", fontFamily: "monospace", fontSize: 9, color: chartMode === m ? "#00e676" : "#666", cursor: "pointer" }}>{m === "live" ? "\u2764\uFE0F" : m === "dex" ? "DEX" : "PF"}</button>
           ))}
         </div>
       </div>
@@ -1415,85 +1429,67 @@ export default function App() {
     const phantom = window?.phantom?.solana || window?.solana;
     if (!phantom?.isPhantom) { toast("Phantom wallet required", "error"); return; }
 
-    toast("Building transaction...", "info");
+    toast("Building trade...", "info");
     try {
-      // 1. Server builds unsigned tx (returns base64)
+      // 1. Server gets unsigned VersionedTransaction from PumpPortal
       const res = await fetch(API + "/api/quick-ape", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ wallet: user.pubkey, ca, solAmount }),
       });
       const data = await res.json();
-      if (!data.ok) { toast(data.error || "Failed to build tx", "error"); return; }
+      if (!data.ok) { toast(data.error || "Failed", "error"); return; }
 
-      // 2. Decode base64 tx to bytes
+      // 2. Decode base64 → Uint8Array (PumpPortal returns VersionedTransaction bytes)
       const raw = atob(data.tx);
       const txBytes = new Uint8Array(raw.length);
       for (let i = 0; i < raw.length; i++) txBytes[i] = raw.charCodeAt(i);
 
       toast("Approve in Phantom...", "info");
 
-      // 3. Try multiple Phantom signing methods (adapter API changed across versions)
+      // 3. Sign with Phantom — try provider method first, then request API
       let signature;
       try {
-        // Method 1: phantom.signAndSendTransaction with raw bytes (Phantom v24+)
-        if (phantom.signAndSendTransaction) {
-          // Phantom expects a Transaction-like object with serialize()
-          // But we can pass a VersionedTransaction-compatible object
-          const result = await phantom.request({
-            method: "signAndSendTransaction",
-            params: { transaction: data.tx, options: { skipPreflight: true } },
-          });
-          signature = result.signature || result;
-        }
+        // Phantom provider.signAndSendTransaction works with VersionedTransaction bytes
+        // wrapped in a minimal object with serialize()
+        const txObj = { serialize: () => txBytes };
+        const result = await phantom.signAndSendTransaction(txObj, { skipPreflight: true });
+        signature = result?.signature || result;
       } catch (e1) {
-        console.warn("[QUICK-APE] Method 1 failed:", e1.message);
+        console.warn("[QUICK-APE] Provider method failed:", e1.message);
         try {
-          // Method 2: Legacy phantom.request with message param
-          const result = await phantom.request({
-            method: "signAndSendTransaction",
-            params: { message: data.tx },
-          });
-          signature = result.signature || result;
-        } catch (e2) {
-          console.warn("[QUICK-APE] Method 2 failed:", e2.message);
-          // Method 3: signTransaction + sendRawTransaction via server
-          const signed = await phantom.signTransaction((() => {
-            // Minimal Transaction-like from bytes
-            const tx = { serialize: () => txBytes, signatures: [] };
-            tx.feePayer = { toBuffer: () => txBytes.slice(0, 32) };
-            return tx;
-          })());
-          // Send via server
-          const sendRes = await fetch(API + "/api/send-signed-tx", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ signedTx: btoa(String.fromCharCode.apply(null, new Uint8Array(signed.serialize()))) }),
-          });
+          // Fallback: sign only, send via server
+          const txObj = { serialize: () => txBytes };
+          const signed = await phantom.signTransaction(txObj);
+          const signedBytes = signed.serialize ? signed.serialize() : (signed instanceof Uint8Array ? signed : new Uint8Array(signed));
+          // Encode safely (avoid stack overflow from spread on large arrays)
+          let b64 = "";
+          const chunks = [];
+          for (let i = 0; i < signedBytes.length; i += 8192) chunks.push(String.fromCharCode.apply(null, signedBytes.subarray(i, i + 8192)));
+          b64 = btoa(chunks.join(""));
+          const sendRes = await fetch(API + "/api/send-signed-tx", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ signedTx: b64 }) });
           const sendData = await sendRes.json();
+          if (!sendData.ok) throw new Error(sendData.error || "Send failed");
           signature = sendData.signature;
+        } catch (e2) {
+          throw new Error("Phantom signing failed: " + (e2.message || e1.message));
         }
       }
 
-      if (!signature) { toast("No signature returned", "error"); return; }
+      if (!signature) { toast("No signature", "error"); return; }
+      const sigStr = typeof signature === "object" && signature.signature ? btoa(String.fromCharCode.apply(null, Array.from(new Uint8Array(signature.signature)))) : String(signature);
 
       toast("Confirming...", "info");
-      // Poll server for confirmation
       let confirmed = false;
-      for (let i = 0; i < 20 && !confirmed; i++) {
+      for (let i = 0; i < 12 && !confirmed; i++) {
         await new Promise(r => setTimeout(r, 2000));
-        try {
-          const check = await fetch(API + "/api/tx-status/" + signature);
-          if (check.ok) { const s = await check.json(); if (s.confirmed) confirmed = true; }
-        } catch {}
+        try { const c = await fetch(API + "/api/tx-status/" + sigStr); if (c.ok) { const s = await c.json(); if (s.confirmed) confirmed = true; } } catch {}
       }
-
-      toast(confirmed ? "Aped " + solAmount + " SOL into " + ca.slice(0, 8) + "... \u2713" : "Tx sent! Check explorer for " + String(signature).slice(0, 12), "success");
-      console.log("[QUICK-APE] Success:", signature);
-      return signature;
+      toast(confirmed ? `Aped ${solAmount} SOL \u2713` : "Tx sent!", "success");
+      return sigStr;
     } catch (e) {
-      if (e.message?.includes("User rejected") || e.message?.includes("user rejected")) { toast("Transaction cancelled", "error"); }
-      else { toast("Ape failed: " + (e.message || "Unknown error"), "error"); }
+      if (e.message?.includes("reject")) toast("Cancelled", "error");
+      else toast(e.message || "Failed", "error");
       console.error("[QUICK-APE]", e);
     }
   };
