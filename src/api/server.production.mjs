@@ -285,6 +285,21 @@ app.post("/api/send-signed-tx", apiLimiter, async (req, res) => {
   }
 });
 
+// Build deposit tx — Phantom signs a normal SOL transfer (never flagged)
+app.post("/api/build-deposit", apiLimiter, async (req, res) => {
+  try {
+    const { from, to, amount } = req.body;
+    if (!from || !to || !amount) return res.status(400).json({ error: "from, to, amount required" });
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: new PublicKey(from), toPubkey: new PublicKey(to), lamports: Math.floor(amount * LAMPORTS_PER_SOL) }));
+    const { blockhash } = await connection.getLatestBlockhash("confirmed");
+    tx.recentBlockhash = blockhash;
+    tx.feePayer = new PublicKey(from);
+    const serialized = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+    res.json({ ok: true, tx: serialized.toString("base64") });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══════════════════════════════════════
 // USERNAME CUSTOMIZATION
 // ═══════════════════════════════════════
@@ -1416,42 +1431,111 @@ app.get("/api/radar/token/:ca", apiLimiter, async (req, res) => {
   res.json({ ok: false, error: "Token not found", ca });
 });
 
-// Quick Ape — server-side trade using user's trading wallet keypair
-// NO Phantom signing. Server builds tx via PumpPortal, signs with trading key, sends via RPC.
+// ═══════════════════════════════════════
+// PUMPPORTAL LIGHTNING WALLET — auto-created per user
+// All trades go through PumpPortal API, zero signing needed
+// ═══════════════════════════════════════
+app.post("/api/trading-wallet/create", apiLimiter, requireVerifiedWallet, async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+
+    // Check if user already has a trading wallet
+    if (userStore) {
+      const user = await userStore.getOrCreate(wallet);
+      if (user.ppWallet && user.ppApiKey) {
+        return res.json({ ok: true, existing: true, tradingWallet: user.ppWallet, apiKey: user.ppApiKey.slice(0, 8) + "...", privateKey: user.ppPrivateKey || null });
+      }
+    }
+
+    // Create new PumpPortal Lightning wallet
+    const ppRes = await fetch("https://pumpportal.fun/api/create-wallet");
+    if (!ppRes.ok) return res.status(500).json({ error: "Failed to create trading wallet" });
+    const ppData = await ppRes.json();
+
+    // ppData should contain: wallet/address, apiKey, privateKey/secretKey
+    const tradingWallet = ppData.wallet || ppData.address || ppData.publicKey;
+    const apiKey = ppData.apiKey || ppData.api_key;
+    const privateKey = ppData.privateKey || ppData.private_key || ppData.secretKey;
+
+    if (!tradingWallet || !apiKey) {
+      console.error("[TRADING-WALLET] Invalid PumpPortal response:", JSON.stringify(ppData).slice(0, 200));
+      return res.status(500).json({ error: "Invalid response from PumpPortal" });
+    }
+
+    // Store in user record
+    if (userStore) {
+      const user = await userStore.getOrCreate(wallet);
+      user.ppWallet = tradingWallet;
+      user.ppApiKey = apiKey;
+      user.ppPrivateKey = privateKey;
+      user.ppCreated = Date.now();
+      await userStore.set(wallet, user);
+    }
+
+    console.log(`[TRADING-WALLET] Created for ${wallet.slice(0, 8)}: ${tradingWallet.slice(0, 8)}...`);
+    res.json({ ok: true, tradingWallet, apiKey, privateKey });
+  } catch (e) {
+    console.error("[TRADING-WALLET]", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Get trading wallet info
+app.get("/api/trading-wallet/:wallet", apiLimiter, async (req, res) => {
+  try {
+    if (!userStore) return res.json({ ok: true, tradingWallet: null });
+    const user = await userStore.get(req.params.wallet);
+    if (!user?.ppWallet) return res.json({ ok: true, tradingWallet: null });
+
+    // Get balance
+    let balance = 0;
+    try {
+      const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+      balance = await connection.getBalance(new PublicKey(user.ppWallet));
+    } catch {}
+
+    res.json({
+      ok: true,
+      tradingWallet: user.ppWallet,
+      balance: balance / LAMPORTS_PER_SOL,
+      apiKey: user.ppApiKey ? user.ppApiKey.slice(0, 8) + "..." : null,
+      hasKey: !!user.ppApiKey,
+    });
+  } catch { res.json({ ok: true, tradingWallet: null }); }
+});
+
+// Export trading wallet keys (Pro/VIP only, or the wallet owner)
+app.post("/api/trading-wallet/export", apiLimiter, requireVerifiedWallet, async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    if (!userStore) return res.status(500).json({ error: "Not available" });
+    const user = await userStore.get(wallet);
+    if (!user?.ppWallet) return res.status(404).json({ error: "No trading wallet" });
+    res.json({ ok: true, tradingWallet: user.ppWallet, apiKey: user.ppApiKey, privateKey: user.ppPrivateKey });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Quick Ape — PumpPortal Lightning API (zero signing, just API key)
 app.post("/api/quick-ape", apiLimiter, requireVerifiedWallet, async (req, res) => {
   try {
-    const { wallet, ca, solAmount, sessionId } = req.body;
+    const { wallet, ca, solAmount } = req.body;
     if (!wallet || !ca || !solAmount) return res.status(400).json({ error: "wallet, ca, and solAmount required" });
     if (solAmount < 0.005 || solAmount > 100) return res.status(400).json({ error: "solAmount must be 0.005-100 SOL" });
 
-    // Get the user's trading wallet keypair (from active session or stored key)
-    let tradingKp;
-    if (sessionId) {
-      tradingKp = await sessionManager.getDevKeypair(sessionId);
+    // Get user's PumpPortal API key
+    let apiKey;
+    if (userStore) {
+      const user = await userStore.get(wallet);
+      apiKey = user?.ppApiKey;
     }
-    if (!tradingKp) {
-      // Try to find any active session for this user
-      try {
-        const sessions = await sessionManager.getByWallet?.(wallet) || [];
-        const active = sessions?.find(s => s.status !== "closed");
-        if (active) tradingKp = await sessionManager.getDevKeypair(active.id);
-      } catch {}
-    }
-    // Fallback: check if tradingKey was passed directly
-    if (!tradingKp && req.body.tradingKey) {
-      try { tradingKp = Keypair.fromSecretKey(bs58.decode(req.body.tradingKey)); } catch {}
-    }
+    if (!apiKey) return res.status(400).json({ error: "No trading wallet. Create one first." });
 
-    if (!tradingKp) return res.status(400).json({ error: "No trading wallet found. Create a session first or provide tradingKey." });
-
-    const tradingPubkey = tradingKp.publicKey.toBase58();
-
-    // Build tx via PumpPortal (using trading wallet as the signer)
-    const ppRes = await fetch("https://pumpportal.fun/api/trade-local", {
+    // Execute trade via PumpPortal Lightning (no signing needed!)
+    const ppRes = await fetch("https://pumpportal.fun/api/trade?api-key=" + apiKey, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        publicKey: tradingPubkey,
         action: "buy",
         mint: ca,
         amount: solAmount,
@@ -1462,58 +1546,41 @@ app.post("/api/quick-ape", apiLimiter, requireVerifiedWallet, async (req, res) =
       }),
     });
 
-    if (!ppRes.ok) {
-      const errText = await ppRes.text();
-      console.error(`[QUICK-APE] PumpPortal error ${ppRes.status}: ${errText.slice(0, 200)}`);
-      return res.status(500).json({ error: "Trade failed: " + (errText.slice(0, 100) || ppRes.status) });
+    const result = await ppRes.json();
+    if (result.errors || result.error) {
+      const err = result.errors?.[0] || result.error || "Trade failed";
+      console.error(`[QUICK-APE] PumpPortal error:`, err);
+      return res.status(500).json({ error: typeof err === "string" ? err : JSON.stringify(err) });
     }
 
-    // PumpPortal returns VersionedTransaction bytes — sign and send server-side
-    const txBuf = Buffer.from(await ppRes.arrayBuffer());
-    
-    const vtx = VersionedTransaction.deserialize(txBuf);
-    vtx.sign([tradingKp]);
+    const signature = result.signature || result.tx || result;
+    console.log(`[QUICK-APE] ✓ ${wallet.slice(0, 8)} bought ${solAmount} SOL of ${ca.slice(0, 8)} via Lightning | sig: ${String(signature).slice(0, 16)}`);
 
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const signature = await connection.sendRawTransaction(vtx.serialize(), { skipPreflight: true, maxRetries: 3 });
-
-    console.log(`[QUICK-APE] ✓ ${tradingPubkey.slice(0, 8)} bought ${solAmount} SOL of ${ca.slice(0, 8)} | sig: ${signature.slice(0, 16)}`);
-
-    res.json({ ok: true, signature, ca, solAmount, tradingWallet: tradingPubkey, via: "server-signed" });
+    res.json({ ok: true, signature: String(signature), ca, solAmount, via: "pumpportal-lightning" });
   } catch (e) {
     console.error("[QUICK-APE] Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-// Quick Sell — server-side sell using trading wallet keypair
+// Quick Sell — PumpPortal Lightning API
 app.post("/api/quick-sell", apiLimiter, requireVerifiedWallet, async (req, res) => {
   try {
-    const { wallet, ca, percent, sessionId } = req.body;
+    const { wallet, ca, percent } = req.body;
     if (!wallet || !ca) return res.status(400).json({ error: "wallet and ca required" });
     const sellPct = Math.min(100, Math.max(1, percent || 100));
 
-    let tradingKp;
-    if (sessionId) tradingKp = await sessionManager.getDevKeypair(sessionId);
-    if (!tradingKp) {
-      try {
-        const sessions = await sessionManager.getByWallet?.(wallet) || [];
-        const active = sessions?.find(s => s.status !== "closed");
-        if (active) tradingKp = await sessionManager.getDevKeypair(active.id);
-      } catch {}
+    let apiKey;
+    if (userStore) {
+      const user = await userStore.get(wallet);
+      apiKey = user?.ppApiKey;
     }
-    if (!tradingKp && req.body.tradingKey) {
-      try { tradingKp = Keypair.fromSecretKey(bs58.decode(req.body.tradingKey)); } catch {}
-    }
-    if (!tradingKp) return res.status(400).json({ error: "No trading wallet found" });
+    if (!apiKey) return res.status(400).json({ error: "No trading wallet" });
 
-    const tradingPubkey = tradingKp.publicKey.toBase58();
-
-    const ppRes = await fetch("https://pumpportal.fun/api/trade-local", {
+    const ppRes = await fetch("https://pumpportal.fun/api/trade?api-key=" + apiKey, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        publicKey: tradingPubkey,
         action: "sell",
         mint: ca,
         amount: sellPct + "%",
@@ -1524,21 +1591,14 @@ app.post("/api/quick-sell", apiLimiter, requireVerifiedWallet, async (req, res) 
       }),
     });
 
-    if (!ppRes.ok) {
-      const errText = await ppRes.text();
-      return res.status(500).json({ error: "Sell failed: " + (errText.slice(0, 100) || ppRes.status) });
+    const result = await ppRes.json();
+    if (result.errors || result.error) {
+      return res.status(500).json({ error: result.errors?.[0] || result.error || "Sell failed" });
     }
 
-    const txBuf = Buffer.from(await ppRes.arrayBuffer());
-    
-    const vtx = VersionedTransaction.deserialize(txBuf);
-    vtx.sign([tradingKp]);
-
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const signature = await connection.sendRawTransaction(vtx.serialize(), { skipPreflight: true, maxRetries: 3 });
-
-    console.log(`[QUICK-SELL] ✓ ${tradingPubkey.slice(0, 8)} sold ${sellPct}% of ${ca.slice(0, 8)} | sig: ${signature.slice(0, 16)}`);
-    res.json({ ok: true, signature, percent: sellPct, ca, tradingWallet: tradingPubkey, via: "server-signed" });
+    const signature = result.signature || result.tx || result;
+    console.log(`[QUICK-SELL] ✓ ${wallet.slice(0, 8)} sold ${sellPct}% of ${ca.slice(0, 8)} via Lightning`);
+    res.json({ ok: true, signature: String(signature), percent: sellPct, ca, via: "pumpportal-lightning" });
   } catch (e) {
     console.error("[QUICK-SELL] Error:", e.message);
     res.status(500).json({ error: e.message });
