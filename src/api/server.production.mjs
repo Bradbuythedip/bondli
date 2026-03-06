@@ -291,30 +291,71 @@ app.post("/api/send-signed-tx", apiLimiter, async (req, res) => {
 app.get("/api/positions/:wallet", apiLimiter, async (req, res) => {
   try {
     const wallet = req.params.wallet;
-    if (!userStore) return res.json({ ok: true, positions: [], balance: 0 });
-    const user = await userStore.get(wallet);
-    const tradingWallet = user?.ppWallet;
-    if (!tradingWallet) return res.json({ ok: true, positions: [], balance: 0, noWallet: true });
-
     const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const pubkey = new PublicKey(tradingWallet);
 
-    // Get SOL balance
-    const solBalance = await connection.getBalance(pubkey);
+    // Collect ALL wallets that might hold tokens for this user
+    const walletsToScan = new Set();
 
-    // Get all token accounts
-    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
-    const positions = [];
-
-    for (const { account } of tokenAccounts.value) {
-      const parsed = account.data.parsed?.info;
-      if (!parsed || parsed.tokenAmount?.uiAmount === 0) continue;
-      const mint = parsed.mint;
-      const amount = parsed.tokenAmount?.uiAmount || 0;
-      const decimals = parsed.tokenAmount?.decimals || 6;
-
-      positions.push({ mint, amount, decimals });
+    // 1. PumpPortal trading wallet
+    if (userStore) {
+      const user = await userStore.get(wallet);
+      if (user?.ppWallet) walletsToScan.add(user.ppWallet);
     }
+
+    // 2. Session master/dev wallets + fleet wallets
+    try {
+      const sessions = await sessionManager?.getByWallet?.(wallet) || [];
+      for (const s of (Array.isArray(sessions) ? sessions : [])) {
+        if (s.devWallet) walletsToScan.add(s.devWallet);
+        if (s.fleetWallets) {
+          for (const fw of s.fleetWallets) {
+            if (fw.pubkey) walletsToScan.add(fw.pubkey);
+          }
+        }
+        // Also get keys from Redis
+        try {
+          const devKp = await sessionManager.getDevKeypair(s.id);
+          if (devKp) walletsToScan.add(devKp.publicKey.toBase58());
+        } catch {}
+      }
+    } catch {}
+
+    // 3. The Phantom wallet itself
+    walletsToScan.add(wallet);
+
+    if (walletsToScan.size === 0) return res.json({ ok: true, positions: [], balance: 0, noWallet: true });
+
+    console.log(`[POSITIONS] Scanning ${walletsToScan.size} wallets for ${wallet.slice(0, 8)}`);
+
+    const allPositions = new Map(); // mint -> position
+    let totalSolBalance = 0;
+
+    for (const w of walletsToScan) {
+      try {
+        const pubkey = new PublicKey(w);
+        const solBal = await connection.getBalance(pubkey);
+        totalSolBalance += solBal;
+
+        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+        for (const { account } of tokenAccounts.value) {
+          const parsed = account.data.parsed?.info;
+          if (!parsed || parsed.tokenAmount?.uiAmount === 0) continue;
+          const mint = parsed.mint;
+          const amount = parsed.tokenAmount?.uiAmount || 0;
+
+          if (allPositions.has(mint)) {
+            allPositions.get(mint).amount += amount;
+            allPositions.get(mint).wallets.push(w.slice(0, 8));
+          } else {
+            allPositions.set(mint, { mint, amount, decimals: parsed.tokenAmount?.decimals || 6, wallets: [w.slice(0, 8)], holdingWallet: w });
+          }
+        }
+      } catch (e) {
+        console.error(`[POSITIONS] Error scanning ${w.slice(0, 8)}:`, e.message);
+      }
+    }
+
+    const positions = [...allPositions.values()];
 
     // Enrich with prices from DexScreener (batch of 10)
     if (positions.length > 0) {
@@ -360,12 +401,13 @@ app.get("/api/positions/:wallet", apiLimiter, async (req, res) => {
 
     res.json({
       ok: true,
-      tradingWallet,
-      solBalance: solBalance / LAMPORTS_PER_SOL,
+      tradingWallet: [...walletsToScan][0] || wallet,
+      solBalance: totalSolBalance / LAMPORTS_PER_SOL,
       positions: filtered,
       totalPositions: filtered.length,
       totalValueUsd: Math.round(totalValueUsd * 100) / 100,
       totalValueSol: Math.round(totalValueSol * 1000) / 1000,
+      walletsScanned: walletsToScan.size,
     });
   } catch (e) {
     console.error("[POSITIONS]", e.message);
@@ -421,6 +463,42 @@ app.get("/api/search", apiLimiter, async (req, res) => {
     }
 
     res.json({ ok: true, results: radarResults.slice(0, 20), source: "radar" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Sell all positions — close everything
+app.post("/api/sell-all", apiLimiter, requireVerifiedWallet, async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+
+    // Get positions first
+    const posRes = await fetch(`http://localhost:${CONFIG.API_PORT || 8080}/api/positions/${wallet}`);
+    const posData = await posRes.json();
+    if (!posData.positions?.length) return res.json({ ok: true, sold: 0, message: "No positions to sell" });
+
+    const results = [];
+    for (const pos of posData.positions) {
+      try {
+        // Use internal quick-sell
+        const sellRes = await fetch(`http://localhost:${CONFIG.API_PORT || 8080}/api/quick-sell`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-wallet": wallet },
+          body: JSON.stringify({ wallet, ca: pos.mint, percent: 100 }),
+        });
+        const d = await sellRes.json();
+        results.push({ mint: pos.mint, ticker: pos.ticker, ok: d.ok, sig: d.signature });
+      } catch (e) {
+        results.push({ mint: pos.mint, ticker: pos.ticker, ok: false, error: e.message });
+      }
+      await new Promise(r => setTimeout(r, 500)); // rate limit
+    }
+
+    const sold = results.filter(r => r.ok).length;
+    console.log(`[SELL-ALL] ${wallet.slice(0, 8)} sold ${sold}/${posData.positions.length} positions`);
+    res.json({ ok: true, sold, total: posData.positions.length, results });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
