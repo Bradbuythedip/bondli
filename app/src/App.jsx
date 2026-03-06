@@ -1720,6 +1720,38 @@ export default function App() {
 
   const exportTradingKeys = async () => { try { const r = await fetch(API + "/api/trading-wallet/export", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) }); const d = await r.json(); if (d.ok) { setTradingKeys(d); } else toast(d.error || "Failed", "error"); } catch { toast("Network error", "error"); } };
 
+  // SOL Incinerator — close empty token accounts to reclaim rent
+  const [incineratorScanning, setIncineratorScanning] = useState(false);
+  const [incineratorResult, setIncineratorResult] = useState(null);
+
+  const runIncinerator = async () => {
+    if (!user?.pubkey || user.demo) { toast("Connect wallet first", "error"); return; }
+    setIncineratorScanning(true);
+    toast("Scanning for reclaimable SOL...", "info");
+    try {
+      // Step 1: Scan
+      const scanRes = await fetch(API + "/api/incinerator/scan", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) });
+      const scanData = await scanRes.json();
+      if (!scanData.ok || scanData.totalAccounts === 0) {
+        toast("No empty accounts to close", "info");
+        setIncineratorScanning(false);
+        return;
+      }
+      toast(`Found ${scanData.totalAccounts} empty accounts (${scanData.totalReclaimable.toFixed(4)} SOL). Closing...`, "info");
+      // Step 2: Close
+      const closeRes = await fetch(API + "/api/incinerator/close", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) });
+      const closeData = await closeRes.json();
+      if (closeData.ok) {
+        toast(`Reclaimed ${closeData.totalReclaimed.toFixed(4)} SOL from ${closeData.closed} accounts`, "success");
+        setIncineratorResult(closeData);
+        setTradingBalance(prev => prev + closeData.totalReclaimed);
+      } else {
+        toast(closeData.error || "Close failed", "error");
+      }
+    } catch (e) { toast("Incinerator error: " + e.message, "error"); }
+    setIncineratorScanning(false);
+  };
+
   // Quick Ape — PumpPortal Lightning (zero signing, one-click)
   const quickApe = async (ca, solAmount = 0.1) => {
     if (!user?.pubkey || user.demo) { toast("Connect wallet first", "error"); return; }
@@ -1873,6 +1905,7 @@ export default function App() {
                 <span style={{ fontSize: 10, fontFamily: mono, color: tradingBalance > 0.01 ? T.green : T.red, fontWeight: 700 }}>{tradingBalance.toFixed(3)} SOL</span>
               </div>
               <div style={{ display: "flex", gap: 4 }}>
+                <button onClick={runIncinerator} disabled={incineratorScanning} style={{ background: T.orange ? T.orange + "15" : "#ff910015", border: "1px solid " + (T.orange || "#ff9100") + "33", borderRadius: 6, padding: "2px 8px", fontFamily: mono, fontSize: 9, color: T.orange || "#ff9100", cursor: incineratorScanning ? "wait" : "pointer", fontWeight: 700, opacity: incineratorScanning ? 0.5 : 1 }}>{incineratorScanning ? "..." : "Reclaim SOL"}</button>
                 <button onClick={() => exportTradingKeys().then(() => setShowTradingSetup(true))} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "2px 8px", fontFamily: mono, fontSize: 9, color: T.dim, cursor: "pointer" }}>Keys</button>
                 <button onClick={() => { navigator.clipboard?.writeText(tradingWallet); toast("Deposit address copied!", "success"); }} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 6, padding: "2px 8px", fontFamily: mono, fontSize: 9, color: T.green, cursor: "pointer", fontWeight: 700 }}>Deposit</button>
               </div>
