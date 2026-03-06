@@ -255,6 +255,36 @@ app.get("/api/health", (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), env: IS_PROD ? "production" : "development", sessionManager: !!sessionManager });
 });
 
+// Transaction status check (for frontend Phantom signAndSendTransaction confirmation)
+app.get("/api/tx-status/:sig", apiLimiter, async (req, res) => {
+  try {
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const status = await connection.getSignatureStatus(req.params.sig);
+    const confirmed = status?.value?.confirmationStatus === "confirmed" || status?.value?.confirmationStatus === "finalized";
+    res.json({ ok: true, confirmed, status: status?.value?.confirmationStatus || "unknown" });
+  } catch (e) {
+    res.json({ ok: true, confirmed: false, error: e.message });
+  }
+});
+
+// Send a pre-signed transaction (fallback for Phantom signing flow)
+app.post("/api/send-signed-tx", apiLimiter, async (req, res) => {
+  try {
+    const { signedTx } = req.body;
+    if (!signedTx) return res.status(400).json({ error: "signedTx required" });
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const raw = atob(signedTx);
+    const txBytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) txBytes[i] = raw.charCodeAt(i);
+    const signature = await connection.sendRawTransaction(txBytes, { skipPreflight: true, maxRetries: 3 });
+    console.log(`[SEND-TX] Sent signed tx: ${signature.slice(0, 12)}`);
+    res.json({ ok: true, signature });
+  } catch (e) {
+    console.error("[SEND-TX]", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ═══════════════════════════════════════
 // ROUTES — Access / Tiers
 // ═══════════════════════════════════════
@@ -705,8 +735,10 @@ async function fetchDexScreenerMomentum() {
             results.push({ ca: t.tokenAddress, source: "boosted", boosts: t.totalAmount || t.amount || 0, icon: t.icon || "", description: t.description || "" });
           }
         }
+      } else {
+        console.error(`[RADAR] DexScreener boosts/top failed: ${r.status}`);
       }
-    } catch {}
+    } catch (e) { console.error("[RADAR] DexScreener boosts/top error:", e.message); }
 
     // 2. Latest boosted (freshly paid = about to pump)
     try {
