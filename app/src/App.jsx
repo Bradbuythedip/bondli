@@ -806,15 +806,13 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
     ? dedupedTokens.filter(t => (t.ticker || "").toLowerCase().includes(search.toLowerCase()) || (t.name || "").toLowerCase().includes(search.toLowerCase()) || (t.ca || "").toLowerCase().startsWith(search.toLowerCase()))
     : dedupedTokens;
 
-  // API search — when local filter has <3 results, search the server
+  // API search — search server for any query 2+ chars
   useEffect(() => {
     if (search.length < 2) { setApiSearchResults([]); setExternalResult(null); return; }
-    const localHits = dedupedTokens.filter(t => (t.ticker || "").toLowerCase().includes(search.toLowerCase()) || (t.name || "").toLowerCase().includes(search.toLowerCase()) || (t.ca || "").toLowerCase().startsWith(search.toLowerCase()));
-    if (localHits.length >= 3) { setApiSearchResults([]); setExternalResult(null); return; }
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
-        // For full CA (32+ chars), hit radar/token endpoint
+        // For full CA (32+ chars), also hit radar/token endpoint
         if (search.length >= 32) {
           const r = await fetch(window.__BONDLI_API + "/api/radar/token/" + search);
           if (r.ok && !cancelled) {
@@ -822,18 +820,17 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
             if (d.ok && !cancelled) setExternalResult({ ca: search, name: d.name || d.ticker || "?", ticker: d.ticker || "?", mcapUsd: d.mcap || 0, buys: d.txns1h?.buys || 0, sells: d.txns1h?.sells || 0, image: d.image_uri, description: d.description, score: d.score || 0, verdict: d.verdict || "?", bp: d.bp || 0, external: true });
           }
         }
-        // For text search, hit the search API (same one bags uses)
+        // Always search the API (DexScreener-backed)
         const sr = await fetch(window.__BONDLI_API + "/api/search?q=" + encodeURIComponent(search));
         if (sr.ok && !cancelled) {
           const sd = await sr.json();
           if (sd.results && !cancelled) {
             setApiSearchResults(sd.results.map(r => ({
               ca: r.ca, name: r.name, ticker: r.ticker, mcapUsd: r.mcap || 0,
-              buys: r.txns1h?.buys || 0, sells: r.txns1h?.sells || 0,
-              image: r.image, description: r.description || "",
+              buys: r.buys24 || 0, sells: r.sells24 || 0,
+              image: r.image, description: "",
               score: 0, verdict: "?", bp: 0, external: true,
-              h1Change: r.h1Change,
-            })));
+            })).filter(r => r.ca));
           }
         }
       } catch {}
@@ -841,10 +838,10 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
     return () => { cancelled = true; clearTimeout(timer); };
   }, [search]);
 
-  // Merge: local hits + external CA result + API search results (deduped)
+  // Merge: local hits first, then API results (deduped)
   const mergedExternal = [...(externalResult ? [externalResult] : []), ...apiSearchResults];
   const displayTokens = search.length >= 2
-    ? [...tokens, ...mergedExternal.filter(e => !tokens.some(t => t.ca === e.ca))]
+    ? [...tokens, ...mergedExternal.filter(e => e.ca && !tokens.some(t => t.ca === e.ca))]
     : tokens;
 
   const fetchRadar = async () => {
@@ -923,41 +920,46 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
     { id: "graduating", label: "Grad", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zm0 14.27L4.58 13.1 4 13.45V18l8 4.35L20 18v-4.55l-.58-.35L12 17.27z"/></svg> },
   ];
 
-  // ── Token Card ──
-  const TokenCard = ({ t, i }) => {
+  // ── Token Row (pump.fun movers style) ──
+  const TokenRow = ({ t, i }) => {
     const isNew = !seenCAs.current.has(t.ca);
     if (isNew) seenCAs.current.add(t.ca);
+    const ageStr = t.age ? (t.age >= 24 ? Math.floor(t.age/24) + "d" : Math.round(t.age) + "h") : (t.created ? ago(t.created) : "");
     return (
     <div onClick={() => handleSelect(t.ca)} style={{
-      background: T.surface, border: "1px solid " + T.border, borderRadius: 10,
-      overflow: "hidden", cursor: "pointer", transition: "all .2s",
-      animation: isNew ? "fadeUp .4s ease " + Math.min(i * 0.05, 0.4) + "s both" : "none",
+      display: "flex", alignItems: "center", gap: mobile ? 10 : 12,
+      padding: mobile ? "10px 12px" : "10px 16px",
+      borderBottom: "1px solid " + T.border + "33",
+      cursor: "pointer", transition: "background .15s",
+      animation: isNew ? "fadeUp .3s ease" : "none",
     }}
-      onMouseEnter={e => { e.currentTarget.style.borderColor = T.green + "55"; e.currentTarget.style.transform = "translateY(-2px)"; e.currentTarget.style.boxShadow = "0 6px 20px " + T.green + "08"; }}
-      onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; e.currentTarget.style.transform = "none"; e.currentTarget.style.boxShadow = "none"; }}
+      onMouseEnter={e => e.currentTarget.style.background = T.green + "06"}
+      onMouseLeave={e => e.currentTarget.style.background = "transparent"}
     >
-      <div style={{ position: "relative", width: "100%", aspectRatio: mobile ? "4/3" : "1", background: T.bg, overflow: "hidden" }}>
-        {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: mobile ? 22 : 32, color: T.faint + "44", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
-        {i < 3 && <div style={{ position: "absolute", top: 3, left: 3, background: T.green + "dd", color: "#000", fontFamily: mono, fontSize: 8, fontWeight: 900, padding: "1px 4px", borderRadius: 3 }}>#{i + 1}</div>}
-        <div style={{ position: "absolute", top: 3, right: 3, background: vc(t.verdict) + "dd", color: "#000", fontFamily: mono, fontSize: 8, fontWeight: 900, padding: "1px 5px", borderRadius: 3 }}>{t.score}</div>
-        {t.bundled && <div style={{ position: "absolute", bottom: 3, left: 3, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 3px", borderRadius: 2 }}>BUNDLED</div>}
+      {/* Thumbnail */}
+      <div style={{ position: "relative", width: mobile ? 48 : 56, height: mobile ? 48 : 56, borderRadius: 10, overflow: "hidden", flexShrink: 0, background: T.bg }}>
+        {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 18, color: T.faint + "66", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
+        {t.bundled && <div style={{ position: "absolute", bottom: 1, left: 1, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 6, fontWeight: 800, padding: "0 2px", borderRadius: 2 }}>B</div>}
       </div>
-      <div style={{ padding: mobile ? "4px 6px 6px" : "6px 8px 8px" }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-          <span style={{ fontFamily: mono, fontSize: mobile ? 11 : 12, fontWeight: 800, color: T.text, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", flex: 1 }}>{t.name || t.ticker}</span>
-          <span style={{ fontFamily: mono, fontSize: 7, color: T.faint, flexShrink: 0 }}>{t.age ? (t.age >= 24 ? Math.floor(t.age/24) + "d" : Math.round(t.age) + "h") : (t.created ? ago(t.created) : "")}</span>
+
+      {/* Info */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontFamily: mono, fontSize: mobile ? 13 : 14, fontWeight: 800, color: T.text, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{t.name || t.ticker}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+          <span style={{ fontFamily: mono, fontSize: mobile ? 11 : 12, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
+          {t.twitter && <span style={{ fontSize: 10, color: T.dim }}>{"𝕏"}</span>}
+          {ageStr && <span style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>{ageStr}</span>}
         </div>
-        <div style={{ fontFamily: mono, fontSize: mobile ? 9 : 10, color: T.green, fontWeight: 700, marginTop: 1 }}>{t.ticker}</div>
-        {t.description && <div style={{ fontFamily: sans, fontSize: mobile ? 9 : 10, color: T.dim, marginTop: 2, lineHeight: 1.2, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: mobile ? 1 : 2, WebkitBoxOrient: "vertical" }}>{t.description.slice(0, 80)}</div>}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 3 }}>
-          <span style={{ fontFamily: mono, fontSize: mobile ? 9 : 10, fontWeight: 800, color: T.green }}>MC {fmt(t.mcapUsd)}</span>
-          <span style={{ fontFamily: mono, fontSize: mobile ? 8 : 9 }}><span style={{ color: T.green }}>{t.buys}</span><span style={{ color: T.faint }}>/</span><span style={{ color: "#ff4444" }}>{t.sells}</span></span>
-        </div>
-        {t.bp > 0 && t.bp < 100 && <div style={{ marginTop: 2, height: 2, background: T.border, borderRadius: 1, overflow: "hidden" }}><div style={{ height: 2, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 1 }} /></div>}
-        <div onClick={e => { e.stopPropagation(); navigator.clipboard?.writeText(t.ca); }} style={{ marginTop: 2, fontFamily: mono, fontSize: 8, color: T.faint + "88", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.ca?.slice(0, 6)}...{t.ca?.slice(-4)}</div>
+        {t.description && <div style={{ fontFamily: sans, fontSize: mobile ? 11 : 12, color: T.dim, marginTop: 2, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{t.description.slice(0, 60)}</div>}
+      </div>
+
+      {/* MCap + score */}
+      <div style={{ textAlign: "right", flexShrink: 0 }}>
+        <div style={{ fontFamily: mono, fontSize: mobile ? 15 : 16, fontWeight: 800, color: T.text }}>${fmt(t.mcapUsd)}</div>
+        <div style={{ fontFamily: mono, fontSize: 9, color: T.faint, marginTop: 2 }}>{t.buys && t.sells ? (<><span style={{ color: T.green }}>{t.buys}</span>/<span style={{ color: "#ff4444" }}>{t.sells}</span></>) : ""}</div>
       </div>
     </div>
-  );
+    );
   };
 
   return (
@@ -977,18 +979,23 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
         </div>
       </div>
 
-      {/* Tabs + Search inline */}
-      {enabled && !loading && (
-        <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid " + T.border, padding: "0 4px" }}>
+      {/* Tabs + Search */}
+      {enabled && !loading && (<>
+        <div style={{ display: "flex", alignItems: "center", borderBottom: "1px solid " + T.border, padding: "0 4px", overflowX: "auto" }}>
           {TAB_CONFIG.map(tab => {
             const count = (tabs[tab.id] || []).length;
             const isActive = activeTab === tab.id;
-            return (<button key={tab.id} onClick={() => { setActiveTab(tab.id); setSelected(null); setSearch(""); }} style={{ padding: mobile ? "8px 8px" : "10px 14px", background: "none", border: "none", borderBottom: isActive ? "2px solid " + T.green : "2px solid transparent", fontFamily: mono, fontSize: mobile ? 10 : 12, fontWeight: 700, color: isActive ? T.green : T.dim, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}><span style={{ display: "flex", alignItems: "center" }}>{tab.icon}</span>{tab.label}{count > 0 && <span style={{ fontSize: 9, opacity: 0.7, fontWeight: 800 }}>{count}</span>}</button>);
+            return (<button key={tab.id} onClick={() => { setActiveTab(tab.id); setSelected(null); setSearch(""); setApiSearchResults([]); setExternalResult(null); }} style={{ padding: mobile ? "8px 8px" : "10px 14px", background: "none", border: "none", borderBottom: isActive ? "2px solid " + T.green : "2px solid transparent", fontFamily: mono, fontSize: mobile ? 10 : 12, fontWeight: 700, color: isActive ? T.green : T.dim, cursor: "pointer", display: "flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}><span style={{ display: "flex", alignItems: "center" }}>{tab.icon}</span>{tab.label}{count > 0 && <span style={{ fontSize: 9, opacity: 0.7, fontWeight: 800 }}>{count}</span>}</button>);
           })}
-          <div style={{ flex: 1 }} />
-          <input type="text" value={search} onChange={e => { setSearch(e.target.value); setExternalResult(null); }} onKeyDown={e => { if (e.key === "Enter" && search.length >= 32) { handleSelect(search); } }} placeholder={"Search or paste CA..."} style={{ width: mobile ? 90 : 200, padding: "6px 10px", margin: "4px 8px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: mono, fontSize: 11, outline: "none" }} />
+          {!mobile && <><div style={{ flex: 1 }} /><input type="text" value={search} onChange={e => { setSearch(e.target.value); setExternalResult(null); }} onKeyDown={e => { if (e.key === "Enter" && search.length >= 32) { handleSelect(search); } }} placeholder={"Search or paste CA..."} style={{ width: 220, padding: "6px 10px", margin: "4px 8px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: mono, fontSize: 11, outline: "none" }} /></>}
         </div>
-      )}
+        {/* Mobile: full-width search bar */}
+        {mobile && (
+          <div style={{ padding: "6px 10px", borderBottom: "1px solid " + T.border + "44" }}>
+            <input type="text" value={search} onChange={e => { setSearch(e.target.value); setExternalResult(null); }} onKeyDown={e => { if (e.key === "Enter" && search.length >= 32) { handleSelect(search); } }} placeholder={"Search name, ticker, or paste CA..."} style={{ width: "100%", padding: "8px 12px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: mono, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+          </div>
+        )}
+      </>)}
 
       {!enabled ? (
         <div style={{ padding: 60, textAlign: "center" }}><div style={{ fontFamily: mono, fontSize: 15, color: T.faint, marginBottom: 12 }}>Radar paused</div><button onClick={handleToggle} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 10, padding: "10px 28px", fontFamily: mono, fontSize: 14, fontWeight: 700, color: T.green, cursor: "pointer" }}>Turn On</button></div>
@@ -1051,9 +1058,9 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
           {selected?.loading && <div style={{ padding: 40, textAlign: "center", fontFamily: mono, fontSize: 14, color: T.dim, animation: "pulse 1s infinite" }}>Loading...</div>}
           {selected?.error && <div style={{ padding: "14px 16px", margin: "10px 16px", background: T.red + "10", borderRadius: 12, fontFamily: mono, fontSize: 12, color: T.red, display: "flex", justifyContent: "space-between" }}><span>{selected.error}</span><button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: T.red, cursor: "pointer" }}>{"✕"}</button></div>}
 
-          {/* Card Grid */}
-          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(155px, 1fr))", gap: mobile ? 4 : 10, padding: mobile ? "6px 4px" : "14px 14px" }}>
-            {displayTokens.map((t, i) => <TokenCard key={t.ca} t={t} i={i} />)}
+          {/* Token List */}
+          <div>
+            {displayTokens.map((t, i) => <TokenRow key={t.ca} t={t} i={i} />)}
           </div>
         </div>
       )}
