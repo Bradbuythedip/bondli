@@ -883,7 +883,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <button onClick={handleRefresh} disabled={refreshing} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontFamily: mono, fontSize: 11, color: T.dim }}><span style={{ display: "inline-block", transition: "transform .5s", transform: refreshing ? "rotate(360deg)" : "none" }}>{"\u21BB"}</span></button>
-          <div style={{ cursor: "pointer" }} onClick={handleToggle}><div style={{ width: 32, height: 16, borderRadius: 8, background: enabled ? T.green + "44" : T.border, padding: 1, transition: "all .2s" }}><div style={{ width: 14, height: 14, borderRadius: "50%", background: enabled ? T.green : T.faint, transform: enabled ? "translateX(16px)" : "translateX(0)", transition: "all .2s" }} /></div></div>
+          <button onClick={handleToggle} style={{ background: enabled ? T.green + "15" : T.red + "15", border: "1px solid " + (enabled ? T.green + "44" : T.red + "44"), borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontFamily: mono, fontSize: 11, fontWeight: 700, color: enabled ? T.green : T.red, transition: "all .2s" }}>{enabled ? "\u25CF ON" : "\u25CB OFF"}</button>
         </div>
       </div>
 
@@ -1397,6 +1397,9 @@ export default function App() {
   const [fleetKeys, setFleetKeys] = useState([]); const [devSecret, setDevSecret] = useState("");
   const [copied, setCopied] = useState(false);
   const [onlineCount, setOnlineCount] = useState(0);
+  const [customUsername, setCustomUsername] = useState(null);
+  const [editingUsername, setEditingUsername] = useState(false);
+  const [usernameInput, setUsernameInput] = useState("");
   const [appTab, setAppTab] = useState("radar"); // "trade" or "radar"
   const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false);
   const [toasts, setToasts] = useState([]);
@@ -1414,6 +1417,19 @@ export default function App() {
   useEffect(() => { if (!user?.pubkey) return; fetch(API + "/api/sessions?wallet=" + user.pubkey).then(r => r.json()).then(d => { if (d.sessions) { const active = d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5); setPastSessions(active); if (!wantsHome && !launched && active.length > 0 && active[0].status === "live") { setLaunchCA(active[0].tokenCA); setLaunched(true); setActiveSessionId(active[0].id); if (active[0].tokenConfig?.name) setTokenName(active[0].tokenConfig.name); if (active[0].tokenConfig?.ticker) setTicker(active[0].tokenConfig.ticker); } } }).catch(() => {}); }, [user]);
   // Poll online count
   useEffect(() => { const iv = setInterval(() => { fetch(API + "/api/radar").then(r => r.json()).then(d => { if (d.online != null) setOnlineCount(d.online); }).catch(() => {}); }, 15000); return () => clearInterval(iv); }, []);
+
+  // Fetch username
+  useEffect(() => { if (!user?.pubkey || user.demo) return; fetch(API + "/api/username/" + user.pubkey).then(r => r.json()).then(d => { if (d.username) { setCustomUsername(d.username); setUsernameInput(d.username); } }).catch(() => {}); }, [user]);
+
+  const saveUsername = async () => {
+    if (!usernameInput.trim()) return;
+    try {
+      const r = await fetch(API + "/api/username", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey, username: usernameInput.trim() }) });
+      const d = await r.json();
+      if (d.ok) { setCustomUsername(d.username); setEditingUsername(false); toast("Username updated", "success"); }
+      else toast(d.error || "Failed", "error");
+    } catch { toast("Network error", "error"); }
+  };
   useEffect(() => { if (!launched || !launchCA) return; const iv = setInterval(async () => { try { const res = await fetch(API + "/api/fleet", { headers: { "X-Wallet": user?.pubkey } }); if (res.ok) { const data = await res.json(); setFleetStatus(data); if (data.curveProgress) setCurveProgress(data.curveProgress); } } catch {} }, 3000); return () => clearInterval(iv); }, [launched, launchCA]);
   useEffect(() => { if (!launched) return; const iv = setInterval(() => setCurveProgress(p => Math.min(1, p + Math.random() * 0.004)), 2000); return () => clearInterval(iv); }, [launched]);
   const walletCount = totalSol < 0.5 ? 3 : totalSol < 1 ? 5 : totalSol < 5 ? 9 : totalSol < 10 ? 11 : totalSol < 25 ? 15 : 20;
@@ -1426,70 +1442,27 @@ export default function App() {
   // Quick Ape — one-click buy from connected Phantom wallet (no private key)
   const quickApe = async (ca, solAmount = 0.1) => {
     if (!user?.pubkey || user.demo) { toast("Connect wallet first", "error"); return; }
-    const phantom = window?.phantom?.solana || window?.solana;
-    if (!phantom?.isPhantom) { toast("Phantom wallet required", "error"); return; }
+    if (!devSecret && !activeSessionId) { toast("Create a session first (need trading wallet)", "error"); return; }
 
-    toast("Building trade...", "info");
+    toast(`Buying ${solAmount} SOL...`, "info");
     try {
-      // 1. Server gets unsigned VersionedTransaction from PumpPortal
       const res = await fetch(API + "/api/quick-ape", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wallet: user.pubkey, ca, solAmount }),
+        headers: { "Content-Type": "application/json", "x-wallet": user.pubkey },
+        body: JSON.stringify({
+          wallet: user.pubkey,
+          ca,
+          solAmount,
+          sessionId: activeSessionId || null,
+          tradingKey: devSecret || null,
+        }),
       });
       const data = await res.json();
-      if (!data.ok) { toast(data.error || "Failed", "error"); return; }
-
-      // 2. Decode base64 → Uint8Array (PumpPortal returns VersionedTransaction bytes)
-      const raw = atob(data.tx);
-      const txBytes = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) txBytes[i] = raw.charCodeAt(i);
-
-      toast("Approve in Phantom...", "info");
-
-      // 3. Sign with Phantom — try provider method first, then request API
-      let signature;
-      try {
-        // Phantom provider.signAndSendTransaction works with VersionedTransaction bytes
-        // wrapped in a minimal object with serialize()
-        const txObj = { serialize: () => txBytes };
-        const result = await phantom.signAndSendTransaction(txObj, { skipPreflight: true });
-        signature = result?.signature || result;
-      } catch (e1) {
-        console.warn("[QUICK-APE] Provider method failed:", e1.message);
-        try {
-          // Fallback: sign only, send via server
-          const txObj = { serialize: () => txBytes };
-          const signed = await phantom.signTransaction(txObj);
-          const signedBytes = signed.serialize ? signed.serialize() : (signed instanceof Uint8Array ? signed : new Uint8Array(signed));
-          // Encode safely (avoid stack overflow from spread on large arrays)
-          let b64 = "";
-          const chunks = [];
-          for (let i = 0; i < signedBytes.length; i += 8192) chunks.push(String.fromCharCode.apply(null, signedBytes.subarray(i, i + 8192)));
-          b64 = btoa(chunks.join(""));
-          const sendRes = await fetch(API + "/api/send-signed-tx", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ signedTx: b64 }) });
-          const sendData = await sendRes.json();
-          if (!sendData.ok) throw new Error(sendData.error || "Send failed");
-          signature = sendData.signature;
-        } catch (e2) {
-          throw new Error("Phantom signing failed: " + (e2.message || e1.message));
-        }
-      }
-
-      if (!signature) { toast("No signature", "error"); return; }
-      const sigStr = typeof signature === "object" && signature.signature ? btoa(String.fromCharCode.apply(null, Array.from(new Uint8Array(signature.signature)))) : String(signature);
-
-      toast("Confirming...", "info");
-      let confirmed = false;
-      for (let i = 0; i < 12 && !confirmed; i++) {
-        await new Promise(r => setTimeout(r, 2000));
-        try { const c = await fetch(API + "/api/tx-status/" + sigStr); if (c.ok) { const s = await c.json(); if (s.confirmed) confirmed = true; } } catch {}
-      }
-      toast(confirmed ? `Aped ${solAmount} SOL \u2713` : "Tx sent!", "success");
-      return sigStr;
+      if (!data.ok) { toast(data.error || "Buy failed", "error"); return; }
+      toast(`Bought ${solAmount} SOL of ${ca.slice(0, 8)}... \u2713`, "success");
+      return data.signature;
     } catch (e) {
-      if (e.message?.includes("reject")) toast("Cancelled", "error");
-      else toast(e.message || "Failed", "error");
+      toast("Buy failed: " + (e.message || "Network error"), "error");
       console.error("[QUICK-APE]", e);
     }
   };
@@ -1497,42 +1470,21 @@ export default function App() {
   // Quick Sell — one-click sell from connected Phantom wallet
   const quickSell = async (ca, percent = 100) => {
     if (!user?.pubkey || user.demo) { toast("Connect wallet first", "error"); return; }
-    const phantom = window?.phantom?.solana || window?.solana;
-    if (!phantom?.isPhantom) { toast("Phantom wallet required", "error"); return; }
+    if (!devSecret && !activeSessionId) { toast("No trading wallet", "error"); return; }
 
-    toast("Building sell tx...", "info");
+    toast(`Selling ${percent}%...`, "info");
     try {
       const res = await fetch(API + "/api/quick-sell", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wallet: user.pubkey, ca, percent }),
+        headers: { "Content-Type": "application/json", "x-wallet": user.pubkey },
+        body: JSON.stringify({ wallet: user.pubkey, ca, percent, sessionId: activeSessionId || null, tradingKey: devSecret || null }),
       });
       const data = await res.json();
-      if (!data.ok) { toast(data.error || "Failed to build tx", "error"); return; }
-
-      const txBuffer = Uint8Array.from(atob(data.tx), c => c.charCodeAt(0));
-
-      toast("Approve sell in Phantom...", "info");
-      const { signature } = await phantom.request({
-        method: "signAndSendTransaction",
-        params: { message: btoa(String.fromCharCode(...txBuffer)) },
-      });
-
-      toast("Confirming sell...", "info");
-      let confirmed = false;
-      for (let i = 0; i < 30 && !confirmed; i++) {
-        await new Promise(r => setTimeout(r, 2000));
-        try {
-          const check = await fetch(API + "/api/tx-status/" + signature);
-          if (check.ok) { const s = await check.json(); if (s.confirmed) confirmed = true; }
-        } catch {}
-      }
-
-      toast("Sold " + percent + "% — ~" + (data.estimatedSolOut || 0).toFixed(4) + " SOL ✓", "success");
-      return signature;
+      if (!data.ok) { toast(data.error || "Sell failed", "error"); return; }
+      toast(`Sold ${percent}% \u2713`, "success");
+      return data.signature;
     } catch (e) {
-      if (e.message?.includes("User rejected")) { toast("Cancelled", "error"); }
-      else { toast("Sell failed: " + (e.message || "Unknown error"), "error"); }
+      toast("Sell failed: " + (e.message || "Network error"), "error");
     }
   };
   const handleCAChange = (v) => { setExistingCA(v); setCaAnalysis(null); };
@@ -1637,11 +1589,28 @@ export default function App() {
               {tierLabel && <span style={{ padding: "3px 8px", borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 700, background: tierColor + "18", color: tierColor, border: "1px solid " + tierColor + "33" }}>{tierLabel}</span>}
               <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: T.surface, borderRadius: 10, border: "1px solid " + T.border }}>
                 <WalletAvatar pubkey={user.pubkey || "demo"} size={22} />
-                <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, maxWidth: mobile ? 80 : 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.demo ? "demo" : walletUsername(user.pubkey || "")}</span>
+                {editingUsername ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <input value={usernameInput} onChange={e => setUsernameInput(e.target.value.slice(0, 24))} onKeyDown={e => { if (e.key === "Enter") saveUsername(); if (e.key === "Escape") setEditingUsername(false); }} autoFocus style={{ width: 90, padding: "2px 6px", background: T.bg, border: "1px solid " + T.green, borderRadius: 4, color: T.text, fontFamily: mono, fontSize: 11, outline: "none" }} />
+                    <button onClick={saveUsername} style={{ background: T.green + "20", border: "none", borderRadius: 4, padding: "2px 6px", color: T.green, fontFamily: mono, fontSize: 10, cursor: "pointer" }}>{"\u2713"}</button>
+                  </div>
+                ) : (
+                  <span onClick={() => { setUsernameInput(customUsername || walletUsername(user.pubkey || "")); setEditingUsername(true); }} style={{ fontFamily: mono, fontSize: 12, color: T.mid, maxWidth: mobile ? 80 : 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }} title="Click to edit username">{user.demo ? "demo" : (customUsername || walletUsername(user.pubkey || ""))}</span>
+                )}
                 <button onClick={disconnect} style={{ background: "none", border: "none", cursor: "pointer", color: T.dim, fontSize: 11, fontFamily: mono, padding: 0, marginLeft: 2 }}>{"\u2715"}</button>
               </div>
             </div>
           </header>
+          {/* Trading Key Banner — always visible when session active */}
+          {devSecret && (
+            <div style={{ background: T.surface, borderBottom: "1px solid " + T.border, padding: "6px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+                <span style={{ fontSize: 10, fontFamily: mono, color: T.dim, flexShrink: 0 }}>{"\uD83D\uDD11"} Trading Key:</span>
+                <span style={{ fontSize: 10, fontFamily: mono, color: T.faint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{devSecret.slice(0, 16)}...{devSecret.slice(-8)}</span>
+              </div>
+              <button onClick={() => { navigator.clipboard?.writeText(devSecret); toast("Trading key copied!", "success"); }} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 6, padding: "3px 10px", fontFamily: mono, fontSize: 10, fontWeight: 700, color: T.green, cursor: "pointer", flexShrink: 0 }}>{"\uD83D\uDD11"} Copy Key</button>
+            </div>
+          )}
           {showSettings && (<div style={{ maxWidth: 680, margin: "0 auto", padding: mobile ? "12px 14px" : "16px 24px" }}><div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 16 : 22 }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>{"\u2699"} Settings</span><button onClick={() => setShowSettings(false)} style={{ background: "none", border: "none", color: T.dim, cursor: "pointer", fontFamily: mono }}>{"\u2715"}</button></div><div style={{ display: "flex", flexDirection: "column", gap: 14 }}><div><Label>RPC URL</Label><Input value={rpc} onChange={setRpc} placeholder="https://mainnet.helius-rpc.com/?api-key=..." big /></div><div style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: T.bg, borderRadius: 10, border: "1px solid " + T.border, cursor: "pointer" }} onClick={() => setUseAtlas(!useAtlas)}><div style={{ width: 40, height: 22, borderRadius: 11, padding: 2, background: useAtlas ? T.green : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", transform: useAtlas ? "translateX(18px)" : "translateX(0)", transition: "transform .2s" }} /></div><div><div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.text }}>Helius Atlas</div><div style={{ fontSize: 11, color: T.dim }}>Staked connections</div></div></div></div></div></div>)}
           {user.tier === "free" && !user.whitelisted && (<div style={{ background: T.green + "08", borderBottom: "1px solid " + T.green + "22", padding: "6px 20px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}><span style={{ fontSize: 12, fontFamily: mono, color: T.green }}>{FREE_PROFIT_CUT}% profit share</span><button onClick={() => setShowUpgrade(true)} style={{ background: T.green, color: T.bg, border: "none", borderRadius: 6, padding: "3px 10px", fontFamily: mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Upgrade</button></div>)}
           {showUpgrade && (<div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowUpgrade(false)}><div onClick={e => e.stopPropagation()} style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 20, padding: mobile ? 24 : 36, maxWidth: 440, width: "100%" }}>
