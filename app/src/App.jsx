@@ -693,14 +693,18 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
         </div>
         <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
           {/* Timeframe buttons */}
-          {chartMode === "live" && [{ v: 5, l: "5m" }, { v: 10, l: "10m" }, { v: 30, l: "30m" }, { v: 60, l: "1h" }, { v: 0, l: "All" }].map(tf => (
-            <button key={tf.v} onClick={() => setTimeframe(tf.v)} style={{ background: timeframe === tf.v ? (T?.green || "#00e676") + "22" : "none", border: "1px solid " + (timeframe === tf.v ? (T?.green || "#00e676") : "#333"), borderRadius: 5, padding: "2px 6px", fontFamily: "monospace", fontSize: 9, color: timeframe === tf.v ? (T?.green || "#00e676") : "#666", cursor: "pointer", fontWeight: timeframe === tf.v ? 800 : 400 }}>{tf.l}</button>
-          ))}
+          {chartMode === "live" && <div style={{ display: "flex", background: T?.border ? T.border + "44" : "#33333344", borderRadius: 6, overflow: "hidden" }}>
+            {[{ v: 5, l: "5m" }, { v: 10, l: "10m" }, { v: 30, l: "30m" }, { v: 60, l: "1h" }, { v: 0, l: "All" }].map(tf => (
+              <button key={tf.v} onClick={() => setTimeframe(tf.v)} style={{ background: timeframe === tf.v ? (T?.green || "#00e676") : "transparent", border: "none", padding: "4px 8px", fontFamily: "monospace", fontSize: 10, color: timeframe === tf.v ? "#000" : "#888", cursor: "pointer", fontWeight: timeframe === tf.v ? 800 : 400, transition: "all .15s" }}>{tf.l}</button>
+            ))}
+          </div>}
           <span style={{ width: 1, height: 14, background: "#333", margin: "0 2px" }} />
           {/* Chart mode buttons */}
-          {["live", "dex", "pump"].map(m => (
-            <button key={m} onClick={() => setChartMode(m)} style={{ background: chartMode === m ? "#00e67622" : "none", border: "1px solid " + (chartMode === m ? "#00e676" : "#333"), borderRadius: 5, padding: "2px 6px", fontFamily: "monospace", fontSize: 9, color: chartMode === m ? "#00e676" : "#666", cursor: "pointer" }}>{m === "live" ? "\u2764\uFE0F" : m === "dex" ? "DEX" : "PF"}</button>
-          ))}
+          <div style={{ display: "flex", background: T?.border ? T.border + "44" : "#33333344", borderRadius: 6, overflow: "hidden" }}>
+            {["live", "dex", "pump"].map(m => (
+              <button key={m} onClick={() => setChartMode(m)} style={{ background: chartMode === m ? (T?.green || "#00e676") : "transparent", border: "none", padding: "4px 8px", fontFamily: "monospace", fontSize: 10, color: chartMode === m ? "#000" : "#888", cursor: "pointer", fontWeight: chartMode === m ? 800 : 400, transition: "all .15s" }}>{m === "live" ? "\u2764" : m === "dex" ? "DEX" : "PF"}</button>
+            ))}
+          </div>
         </div>
       </div>
       {bp > 0 && <div style={{ height: 3, background: "#1a1a2a", margin: "0 14px 4px" }}><div style={{ height: 3, background: bp >= 100 ? "#ffaa00" : "#00e676", width: Math.min(100, bp) + "%", borderRadius: 2, transition: "width 1s" }} /></div>}
@@ -1439,53 +1443,45 @@ export default function App() {
   const handleTierSelect = (tier) => setUser({ ...user, tier, paid: tier === "pro" });
   const analyzeCA = async (ca) => { if (!ca || ca.length < 32) return; setCaAnalysis({ ca, loading: true, error: null, data: null }); try { const res = await fetch(API + "/api/analyze/" + ca); if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "Not found"); } const coin = await res.json(); setCaAnalysis({ ca, loading: false, error: null, data: coin }); } catch (e) { setCaAnalysis({ ca, loading: false, error: e.message || "Analysis failed", data: null }); } };
 
-  // Quick Ape — one-click buy from connected Phantom wallet (no private key)
+  // ═══ TRADING WALLET (PumpPortal Lightning) ═══
+  const [tradingWallet, setTradingWallet] = useState(null);
+  const [tradingBalance, setTradingBalance] = useState(0);
+  const [tradingKeys, setTradingKeys] = useState(null);
+  const [showTradingSetup, setShowTradingSetup] = useState(false);
+
+  useEffect(() => { if (!user?.pubkey || user.demo) return; fetch(API + "/api/trading-wallet/" + user.pubkey).then(r => r.json()).then(d => { if (d.tradingWallet) { setTradingWallet(d.tradingWallet); setTradingBalance(d.balance || 0); } }).catch(() => {}); }, [user]);
+
+  const createTradingWallet = async () => { try { toast("Creating trading wallet...", "info"); const r = await fetch(API + "/api/trading-wallet/create", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) }); const d = await r.json(); if (d.ok) { setTradingWallet(d.tradingWallet); setTradingKeys({ apiKey: d.apiKey, privateKey: d.privateKey }); setShowTradingSetup(false); toast("Trading wallet created! Deposit SOL to start.", "success"); } else toast(d.error || "Failed", "error"); } catch { toast("Network error", "error"); } };
+
+  const exportTradingKeys = async () => { try { const r = await fetch(API + "/api/trading-wallet/export", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) }); const d = await r.json(); if (d.ok) { setTradingKeys(d); } else toast(d.error || "Failed", "error"); } catch { toast("Network error", "error"); } };
+
+  // Quick Ape — PumpPortal Lightning (zero signing, one-click)
   const quickApe = async (ca, solAmount = 0.1) => {
     if (!user?.pubkey || user.demo) { toast("Connect wallet first", "error"); return; }
-    if (!devSecret && !activeSessionId) { toast("Create a session first (need trading wallet)", "error"); return; }
-
+    if (!tradingWallet) { setShowTradingSetup(true); toast("Set up your trading wallet first", "error"); return; }
+    if (tradingBalance < solAmount) { toast(`Need ${solAmount} SOL in trading wallet (have ${tradingBalance.toFixed(3)})`, "error"); return; }
     toast(`Buying ${solAmount} SOL...`, "info");
     try {
-      const res = await fetch(API + "/api/quick-ape", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-wallet": user.pubkey },
-        body: JSON.stringify({
-          wallet: user.pubkey,
-          ca,
-          solAmount,
-          sessionId: activeSessionId || null,
-          tradingKey: devSecret || null,
-        }),
-      });
-      const data = await res.json();
-      if (!data.ok) { toast(data.error || "Buy failed", "error"); return; }
-      toast(`Bought ${solAmount} SOL of ${ca.slice(0, 8)}... \u2713`, "success");
-      return data.signature;
-    } catch (e) {
-      toast("Buy failed: " + (e.message || "Network error"), "error");
-      console.error("[QUICK-APE]", e);
-    }
+      const r = await fetch(API + "/api/quick-ape", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey, ca, solAmount }) });
+      const d = await r.json();
+      if (!d.ok) { toast(d.error || "Buy failed", "error"); return; }
+      toast(`Bought ${solAmount} SOL \u2713`, "success");
+      setTradingBalance(prev => Math.max(0, prev - solAmount - 0.001));
+      return d.signature;
+    } catch (e) { toast("Failed: " + (e.message || "Error"), "error"); }
   };
 
-  // Quick Sell — one-click sell from connected Phantom wallet
+  // Quick Sell — PumpPortal Lightning
   const quickSell = async (ca, percent = 100) => {
-    if (!user?.pubkey || user.demo) { toast("Connect wallet first", "error"); return; }
-    if (!devSecret && !activeSessionId) { toast("No trading wallet", "error"); return; }
-
+    if (!user?.pubkey || !tradingWallet) { toast("No trading wallet", "error"); return; }
     toast(`Selling ${percent}%...`, "info");
     try {
-      const res = await fetch(API + "/api/quick-sell", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-wallet": user.pubkey },
-        body: JSON.stringify({ wallet: user.pubkey, ca, percent, sessionId: activeSessionId || null, tradingKey: devSecret || null }),
-      });
-      const data = await res.json();
-      if (!data.ok) { toast(data.error || "Sell failed", "error"); return; }
+      const r = await fetch(API + "/api/quick-sell", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey, ca, percent }) });
+      const d = await r.json();
+      if (!d.ok) { toast(d.error || "Sell failed", "error"); return; }
       toast(`Sold ${percent}% \u2713`, "success");
-      return data.signature;
-    } catch (e) {
-      toast("Sell failed: " + (e.message || "Network error"), "error");
-    }
+      return d.signature;
+    } catch (e) { toast("Failed: " + e.message, "error"); }
   };
   const handleCAChange = (v) => { setExistingCA(v); setCaAnalysis(null); };
   const closeSession = async (ca) => {
@@ -1601,14 +1597,45 @@ export default function App() {
               </div>
             </div>
           </header>
-          {/* Trading Key Banner — always visible when session active */}
-          {devSecret && (
-            <div style={{ background: T.surface, borderBottom: "1px solid " + T.border, padding: "6px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          {/* Trading Wallet Banner */}
+          {tradingWallet ? (
+            <div style={{ background: T.surface, borderBottom: "1px solid " + T.border, padding: "6px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
-                <span style={{ fontSize: 10, fontFamily: mono, color: T.dim, flexShrink: 0 }}>{"\uD83D\uDD11"} Trading Key:</span>
-                <span style={{ fontSize: 10, fontFamily: mono, color: T.faint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{devSecret.slice(0, 16)}...{devSecret.slice(-8)}</span>
+                <span style={{ fontSize: 10, fontFamily: mono, color: T.green, flexShrink: 0 }}>{"\uD83D\uDCB0"} Trading:</span>
+                <span onClick={() => { navigator.clipboard?.writeText(tradingWallet); toast("Copied!", "success"); }} style={{ fontSize: 10, fontFamily: mono, color: T.faint, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title="Click to copy">{tradingWallet.slice(0, 12)}...{tradingWallet.slice(-6)}</span>
+                <span style={{ fontSize: 10, fontFamily: mono, color: tradingBalance > 0.01 ? T.green : T.red, fontWeight: 700 }}>{tradingBalance.toFixed(3)} SOL</span>
               </div>
-              <button onClick={() => { navigator.clipboard?.writeText(devSecret); toast("Trading key copied!", "success"); }} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 6, padding: "3px 10px", fontFamily: mono, fontSize: 10, fontWeight: 700, color: T.green, cursor: "pointer", flexShrink: 0 }}>{"\uD83D\uDD11"} Copy Key</button>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button onClick={() => exportTradingKeys().then(() => setShowTradingSetup(true))} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "2px 8px", fontFamily: mono, fontSize: 9, color: T.dim, cursor: "pointer" }}>{"\uD83D\uDD11"} Keys</button>
+                <button onClick={() => { navigator.clipboard?.writeText(tradingWallet); toast("Deposit address copied!", "success"); }} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 6, padding: "2px 8px", fontFamily: mono, fontSize: 9, color: T.green, cursor: "pointer", fontWeight: 700 }}>Deposit</button>
+              </div>
+            </div>
+          ) : user && !user.demo && (
+            <div style={{ background: T.yellow + "08", borderBottom: "1px solid " + T.yellow + "22", padding: "8px 20px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
+              <span style={{ fontSize: 12, fontFamily: mono, color: T.yellow }}>No trading wallet</span>
+              <button onClick={createTradingWallet} style={{ background: T.green, color: T.bg, border: "none", borderRadius: 6, padding: "4px 14px", fontFamily: mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Create Trading Wallet</button>
+            </div>
+          )}
+          {/* Trading Keys Modal */}
+          {showTradingSetup && tradingKeys && (
+            <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowTradingSetup(false)}>
+              <div onClick={e => e.stopPropagation()} style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 20, padding: 28, maxWidth: 480, width: "100%" }}>
+                <h3 style={{ fontFamily: sans, fontWeight: 900, fontSize: 20, color: T.text, marginBottom: 16, textAlign: "center" }}>{"\uD83D\uDD11"} Trading Wallet Keys</h3>
+                <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, fontFamily: mono, color: T.faint, marginBottom: 4 }}>Wallet Address</div>
+                  <div onClick={() => { navigator.clipboard?.writeText(tradingKeys.tradingWallet || tradingWallet); toast("Copied!", "success"); }} style={{ fontSize: 13, fontFamily: mono, color: T.green, cursor: "pointer", wordBreak: "break-all" }}>{tradingKeys.tradingWallet || tradingWallet}</div>
+                </div>
+                {tradingKeys.apiKey && <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, fontFamily: mono, color: T.faint, marginBottom: 4 }}>API Key (PumpPortal)</div>
+                  <div onClick={() => { navigator.clipboard?.writeText(tradingKeys.apiKey); toast("API key copied!", "success"); }} style={{ fontSize: 12, fontFamily: mono, color: T.yellow, cursor: "pointer", wordBreak: "break-all" }}>{tradingKeys.apiKey}</div>
+                </div>}
+                {tradingKeys.privateKey && <div style={{ background: T.red + "08", border: "1px solid " + T.red + "22", borderRadius: 10, padding: 14, marginBottom: 16 }}>
+                  <div style={{ fontSize: 10, fontFamily: mono, color: T.red, marginBottom: 4 }}>Private Key (KEEP SECRET)</div>
+                  <div onClick={() => { navigator.clipboard?.writeText(tradingKeys.privateKey); toast("Private key copied!", "success"); }} style={{ fontSize: 11, fontFamily: mono, color: T.red, cursor: "pointer", wordBreak: "break-all", opacity: 0.8 }}>{tradingKeys.privateKey}</div>
+                </div>}
+                <p style={{ fontSize: 12, color: T.faint, textAlign: "center", marginBottom: 14, lineHeight: 1.6 }}>Save these keys. You can import the private key into Phantom to manage funds directly. Anyone with the API key can trade from this wallet.</p>
+                <button onClick={() => setShowTradingSetup(false)} style={{ width: "100%", padding: 12, background: T.green + "15", border: "1px solid " + T.green, borderRadius: 10, fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.green, cursor: "pointer" }}>Done</button>
+              </div>
             </div>
           )}
           {showSettings && (<div style={{ maxWidth: 680, margin: "0 auto", padding: mobile ? "12px 14px" : "16px 24px" }}><div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 16 : 22 }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}>{"\u2699"} Settings</span><button onClick={() => setShowSettings(false)} style={{ background: "none", border: "none", color: T.dim, cursor: "pointer", fontFamily: mono }}>{"\u2715"}</button></div><div style={{ display: "flex", flexDirection: "column", gap: 14 }}><div><Label>RPC URL</Label><Input value={rpc} onChange={setRpc} placeholder="https://mainnet.helius-rpc.com/?api-key=..." big /></div><div style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: T.bg, borderRadius: 10, border: "1px solid " + T.border, cursor: "pointer" }} onClick={() => setUseAtlas(!useAtlas)}><div style={{ width: 40, height: 22, borderRadius: 11, padding: 2, background: useAtlas ? T.green : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", transform: useAtlas ? "translateX(18px)" : "translateX(0)", transition: "transform .2s" }} /></div><div><div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.text }}>Helius Atlas</div><div style={{ fontSize: 11, color: T.dim }}>Staked connections</div></div></div></div></div></div>)}
