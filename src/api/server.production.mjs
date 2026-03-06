@@ -319,10 +319,7 @@ app.post("/api/username", apiLimiter, requireVerifiedWallet, async (req, res) =>
     const clean = (username || "").trim().slice(0, 24).replace(/[^a-zA-Z0-9_\-.\u3000-\u9FFF\uFF00-\uFFEF]/g, "");
     if (clean.length < 1) return res.status(400).json({ error: "Username must be 1-24 characters" });
     
-    const user = await userStore.getOrCreate(wallet);
-    user.username = clean;
-    user.usernameSetAt = Date.now();
-    await userStore.set(wallet, user);
+    await userStore.update(wallet, { username: clean, usernameSetAt: Date.now() });
     
     console.log(`[USERNAME] ${wallet.slice(0, 8)} -> "${clean}"`);
     res.json({ ok: true, username: clean });
@@ -1465,12 +1462,12 @@ app.post("/api/trading-wallet/create", apiLimiter, requireVerifiedWallet, async 
 
     // Store in user record
     if (userStore) {
-      const user = await userStore.getOrCreate(wallet);
-      user.ppWallet = tradingWallet;
-      user.ppApiKey = apiKey;
-      user.ppPrivateKey = privateKey;
-      user.ppCreated = Date.now();
-      await userStore.set(wallet, user);
+      await userStore.update(wallet, {
+        ppWallet: tradingWallet,
+        ppApiKey: apiKey,
+        ppPrivateKey: privateKey || "",
+        ppCreated: Date.now(),
+      });
     }
 
     console.log(`[TRADING-WALLET] Created for ${wallet.slice(0, 8)}: ${tradingWallet.slice(0, 8)}...`);
