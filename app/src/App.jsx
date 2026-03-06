@@ -1799,27 +1799,48 @@ export default function App() {
 
   const closeAllSessions = async () => {
     if (isClosing) { toast("Already closing — please wait", "error"); return; }
-    // Gather all active CAs
-    const allCAs = new Set();
-    if (launchCA) allCAs.add(launchCA);
-    for (const s of pastSessions) { if (s.tokenCA && s.status !== "closed") allCAs.add(s.tokenCA); }
-    if (allCAs.size === 0) { toast("No active sessions", "error"); return; }
-    if (!confirm("CLOSE ALL " + allCAs.size + " sessions? This sells all tokens and sweeps all SOL.")) return;
+    // Gather all active session IDs + CAs
+    const activeSessions = pastSessions.filter(s => s.tokenCA && s.status !== "closed" && s.status !== "swept" && s.status !== "recovered");
+    const hasPositions = heldMints.size > 0;
+    const hasFleet = launched || activeSessions.length > 0;
+    if (!hasPositions && !hasFleet) { toast("Nothing to close", "info"); return; }
+    const parts = [];
+    if (hasPositions) parts.push(heldMints.size + " position" + (heldMints.size !== 1 ? "s" : ""));
+    if (hasFleet) parts.push((activeSessions.length || 1) + " session" + (activeSessions.length !== 1 ? "s" : ""));
+    if (!confirm("EXIT ALL? This will sell " + parts.join(" + ") + " and sweep all SOL back to you.")) return;
     setIsClosing(true);
-    toast("Closing " + allCAs.size + " sessions...", "info");
-    let closed = 0, totalRecovered = 0;
-    // Fire all close requests simultaneously
-    const results = await Promise.allSettled([...allCAs].map(async (ca) => {
+    let totalRecovered = 0;
+    // Step 1: Sell all portfolio positions (trading wallet bags)
+    if (hasPositions) {
+      toast("Selling all portfolio positions...", "info");
       try {
-        const res = await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca, wallet: user?.pubkey }) });
-        const data = await res.json();
-        if (!data.error) { closed++; totalRecovered += data.solRecovered || 0; }
-        return data;
-      } catch (e) { return { error: e.message }; }
-    }));
-    toast("Closed " + closed + "/" + allCAs.size + " sessions | Recovered " + totalRecovered.toFixed(4) + " SOL", closed > 0 ? "success" : "error");
+        const r = await fetch(API + "/api/sell-all", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) });
+        const d = await r.json();
+        if (d.ok) toast("Sold " + (d.sold || 0) + "/" + (d.total || 0) + " positions", "success");
+      } catch {}
+    }
+    // Step 2: Sell-sweep each fleet session (sells tokens + sweeps SOL to master → user)
+    if (hasFleet) {
+      toast("Closing " + (activeSessions.length || 1) + " fleet session(s)...", "info");
+      const sessionIds = activeSessions.map(s => s.id);
+      if (activeSessionId && !sessionIds.includes(activeSessionId)) sessionIds.push(activeSessionId);
+      for (const sid of sessionIds) {
+        try {
+          const res = await fetch(API + "/api/session/sell-sweep", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: sid, wallet: user?.pubkey }) });
+          const data = await res.json();
+          if (!data.error) totalRecovered += (data.totalSwept || 0) + (data.totalSold || 0);
+        } catch {}
+      }
+      // Also close via orch for any running fleet engines
+      const allCAs = new Set();
+      if (launchCA) allCAs.add(launchCA);
+      for (const s of activeSessions) { if (s.tokenCA) allCAs.add(s.tokenCA); }
+      for (const ca of allCAs) {
+        try { await fetch(API + "/api/close", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ ca, wallet: user?.pubkey }) }); } catch {}
+      }
+    }
+    toast("EXIT ALL complete" + (totalRecovered > 0 ? " | Recovered " + totalRecovered.toFixed(4) + " SOL" : ""), "success");
     setLaunched(false); setLaunchCA(""); setFleetStatus(null); setFleetKeys([]); setDevSecret("");
-    // Refresh sessions list
     try { const r = await fetch(API + "/api/sessions?wallet=" + user.pubkey); const d = await r.json(); if (d.sessions) setPastSessions(d.sessions.filter(s => s.tokenCA && s.status !== "closed").slice(0, 5)); } catch {}
     setIsClosing(false);
   };
@@ -1879,7 +1900,7 @@ export default function App() {
               {wsConnected && <span style={{ fontSize: 10, fontFamily: mono, color: T.green, opacity: 0.8 }}>{"●"} live</span>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: mobile ? 6 : 10 }}>
-              {(launched || pastSessions.filter(s => s.status !== "closed" && s.status !== "swept" && s.status !== "recovered").length > 0) && (<button onClick={closeAllSessions} disabled={isClosing} style={{ background: T.red + "15", border: "1px solid " + T.red + "44", borderRadius: 8, padding: "5px 10px", cursor: isClosing ? "wait" : "pointer", color: T.red, fontFamily: mono, fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Closing..." : "✕ Close All"}</button>)}
+              {(launched || heldMints.size > 0 || pastSessions.filter(s => s.status !== "closed" && s.status !== "swept" && s.status !== "recovered").length > 0) && (<button onClick={closeAllSessions} disabled={isClosing} style={{ background: T.red + "15", border: "1px solid " + T.red + "44", borderRadius: 8, padding: "5px 10px", cursor: isClosing ? "wait" : "pointer", color: T.red, fontFamily: mono, fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Exiting..." : "EXIT ALL"}</button>)}
               <button onClick={() => setShowSettings(!showSettings)} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: T.dim, fontSize: 14 }}><Ic.Cpu /></button>
               <ThemeToggle isDark={isDark} toggle={toggleTheme} mobile={mobile} />
               {tierLabel && <span style={{ padding: "3px 8px", borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 700, background: tierColor + "18", color: tierColor, border: "1px solid " + tierColor + "33" }}>{tierLabel}</span>}
@@ -2057,8 +2078,7 @@ export default function App() {
 
                 {/* ═══ CONTROLS ═══ */}
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={closeAllSessions} disabled={isClosing} style={{ flex: 1, padding: "14px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Closing..." : "Close All"}</button>
-                  <button onClick={() => sellAndSweep(activeSessionId || pastSessions[0]?.id)} disabled={isSweeping} style={{ flex: 1, padding: "14px", background: T.yellow + "10", border: "1px solid " + T.yellow, color: T.yellow, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isSweeping ? "wait" : "pointer", opacity: isSweeping ? 0.5 : 1 }}>{isSweeping ? "Sweeping..." : "\u21BB Sell & Sweep"}</button>
+                  <button onClick={closeAllSessions} disabled={isClosing} style={{ flex: 1, padding: "14px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Exiting..." : "EXIT ALL"}</button>
                   <button onClick={() => { setLaunched(false); setLaunchCA(""); setCaAnalysis(null); setFleetStatus(null); setFleetKeys([]); setDevSecret(""); setWantsHome(true); }} style={{ padding: "14px 20px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 13, borderRadius: 10, cursor: "pointer" }}>New</button>
                 </div>
               </div>
@@ -2197,10 +2217,9 @@ export default function App() {
                   {pastSessions.map(s => (<div key={s.id} style={{ marginBottom: 8 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid " + T.border + "22" }}>
                       <span style={{ fontFamily: mono, fontSize: 13, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || s.tokenConfig?.name || "?"} {"\u2014"} <span style={{ color: T.faint, fontSize: 11 }}>{s.tokenCA?.slice(0, 8)}...</span></span>
-                      <button onClick={() => closeSession(s.tokenCA)} disabled={isClosing} style={{ background: T.red + "15", color: T.red, border: "1px solid " + T.red + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{"✕"} Close</button>
-                      <button onClick={() => sellAndSweep(s.id)} disabled={isSweeping} style={{ background: T.yellow + "15", color: T.yellow, border: "1px solid " + T.yellow + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: isSweeping ? "wait" : "pointer", opacity: isSweeping ? 0.5 : 1 }}>{isSweeping ? "..." : "\u21BB Sweep"}</button>
+                      <button onClick={() => sellAndSweep(s.id)} disabled={isSweeping || isClosing} style={{ background: T.red + "15", color: T.red, border: "1px solid " + T.red + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: (isSweeping || isClosing) ? "wait" : "pointer", opacity: (isSweeping || isClosing) ? 0.5 : 1 }}>{isSweeping ? "..." : "Close"}</button>
                       <button onClick={async () => { try { const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) }); const data = await res.json(); if (data.ok && data.status === "running") { setLaunchCA(data.tokenCA); setLaunched(true); } else if (data.ok) { setSessionDetail(data); } else toast(data.error || "Failed", "error"); } catch (e) { toast(e.message, "error"); } }} style={{ background: T.green + "15", color: T.green, border: "1px solid " + T.green + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: "pointer" }}>View</button>
-                      <button onClick={() => recoverSession(s.id)} disabled={isRecovering} style={{ background: T.yellow + "15", color: T.yellow, border: "1px solid " + T.yellow + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: isRecovering ? "wait" : "pointer", opacity: isRecovering ? 0.5 : 1 }}>{isRecovering ? "..." : "\u21BB Recover"}</button>
+                      <button onClick={() => recoverSession(s.id)} disabled={isRecovering} style={{ background: "none", color: T.faint, border: "1px solid " + T.border, fontFamily: mono, fontSize: 10, fontWeight: 600, padding: "5px 8px", borderRadius: 6, cursor: isRecovering ? "wait" : "pointer", opacity: isRecovering ? 0.5 : 1 }}>{isRecovering ? "..." : "Recover SOL"}</button>
                     </div>
                     {sessionDetail && sessionDetail.session?.id === s.id && (<div style={{ padding: "12px 0" }}>
                       <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginBottom: 8 }}>Total SOL in fleet: <span style={{ color: T.green, fontWeight: 700, fontSize: 14 }}>{(sessionDetail.totalBalance || 0).toFixed(4)}</span></div>
