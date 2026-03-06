@@ -895,28 +895,25 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
     >
       <div style={{ position: "relative", width: "100%", aspectRatio: "1", background: T.bg, overflow: "hidden" }}>
         {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 32, color: T.faint + "44", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
-        <div style={{ position: "absolute", top: 5, right: 5, background: vc(t.verdict) + "dd", color: "#000", fontFamily: mono, fontSize: 9, fontWeight: 900, padding: "2px 6px", borderRadius: 4 }}>{t.verdict} {t.score}</div>
         {i < 3 && <div style={{ position: "absolute", top: 5, left: 5, background: T.green + "dd", color: "#000", fontFamily: mono, fontSize: 9, fontWeight: 900, padding: "1px 5px", borderRadius: 4 }}>#{i + 1}</div>}
-        {t.bundled && <div style={{ position: "absolute", bottom: 5, right: 5, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}><StatusIc.Warn size={10} />BUNDLED</div>}
-        {!t.bundled && t.boosted && <div style={{ position: "absolute", top: 5, left: i < 3 ? 38 : 5, background: "#ffaa00dd", color: "#000", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}><Ic.Zap />BOOST</div>}
-        {t.freshBoost && !t.boosted && <div style={{ position: "absolute", top: 5, left: i < 3 ? 38 : 5, background: "#00ff88dd", color: "#000", fontFamily: mono, fontSize: 7, fontWeight: 900, padding: "1px 4px", borderRadius: 3 }}>NEW BOOST</div>}
-        {t.imageDupe && !t.bundled && <div style={{ position: "absolute", bottom: 5, right: 5, background: T.red + "cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}>DUPE</div>}
-        {/* Momentum price change — always bottom-left, no conflict */}
-        {t.priceChange?.h1 != null && <div style={{ position: "absolute", bottom: 5, left: 5, background: t.priceChange.h1 >= 0 ? "#00ff8899" : "#ff444499", color: "#fff", fontFamily: mono, fontSize: 9, fontWeight: 800, padding: "2px 5px", borderRadius: 4 }}>{t.priceChange.h1 > 0 ? "+" : ""}{t.priceChange.h1.toFixed(1)}% 1h</div>}
+        <div style={{ position: "absolute", top: 5, right: 5, background: vc(t.verdict) + "dd", color: "#000", fontFamily: mono, fontSize: 9, fontWeight: 900, padding: "2px 6px", borderRadius: 4 }}>{t.score}</div>
+        {t.bundled && <div style={{ position: "absolute", bottom: 5, left: 5, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}>BUNDLED</div>}
       </div>
-      <div style={{ padding: "5px 7px 6px" }}>
-        <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 800, color: T.text, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 1, WebkitBoxOrient: "vertical", lineHeight: 1.3 }}>{t.name || t.ticker}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 3, marginTop: 1 }}>
-          <span style={{ fontFamily: mono, fontSize: 9, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
-          {t.age && <span style={{ fontFamily: mono, fontSize: 7, color: T.faint }}>{t.age >= 24 ? Math.floor(t.age/24) + "d" : t.age + "h"}</span>}
-          {!t.age && t.created && <span style={{ fontFamily: mono, fontSize: 7, color: T.faint }}>{ago(t.created)}</span>}
-          {t.socialCount > 0 && <span style={{ fontSize: 8 }}>{t.twitter ? "X" : ""}{t.website ? "web" : ""}</span>}
+      <div style={{ padding: "6px 8px 8px" }}>
+        <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 800, color: T.text, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", lineHeight: 1.3 }}>{t.name || t.ticker}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+          <span style={{ fontFamily: mono, fontSize: 10, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
+          {!t.age && t.created && <span style={{ fontFamily: mono, fontSize: 8, color: T.faint }}>{ago(t.created)}</span>}
+          {t.age && <span style={{ fontFamily: mono, fontSize: 8, color: T.faint }}>{t.age >= 24 ? Math.floor(t.age/24) + "d" : Math.round(t.age) + "h"}</span>}
+          {t.socialCount > 0 && <span style={{ fontFamily: mono, fontSize: 8, color: T.dim }}>{t.twitter ? "X" : ""}{t.website ? " web" : ""}</span>}
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 3 }}>
-          <span style={{ fontFamily: mono, fontSize: 9, fontWeight: 800, color: T.green }}>MC ${fmt(t.mcapUsd)}</span>
-          {t.bp > 0 && t.bp < 100 && <div style={{ width: 28, height: 2, background: T.border, borderRadius: 1, overflow: "hidden" }}><div style={{ height: 2, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 1 }} /></div>}
+        {t.description && <div style={{ fontFamily: sans, fontSize: 10, color: T.dim, marginTop: 3, lineHeight: 1.3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{t.description.slice(0, 100)}</div>}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+          <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 800, color: T.green }}>MC {fmt(t.mcapUsd)}</span>
           <span style={{ fontFamily: mono, fontSize: 9, color: T.dim }}>{t.buys}b/{t.sells}s</span>
         </div>
+        {t.priceChange?.h1 != null && <div style={{ fontFamily: mono, fontSize: 9, fontWeight: 700, color: t.priceChange.h1 >= 0 ? T.green : "#ff4444", marginTop: 2 }}>{t.priceChange.h1 > 0 ? "+" : ""}{t.priceChange.h1.toFixed(1)}% 1h</div>}
+        {t.bp > 0 && t.bp < 100 && <div style={{ marginTop: 3, height: 3, background: T.border, borderRadius: 2, overflow: "hidden" }}><div style={{ height: 3, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 2 }} /></div>}
       </div>
     </div>
   );
@@ -967,7 +964,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
                 {selected.image ? <img src={selected.image} style={{ width: mobile ? 100 : 150, height: mobile ? 100 : 150, borderRadius: 16, objectFit: "cover", flexShrink: 0, border: "2px solid " + T.border }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: mobile ? 100 : 150, height: mobile ? 100 : 150, borderRadius: 16, background: T.surface, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 48, color: T.faint, fontWeight: 800 }}>{(selected.ticker || "?")[0]}</div>}
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontFamily: mono, fontSize: mobile ? 22 : 28, fontWeight: 900, color: T.text }}>{selected.name}</div>
-                  <div style={{ fontFamily: mono, fontSize: 16, color: T.green, fontWeight: 700 }}>${selected.ticker}</div>
+                  <div style={{ fontFamily: mono, fontSize: 16, color: T.green, fontWeight: 700 }}>{selected.ticker}</div>
                   <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginTop: 6, lineHeight: 1.5, maxHeight: 54, overflow: "hidden" }}>{selected.description || ""}</div>
                   {selected.creator && <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 4 }}>dev: {selected.creator.slice(0, 14)}...</div>}
                   <div style={{ display: "flex", gap: 5, marginTop: 6, flexWrap: "wrap" }}>
@@ -1030,7 +1027,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
 // ═══════════════════════════════════════
 // PORTFOLIO — Live positions with P&L + sell buttons + search
 // ═══════════════════════════════════════
-function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tradingBalance, onPositionsUpdate, getCostBasis }) {
+function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tradingBalance, onPositionsUpdate, getCostBasis, onApe }) {
   const [positions, setPositions] = useState([]);
   const [solBal, setSolBal] = useState(tradingBalance || 0);
   const [totalVal, setTotalVal] = useState(0);
@@ -1121,13 +1118,13 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tra
           {searching && <div style={{ padding: 16, textAlign: "center", fontFamily: mono, fontSize: 12, color: T.dim }}>Searching...</div>}
           {!searching && searchResults.length === 0 && search.length >= 2 && <div style={{ padding: 16, textAlign: "center", fontFamily: mono, fontSize: 12, color: T.faint }}>No results</div>}
           {searchResults.map(t => (
-            <div key={t.ca} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 20px", borderBottom: "1px solid " + T.border + "22" }}>
+            <div key={t.ca} onClick={() => { if (onApe) { onApe(t.ca); setSearch(""); } }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 20px", borderBottom: "1px solid " + T.border + "22", cursor: "pointer", transition: "background .15s" }} onMouseEnter={e => e.currentTarget.style.background = T.greenGhost} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
               {t.image ? <img src={t.image} style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: 32, height: 32, borderRadius: 8, background: T.border + "44", flexShrink: 0 }} />}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 800, color: T.text }}>{t.name} <span style={{ color: T.green, fontSize: 11 }}>${t.ticker}</span></div>
-                <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>MC {fmt(t.mcap)}{t.h1Change ? (t.h1Change > 0 ? " ▲" : " ▼") + Math.abs(t.h1Change).toFixed(1) + "%" : ""}</div>
+                <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 800, color: T.text }}>{t.name} <span style={{ color: T.green, fontSize: 11 }}>{t.ticker}</span></div>
+                <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>MC {fmt(t.mcap)}{t.h1Change ? (t.h1Change > 0 ? " +" : " ") + t.h1Change.toFixed(1) + "%" : ""}</div>
               </div>
-              <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+              <div style={{ display: "flex", gap: 3, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
                 <button onClick={() => { navigator.clipboard?.writeText(t.ca); toast("CA copied", "success"); }} style={{ padding: "6px 8px", background: "none", border: "1px solid " + T.border, borderRadius: 6, fontFamily: mono, fontSize: 9, color: T.faint, cursor: "pointer" }}>CA</button>
                 {[0.1, 0.25, 0.5].map(amt => (
                   <button key={amt} disabled={solBal < amt} onClick={() => quickApe(t.ca, amt)} style={{ padding: "6px 8px", background: solBal >= amt ? T.green + "12" : T.border + "22", border: "1px solid " + (solBal >= amt ? T.green + "33" : T.border), borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 800, color: solBal >= amt ? T.green : T.faint, cursor: solBal >= amt ? "pointer" : "not-allowed", opacity: solBal >= amt ? 1 : 0.4 }}>{amt}</button>
@@ -1158,7 +1155,7 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tra
 
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ fontFamily: mono, fontSize: 15, fontWeight: 800, color: T.text }}>${p.ticker || "?"}</span>
+                      <span style={{ fontFamily: mono, fontSize: 15, fontWeight: 800, color: T.text }}>{p.ticker || "?"}</span>
                       <span style={{ fontFamily: mono, fontSize: 11, color: isUp ? T.green : "#ff4444", fontWeight: 700, background: (isUp ? T.green : "#ff4444") + "12", padding: "1px 5px", borderRadius: 4 }}>{isUp ? "▲" : "▼"}{Math.abs(p.h1Change || 0).toFixed(1)}%</span>
                     </div>
                     <div style={{ fontFamily: mono, fontSize: 11, color: T.faint, marginTop: 3 }}>
@@ -2061,7 +2058,7 @@ export default function App() {
 
                 {/* ═══ PORTFOLIO TAB (positions + P&L + sell) ═══ */}
                 {appTab === "portfolio" && (
-                  <PortfolioPanel T={T} mobile={mobile} mono={mono} user={user} quickSell={quickSell} quickApe={quickApe} toast={toast} tradingBalance={tradingBalance} onPositionsUpdate={(positions) => setHeldMints(new Set(positions.map(p => p.mint)))} getCostBasis={getCostBasis} />
+                  <PortfolioPanel T={T} mobile={mobile} mono={mono} user={user} quickSell={quickSell} quickApe={quickApe} toast={toast} tradingBalance={tradingBalance} onPositionsUpdate={(positions) => setHeldMints(new Set(positions.map(p => p.mint)))} getCostBasis={getCostBasis} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} />
                 )}
 
                 {/* ═══ TRADE TAB (wizard) ═══ */}
@@ -2130,7 +2127,7 @@ export default function App() {
                     </div>
                     {showChart && (<iframe src={"https://www.gmgn.cc/kline/sol/" + caAnalysis.ca} style={{ width: "100%", height: mobile ? 300 : 420, border: "none", display: "block", background: "#0a0a0a" }} title="Chart" />)}
                   </div>); })()}
-                  {!existingCA && (<><div style={{ display: "flex", alignItems: "center", gap: 12, margin: "4px 0 10px", fontSize: 11, color: T.faint, fontFamily: mono, textTransform: "uppercase", letterSpacing: ".08em" }}><span style={{ flex: 1, height: 1, background: T.border }} />or create new<span style={{ flex: 1, height: 1, background: T.border }} /></div><div style={{ display: "flex", gap: mobile ? 10 : 14, marginBottom: 10 }}><ImageUpload image={image} onChange={setImage} mobile={mobile} /><div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, minWidth: 0, overflow: "hidden" }}><Input value={tokenName} onChange={setTokenName} placeholder="Token Name" big /><Input value={ticker} onChange={v => setTicker(v.toUpperCase())} placeholder="$TICKER" maxLength={10} big /></div></div><div style={{ marginBottom: 8 }}><textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2} placeholder="Description..." style={{ width: "100%", padding: "10px 12px", background: T.bg, border: "1px solid " + T.border, borderRadius: 10, color: T.text, fontFamily: sans, fontSize: 14, outline: "none", resize: "vertical", lineHeight: 1.5, boxSizing: "border-box" }} /></div><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, overflow: "hidden" }}><Input value={twitter} onChange={setTwitter} placeholder="Twitter" /><Input value={telegram} onChange={setTelegram} placeholder="Telegram" /><Input value={website} onChange={setWebsite} placeholder="Website" /></div></>)}
+                  {!existingCA && (<><div style={{ display: "flex", alignItems: "center", gap: 12, margin: "4px 0 10px", fontSize: 11, color: T.faint, fontFamily: mono, textTransform: "uppercase", letterSpacing: ".08em" }}><span style={{ flex: 1, height: 1, background: T.border }} />or create new<span style={{ flex: 1, height: 1, background: T.border }} /></div><div style={{ display: "flex", gap: mobile ? 10 : 14, marginBottom: 10 }}><ImageUpload image={image} onChange={setImage} mobile={mobile} /><div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, minWidth: 0, overflow: "hidden" }}><Input value={tokenName} onChange={setTokenName} placeholder="Token Name" big /><Input value={ticker} onChange={v => setTicker(v.toUpperCase())} placeholder="TICKER" maxLength={10} big /></div></div><div style={{ marginBottom: 8 }}><textarea value={desc} onChange={e => setDesc(e.target.value)} rows={2} placeholder="Description..." style={{ width: "100%", padding: "10px 12px", background: T.bg, border: "1px solid " + T.border, borderRadius: 10, color: T.text, fontFamily: sans, fontSize: 14, outline: "none", resize: "vertical", lineHeight: 1.5, boxSizing: "border-box" }} /></div><div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, overflow: "hidden" }}><Input value={twitter} onChange={setTwitter} placeholder="Twitter" /><Input value={telegram} onChange={setTelegram} placeholder="Telegram" /><Input value={website} onChange={setWebsite} placeholder="Website" /></div></>)}
                 </Section>
                 <Section n="3" title="Configure" T={T} mobile={mobile}>
                   {!isApe && (<div style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 14px", background: T.bg, borderRadius: 10, border: "1px solid " + T.border, cursor: "pointer", marginBottom: 12 }} onClick={() => setDeployOnly(!deployOnly)}>
