@@ -972,6 +972,152 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
 // ═══════════════════════════════════════
 // REFERRAL PANEL
 // ═══════════════════════════════════════
+// ═══════════════════════════════════════
+// PORTFOLIO — Live positions with P&L + sell buttons + search
+// ═══════════════════════════════════════
+function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast }) {
+  const [positions, setPositions] = useState([]);
+  const [solBal, setSolBal] = useState(0);
+  const [totalVal, setTotalVal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [selling, setSelling] = useState(null); // ca being sold
+
+  const API = window.__BONDLI_API;
+  const fmt = n => !n || n === 0 ? "$0" : n >= 1e6 ? "$" + (n/1e6).toFixed(1) + "M" : n >= 1e3 ? "$" + (n/1e3).toFixed(1) + "K" : "$" + n.toFixed(2);
+
+  // Fetch positions
+  const fetchPositions = async () => {
+    try {
+      const r = await fetch(API + "/api/positions/" + user.pubkey);
+      if (r.ok) {
+        const d = await r.json();
+        setPositions(d.positions || []);
+        setSolBal(d.solBalance || 0);
+        setTotalVal(d.totalValueUsd || 0);
+        setLoading(false);
+      }
+    } catch { setLoading(false); }
+  };
+
+  useEffect(() => {
+    if (!user?.pubkey) return;
+    fetchPositions();
+    const iv = setInterval(fetchPositions, 10000);
+    return () => clearInterval(iv);
+  }, [user?.pubkey]);
+
+  // Global search
+  useEffect(() => {
+    if (search.length < 2) { setSearchResults([]); return; }
+    const timeout = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const r = await fetch(API + "/api/search?q=" + encodeURIComponent(search));
+        if (r.ok) { const d = await r.json(); setSearchResults(d.results || []); }
+      } catch {}
+      setSearching(false);
+    }, 400);
+    return () => clearTimeout(timeout);
+  }, [search]);
+
+  const handleSell = async (ca, pct) => {
+    setSelling(ca);
+    await quickSell(ca, pct);
+    setSelling(null);
+    setTimeout(fetchPositions, 3000);
+  };
+
+  return (
+    <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{ padding: "16px 20px", borderBottom: "1px solid " + T.border }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontFamily: mono, fontSize: 22, fontWeight: 900, color: T.text }}>{fmt(totalVal)}</div>
+            <div style={{ fontFamily: mono, fontSize: 12, color: T.faint }}>{solBal.toFixed(3)} SOL available {"\u00B7"} {positions.length} position{positions.length !== 1 ? "s" : ""}</div>
+          </div>
+          <button onClick={fetchPositions} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "6px 12px", fontFamily: mono, fontSize: 11, color: T.dim, cursor: "pointer" }}>{"\u21BB"} Refresh</button>
+        </div>
+
+        {/* Global Search */}
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder={"\uD83D\uDD0D Search any token on pump.fun..."} style={{ width: "100%", padding: "10px 14px", background: T.bg, border: "1px solid " + T.border, borderRadius: 10, color: T.text, fontFamily: mono, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+      </div>
+
+      {/* Search Results */}
+      {search.length >= 2 && (
+        <div style={{ borderBottom: "1px solid " + T.border }}>
+          {searching && <div style={{ padding: 16, textAlign: "center", fontFamily: mono, fontSize: 12, color: T.dim }}>Searching...</div>}
+          {!searching && searchResults.length === 0 && <div style={{ padding: 16, textAlign: "center", fontFamily: mono, fontSize: 12, color: T.faint }}>No results for "{search}"</div>}
+          {searchResults.map(t => (
+            <div key={t.ca} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 20px", borderBottom: "1px solid " + T.border + "22", cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(t.ca); toast("CA copied: " + t.ca.slice(0, 12), "success"); }}>
+              {t.image ? <img src={t.image} style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: 32, height: 32, borderRadius: 8, background: T.border + "44", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 14, color: T.faint }}>{(t.ticker || "?")[0]}</div>}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 800, color: T.text }}>{t.name} <span style={{ color: T.green, fontSize: 11 }}>${t.ticker}</span></div>
+                <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>MC {fmt(t.mcap)}{t.h1Change ? (t.h1Change > 0 ? " \u25B2" : " \u25BC") + Math.abs(t.h1Change).toFixed(1) + "% 1h" : ""}</div>
+              </div>
+              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                {[0.1, 0.25, 0.5].map(amt => (
+                  <button key={amt} onClick={e => { e.stopPropagation(); quickApe(t.ca, amt); }} style={{ padding: "6px 8px", background: T.green + "12", border: "1px solid " + T.green + "33", borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 800, color: T.green, cursor: "pointer" }}>{amt}</button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Positions */}
+      {loading ? (
+        <div style={{ padding: 40, textAlign: "center", fontFamily: mono, fontSize: 14, color: T.dim, animation: "pulse 1.5s infinite" }}>Loading positions...</div>
+      ) : positions.length === 0 ? (
+        <div style={{ padding: "40px 20px", textAlign: "center" }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>{"\uD83D\uDCBC"}</div>
+          <div style={{ fontFamily: mono, fontSize: 14, color: T.faint, marginBottom: 4 }}>No positions yet</div>
+          <div style={{ fontFamily: mono, fontSize: 12, color: T.faint }}>Buy from Radar tab {"\u2192"} positions show here</div>
+        </div>
+      ) : (
+        <div>
+          {positions.map(p => {
+            const isUp = (p.h1Change || 0) >= 0;
+            const isSelling = selling === p.mint;
+            return (
+              <div key={p.mint} style={{ padding: "12px 20px", borderBottom: "1px solid " + T.border + "22", display: "flex", alignItems: "center", gap: mobile ? 8 : 12 }}>
+                {p.image ? <img src={p.image} style={{ width: 38, height: 38, borderRadius: 10, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => e.target.style.display="none"} /> : <div style={{ width: 38, height: 38, borderRadius: 10, background: T.border + "44", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 16, color: T.faint }}>{(p.ticker || "?")[0]}</div>}
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.text }}>${p.ticker || "?"}</span>
+                    <span style={{ fontFamily: mono, fontSize: 10, color: isUp ? T.green : "#ff4444", fontWeight: 700 }}>{isUp ? "\u25B2" : "\u25BC"}{Math.abs(p.h1Change || 0).toFixed(1)}% 1h</span>
+                  </div>
+                  <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 2 }}>
+                    {p.amount?.toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens {"\u00B7"} {fmt(p.valueUsd || 0)} {"\u00B7"} MC {fmt(p.mcap || 0)}
+                  </div>
+                </div>
+
+                {/* Sell buttons */}
+                <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+                  {[25, 50, 100].map(pct => (
+                    <button key={pct} disabled={isSelling} onClick={() => handleSell(p.mint, pct)} style={{
+                      padding: mobile ? "6px 8px" : "6px 10px",
+                      background: pct === 100 ? "#ff444418" : "#ff444408",
+                      border: "1px solid " + (pct === 100 ? "#ff444466" : "#ff444433"),
+                      borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 800,
+                      color: pct === 100 ? "#ff4444" : "#ff6666",
+                      cursor: isSelling ? "wait" : "pointer", opacity: isSelling ? 0.5 : 1,
+                    }}>{isSelling && selling === p.mint ? "..." : pct + "%"}</button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReferralPanel({ user, T, mobile }) {
   const [refData, setRefData] = useState(null);
   const [refInput, setRefInput] = useState("");
@@ -1664,7 +1810,7 @@ export default function App() {
             }} disabled={upgradeVerifying} style={{ width: "100%", padding: "14px", background: "linear-gradient(135deg, #534bb1, #551bf9)", border: "none", borderRadius: 12, color: "#fff", fontFamily: mono, fontSize: 15, fontWeight: 800, cursor: upgradeVerifying ? "wait" : "pointer", opacity: upgradeVerifying ? 0.6 : 1 }}>{upgradeVerifying ? "Verifying..." : "Verify Payment"}</button>
             <button onClick={() => setShowUpgrade(false)} style={{ width: "100%", marginTop: 8, padding: "10px", background: "none", border: "1px solid " + T.border, borderRadius: 10, color: T.dim, fontFamily: mono, fontSize: 13, cursor: "pointer" }}>Cancel</button>
           </div></div>)}
-          <div style={{ maxWidth: launched ? 1100 : appTab === "radar" ? 1400 : 760, margin: "0 auto", padding: appTab === "radar" ? (mobile ? "10px 6px" : "16px 12px") : (mobile ? "16px 12px" : "28px 24px"), position: "relative", zIndex: 1 }}>
+          <div style={{ maxWidth: launched ? 1100 : appTab === "radar" ? 1400 : appTab === "portfolio" ? 800 : 760, margin: "0 auto", padding: appTab === "radar" ? (mobile ? "10px 6px" : "16px 12px") : (mobile ? "16px 12px" : "28px 24px"), position: "relative", zIndex: 1 }}>
             {launched && launchCA ? (
               <div>
                 {/* ═══ CHART ═══ */}
@@ -1772,8 +1918,9 @@ export default function App() {
                 {/* ═══ TOP TAB BAR ═══ */}
                 <div style={{ display: "flex", marginBottom: 16, background: T.surface, borderRadius: 12, border: "1px solid " + T.border, overflow: "hidden" }}>
                   {[
-                    { id: "trade", label: "Deploy", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> },
                     { id: "radar", label: "Radar", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/></svg> },
+                    { id: "portfolio", label: "Bags", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M2 12h20"/><circle cx="12" cy="12" r="10"/></svg> },
+                    { id: "trade", label: "Deploy", icon: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg> },
                   ].map(t => (
                     <button key={t.id} onClick={() => setAppTab(t.id)} style={{
                       flex: 1, padding: mobile ? "12px 8px" : "14px 16px",
@@ -1791,6 +1938,11 @@ export default function App() {
                   <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden" }}>
                     <RadarFeed T={T} mobile={mobile} fullScreen isVip={user?.tier === "pro" || user?.whitelisted} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} onQuickApe={quickApe} />
                   </div>
+                )}
+
+                {/* ═══ PORTFOLIO TAB (positions + P&L + sell) ═══ */}
+                {appTab === "portfolio" && (
+                  <PortfolioPanel T={T} mobile={mobile} mono={mono} user={user} quickSell={quickSell} quickApe={quickApe} toast={toast} />
                 )}
 
                 {/* ═══ TRADE TAB (wizard) ═══ */}
