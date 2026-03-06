@@ -791,6 +791,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
   const [refreshing, setRefreshing] = useState(false);
   const [online, setOnline] = useState(0);
   const [search, setSearch] = useState("");
+  const [externalResult, setExternalResult] = useState(null);
   const seenCAs = useRef(new Set());
   const prevCAsRef = useRef(new Set()); // CAs from last render — used to detect truly new entries
   const lastDataHash = useRef(""); // prevent unnecessary re-renders
@@ -803,6 +804,26 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
   const tokens = search.length >= 2
     ? dedupedTokens.filter(t => (t.ticker || "").toLowerCase().includes(search.toLowerCase()) || (t.name || "").toLowerCase().includes(search.toLowerCase()) || (t.ca || "").toLowerCase().startsWith(search.toLowerCase()))
     : dedupedTokens;
+
+  // External CA lookup — when search is a full CA (32+ chars) and not found locally
+  useEffect(() => {
+    if (search.length < 32 || tokens.some(t => t.ca === search)) { setExternalResult(null); return; }
+    let cancelled = false;
+    const lookup = async () => {
+      try {
+        const r = await fetch(window.__BONDLI_API + "/api/radar/token/" + search);
+        if (r.ok && !cancelled) {
+          const d = await r.json();
+          if (d.ok && !cancelled) setExternalResult({ ca: search, name: d.name || d.ticker || "?", ticker: d.ticker || "?", mcapUsd: d.mcap || 0, buys: d.txns1h?.buys || 0, sells: d.txns1h?.sells || 0, image: d.image_uri, description: d.description, score: d.score || 0, verdict: d.verdict || "?", bp: d.bp || 0, external: true });
+        }
+      } catch {}
+    };
+    lookup();
+    return () => { cancelled = true; };
+  }, [search]);
+
+  // Merge external result into display
+  const displayTokens = externalResult && !tokens.some(t => t.ca === externalResult.ca) ? [externalResult, ...tokens] : tokens;
 
   const fetchRadar = async () => {
     try {
@@ -900,21 +921,18 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
         {t.bundled && <div style={{ position: "absolute", bottom: 3, left: 3, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 3px", borderRadius: 2 }}>BUNDLED</div>}
       </div>
       <div style={{ padding: mobile ? "4px 6px 6px" : "6px 8px 8px" }}>
-        <div style={{ fontFamily: mono, fontSize: mobile ? 11 : 12, fontWeight: 800, color: T.text, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", lineHeight: 1.3 }}>{t.name || t.ticker}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 3, marginTop: 1 }}>
-          <span style={{ fontFamily: mono, fontSize: mobile ? 9 : 10, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
-          {!t.age && t.created && <span style={{ fontFamily: mono, fontSize: 7, color: T.faint }}>{ago(t.created)}</span>}
-          {t.age && <span style={{ fontFamily: mono, fontSize: 7, color: T.faint }}>{t.age >= 24 ? Math.floor(t.age/24) + "d" : Math.round(t.age) + "h"}</span>}
-          {t.socialCount > 0 && <span style={{ fontFamily: mono, fontSize: 7, color: T.dim }}>{t.twitter ? "X" : ""}{t.website ? " web" : ""}</span>}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
+          <span style={{ fontFamily: mono, fontSize: mobile ? 11 : 12, fontWeight: 800, color: T.text, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", flex: 1 }}>{t.name || t.ticker}</span>
+          <span style={{ fontFamily: mono, fontSize: 7, color: T.faint, flexShrink: 0 }}>{t.age ? (t.age >= 24 ? Math.floor(t.age/24) + "d" : Math.round(t.age) + "h") : (t.created ? ago(t.created) : "")}</span>
         </div>
+        <div style={{ fontFamily: mono, fontSize: mobile ? 9 : 10, color: T.green, fontWeight: 700, marginTop: 1 }}>{t.ticker}</div>
         {t.description && <div style={{ fontFamily: sans, fontSize: mobile ? 9 : 10, color: T.dim, marginTop: 2, lineHeight: 1.2, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: mobile ? 1 : 2, WebkitBoxOrient: "vertical" }}>{t.description.slice(0, 80)}</div>}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 3 }}>
           <span style={{ fontFamily: mono, fontSize: mobile ? 9 : 10, fontWeight: 800, color: T.green }}>MC {fmt(t.mcapUsd)}</span>
-          <span style={{ fontFamily: mono, fontSize: mobile ? 8 : 9, color: T.dim }}>{t.buys}b/{t.sells}s</span>
+          <span style={{ fontFamily: mono, fontSize: mobile ? 8 : 9 }}><span style={{ color: T.green }}>{t.buys}</span><span style={{ color: T.faint }}>/</span><span style={{ color: "#ff4444" }}>{t.sells}</span></span>
         </div>
         {t.bp > 0 && t.bp < 100 && <div style={{ marginTop: 2, height: 2, background: T.border, borderRadius: 1, overflow: "hidden" }}><div style={{ height: 2, background: t.bp > 50 ? "#ffaa00" : T.green, width: Math.min(100, t.bp) + "%", borderRadius: 1 }} /></div>}
-        {/* Tappable CA copy row — visible on mobile */}
-        <div onClick={e => { e.stopPropagation(); navigator.clipboard?.writeText(t.ca); }} style={{ marginTop: 3, fontFamily: mono, fontSize: 8, color: T.faint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", padding: "2px 0", WebkitTapHighlightColor: "transparent" }}>{t.ca?.slice(0, 6)}...{t.ca?.slice(-4)} <span style={{ color: T.dim, fontSize: 7 }}>tap to copy</span></div>
+        <div onClick={e => { e.stopPropagation(); navigator.clipboard?.writeText(t.ca); }} style={{ marginTop: 2, fontFamily: mono, fontSize: 8, color: T.faint + "88", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.ca?.slice(0, 6)}...{t.ca?.slice(-4)}</div>
       </div>
     </div>
   );
@@ -946,7 +964,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
             return (<button key={tab.id} onClick={() => { setActiveTab(tab.id); setSelected(null); setSearch(""); }} style={{ padding: mobile ? "8px 8px" : "10px 14px", background: "none", border: "none", borderBottom: isActive ? "2px solid " + T.green : "2px solid transparent", fontFamily: mono, fontSize: mobile ? 10 : 12, fontWeight: 700, color: isActive ? T.green : T.dim, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}><span style={{ display: "flex", alignItems: "center" }}>{tab.icon}</span>{tab.label}{count > 0 && <span style={{ fontSize: 9, opacity: 0.7, fontWeight: 800 }}>{count}</span>}</button>);
           })}
           <div style={{ flex: 1 }} />
-          <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder={"Search..."} style={{ width: mobile ? 90 : 200, padding: "6px 10px", margin: "4px 8px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: mono, fontSize: 11, outline: "none" }} />
+          <input type="text" value={search} onChange={e => { setSearch(e.target.value); setExternalResult(null); }} onKeyDown={e => { if (e.key === "Enter" && search.length >= 32) { handleSelect(search); } }} placeholder={"Search or paste CA..."} style={{ width: mobile ? 90 : 200, padding: "6px 10px", margin: "4px 8px", background: T.bg, border: "1px solid " + T.border, borderRadius: 8, color: T.text, fontFamily: mono, fontSize: 11, outline: "none" }} />
         </div>
       )}
 
@@ -954,7 +972,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
         <div style={{ padding: 60, textAlign: "center" }}><div style={{ fontFamily: mono, fontSize: 15, color: T.faint, marginBottom: 12 }}>Radar paused</div><button onClick={handleToggle} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 10, padding: "10px 28px", fontFamily: mono, fontSize: 14, fontWeight: 700, color: T.green, cursor: "pointer" }}>Turn On</button></div>
       ) : loading ? (
         <div style={{ padding: 80, textAlign: "center", fontFamily: mono, fontSize: 15, color: T.faint, animation: "pulse 2s infinite" }}><StatusIc.Signal size={14} /> Scanning...</div>
-      ) : tokens.length === 0 ? (
+      ) : displayTokens.length === 0 ? (
         <div style={{ padding: 60, textAlign: "center" }}><div style={{ fontFamily: mono, fontSize: 14, color: T.faint }}>No movers yet</div><div style={{ fontFamily: mono, fontSize: 11, color: T.faint, marginTop: 4 }}>{poolSize} tokens scanned{search ? ` — no matches for "${search}"` : ""}</div></div>
       ) : (
         <div>
@@ -1013,7 +1031,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
 
           {/* Card Grid */}
           <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(155px, 1fr))", gap: mobile ? 4 : 10, padding: mobile ? "6px 4px" : "14px 14px" }}>
-            {tokens.map((t, i) => <TokenCard key={t.ca} t={t} i={i} />)}
+            {displayTokens.map((t, i) => <TokenCard key={t.ca} t={t} i={i} />)}
           </div>
         </div>
       )}
