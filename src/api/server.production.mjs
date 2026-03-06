@@ -469,39 +469,34 @@ app.get("/api/search", apiLimiter, async (req, res) => {
 });
 
 // Sell all positions — close everything
+// Sell-all: delegates to quick-sell endpoint for each position
 app.post("/api/sell-all", apiLimiter, requireVerifiedWallet, async (req, res) => {
   try {
     const { wallet } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
-
-    // Get positions first
-    const posRes = await fetch(`http://localhost:${CONFIG.API_PORT || 8080}/api/positions/${wallet}`);
-    const posData = await posRes.json();
-    if (!posData.positions?.length) return res.json({ ok: true, sold: 0, message: "No positions to sell" });
-
+    // Inline: find all token mints held
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const walletsToScan = new Set([wallet]);
+    if (userStore) { const u = await userStore.get(wallet); if (u?.ppWallet) walletsToScan.add(u.ppWallet); }
+    try { const ss = await sessionManager?.getByWallet?.(wallet) || []; for (const s of (Array.isArray(ss) ? ss : [])) { if (s.devWallet) walletsToScan.add(s.devWallet); } } catch {}
+    const mints = new Set();
+    for (const w of walletsToScan) { try { const accts = await connection.getParsedTokenAccountsByOwner(new PublicKey(w), { programId: TOKEN_PROGRAM_ID }); for (const { account } of accts.value) { if ((account.data.parsed?.info?.tokenAmount?.uiAmount || 0) > 0) mints.add(account.data.parsed.info.mint); } } catch {} }
+    if (mints.size === 0) return res.json({ ok: true, sold: 0, message: "No positions" });
+    // Sell each via PumpPortal
     const results = [];
-    for (const pos of posData.positions) {
+    for (const mint of mints) {
       try {
-        // Use internal quick-sell
-        const sellRes = await fetch(`http://localhost:${CONFIG.API_PORT || 8080}/api/quick-sell`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-wallet": wallet },
-          body: JSON.stringify({ wallet, ca: pos.mint, percent: 100 }),
-        });
-        const d = await sellRes.json();
-        results.push({ mint: pos.mint, ticker: pos.ticker, ok: d.ok, sig: d.signature });
-      } catch (e) {
-        results.push({ mint: pos.mint, ticker: pos.ticker, ok: false, error: e.message });
-      }
-      await new Promise(r => setTimeout(r, 500)); // rate limit
+        // Try lightning first
+        let sold = false;
+        if (userStore) { const u = await userStore.get(wallet); const ak = u?.ppApiKey && u.ppApiKey !== "" ? u.ppApiKey : null; if (ak) { const r = await fetch("https://pumpportal.fun/api/trade?api-key=" + ak, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sell", mint, amount: "100%", denominatedInSol: "false", slippage: 50, priorityFee: 0.001, pool: "auto" }) }); const d = await r.json(); if (d.signature) { results.push({ mint, ok: true, sig: d.signature }); sold = true; } } }
+        if (!sold) results.push({ mint, ok: false, error: "no key" });
+      } catch (e) { results.push({ mint, ok: false, error: e.message }); }
+      await new Promise(r => setTimeout(r, 300));
     }
-
     const sold = results.filter(r => r.ok).length;
-    console.log(`[SELL-ALL] ${wallet.slice(0, 8)} sold ${sold}/${posData.positions.length} positions`);
-    res.json({ ok: true, sold, total: posData.positions.length, results });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    console.log("[SELL-ALL]", wallet.slice(0, 8), sold + "/" + mints.size);
+    res.json({ ok: true, sold, total: mints.size, results });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Build deposit tx — Phantom signs a normal SOL transfer (never flagged)
@@ -1858,68 +1853,85 @@ app.post("/api/quick-sell", apiLimiter, requireVerifiedWallet, async (req, res) 
     const { wallet, ca, percent } = req.body;
     if (!wallet || !ca) return res.status(400).json({ error: "wallet and ca required" });
     const sellPct = Math.min(100, Math.max(1, percent || 100));
+    const mint = new PublicKey(ca);
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
 
-    let apiKey, ppPrivateKey;
+    // Find ALL wallets that might hold this token
+    const walletsWithKeys = []; // { pubkey, keypair?, apiKey? }
+
+    // 1. PumpPortal trading wallet
     if (userStore) {
       const user = await userStore.get(wallet);
-      apiKey = user?.ppApiKey || null; if (apiKey === "") apiKey = null;
-      ppPrivateKey = user?.ppPrivateKey || null; if (ppPrivateKey === "") ppPrivateKey = null;
+      const apiKey = user?.ppApiKey && user.ppApiKey !== "" ? user.ppApiKey : null;
+      const pk = user?.ppPrivateKey && user.ppPrivateKey !== "" ? user.ppPrivateKey : null;
+      if (user?.ppWallet) walletsWithKeys.push({ pubkey: user.ppWallet, apiKey, privateKey: pk });
     }
-    if (!apiKey && !ppPrivateKey) return res.status(400).json({ error: "No trading wallet" });
+
+    // 2. Session wallets (master + fleet)
+    try {
+      const sessions = await sessionManager?.getByWallet?.(wallet) || [];
+      for (const s of (Array.isArray(sessions) ? sessions : [])) {
+        try {
+          const devKp = await sessionManager.getDevKeypair(s.id);
+          if (devKp) walletsWithKeys.push({ pubkey: devKp.publicKey.toBase58(), keypair: devKp });
+        } catch {}
+        if (s.fleetWallets) {
+          for (const fw of s.fleetWallets) {
+            if (fw.secret) {
+              try {
+                const kp = Keypair.fromSecretKey(bs58.decode(fw.secret));
+                walletsWithKeys.push({ pubkey: kp.publicKey.toBase58(), keypair: kp });
+              } catch {}
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // Find which wallet actually holds this token
+    let sellerWallet = null;
+    for (const w of walletsWithKeys) {
+      try {
+        const ata = await connection.getParsedTokenAccountsByOwner(new PublicKey(w.pubkey), { mint });
+        const balance = ata.value?.[0]?.account?.data?.parsed?.info?.tokenAmount?.uiAmount || 0;
+        if (balance > 0) { sellerWallet = w; break; }
+      } catch {}
+    }
+
+    if (!sellerWallet) return res.status(400).json({ error: "No wallet holds this token" });
 
     let signature;
 
-    if (apiKey) {
-      const ppRes = await fetch("https://pumpportal.fun/api/trade?api-key=" + apiKey, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "sell",
-          mint: ca,
-          amount: sellPct + "%",
-          denominatedInSol: "false",
-          slippage: 25,
-          priorityFee: 0.0005,
-          pool: "auto",
-        }),
+    // Try Lightning API first (if PumpPortal wallet with API key)
+    if (sellerWallet.apiKey) {
+      const ppRes = await fetch("https://pumpportal.fun/api/trade?api-key=" + sellerWallet.apiKey, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "sell", mint: ca, amount: sellPct + "%", denominatedInSol: "false", slippage: 25, priorityFee: 0.0005, pool: "auto" }),
       });
-
       const result = await ppRes.json();
-      if (result.errors || result.error) {
-        return res.status(500).json({ error: result.errors?.[0] || result.error || "Sell failed" });
-      }
-      signature = result.signature || result.tx || result;
-    } else {
-      const tradingKp = Keypair.fromSecretKey(bs58.decode(ppPrivateKey));
+      if (!result.errors && !result.error) { signature = result.signature || result; }
+      else console.error("[QUICK-SELL] Lightning error:", result.errors || result.error);
+    }
+
+    // Fallback: trade-local with private key
+    if (!signature) {
+      let kp = sellerWallet.keypair;
+      if (!kp && sellerWallet.privateKey) kp = Keypair.fromSecretKey(bs58.decode(sellerWallet.privateKey));
+      if (!kp) return res.status(400).json({ error: "No signing key for wallet holding this token" });
+
       const ppRes = await fetch("https://pumpportal.fun/api/trade-local", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          publicKey: tradingKp.publicKey.toBase58(),
-          action: "sell",
-          mint: ca,
-          amount: sellPct + "%",
-          denominatedInSol: "false",
-          slippage: 25,
-          priorityFee: 0.0005,
-          pool: "auto",
-        }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ publicKey: kp.publicKey.toBase58(), action: "sell", mint: ca, amount: sellPct + "%", denominatedInSol: "false", slippage: 25, priorityFee: 0.0005, pool: "auto" }),
       });
-
-      if (!ppRes.ok) {
-        const errText = await ppRes.text();
-        return res.status(500).json({ error: "Sell failed: " + errText.slice(0, 100) });
-      }
-
+      if (!ppRes.ok) { const t = await ppRes.text(); return res.status(500).json({ error: "Sell failed: " + t.slice(0, 100) }); }
       const txBuf = Buffer.from(await ppRes.arrayBuffer());
       const vtx = VersionedTransaction.deserialize(txBuf);
-      vtx.sign([tradingKp]);
-      const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+      vtx.sign([kp]);
       signature = await connection.sendRawTransaction(vtx.serialize(), { skipPreflight: true, maxRetries: 3 });
     }
 
-    console.log(`[QUICK-SELL] ✓ ${wallet.slice(0, 8)} sold ${sellPct}% of ${ca.slice(0, 8)} | via: ${apiKey ? "lightning" : "local"}`);
-    res.json({ ok: true, signature: String(signature), percent: sellPct, ca, via: apiKey ? "pumpportal-lightning" : "pumpportal-local" });
+    console.log(`[QUICK-SELL] ✓ ${sellerWallet.pubkey.slice(0, 8)} sold ${sellPct}% of ${ca.slice(0, 8)} | sig: ${String(signature).slice(0, 16)}`);
+    res.json({ ok: true, signature: String(signature), percent: sellPct, ca, sellerWallet: sellerWallet.pubkey.slice(0, 8) });
   } catch (e) {
     console.error("[QUICK-SELL] Error:", e.message);
     res.status(500).json({ error: e.message });
