@@ -1637,7 +1637,7 @@ export default function App() {
   const [tokenName, setTokenName] = useState(""); const [ticker, setTicker] = useState(""); const [desc, setDesc] = useState(""); const [image, setImage] = useState(null);
   const [twitter, setTwitter] = useState(""); const [telegram, setTelegram] = useState(""); const [website, setWebsite] = useState("");
   const [existingCA, setExistingCA] = useState(""); const [totalSol, setTotalSol] = useState(1);
-  const [rpc, setRpc] = useState(""); const [seed, setSeed] = useState("");
+  const [rpc, setRpc] = useState(""); const [seed, setSeed] = useState(""); const [useFreshWallet, setUseFreshWallet] = useState(false);
   const [slippage, setSlippage] = useState(25); const [sniperCount, setSniperCount] = useState(2); const [duration, setDuration] = useState(60); const [jitoTip, setJitoTip] = useState(0.001); const [useAtlas, setUseAtlas] = useState(false); const [deployOnly, setDeployOnly] = useState(false); const [batchCount, setBatchCount] = useState(1); const [batchDelay, setBatchDelay] = useState(5);
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState(""); const [activeSessionId, setActiveSessionId] = useState("");
@@ -2117,12 +2117,31 @@ export default function App() {
 
                 {/* ═══ TRADE TAB (wizard) ═══ */}
                 {appTab === "trade" && (<>
-                <Section n="1" title="Wallet" done={!!tradingKeys?.privateKey || !!seed} T={T} mobile={mobile}>
+                <Section n="1" title="Wallet" done={!!tradingKeys?.privateKey || !!seed || useFreshWallet} T={T} mobile={mobile}>
                     {tradingKeys?.privateKey ? (
-                      <div style={{ padding: mobile ? 16 : 20, background: T.green + "08", border: "1px solid " + T.green + "44", borderRadius: 12, textAlign: "center" }}>
-                        <div style={{ fontSize: 15, fontFamily: mono, fontWeight: 700, color: T.green }}>Trading Wallet {"✓"}</div>
-                        <div style={{ fontSize: 11, color: T.faint, fontFamily: mono, marginTop: 4 }}>{tradingWallet?.slice(0, 16)}... {"·"} {tradingBalance.toFixed(3)} SOL</div>
-                        <div style={{ fontSize: 10, color: T.dim, fontFamily: mono, marginTop: 4 }}>Deploy uses this wallet automatically</div>
+                      <div>
+                        {/* Toggle: Trading Wallet vs Fresh Wallet */}
+                        {(user?.tier === "pro" || user?.whitelisted) && (
+                          <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+                            <button onClick={() => { setUseFreshWallet(false); setSeed(""); }} style={{ flex: 1, padding: "8px 12px", background: !useFreshWallet ? T.green + "12" : "transparent", border: "1px solid " + (!useFreshWallet ? T.green + "44" : T.border), borderRadius: 8, fontFamily: mono, fontSize: 11, fontWeight: 700, color: !useFreshWallet ? T.green : T.dim, cursor: "pointer" }}>Trading Key</button>
+                            <button onClick={() => setUseFreshWallet(true)} style={{ flex: 1, padding: "8px 12px", background: useFreshWallet ? T.green + "12" : "transparent", border: "1px solid " + (useFreshWallet ? T.green + "44" : T.border), borderRadius: 8, fontFamily: mono, fontSize: 11, fontWeight: 700, color: useFreshWallet ? T.green : T.dim, cursor: "pointer" }}>Fresh Wallet</button>
+                          </div>
+                        )}
+                        {!useFreshWallet ? (
+                          <div style={{ padding: mobile ? 14 : 18, background: T.green + "08", border: "1px solid " + T.green + "44", borderRadius: 12 }}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                              <div style={{ fontSize: 14, fontFamily: mono, fontWeight: 700, color: T.green }}>Trading Wallet</div>
+                              <div style={{ fontSize: 12, fontFamily: mono, fontWeight: 700, color: tradingBalance > 0.05 ? T.green : T.red }}>{tradingBalance.toFixed(3)} SOL</div>
+                            </div>
+                            <div style={{ fontSize: 10, color: T.faint, fontFamily: mono, marginTop: 4 }}>{tradingWallet?.slice(0, 20)}...{tradingWallet?.slice(-6)}</div>
+                            <div style={{ fontSize: 10, color: T.dim, fontFamily: mono, marginTop: 4 }}>Deploys directly from this wallet. No deposit step.</div>
+                          </div>
+                        ) : (
+                          <div style={{ padding: mobile ? 14 : 18, background: T.bg, border: "1px solid " + T.border, borderRadius: 12 }}>
+                            <div style={{ fontSize: 14, fontFamily: mono, fontWeight: 700, color: T.mid, marginBottom: 4 }}>Fresh Wallet</div>
+                            <div style={{ fontSize: 10, color: T.faint, fontFamily: mono }}>A new keypair will be generated. You'll deposit SOL via Phantom to fund it. No on-chain link to your trading wallet.</div>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
@@ -2207,7 +2226,7 @@ export default function App() {
                   </>)}
                 </Section>
                 <Section n=<StatusIc.Rocket size={28} /> title={isApe ? "Start Trading" : "Launch"} highlight={canLaunch} T={T} mobile={mobile}>
-                  <LaunchFlow user={user} mobile={mobile} totalSol={deployOnly ? 0 : totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={tradingKeys?.privateKey || seed} fleetConfig={{ sniperCount, slippage, duration, jitoTip, deployOnly, batchCount: deployOnly ? batchCount : 1, batchDelay: deployOnly ? batchDelay : 5 }} onLaunched={(data) => { setWantsHome(false); setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); if (data.walletKeys) setFleetKeys(data.walletKeys); if (data.devSecret) setDevSecret(data.devSecret); }} />
+                  <LaunchFlow user={user} mobile={mobile} totalSol={deployOnly ? 0 : totalSol} tokenConfig={{ name: tokenName, ticker, description: desc || (user?.tier === "free" ? "bondli.fun deployed" : ""), image, twitter, telegram, website, existingCA }} canLaunch={canLaunch} launched={launched} masterSeed={useFreshWallet ? "" : (tradingKeys?.privateKey || seed)} fleetConfig={{ sniperCount, slippage, duration, jitoTip, deployOnly, batchCount: deployOnly ? batchCount : 1, batchDelay: deployOnly ? batchDelay : 5 }} onLaunched={(data) => { setWantsHome(false); setLaunched(true); setCurveProgress(0.03); if (data.tokenCA) setLaunchCA(data.tokenCA); if (data.pumpUrl) setLaunchPumpUrl(data.pumpUrl); if (data.sessionId) setActiveSessionId(data.sessionId); if (data.walletKeys) setFleetKeys(data.walletKeys); if (data.devSecret) setDevSecret(data.devSecret); }} />
                 </Section>
                 {pastSessions.length > 0 && (<div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 14 : 18, marginTop: 8 }}>
                   <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
