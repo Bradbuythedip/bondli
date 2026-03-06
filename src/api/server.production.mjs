@@ -34,7 +34,7 @@ import { generateChallenge, verifySolanaSignature, issueAuthToken, requireVerifi
 // Launch Sessions (dev wallet generation + funding)
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
 import { createToken } from "../engine/token-creator.mjs";
-import { getAssociatedTokenAddressSync, getAccount } from "@solana/spl-token";
+import { getAssociatedTokenAddressSync, getAccount, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import BN from "bn.js";
 import { getSellSolAmountFromTokenAmount, getBuyTokenAmountFromSolAmount, PumpSdk, OnlinePumpSdk } from "@pump-fun/pump-sdk";
 
@@ -281,6 +281,147 @@ app.post("/api/send-signed-tx", apiLimiter, async (req, res) => {
     res.json({ ok: true, signature });
   } catch (e) {
     console.error("[SEND-TX]", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════
+// POSITIONS — live portfolio with P&L for trading wallet
+// ═══════════════════════════════════════
+app.get("/api/positions/:wallet", apiLimiter, async (req, res) => {
+  try {
+    const wallet = req.params.wallet;
+    if (!userStore) return res.json({ ok: true, positions: [], balance: 0 });
+    const user = await userStore.get(wallet);
+    const tradingWallet = user?.ppWallet;
+    if (!tradingWallet) return res.json({ ok: true, positions: [], balance: 0, noWallet: true });
+
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const pubkey = new PublicKey(tradingWallet);
+
+    // Get SOL balance
+    const solBalance = await connection.getBalance(pubkey);
+
+    // Get all token accounts
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
+    const positions = [];
+
+    for (const { account } of tokenAccounts.value) {
+      const parsed = account.data.parsed?.info;
+      if (!parsed || parsed.tokenAmount?.uiAmount === 0) continue;
+      const mint = parsed.mint;
+      const amount = parsed.tokenAmount?.uiAmount || 0;
+      const decimals = parsed.tokenAmount?.decimals || 6;
+
+      positions.push({ mint, amount, decimals });
+    }
+
+    // Enrich with prices from DexScreener (batch of 10)
+    if (positions.length > 0) {
+      const mints = positions.map(p => p.mint);
+      const batches = [];
+      for (let i = 0; i < mints.length; i += 10) batches.push(mints.slice(i, i + 10));
+
+      for (const batch of batches.slice(0, 3)) { // max 30 tokens
+        try {
+          const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + batch.join(","), { signal: AbortSignal.timeout(6000) });
+          if (r.ok) {
+            const data = await r.json();
+            for (const pair of (data.pairs || [])) {
+              const pos = positions.find(p => p.mint === pair.baseToken?.address);
+              if (pos && pair.chainId === "solana") {
+                pos.name = pair.baseToken?.name || "?";
+                pos.ticker = pair.baseToken?.symbol || "?";
+                pos.priceUsd = parseFloat(pair.priceUsd || 0);
+                pos.priceNative = parseFloat(pair.priceNative || 0);
+                pos.mcap = pair.marketCap || pair.fdv || 0;
+                pos.valueUsd = pos.amount * pos.priceUsd;
+                pos.valueSol = pos.amount * pos.priceNative;
+                pos.h1Change = pair.priceChange?.h1 || 0;
+                pos.h24Change = pair.priceChange?.h24 || 0;
+                pos.image = pair.info?.imageUrl || "";
+                pos.dexUrl = pair.url || "";
+                pos.pumpUrl = "https://pump.fun/coin/" + pos.mint;
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // Filter out dust positions (< $0.01)
+    const filtered = positions.filter(p => (p.valueUsd || 0) >= 0.01 || !p.priceUsd);
+
+    // Sort by value descending
+    filtered.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
+
+    const totalValueUsd = filtered.reduce((s, p) => s + (p.valueUsd || 0), 0);
+    const totalValueSol = filtered.reduce((s, p) => s + (p.valueSol || 0), 0);
+
+    res.json({
+      ok: true,
+      tradingWallet,
+      solBalance: solBalance / LAMPORTS_PER_SOL,
+      positions: filtered,
+      totalPositions: filtered.length,
+      totalValueUsd: Math.round(totalValueUsd * 100) / 100,
+      totalValueSol: Math.round(totalValueSol * 1000) / 1000,
+    });
+  } catch (e) {
+    console.error("[POSITIONS]", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════
+// TOKEN SEARCH — search across ALL pump.fun tokens via DexScreener
+// ═══════════════════════════════════════
+app.get("/api/search", apiLimiter, async (req, res) => {
+  try {
+    const q = (req.query.q || "").trim();
+    if (q.length < 2) return res.json({ ok: true, results: [] });
+
+    // If it looks like a CA (32+ chars, base58), search by token address
+    if (q.length >= 32 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(q)) {
+      try {
+        const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + q, { signal: AbortSignal.timeout(6000) });
+        if (r.ok) {
+          const data = await r.json();
+          const results = (data.pairs || []).filter(p => p.chainId === "solana").slice(0, 5).map(p => ({
+            ca: p.baseToken?.address, name: p.baseToken?.name, ticker: p.baseToken?.symbol,
+            mcap: p.marketCap || p.fdv || 0, priceUsd: p.priceUsd, h1Change: p.priceChange?.h1 || 0,
+            image: p.info?.imageUrl || "", dexUrl: p.url || "", volume24: p.volume?.h24 || 0,
+          }));
+          return res.json({ ok: true, results, source: "dexscreener-token" });
+        }
+      } catch {}
+    }
+
+    // Text search via DexScreener
+    try {
+      const r = await fetch("https://api.dexscreener.com/latest/dex/search?q=" + encodeURIComponent(q), { signal: AbortSignal.timeout(6000) });
+      if (r.ok) {
+        const data = await r.json();
+        const results = (data.pairs || []).filter(p => p.chainId === "solana").slice(0, 20).map(p => ({
+          ca: p.baseToken?.address, name: p.baseToken?.name, ticker: p.baseToken?.symbol,
+          mcap: p.marketCap || p.fdv || 0, priceUsd: p.priceUsd, h1Change: p.priceChange?.h1 || 0,
+          image: p.info?.imageUrl || "", dexUrl: p.url || "", volume24: p.volume?.h24 || 0,
+          buys24: p.txns?.h24?.buys || 0, sells24: p.txns?.h24?.sells || 0,
+        }));
+        return res.json({ ok: true, results, source: "dexscreener-search" });
+      }
+    } catch {}
+
+    // Fallback: check radar pool
+    const radarResults = [];
+    for (const [ca, t] of radar.pool) {
+      if ((t.name || "").toLowerCase().includes(q.toLowerCase()) || (t.ticker || "").toLowerCase().includes(q.toLowerCase())) {
+        radarResults.push({ ca, name: t.name, ticker: t.ticker, mcap: Math.round((t.mcapSol || 0) * 170), image: t.image || "", buys: t.buys, sells: t.sells });
+      }
+    }
+
+    res.json({ ok: true, results: radarResults.slice(0, 20), source: "radar" });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
