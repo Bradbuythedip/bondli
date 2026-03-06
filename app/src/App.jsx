@@ -1380,7 +1380,7 @@ export default function App() {
   const [fleetKeys, setFleetKeys] = useState([]); const [devSecret, setDevSecret] = useState("");
   const [copied, setCopied] = useState(false);
   const [onlineCount, setOnlineCount] = useState(0);
-  const [appTab, setAppTab] = useState("trade"); // "trade" or "radar"
+  const [appTab, setAppTab] = useState("radar"); // "trade" or "radar"
   const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false);
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
@@ -1414,7 +1414,7 @@ export default function App() {
 
     toast("Building transaction...", "info");
     try {
-      // 1. Server builds unsigned tx
+      // 1. Server builds unsigned tx (returns base64)
       const res = await fetch(API + "/api/quick-ape", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1423,20 +1423,61 @@ export default function App() {
       const data = await res.json();
       if (!data.ok) { toast(data.error || "Failed to build tx", "error"); return; }
 
-      // 2. Deserialize and sign+send with Phantom (no @solana/web3.js needed)
-      const txBuffer = Uint8Array.from(atob(data.tx), c => c.charCodeAt(0));
+      // 2. Decode base64 tx to bytes
+      const raw = atob(data.tx);
+      const txBytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) txBytes[i] = raw.charCodeAt(i);
 
       toast("Approve in Phantom...", "info");
-      // Phantom's signAndSendTransaction handles everything
-      const { signature } = await phantom.request({
-        method: "signAndSendTransaction",
-        params: { message: btoa(String.fromCharCode(...txBuffer)) },
-      });
+
+      // 3. Try multiple Phantom signing methods (adapter API changed across versions)
+      let signature;
+      try {
+        // Method 1: phantom.signAndSendTransaction with raw bytes (Phantom v24+)
+        if (phantom.signAndSendTransaction) {
+          // Phantom expects a Transaction-like object with serialize()
+          // But we can pass a VersionedTransaction-compatible object
+          const result = await phantom.request({
+            method: "signAndSendTransaction",
+            params: { transaction: data.tx, options: { skipPreflight: true } },
+          });
+          signature = result.signature || result;
+        }
+      } catch (e1) {
+        console.warn("[QUICK-APE] Method 1 failed:", e1.message);
+        try {
+          // Method 2: Legacy phantom.request with message param
+          const result = await phantom.request({
+            method: "signAndSendTransaction",
+            params: { message: data.tx },
+          });
+          signature = result.signature || result;
+        } catch (e2) {
+          console.warn("[QUICK-APE] Method 2 failed:", e2.message);
+          // Method 3: signTransaction + sendRawTransaction via server
+          const signed = await phantom.signTransaction((() => {
+            // Minimal Transaction-like from bytes
+            const tx = { serialize: () => txBytes, signatures: [] };
+            tx.feePayer = { toBuffer: () => txBytes.slice(0, 32) };
+            return tx;
+          })());
+          // Send via server
+          const sendRes = await fetch(API + "/api/send-signed-tx", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ signedTx: btoa(String.fromCharCode.apply(null, new Uint8Array(signed.serialize()))) }),
+          });
+          const sendData = await sendRes.json();
+          signature = sendData.signature;
+        }
+      }
+
+      if (!signature) { toast("No signature returned", "error"); return; }
 
       toast("Confirming...", "info");
-      // Poll server for confirmation instead of using @solana/web3.js Connection
+      // Poll server for confirmation
       let confirmed = false;
-      for (let i = 0; i < 30 && !confirmed; i++) {
+      for (let i = 0; i < 20 && !confirmed; i++) {
         await new Promise(r => setTimeout(r, 2000));
         try {
           const check = await fetch(API + "/api/tx-status/" + signature);
@@ -1444,11 +1485,11 @@ export default function App() {
         } catch {}
       }
 
-      toast("Aped " + solAmount + " SOL into " + ca.slice(0, 8) + "... ✓", "success");
+      toast(confirmed ? "Aped " + solAmount + " SOL into " + ca.slice(0, 8) + "... \u2713" : "Tx sent! Check explorer for " + String(signature).slice(0, 12), "success");
       console.log("[QUICK-APE] Success:", signature);
       return signature;
     } catch (e) {
-      if (e.message?.includes("User rejected")) { toast("Transaction cancelled", "error"); }
+      if (e.message?.includes("User rejected") || e.message?.includes("user rejected")) { toast("Transaction cancelled", "error"); }
       else { toast("Ape failed: " + (e.message || "Unknown error"), "error"); }
       console.error("[QUICK-APE]", e);
     }
