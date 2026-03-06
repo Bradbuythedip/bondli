@@ -1616,9 +1616,9 @@ export default function App() {
               </div>
             </div>
           ) : user && !user.demo && (
-            <div style={{ background: T.yellow + "08", borderBottom: "1px solid " + T.yellow + "22", padding: "8px 20px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}>
-              <span style={{ fontSize: 12, fontFamily: mono, color: T.yellow }}>No trading wallet</span>
-              <button onClick={createTradingWallet} style={{ background: T.green, color: T.bg, border: "none", borderRadius: 6, padding: "4px 14px", fontFamily: mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Create Trading Wallet</button>
+            <div style={{ background: T.yellow + "08", borderBottom: "1px solid " + T.yellow + "22", padding: "8px 20px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, fontFamily: mono, color: T.yellow }}>Set up trading wallet to start buying</span>
+              <button onClick={createTradingWallet} style={{ background: T.green, color: T.bg, border: "none", borderRadius: 6, padding: "4px 14px", fontFamily: mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>{"\uD83D\uDE80"} Create Trading Wallet</button>
             </div>
           )}
           {/* Trading Keys Modal */}
@@ -1627,18 +1627,18 @@ export default function App() {
               <div onClick={e => e.stopPropagation()} style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 20, padding: 28, maxWidth: 480, width: "100%" }}>
                 <h3 style={{ fontFamily: sans, fontWeight: 900, fontSize: 20, color: T.text, marginBottom: 16, textAlign: "center" }}>{"\uD83D\uDD11"} Trading Wallet Keys</h3>
                 <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: 14, marginBottom: 12 }}>
-                  <div style={{ fontSize: 10, fontFamily: mono, color: T.faint, marginBottom: 4 }}>Wallet Address</div>
+                  <div style={{ fontSize: 10, fontFamily: mono, color: T.faint, marginBottom: 4 }}>Wallet Address (send SOL here to fund)</div>
                   <div onClick={() => { navigator.clipboard?.writeText(tradingKeys.tradingWallet || tradingWallet); toast("Copied!", "success"); }} style={{ fontSize: 13, fontFamily: mono, color: T.green, cursor: "pointer", wordBreak: "break-all" }}>{tradingKeys.tradingWallet || tradingWallet}</div>
                 </div>
-                {tradingKeys.apiKey && <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: 14, marginBottom: 12 }}>
-                  <div style={{ fontSize: 10, fontFamily: mono, color: T.faint, marginBottom: 4 }}>API Key (PumpPortal)</div>
-                  <div onClick={() => { navigator.clipboard?.writeText(tradingKeys.apiKey); toast("API key copied!", "success"); }} style={{ fontSize: 12, fontFamily: mono, color: T.yellow, cursor: "pointer", wordBreak: "break-all" }}>{tradingKeys.apiKey}</div>
+                {tradingKeys.privateKey && <div style={{ background: T.bg, border: "1px solid " + T.yellow + "33", borderRadius: 10, padding: 14, marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, fontFamily: mono, color: T.yellow, marginBottom: 4 }}>Private Key (import to Phantom to manage funds)</div>
+                  <div onClick={() => { navigator.clipboard?.writeText(tradingKeys.privateKey); toast("Private key copied!", "success"); }} style={{ fontSize: 11, fontFamily: mono, color: T.text, cursor: "pointer", wordBreak: "break-all", background: T.surface, padding: 8, borderRadius: 6 }}>{tradingKeys.privateKey}</div>
                 </div>}
-                {tradingKeys.privateKey && <div style={{ background: T.red + "08", border: "1px solid " + T.red + "22", borderRadius: 10, padding: 14, marginBottom: 16 }}>
-                  <div style={{ fontSize: 10, fontFamily: mono, color: T.red, marginBottom: 4 }}>Private Key (KEEP SECRET)</div>
-                  <div onClick={() => { navigator.clipboard?.writeText(tradingKeys.privateKey); toast("Private key copied!", "success"); }} style={{ fontSize: 11, fontFamily: mono, color: T.red, cursor: "pointer", wordBreak: "break-all", opacity: 0.8 }}>{tradingKeys.privateKey}</div>
+                {tradingKeys.apiKey && tradingKeys.apiKey !== "null" && <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, fontFamily: mono, color: T.faint, marginBottom: 4 }}>PumpPortal Lightning API Key (for instant trades)</div>
+                  <div onClick={() => { navigator.clipboard?.writeText(tradingKeys.apiKey); toast("API key copied!", "success"); }} style={{ fontSize: 12, fontFamily: mono, color: T.dim, cursor: "pointer", wordBreak: "break-all" }}>{tradingKeys.apiKey}</div>
                 </div>}
-                <p style={{ fontSize: 12, color: T.faint, textAlign: "center", marginBottom: 14, lineHeight: 1.6 }}>Save these keys. You can import the private key into Phantom to manage funds directly. Anyone with the API key can trade from this wallet.</p>
+                <p style={{ fontSize: 12, color: T.faint, textAlign: "center", marginBottom: 14, lineHeight: 1.6 }}>Save your private key! Import it into Phantom to withdraw funds anytime. Trades happen instantly from this wallet with zero popups.</p>
                 <button onClick={() => setShowTradingSetup(false)} style={{ width: "100%", padding: 12, background: T.green + "15", border: "1px solid " + T.green, borderRadius: 10, fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.green, cursor: "pointer" }}>Done</button>
               </div>
             </div>
