@@ -486,7 +486,8 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
   const [chartMode, setChartMode] = useState("live");
   const [timeframe, setTimeframe] = useState(5); // minutes: 5, 10, 30, 60, 0=all
   const timeframeRef = useRef(5);
-  useEffect(() => { timeframeRef.current = timeframe; drawCanvas(); }, [timeframe]);
+  const drawRef = useRef(null);
+  useEffect(() => { timeframeRef.current = timeframe; if (drawRef.current) drawRef.current(); }, [timeframe]);
   const [age, setAge] = useState(0);
   const canvasRef = useRef(null);
   const histRef = useRef([]);
@@ -685,6 +686,7 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
       ctx.fillText(bpVal.toFixed(0) + "%", pad.left + barW + 4, H - 2);
     }
   };
+  drawRef.current = drawCanvas;
 
   return (
     <div>
@@ -736,7 +738,7 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
 // ═══════════════════════════════════════
 // RADAR — Full-screen card grid scanner (pump.fun style)
 // ═══════════════════════════════════════
-function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
+function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScreen, tradingBalance }) {
   const mono = "'SF Mono',SFMono-Regular,ui-monospace,'Cascadia Mono',Menlo,monospace";
   const [tabs, setTabs] = useState({ new: [], hot: [], graduating: [], momentum: [] });
   const [activeTab, setActiveTab] = useState("momentum");
@@ -942,11 +944,23 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
               {selected.bp > 0 && <div style={{ height: 4, background: T.border, margin: "8px 16px 0", borderRadius: 2 }}><div style={{ height: 4, background: selected.bp >= 80 ? "#ffaa00" : T.green, width: Math.min(100, selected.bp) + "%", borderRadius: 2 }} /></div>}
               <div style={{ margin: "10px 16px 0", borderRadius: 10, overflow: "hidden", border: "1px solid " + T.border }}><PriceChart trades={[]} mobile={true} T={T} ca={selected.ca} /></div>
               <div onClick={() => { navigator.clipboard?.writeText(selected.ca); }} style={{ margin: "10px 16px", background: T.surface, borderRadius: 8, padding: "8px 12px", fontFamily: mono, fontSize: 11, color: T.faint, cursor: "pointer", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selected.ca} <span style={{ color: T.dim }}>{"\u2398"} copy</span></div>
-              <div style={{ display: "flex", gap: 6, padding: "0 16px 8px", flexWrap: "wrap" }}>
-                {onQuickApe && [0.05, 0.1, 0.25, 0.5, 1].map(amt => (
-                  <button key={amt} onClick={(e) => { e.stopPropagation(); onQuickApe(selected.ca, amt); }} style={{ padding: "10px 0", flex: 1, minWidth: 50, background: T.green + "12", border: "1px solid " + T.green + "44", borderRadius: 10, fontFamily: mono, fontSize: 12, fontWeight: 800, color: T.green, cursor: "pointer", transition: "all .15s" }} onMouseEnter={e => e.currentTarget.style.background = T.green + "25"} onMouseLeave={e => e.currentTarget.style.background = T.green + "12"}>{amt} SOL</button>
-                ))}
+              <div style={{ display: "flex", gap: 5, padding: "0 16px 6px", flexWrap: "wrap" }}>
+                <span style={{ fontFamily: mono, fontSize: 9, color: T.green, fontWeight: 700, alignSelf: "center", marginRight: 2 }}>BUY</span>
+                {onQuickApe && [0.05, 0.1, 0.25, 0.5, 1].map(amt => {
+                  const canAfford = (tradingBalance || 0) >= amt;
+                  return (
+                    <button key={amt} disabled={!canAfford} onClick={(e) => { e.stopPropagation(); onQuickApe(selected.ca, amt); }} style={{ padding: "8px 0", flex: 1, minWidth: 44, background: canAfford ? T.green + "12" : T.border + "22", border: "1px solid " + (canAfford ? T.green + "44" : T.border), borderRadius: 8, fontFamily: mono, fontSize: 11, fontWeight: 800, color: canAfford ? T.green : T.faint, cursor: canAfford ? "pointer" : "not-allowed", opacity: canAfford ? 1 : 0.4, transition: "all .15s" }}>{amt}</button>
+                  );
+                })}
               </div>
+              {onQuickSell && (
+                <div style={{ display: "flex", gap: 5, padding: "0 16px 8px", flexWrap: "wrap" }}>
+                  <span style={{ fontFamily: mono, fontSize: 9, color: "#ff4444", fontWeight: 700, alignSelf: "center", marginRight: 2 }}>SELL</span>
+                  {[25, 50, 100].map(pct => (
+                    <button key={pct} onClick={(e) => { e.stopPropagation(); onQuickSell(selected.ca, pct); }} style={{ padding: "8px 0", flex: 1, background: pct === 100 ? "#ff444418" : "#ff444408", border: "1px solid " + (pct === 100 ? "#ff444466" : "#ff444433"), borderRadius: 8, fontFamily: mono, fontSize: 11, fontWeight: 800, color: pct === 100 ? "#ff4444" : "#ff6666", cursor: "pointer" }}>{pct === 100 ? "\u2620 All" : pct + "%"}</button>
+                  ))}
+                </div>
+              )}
               <div style={{ display: "flex", gap: 8, padding: "0 16px 16px" }}>
                 <button onClick={(e) => { e.stopPropagation(); onApe(selected.ca); setSelected(null); }} style={{ flex: 1, padding: "12px", background: T.surface, border: "1px solid " + T.green, borderRadius: 12, fontFamily: mono, fontSize: 13, fontWeight: 800, color: T.green, cursor: "pointer" }}>{"\u2699"} Fleet APE</button>
                 <a href={"https://pump.fun/coin/" + selected.ca} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={{ padding: "12px 14px", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 11, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>pump {"\u2197"}</a>
@@ -959,7 +973,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
           {selected?.error && <div style={{ padding: "14px 16px", margin: "10px 16px", background: T.red + "10", borderRadius: 12, fontFamily: mono, fontSize: 12, color: T.red, display: "flex", justifyContent: "space-between" }}><span>{selected.error}</span><button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: T.red, cursor: "pointer" }}>{"\u2715"}</button></div>}
 
           {/* Card Grid */}
-          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(180px, 1fr))", gap: mobile ? 6 : 10, padding: mobile ? "10px 8px" : "14px 16px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(180px, 1fr))", gap: mobile ? 8 : 14, padding: mobile ? "12px 10px" : "16px 18px" }}>
             {tokens.map((t, i) => <TokenCard key={t.ca} t={t} i={i} />)}
           </div>
         </div>
@@ -975,20 +989,20 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
 // ═══════════════════════════════════════
 // PORTFOLIO — Live positions with P&L + sell buttons + search
 // ═══════════════════════════════════════
-function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast }) {
+function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tradingBalance }) {
   const [positions, setPositions] = useState([]);
-  const [solBal, setSolBal] = useState(0);
+  const [solBal, setSolBal] = useState(tradingBalance || 0);
   const [totalVal, setTotalVal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
-  const [selling, setSelling] = useState(null); // ca being sold
+  const [selling, setSelling] = useState(null);
+  const [sellingAll, setSellingAll] = useState(false);
 
   const API = window.__BONDLI_API;
   const fmt = n => !n || n === 0 ? "$0" : n >= 1e6 ? "$" + (n/1e6).toFixed(1) + "M" : n >= 1e3 ? "$" + (n/1e3).toFixed(1) + "K" : "$" + n.toFixed(2);
 
-  // Fetch positions
   const fetchPositions = async () => {
     try {
       const r = await fetch(API + "/api/positions/" + user.pubkey);
@@ -1009,7 +1023,6 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast }) {
     return () => clearInterval(iv);
   }, [user?.pubkey]);
 
-  // Global search
   useEffect(() => {
     if (search.length < 2) { setSearchResults([]); return; }
     const timeout = setTimeout(async () => {
@@ -1024,10 +1037,23 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast }) {
   }, [search]);
 
   const handleSell = async (ca, pct) => {
-    setSelling(ca);
+    setSelling(ca + pct);
     await quickSell(ca, pct);
     setSelling(null);
     setTimeout(fetchPositions, 3000);
+  };
+
+  const handleSellAll = async () => {
+    if (positions.length === 0) return;
+    setSellingAll(true);
+    toast("Selling all positions...", "info");
+    try {
+      const r = await fetch(API + "/api/sell-all", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) });
+      const d = await r.json();
+      toast(d.ok ? `Sold ${d.sold}/${d.total} positions` : (d.error || "Failed"), d.ok ? "success" : "error");
+      setTimeout(fetchPositions, 3000);
+    } catch { toast("Network error", "error"); }
+    setSellingAll(false);
   };
 
   return (
@@ -1036,31 +1062,33 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast }) {
       <div style={{ padding: "16px 20px", borderBottom: "1px solid " + T.border }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
           <div>
-            <div style={{ fontFamily: mono, fontSize: 22, fontWeight: 900, color: T.text }}>{fmt(totalVal)}</div>
-            <div style={{ fontFamily: mono, fontSize: 12, color: T.faint }}>{solBal.toFixed(3)} SOL available {"\u00B7"} {positions.length} position{positions.length !== 1 ? "s" : ""}</div>
+            <div style={{ fontFamily: mono, fontSize: 24, fontWeight: 900, color: T.text }}>{fmt(totalVal)}</div>
+            <div style={{ fontFamily: mono, fontSize: 12, color: T.faint }}>{solBal.toFixed(3)} SOL {"\u00B7"} {positions.length} bag{positions.length !== 1 ? "s" : ""}</div>
           </div>
-          <button onClick={fetchPositions} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "6px 12px", fontFamily: mono, fontSize: 11, color: T.dim, cursor: "pointer" }}>{"\u21BB"} Refresh</button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={fetchPositions} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "6px 10px", fontFamily: mono, fontSize: 10, color: T.dim, cursor: "pointer" }}>{"\u21BB"}</button>
+            {positions.length > 0 && <button onClick={handleSellAll} disabled={sellingAll} style={{ background: "#ff444415", border: "1px solid #ff444444", borderRadius: 8, padding: "6px 12px", fontFamily: mono, fontSize: 10, fontWeight: 800, color: "#ff4444", cursor: sellingAll ? "wait" : "pointer", opacity: sellingAll ? 0.5 : 1 }}>{sellingAll ? "Selling..." : "\u2620 Close All"}</button>}
+          </div>
         </div>
-
-        {/* Global Search */}
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder={"\uD83D\uDD0D Search any token on pump.fun..."} style={{ width: "100%", padding: "10px 14px", background: T.bg, border: "1px solid " + T.border, borderRadius: 10, color: T.text, fontFamily: mono, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
       </div>
 
       {/* Search Results */}
       {search.length >= 2 && (
-        <div style={{ borderBottom: "1px solid " + T.border }}>
+        <div style={{ borderBottom: "1px solid " + T.border, maxHeight: 300, overflow: "auto" }}>
           {searching && <div style={{ padding: 16, textAlign: "center", fontFamily: mono, fontSize: 12, color: T.dim }}>Searching...</div>}
-          {!searching && searchResults.length === 0 && <div style={{ padding: 16, textAlign: "center", fontFamily: mono, fontSize: 12, color: T.faint }}>No results for "{search}"</div>}
+          {!searching && searchResults.length === 0 && search.length >= 2 && <div style={{ padding: 16, textAlign: "center", fontFamily: mono, fontSize: 12, color: T.faint }}>No results</div>}
           {searchResults.map(t => (
-            <div key={t.ca} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 20px", borderBottom: "1px solid " + T.border + "22", cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(t.ca); toast("CA copied: " + t.ca.slice(0, 12), "success"); }}>
-              {t.image ? <img src={t.image} style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: 32, height: 32, borderRadius: 8, background: T.border + "44", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 14, color: T.faint }}>{(t.ticker || "?")[0]}</div>}
+            <div key={t.ca} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 20px", borderBottom: "1px solid " + T.border + "22" }}>
+              {t.image ? <img src={t.image} style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => e.target.style.display = "none"} /> : <div style={{ width: 32, height: 32, borderRadius: 8, background: T.border + "44", flexShrink: 0 }} />}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 800, color: T.text }}>{t.name} <span style={{ color: T.green, fontSize: 11 }}>${t.ticker}</span></div>
-                <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>MC {fmt(t.mcap)}{t.h1Change ? (t.h1Change > 0 ? " \u25B2" : " \u25BC") + Math.abs(t.h1Change).toFixed(1) + "% 1h" : ""}</div>
+                <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>MC {fmt(t.mcap)}{t.h1Change ? (t.h1Change > 0 ? " \u25B2" : " \u25BC") + Math.abs(t.h1Change).toFixed(1) + "%" : ""}</div>
               </div>
-              <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+              <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+                <button onClick={() => { navigator.clipboard?.writeText(t.ca); toast("CA copied", "success"); }} style={{ padding: "6px 8px", background: "none", border: "1px solid " + T.border, borderRadius: 6, fontFamily: mono, fontSize: 9, color: T.faint, cursor: "pointer" }}>CA</button>
                 {[0.1, 0.25, 0.5].map(amt => (
-                  <button key={amt} onClick={e => { e.stopPropagation(); quickApe(t.ca, amt); }} style={{ padding: "6px 8px", background: T.green + "12", border: "1px solid " + T.green + "33", borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 800, color: T.green, cursor: "pointer" }}>{amt}</button>
+                  <button key={amt} disabled={solBal < amt} onClick={() => quickApe(t.ca, amt)} style={{ padding: "6px 8px", background: solBal >= amt ? T.green + "12" : T.border + "22", border: "1px solid " + (solBal >= amt ? T.green + "33" : T.border), borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 800, color: solBal >= amt ? T.green : T.faint, cursor: solBal >= amt ? "pointer" : "not-allowed", opacity: solBal >= amt ? 1 : 0.4 }}>{amt}</button>
                 ))}
               </div>
             </div>
@@ -1070,44 +1098,53 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast }) {
 
       {/* Positions */}
       {loading ? (
-        <div style={{ padding: 40, textAlign: "center", fontFamily: mono, fontSize: 14, color: T.dim, animation: "pulse 1.5s infinite" }}>Loading positions...</div>
-      ) : positions.length === 0 ? (
+        <div style={{ padding: 40, textAlign: "center", fontFamily: mono, fontSize: 14, color: T.dim, animation: "pulse 1.5s infinite" }}>Scanning wallets...</div>
+      ) : positions.length === 0 && search.length < 2 ? (
         <div style={{ padding: "40px 20px", textAlign: "center" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>{"\uD83D\uDCBC"}</div>
-          <div style={{ fontFamily: mono, fontSize: 14, color: T.faint, marginBottom: 4 }}>No positions yet</div>
-          <div style={{ fontFamily: mono, fontSize: 12, color: T.faint }}>Buy from Radar tab {"\u2192"} positions show here</div>
+          <div style={{ fontFamily: mono, fontSize: 14, color: T.faint, marginBottom: 4 }}>No bags yet</div>
+          <div style={{ fontFamily: mono, fontSize: 12, color: T.faint }}>Buy from Radar {"\u2192"} bags show here with live P&L</div>
         </div>
       ) : (
         <div>
           {positions.map(p => {
             const isUp = (p.h1Change || 0) >= 0;
-            const isSelling = selling === p.mint;
             return (
-              <div key={p.mint} style={{ padding: "12px 20px", borderBottom: "1px solid " + T.border + "22", display: "flex", alignItems: "center", gap: mobile ? 8 : 12 }}>
-                {p.image ? <img src={p.image} style={{ width: 38, height: 38, borderRadius: 10, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => e.target.style.display="none"} /> : <div style={{ width: 38, height: 38, borderRadius: 10, background: T.border + "44", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 16, color: T.faint }}>{(p.ticker || "?")[0]}</div>}
+              <div key={p.mint} style={{ padding: "14px 20px", borderBottom: "1px solid " + T.border + "33" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: mobile ? 8 : 12 }}>
+                  {p.image ? <img src={p.image} style={{ width: 42, height: 42, borderRadius: 10, objectFit: "cover", flexShrink: 0 }} alt="" onError={e => e.target.style.display="none"} /> : <div style={{ width: 42, height: 42, borderRadius: 10, background: T.border + "44", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 18, color: T.faint }}>{(p.ticker || "?")[0]}</div>}
 
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.text }}>${p.ticker || "?"}</span>
-                    <span style={{ fontFamily: mono, fontSize: 10, color: isUp ? T.green : "#ff4444", fontWeight: 700 }}>{isUp ? "\u25B2" : "\u25BC"}{Math.abs(p.h1Change || 0).toFixed(1)}% 1h</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontFamily: mono, fontSize: 15, fontWeight: 800, color: T.text }}>${p.ticker || "?"}</span>
+                      <span style={{ fontFamily: mono, fontSize: 11, color: isUp ? T.green : "#ff4444", fontWeight: 700, background: (isUp ? T.green : "#ff4444") + "12", padding: "1px 5px", borderRadius: 4 }}>{isUp ? "\u25B2" : "\u25BC"}{Math.abs(p.h1Change || 0).toFixed(1)}%</span>
+                    </div>
+                    <div style={{ fontFamily: mono, fontSize: 11, color: T.faint, marginTop: 3 }}>
+                      {p.amount?.toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens {"\u00B7"} {fmt(p.valueUsd || 0)} {"\u00B7"} MC {fmt(p.mcap || 0)}
+                    </div>
                   </div>
-                  <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 2 }}>
-                    {p.amount?.toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens {"\u00B7"} {fmt(p.valueUsd || 0)} {"\u00B7"} MC {fmt(p.mcap || 0)}
+
+                  <div style={{ fontFamily: mono, fontSize: 16, fontWeight: 900, color: isUp ? T.green : "#ff4444", textAlign: "right", flexShrink: 0 }}>
+                    {fmt(p.valueUsd || 0)}
                   </div>
                 </div>
 
-                {/* Sell buttons */}
-                <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
-                  {[25, 50, 100].map(pct => (
-                    <button key={pct} disabled={isSelling} onClick={() => handleSell(p.mint, pct)} style={{
-                      padding: mobile ? "6px 8px" : "6px 10px",
-                      background: pct === 100 ? "#ff444418" : "#ff444408",
-                      border: "1px solid " + (pct === 100 ? "#ff444466" : "#ff444433"),
-                      borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 800,
-                      color: pct === 100 ? "#ff4444" : "#ff6666",
-                      cursor: isSelling ? "wait" : "pointer", opacity: isSelling ? 0.5 : 1,
-                    }}>{isSelling && selling === p.mint ? "..." : pct + "%"}</button>
-                  ))}
+                {/* Action buttons */}
+                <div style={{ display: "flex", gap: 4, marginTop: 8, marginLeft: mobile ? 0 : 54 }}>
+                  {[25, 50, 100].map(pct => {
+                    const isSelling = selling === (p.mint + pct);
+                    return (
+                      <button key={pct} disabled={isSelling} onClick={() => handleSell(p.mint, pct)} style={{
+                        padding: "6px 12px", flex: pct === 100 ? 2 : 1,
+                        background: pct === 100 ? "#ff444418" : "#ff444408",
+                        border: "1px solid " + (pct === 100 ? "#ff444466" : "#ff444433"),
+                        borderRadius: 8, fontFamily: mono, fontSize: 11, fontWeight: 800,
+                        color: pct === 100 ? "#ff4444" : "#ff6666",
+                        cursor: isSelling ? "wait" : "pointer", opacity: isSelling ? 0.5 : 1,
+                      }}>{isSelling ? "..." : pct === 100 ? "\u2620 Sell All" : "Sell " + pct + "%"}</button>
+                    );
+                  })}
+                  {p.valueUsd > 0 && <button onClick={() => { navigator.clipboard?.writeText(p.mint); toast("CA copied", "success"); }} style={{ padding: "6px 8px", background: "none", border: "1px solid " + T.border, borderRadius: 8, fontFamily: mono, fontSize: 9, color: T.faint, cursor: "pointer" }}>CA</button>}
                 </div>
               </div>
             );
@@ -1936,13 +1973,13 @@ export default function App() {
                 {/* ═══ RADAR TAB (full width card grid) ═══ */}
                 {appTab === "radar" && (
                   <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden" }}>
-                    <RadarFeed T={T} mobile={mobile} fullScreen isVip={user?.tier === "pro" || user?.whitelisted} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} onQuickApe={quickApe} />
+                    <RadarFeed T={T} mobile={mobile} fullScreen isVip={user?.tier === "pro" || user?.whitelisted} tradingBalance={tradingBalance} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} onQuickApe={quickApe} onQuickSell={quickSell} />
                   </div>
                 )}
 
                 {/* ═══ PORTFOLIO TAB (positions + P&L + sell) ═══ */}
                 {appTab === "portfolio" && (
-                  <PortfolioPanel T={T} mobile={mobile} mono={mono} user={user} quickSell={quickSell} quickApe={quickApe} toast={toast} />
+                  <PortfolioPanel T={T} mobile={mobile} mono={mono} user={user} quickSell={quickSell} quickApe={quickApe} toast={toast} tradingBalance={tradingBalance} />
                 )}
 
                 {/* ═══ TRADE TAB (wizard) ═══ */}
