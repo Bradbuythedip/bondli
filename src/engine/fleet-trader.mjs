@@ -257,6 +257,74 @@ class GameState {
   }
 }
 
+// ═══════════════════════════════════════
+// DEV SELL CONTROLLER — Mimicry Axiom
+// Makes the dev wallet sell small amounts during volume phase
+// so it looks like a normal retail dev taking profit.
+// A dev that NEVER sells while 6 wallets buy is a coordination signal.
+// ═══════════════════════════════════════
+class DevSellController {
+  constructor(session) {
+    this.session = session;
+    this.totalDevSoldPct = 0;
+    this.maxDevSellPct = 0.20;   // Never sell more than 20% during volume phase
+    this.sellCount = 0;
+    this.lastSellTime = 0;
+    this.minSellGap = 15000;     // At least 15s between dev sells
+  }
+
+  shouldDevSell(tradeType, tradeSol, isOurs, gameState) {
+    if (this.totalDevSoldPct >= this.maxDevSellPct) return null;
+    if (gameState?.signal === "SELL_NOW") return null;
+    if (Date.now() - this.lastSellTime < this.minSellGap) return null;
+    if (tradeType === "sell") return null;
+
+    let probability = 0, sellPct = 0, delay = 0;
+
+    if (tradeSol > 0.5) {
+      probability = 0.30;
+      sellPct = 0.02 + Math.random() * 0.03;
+      delay = 3000 + Math.random() * 5000;
+    } else if (tradeSol > 0.1) {
+      probability = 0.15;
+      sellPct = 0.01 + Math.random() * 0.02;
+      delay = 5000 + Math.random() * 8000;
+    } else if (!isOurs && tradeSol > 0.02) {
+      probability = 0.08;
+      sellPct = 0.01 + Math.random() * 0.015;
+      delay = 8000 + Math.random() * 12000;
+    } else {
+      probability = 0.04;
+      sellPct = 0.005 + Math.random() * 0.01;
+      delay = 10000 + Math.random() * 15000;
+    }
+
+    if (this.session.tradeCount > 10) probability *= 1.3;
+    if (this.session.tradeCount > 20) probability *= 1.2;
+    if (gameState?.signal === "RIDE") { probability *= 0.3; sellPct *= 0.5; }
+
+    if (Math.random() > probability) return null;
+    sellPct = Math.min(sellPct, this.maxDevSellPct - this.totalDevSoldPct);
+    if (sellPct < 0.003) return null;
+
+    return { shouldSell: true, sellPct, delay };
+  }
+
+  recordSell(pctSold) {
+    this.totalDevSoldPct += pctSold;
+    this.sellCount++;
+    this.lastSellTime = Date.now();
+  }
+
+  summary() {
+    return {
+      totalSoldPct: +(this.totalDevSoldPct * 100).toFixed(2),
+      sellCount: this.sellCount,
+      remainingAllowance: +((this.maxDevSellPct - this.totalDevSoldPct) * 100).toFixed(2),
+    };
+  }
+}
+
 // WALLET ROLES v5 — buy timing matters less now (CREATE strategy controls waves)
 // sellPct is max sell per round BEFORE holdback deduction
 const ROLES = [
@@ -503,6 +571,10 @@ class FleetTrader extends EventEmitter {
   async _runCreateStrategy(session, global, feeConfig, isSolo) {
     const { ca, mint, masterKp, fleetWallets, gameState } = session;
     const funded = fleetWallets.filter(w => w.funded);
+
+    // Initialize dev sell controller (Mimicry Axiom)
+    // Dev wallet = masterKp, which holds tokens from the creation buy
+    session._devSellCtrl = new DevSellController(session);
 
     // ═══ PHASE 1: Staggered buys (first 60s) ═══
     session.phase = "buying";
@@ -896,6 +968,36 @@ class FleetTrader extends EventEmitter {
             console.log(`[VOL] ${step}/${totalSteps} SELL ${(sellPct * 100).toFixed(0)}% [${wallet.role}] -> ${(r.solOut || 0).toFixed(4)} SOL (${phase})`);
           }
         } catch {}
+      }
+
+      // ── Dev sell check (Mimicry Axiom) ──
+      // After each fleet buy, the dev might sell a small amount.
+      // This makes the dev look like a normal retail creator taking profit.
+      if (doBuy && session._devSellCtrl) {
+        const gs = gameState?.alive ? gameState.snapshot() : null;
+        const decision = session._devSellCtrl.shouldDevSell("buy", 0.05, true, gs);
+        if (decision?.shouldSell) {
+          const devSellDelay = decision.delay;
+          const devSellPct = decision.sellPct;
+          // Schedule dev sell after human-like delay (non-blocking)
+          setTimeout(async () => {
+            if (!session.running) return;
+            try {
+              let g2, fc2;
+              try { g2 = await this.onlineSdk.fetchGlobal(); fc2 = await this.onlineSdk.fetchFeeConfig(); } catch { return; }
+              // Dev wallet = masterKp. Create a temporary wallet object for _executeSell
+              const devWalletObj = { keypair: session.masterKp, pubkey: session.masterKp.publicKey.toBase58(), role: "dev", trades: [] };
+              const result = await this._executeSell(devWalletObj, mint, g2, fc2, devSellPct);
+              if (result.ok) {
+                session._devSellCtrl.recordSell(devSellPct);
+                session.tradeCount++;
+                session.totalSolRecovered += result.solOut || 0;
+                this.emit("trade", { ca, role: "dev-profit", side: "sell", sol: result.solOut, sig: result.sig });
+                console.log(`[DEV-SELL] Dev took ${(devSellPct * 100).toFixed(1)}% profit -> ${(result.solOut || 0).toFixed(4)} SOL (total: ${session._devSellCtrl.summary().totalSoldPct}%)`);
+              }
+            } catch (e) { console.error("[DEV-SELL] Failed:", e.message); }
+          }, devSellDelay);
+        }
       }
 
       // Gap between trades: 3-8 seconds (faster at peak, slower at edges)
