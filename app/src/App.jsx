@@ -772,6 +772,9 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
   const handleSelect = async (ca) => {
     if (selected?.ca === ca) { setSelected(null); return; }
     
+    // Scroll to top so detail panel is visible
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    
     // First: check if we already have this token's data in our tabs (no API call needed)
     const allTabTokens = [...(tabs.hot || []), ...(tabs.new || []), ...(tabs.graduating || []), ...(tabs.momentum || [])];
     const localToken = allTabTokens.find(t => t.ca === ca);
@@ -828,15 +831,15 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
         {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 32, color: T.faint + "44", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
         <div style={{ position: "absolute", top: 5, right: 5, background: vc(t.verdict) + "dd", color: "#000", fontFamily: mono, fontSize: 9, fontWeight: 900, padding: "2px 6px", borderRadius: 4 }}>{t.verdict} {t.score}</div>
         {i < 3 && <div style={{ position: "absolute", top: 5, left: 5, background: T.green + "dd", color: "#000", fontFamily: mono, fontSize: 9, fontWeight: 900, padding: "1px 5px", borderRadius: 4 }}>#{i + 1}</div>}
-        {t.bundled && <div style={{ position: "absolute", bottom: 5, left: 5, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}>{"\u26A0"}BUNDLED</div>}
-        {!t.bundled && t.boosted && <div style={{ position: "absolute", bottom: 5, left: 5, background: "#ffaa00dd", color: "#000", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}>{"\u26A1"}BOOSTED</div>}
-        {t.freshBoost && <div style={{ position: "absolute", top: 5, left: i < 3 ? 38 : 5, background: "#00ff88dd", color: "#000", fontFamily: mono, fontSize: 7, fontWeight: 900, padding: "1px 4px", borderRadius: 3 }}>NEW BOOST</div>}
-        {t.imageDupe && <div style={{ position: "absolute", bottom: 5, right: 5, background: T.red + "cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}>DUPE</div>}
-        {/* Momentum price change overlay */}
+        {t.bundled && <div style={{ position: "absolute", bottom: 5, right: 5, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}>{"\u26A0"}BUNDLED</div>}
+        {!t.bundled && t.boosted && <div style={{ position: "absolute", top: 5, left: i < 3 ? 38 : 5, background: "#ffaa00dd", color: "#000", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}>{"\u26A1"}BOOST</div>}
+        {t.freshBoost && !t.boosted && <div style={{ position: "absolute", top: 5, left: i < 3 ? 38 : 5, background: "#00ff88dd", color: "#000", fontFamily: mono, fontSize: 7, fontWeight: 900, padding: "1px 4px", borderRadius: 3 }}>NEW BOOST</div>}
+        {t.imageDupe && !t.bundled && <div style={{ position: "absolute", bottom: 5, right: 5, background: T.red + "cc", color: "#fff", fontFamily: mono, fontSize: 7, fontWeight: 800, padding: "1px 4px", borderRadius: 3 }}>DUPE</div>}
+        {/* Momentum price change — always bottom-left, no conflict */}
         {t.priceChange?.h1 != null && <div style={{ position: "absolute", bottom: 5, left: 5, background: t.priceChange.h1 >= 0 ? "#00ff8899" : "#ff444499", color: "#fff", fontFamily: mono, fontSize: 9, fontWeight: 800, padding: "2px 5px", borderRadius: 4 }}>{t.priceChange.h1 > 0 ? "+" : ""}{t.priceChange.h1.toFixed(1)}% 1h</div>}
       </div>
       <div style={{ padding: "6px 8px 8px" }}>
-        <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 800, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name || t.ticker}</div>
+        <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 800, color: T.text, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", lineHeight: 1.3, minHeight: "1.3em" }}>{t.name || t.ticker}</div>
         <div style={{ display: "flex", alignItems: "center", gap: 3, marginTop: 1 }}>
           <span style={{ fontFamily: mono, fontSize: 10, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
           {t.age && <span style={{ fontFamily: mono, fontSize: 7, color: T.faint }}>{t.age >= 24 ? Math.floor(t.age/24) + "d" : t.age + "h"}</span>}
@@ -922,10 +925,10 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
                 ))}
               </div>
               <div style={{ display: "flex", gap: 8, padding: "0 16px 16px" }}>
-                <button onClick={() => { onApe(selected.ca); setSelected(null); }} style={{ flex: 1, padding: "12px", background: T.surface, border: "1px solid " + T.green, borderRadius: 12, fontFamily: mono, fontSize: 13, fontWeight: 800, color: T.green, cursor: "pointer" }}>{"\u2699"} Fleet APE</button>
-                <a href={"https://pump.fun/coin/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "14px", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 11, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>pump{"\u2197"}</a>
-                <a href={"https://dexscreener.com/solana/" + selected.ca} target="_blank" rel="noopener" style={{ padding: "14px", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 11, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>dex{"\u2197"}</a>
-                <button onClick={() => setSelected(null)} style={{ padding: "14px", background: "none", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 14, color: T.faint, cursor: "pointer" }}>{"\u2715"}</button>
+                <button onClick={(e) => { e.stopPropagation(); onApe(selected.ca); setSelected(null); }} style={{ flex: 1, padding: "12px", background: T.surface, border: "1px solid " + T.green, borderRadius: 12, fontFamily: mono, fontSize: 13, fontWeight: 800, color: T.green, cursor: "pointer" }}>{"\u2699"} Fleet APE</button>
+                <a href={"https://pump.fun/coin/" + selected.ca} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={{ padding: "12px 14px", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 11, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>pump {"\u2197"}</a>
+                <a href={selected.dexUrl || ("https://dexscreener.com/solana/" + selected.ca)} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={{ padding: "12px 14px", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 11, color: T.dim, textDecoration: "none", display: "flex", alignItems: "center" }}>dex {"\u2197"}</a>
+                <button onClick={(e) => { e.stopPropagation(); setSelected(null); }} style={{ padding: "12px 14px", background: "none", border: "1px solid " + T.border, borderRadius: 12, fontFamily: mono, fontSize: 14, color: T.faint, cursor: "pointer" }}>{"\u2715"}</button>
               </div>
             </div>
           )}
@@ -933,7 +936,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, isVip, fullScreen }) {
           {selected?.error && <div style={{ padding: "14px 16px", margin: "10px 16px", background: T.red + "10", borderRadius: 12, fontFamily: mono, fontSize: 12, color: T.red, display: "flex", justifyContent: "space-between" }}><span>{selected.error}</span><button onClick={() => setSelected(null)} style={{ background: "none", border: "none", color: T.red, cursor: "pointer" }}>{"\u2715"}</button></div>}
 
           {/* Card Grid */}
-          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(168px, 1fr))", gap: mobile ? 6 : 10, padding: mobile ? "10px 8px" : "14px 16px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "repeat(auto-fill, minmax(180px, 1fr))", gap: mobile ? 6 : 10, padding: mobile ? "10px 8px" : "14px 16px" }}>
             {tokens.map((t, i) => <TokenCard key={t.ca} t={t} i={i} />)}
           </div>
         </div>
