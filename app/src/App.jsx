@@ -764,7 +764,7 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
 // ═══════════════════════════════════════
 // RADAR — Full-screen card grid scanner (pump.fun style)
 // ═══════════════════════════════════════
-function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScreen, tradingBalance, heldMints }) {
+function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScreen, tradingBalance, heldMints, toast }) {
   const mono = "'SF Mono',SFMono-Regular,ui-monospace,'Cascadia Mono',Menlo,monospace";
   const [tabs, setTabs] = useState({ new: [], hot: [], graduating: [], momentum: [] });
   const [activeTab, setActiveTab] = useState("momentum");
@@ -905,43 +905,90 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
     { id: "graduating", label: "Grad", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zm0 14.27L4.58 13.1 4 13.45V18l8 4.35L20 18v-4.55l-.58-.35L12 17.27z"/></svg> },
   ];
 
-  // ── Token Row (pump.fun movers style) ──
+  // ── Token Row (pump.fun movers style + inline trading) ──
+  const [buyingCA, setBuyingCA] = useState(null);
+  const [sellingCA, setSellingCA] = useState(null);
+  const [flashCA, setFlashCA] = useState(null);
+
+  const handleBuy = async (ca, amt, e) => {
+    e?.stopPropagation();
+    if (buyingCA) return;
+    setBuyingCA(ca + amt);
+    const sig = await onQuickApe(ca, amt);
+    setBuyingCA(null);
+    if (sig) {
+      setFlashCA(ca);
+      setTimeout(() => setFlashCA(null), 1500);
+    }
+  };
+
+  const handleSell = async (ca, pct, e) => {
+    e?.stopPropagation();
+    if (sellingCA) return;
+    setSellingCA(ca + pct);
+    const sig = await onQuickSell(ca, pct);
+    setSellingCA(null);
+    if (sig) {
+      setFlashCA(ca);
+      setTimeout(() => setFlashCA(null), 1500);
+    }
+  };
+
   const TokenRow = ({ t, i }) => {
     const isNew = !seenCAs.current.has(t.ca);
     if (isNew) seenCAs.current.add(t.ca);
     const ageStr = t.age ? (t.age >= 24 ? Math.floor(t.age/24) + "d" : Math.round(t.age) + "h") : (t.created ? ago(t.created) : "");
+    const held = heldMints?.has(t.ca);
+    const flashing = flashCA === t.ca;
     return (
-    <div onClick={() => handleSelect(t.ca)} style={{
-      display: "flex", alignItems: "center", gap: mobile ? 10 : 12,
-      padding: mobile ? "10px 12px" : "10px 16px",
+    <div style={{
       borderBottom: "1px solid " + T.border + "33",
-      cursor: "pointer", transition: "background .15s",
-      animation: isNew ? "fadeUp .3s ease" : "none",
-    }}
-      onMouseEnter={e => e.currentTarget.style.background = T.green + "06"}
-      onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-    >
-      {/* Thumbnail */}
-      <div style={{ position: "relative", width: mobile ? 48 : 56, height: mobile ? 48 : 56, borderRadius: 10, overflow: "hidden", flexShrink: 0, background: T.bg }}>
-        {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 18, color: T.faint + "66", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
-        {t.bundled && <div style={{ position: "absolute", bottom: 1, left: 1, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 6, fontWeight: 800, padding: "0 2px", borderRadius: 2 }}>B</div>}
-      </div>
-
-      {/* Info */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontFamily: mono, fontSize: mobile ? 13 : 14, fontWeight: 800, color: T.text, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{t.name || t.ticker}</div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
-          <span style={{ fontFamily: mono, fontSize: mobile ? 11 : 12, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
-          {t.twitter && <span style={{ fontSize: 10, color: T.dim }}>{"𝕏"}</span>}
-          {ageStr && <span style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>{ageStr}</span>}
+      background: flashing ? T.green + "12" : "transparent",
+      transition: "background .3s",
+    }}>
+      {/* Main row — tap to open detail */}
+      <div onClick={() => handleSelect(t.ca)} style={{
+        display: "flex", alignItems: "center", gap: mobile ? 10 : 12,
+        padding: mobile ? "10px 12px 4px" : "10px 16px 4px",
+        cursor: "pointer",
+      }}>
+        {/* Thumbnail */}
+        <div style={{ position: "relative", width: mobile ? 44 : 52, height: mobile ? 44 : 52, borderRadius: 10, overflow: "hidden", flexShrink: 0, background: T.bg }}>
+          {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 18, color: T.faint + "66", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
+          {t.bundled && <div style={{ position: "absolute", bottom: 1, left: 1, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 6, fontWeight: 800, padding: "0 2px", borderRadius: 2 }}>B</div>}
         </div>
-        {t.description && <div style={{ fontFamily: sans, fontSize: mobile ? 11 : 12, color: T.dim, marginTop: 2, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{t.description.slice(0, 60)}</div>}
+
+        {/* Info */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontFamily: mono, fontSize: mobile ? 13 : 14, fontWeight: 800, color: T.text, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{t.name || t.ticker}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 1 }}>
+            <span style={{ fontFamily: mono, fontSize: mobile ? 11 : 12, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
+            {t.twitter && <span style={{ fontSize: 10, color: T.dim }}>{"𝕏"}</span>}
+            {ageStr && <span style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>{ageStr}</span>}
+          </div>
+          {t.description && <div style={{ fontFamily: sans, fontSize: 11, color: T.dim, marginTop: 1, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{t.description.slice(0, 50)}</div>}
+        </div>
+
+        {/* MCap */}
+        <div style={{ textAlign: "right", flexShrink: 0 }}>
+          <div style={{ fontFamily: mono, fontSize: mobile ? 14 : 16, fontWeight: 800, color: T.text }}>${fmt(t.mcapUsd)}</div>
+          {held && <div style={{ fontFamily: mono, fontSize: 8, color: T.green, marginTop: 1 }}>HELD</div>}
+        </div>
       </div>
 
-      {/* MCap + score */}
-      <div style={{ textAlign: "right", flexShrink: 0 }}>
-        <div style={{ fontFamily: mono, fontSize: mobile ? 15 : 16, fontWeight: 800, color: T.text }}>${fmt(t.mcapUsd)}</div>
-        <div style={{ fontFamily: mono, fontSize: 9, color: T.faint, marginTop: 2 }}>{t.buys && t.sells ? (<><span style={{ color: T.green }}>{t.buys}</span>/<span style={{ color: "#ff4444" }}>{t.sells}</span></>) : ""}</div>
+      {/* Inline trade buttons — always visible, no detail panel needed */}
+      <div style={{ display: "flex", gap: 4, padding: mobile ? "4px 12px 8px" : "4px 16px 8px", paddingLeft: mobile ? 66 : 80, alignItems: "center" }}>
+        {onQuickApe && [0.05, 0.1, 0.25, 0.5].map(amt => {
+          const canAfford = (tradingBalance || 0) >= amt;
+          const loading = buyingCA === t.ca + amt;
+          return (
+            <button key={amt} disabled={!canAfford || loading} onClick={(e) => handleBuy(t.ca, amt, e)} style={{ padding: "5px 0", flex: 1, minWidth: 0, background: loading ? T.green + "30" : canAfford ? T.green + "0a" : "transparent", border: "1px solid " + (canAfford ? T.green + "33" : T.border + "33"), borderRadius: 6, fontFamily: mono, fontSize: mobile ? 10 : 11, fontWeight: 800, color: canAfford ? T.green : T.faint + "44", cursor: canAfford && !loading ? "pointer" : "default", opacity: canAfford ? 1 : 0.3, transition: "all .15s" }}>{loading ? "..." : amt}</button>
+          );
+        })}
+        {held && onQuickSell && (
+          <button disabled={!!sellingCA} onClick={(e) => handleSell(t.ca, 100, e)} style={{ padding: "5px 0", flex: 1, minWidth: 0, background: sellingCA === t.ca + "100" ? "#ff444430" : "#ff44440a", border: "1px solid #ff444433", borderRadius: 6, fontFamily: mono, fontSize: mobile ? 10 : 11, fontWeight: 800, color: "#ff4444", cursor: sellingCA ? "default" : "pointer", transition: "all .15s" }}>{sellingCA === t.ca + "100" ? "..." : "SELL"}</button>
+        )}
+        <button onClick={(e) => { e.stopPropagation(); navigator.clipboard?.writeText(t.ca); toast?.("CA copied", "success"); }} style={{ padding: "5px 6px", background: "none", border: "1px solid " + T.border + "33", borderRadius: 6, fontFamily: mono, fontSize: 8, color: T.faint, cursor: "pointer", flexShrink: 0 }}>CA</button>
       </div>
     </div>
     );
@@ -1788,32 +1835,43 @@ export default function App() {
   // Quick Ape — PumpPortal Lightning (zero signing, one-click)
   const quickApe = async (ca, solAmount = 0.1) => {
     if (!user?.pubkey || user.demo) { toast("Connect wallet first", "error"); return; }
-    if (!tradingWallet) { setShowTradingSetup(true); toast("Set up your trading wallet first", "error"); return; }
-    if (tradingBalance < solAmount) { toast(`Need ${solAmount} SOL in trading wallet (have ${tradingBalance.toFixed(3)})`, "error"); return; }
-    toast(`Buying ${solAmount} SOL...`, "info");
+    if (!tradingWallet) { setShowTradingSetup(true); toast("Set up trading wallet first", "error"); return; }
+    if (tradingBalance < solAmount) { toast(`Need ${solAmount} SOL (have ${tradingBalance.toFixed(3)})`, "error"); return; }
+    toast(`Buying ${solAmount} SOL of ${ca.slice(0, 6)}...`, "info");
     try {
       const r = await fetch(API + "/api/quick-ape", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey, ca, solAmount }) });
       const d = await r.json();
-      if (!d.ok) { toast(d.error || "Buy failed", "error"); return; }
-      toast(`Bought ${solAmount} SOL ✓`, "success");
+      if (!d.ok) { toast(d.error || "Buy failed — check trading wallet balance", "error"); return; }
+      toast(`Bought ${solAmount} SOL — position open`, "success");
       setTradingBalance(prev => Math.max(0, prev - solAmount - 0.001));
       recordBuy(ca, solAmount);
+      // Update held mints immediately
+      setHeldMints(prev => { const n = new Set(prev); n.add(ca); return n; });
       return d.signature;
-    } catch (e) { toast("Failed: " + (e.message || "Error"), "error"); }
+    } catch (e) { toast("Buy failed: " + (e.message || "network error"), "error"); }
   };
 
   // Quick Sell — PumpPortal Lightning
   const quickSell = async (ca, percent = 100) => {
     if (!user?.pubkey || !tradingWallet) { toast("No trading wallet", "error"); return; }
-    toast(`Selling ${percent}%...`, "info");
+    toast(`Selling ${percent}% of ${ca.slice(0, 6)}...`, "info");
     try {
       const r = await fetch(API + "/api/quick-sell", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey, ca, percent }) });
       const d = await r.json();
       if (!d.ok) { toast(d.error || "Sell failed", "error"); return; }
-      toast(`Sold ${percent}% ✓`, "success");
-      if (percent >= 100) clearCostBasis(ca);
+      const costBasis = getCostBasis(ca);
+      const solBack = d.solReceived || 0;
+      let profitMsg = `Sold ${percent}%`;
+      if (solBack > 0) profitMsg += ` — got ${solBack.toFixed(4)} SOL`;
+      if (costBasis > 0 && solBack > 0) {
+        const pnl = solBack - costBasis;
+        profitMsg += pnl >= 0 ? ` (+${pnl.toFixed(4)} profit)` : ` (${pnl.toFixed(4)} loss)`;
+      }
+      toast(profitMsg, solBack >= (costBasis || 0) ? "success" : "error");
+      if (percent >= 100) { clearCostBasis(ca); setHeldMints(prev => { const n = new Set(prev); n.delete(ca); return n; }); }
+      setTradingBalance(prev => prev + (solBack || 0));
       return d.signature;
-    } catch (e) { toast("Failed: " + e.message, "error"); }
+    } catch (e) { toast("Sell failed: " + e.message, "error"); }
   };
   const handleCAChange = (v) => { setExistingCA(v); setCaAnalysis(null); };
   const closeSession = async (ca) => {
@@ -2138,7 +2196,7 @@ export default function App() {
                 {/* ═══ RADAR TAB (full width card grid) ═══ */}
                 {appTab === "radar" && (
                   <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, overflow: "hidden" }}>
-                    <RadarFeed T={T} mobile={mobile} fullScreen isVip={user?.tier === "pro" || user?.whitelisted} tradingBalance={tradingBalance} heldMints={heldMints} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} onQuickApe={quickApe} onQuickSell={quickSell} />
+                    <RadarFeed T={T} mobile={mobile} fullScreen isVip={user?.tier === "pro" || user?.whitelisted} tradingBalance={tradingBalance} heldMints={heldMints} toast={toast} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} onQuickApe={quickApe} onQuickSell={quickSell} />
                   </div>
                 )}
 
