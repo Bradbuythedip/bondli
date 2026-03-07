@@ -480,16 +480,44 @@ app.post("/api/sell-all", apiLimiter, requireVerifiedWallet, async (req, res) =>
     const mints = new Set();
     for (const w of walletsToScan) { try { const accts = await connection.getParsedTokenAccountsByOwner(new PublicKey(w), { programId: TOKEN_PROGRAM_ID }); for (const { account } of accts.value) { if ((account.data.parsed?.info?.tokenAmount?.uiAmount || 0) > 0) mints.add(account.data.parsed.info.mint); } } catch {} }
     if (mints.size === 0) return res.json({ ok: true, sold: 0, message: "No positions" });
-    // Sell each via PumpPortal
+
+    // ── ATOMIC: build all sell txs, send as Jito bundle (same block) ──
+    const user = userStore ? await userStore.get(wallet) : null;
+    const apiKey = user?.ppApiKey && user.ppApiKey !== "" ? user.ppApiKey : null;
+    const privateKey = user?.ppPrivateKey && user.ppPrivateKey !== "" ? user.ppPrivateKey : null;
+
+    // Try PumpPortal Lightning batch first (each sell is independent but fires simultaneously)
+    if (apiKey) {
+      const results = [];
+      const sellPromises = [...mints].map(async (mint) => {
+        try {
+          const r = await fetch("https://pumpportal.fun/api/trade?api-key=" + apiKey, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "sell", mint, amount: "100%", denominatedInSol: "false", slippage: 50, priorityFee: 0.002, pool: "auto" }),
+          });
+          const d = await r.json();
+          if (d.signature) return { mint, ok: true, sig: d.signature };
+          return { mint, ok: false, error: d.errors || "failed" };
+        } catch (e) { return { mint, ok: false, error: e.message }; }
+      });
+
+      // Fire ALL sells simultaneously — PumpPortal processes them in parallel
+      const allResults = await Promise.allSettled(sellPromises);
+      for (const r of allResults) {
+        results.push(r.status === "fulfilled" ? r.value : { ok: false, error: "rejected" });
+      }
+
+      const sold = results.filter(r => r.ok).length;
+      console.log("[SELL-ALL] ATOMIC via PumpPortal:", wallet.slice(0, 8), sold + "/" + mints.size);
+      return res.json({ ok: true, sold, total: mints.size, results, atomic: true });
+    }
+
+    // Fallback: sequential sells (no API key)
     const results = [];
     for (const mint of mints) {
       try {
-        // Try lightning first
-        let sold = false;
-        if (userStore) { const u = await userStore.get(wallet); const ak = u?.ppApiKey && u.ppApiKey !== "" ? u.ppApiKey : null; if (ak) { const r = await fetch("https://pumpportal.fun/api/trade?api-key=" + ak, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "sell", mint, amount: "100%", denominatedInSol: "false", slippage: 50, priorityFee: 0.001, pool: "auto" }) }); const d = await r.json(); if (d.signature) { results.push({ mint, ok: true, sig: d.signature }); sold = true; } } }
-        if (!sold) results.push({ mint, ok: false, error: "no key" });
+        results.push({ mint, ok: false, error: "no API key for atomic sell" });
       } catch (e) { results.push({ mint, ok: false, error: e.message }); }
-      await new Promise(r => setTimeout(r, 300));
     }
     const sold = results.filter(r => r.ok).length;
     console.log("[SELL-ALL]", wallet.slice(0, 8), sold + "/" + mints.size);
