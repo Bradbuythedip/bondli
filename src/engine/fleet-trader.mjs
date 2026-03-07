@@ -664,46 +664,42 @@ class FleetTrader extends EventEmitter {
     if (!session.running) return;
     await sleep(2000); // brief pause to let chart render
 
-      // ═══ PHASE 3: Volume generation (3-5 MINUTES) ═══
-      // This is the critical phase — paint the chart to attract real buyers
-      if (!session.running) return;
-      session.phase = "volume";
-      this.emit("phase", { ca, phase: "volume" });
+    // ═══ PHASE 2: Volume generation (3-5 MINUTES) ═══
+    // This is the critical phase — paint the chart to attract real buyers
+    if (!session.running) return;
+    session.phase = "volume";
+    this.emit("phase", { ca, phase: "volume" });
 
-      // Run volume for at least 3 minutes (time-based, not cycle-based)
-      const volumeEnd = Date.now() + (3 * 60 * 1000) + Math.random() * (2 * 60 * 1000); // 3-5 min
-      let volCycle = 0;
-      console.log(`[FLEET] CREATE v5: Phase 3 — parabolic volume for ${Math.round((volumeEnd - Date.now()) / 60000)}min...`);
+    // Run volume for at least 3 minutes (time-based, not cycle-based)
+    const volumeEnd = Date.now() + (3 * 60 * 1000) + Math.random() * (2 * 60 * 1000); // 3-5 min
+    let volCycle = 0;
+    console.log(`[FLEET] CREATE v6: Phase 2 — volume for ${Math.round((volumeEnd - Date.now()) / 60000)}min...`);
 
-      while (Date.now() < volumeEnd && session.running) {
-        // Check GameState — abort volume if dump detected
-        if (gameState?.alive) {
-          const gs = gameState.snapshot();
-          if (gs.signal === "SELL_NOW") {
-            console.log(`[FLEET] ⚡ SELL_NOW during volume — aborting, going to sell phase`);
-            break;
-          }
-          if (volCycle % 3 === 0) {
-            console.log(`[FLEET] [VOL] round ${volCycle} | ${gs.uniqueBuyers} ext buyers | ${gs.buyPressure}% bp | ${gs.signal}`);
-          }
+    while (Date.now() < volumeEnd && session.running) {
+      if (gameState?.alive) {
+        const gs = gameState.snapshot();
+        if (gs.signal === "SELL_NOW") {
+          console.log(`[FLEET] SELL_NOW during volume — going to sell phase`);
+          break;
         }
-
-        // Run one full parabola (8 steps = ~30-60s of trades)
-        await this._generateVolume(session, global, feeConfig, 2);
-        volCycle++;
-        
-        // Refresh global between cycles
-        try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+        if (volCycle % 3 === 0) {
+          console.log(`[FLEET] [VOL] round ${volCycle} | ${gs.uniqueBuyers} ext buyers | ${gs.buyPressure}% bp | ${gs.signal}`);
+        }
       }
 
-      console.log(`[FLEET] Volume phase done — ${volCycle} cycles, ${session.tradeCount} total trades`);
+      await this._generateVolume(session, global, feeConfig, 2);
+      volCycle++;
+      
+      try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
     }
 
-    // ═══ PHASE 4: Sell INTO demand (only when real buyers are active) ═══
+    console.log(`[FLEET] Volume phase done — ${volCycle} cycles, ${session.tradeCount} total trades`);
+
+    // ═══ PHASE 3: Sell INTO demand ═══
     if (!session.running) return;
     session.phase = "selling";
     this.emit("phase", { ca, phase: "selling" });
-    console.log(`[FLEET] CREATE v5: Phase 4 — sell into demand...`);
+    console.log(`[FLEET] CREATE v6: Phase 3 — sell into demand...`);
 
     try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
 
