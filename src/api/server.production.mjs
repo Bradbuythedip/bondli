@@ -42,6 +42,47 @@ import { getSellSolAmountFromTokenAmount, getBuyTokenAmountFromSolAmount, PumpSd
 // TIER + ACCESS SYSTEM
 // ═══════════════════════════════════════
 const PRO_FEE_SOL = parseFloat(process.env.PRO_FEE_SOL || "10");
+
+// ═══════════════════════════════════════
+// PRO LICENSE BONDING CURVE
+// price = BASE + (K * totalSold) + (ACCEL * totalSold^1.5 / 100)
+// Starts ~1 SOL, reaches ~10 SOL around license #200
+// ═══════════════════════════════════════
+const PRO_CURVE = {
+  BASE: 1.0,        // floor price in SOL
+  K: 0.015,         // linear component per license
+  ACCEL: 0.002,     // acceleration component
+};
+
+let proLicenseCount = 0; // loaded from Redis on start
+
+async function loadProCount() {
+  const redis = getRedis();
+  if (!redis) return;
+  try {
+    const count = await redis.get("bondli:pro_license_count");
+    if (count) proLicenseCount = parseInt(count);
+    console.log(`[CURVE] Loaded pro license count: ${proLicenseCount}`);
+  } catch {}
+}
+
+async function incrementProCount() {
+  proLicenseCount++;
+  const redis = getRedis();
+  if (redis) {
+    try { await redis.set("bondli:pro_license_count", proLicenseCount.toString()); } catch {}
+  }
+  return proLicenseCount;
+}
+
+function getProPrice(n = proLicenseCount) {
+  const price = PRO_CURVE.BASE + (PRO_CURVE.K * n) + (PRO_CURVE.ACCEL * Math.pow(n, 1.5) / 100);
+  return Math.round(price * 1000) / 1000; // 3 decimal places
+}
+
+function getProPriceAfter(n = proLicenseCount) {
+  return getProPrice(n + 1);
+}
 const FREE_PROFIT_CUT = parseFloat(process.env.FREE_PROFIT_CUT || "25"); // percent
 const PLATFORM_WALLET = process.env.PLATFORM_WALLET || "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
 if (PLATFORM_WALLET === "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx") console.log("[INFO] Using hardcoded platform wallet");
@@ -576,15 +617,10 @@ app.post("/api/username", apiLimiter, requireVerifiedWallet, async (req, res) =>
 app.get("/api/access/check", apiLimiter, async (req, res) => {
   const wallet = req.query.wallet;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
-
   const info = await getWalletTier(wallet);
-  res.json({
-    access: true, // everyone has access now, free is default
-    tier: info.tier || "free",
-    whitelisted: info.whitelisted,
-    paid: info.paid,
-    profitCut: info.profitCut,
-  });
+  const price = getProPrice();
+  const nextPrice = getProPriceAfter();
+  res.json({ ...info, proPrice: price, proNextPrice: nextPrice, proLicenses: proLicenseCount });
 });
 
 // Activate free tier — no payment needed, 25% profit share
@@ -602,10 +638,12 @@ app.post("/api/access/activate-free", apiLimiter, async (req, res) => {
   res.json({ ok: true, tier: "free", profitCut: FREE_PROFIT_CUT });
 });
 
-// Activate pro tier — requires 10 SOL tx verification
+// Activate pro tier — bonding curve pricing
 app.post("/api/access/activate-pro", apiLimiter, async (req, res) => {
   const { wallet, txSig } = req.body || {};
   if (!wallet || !txSig) return res.status(400).json({ error: "wallet and txSig required" });
+
+  const currentPrice = getProPrice();
 
   // Verify the transaction on-chain
   try {
@@ -618,44 +656,54 @@ app.post("/api/access/activate-pro", apiLimiter, async (req, res) => {
     if (!tx) return res.status(400).json({ error: "Transaction not found. Wait for confirmation and retry." });
     if (tx.meta?.err) return res.status(400).json({ error: "Transaction failed on-chain" });
 
-    // Verify amount: at least PRO_FEE_SOL sent
-    // Check all instructions for a SOL transfer to platform wallet
+    // Verify amount: at least currentPrice sent to platform wallet
     let verified = false;
-    const requiredLamports = PRO_FEE_SOL * LAMPORTS_PER_SOL;
+    const requiredLamports = currentPrice * LAMPORTS_PER_SOL;
 
-    // Check pre/post balances for platform wallet receiving funds
     const accountKeys = tx.transaction.message.staticAccountKeys
       ? tx.transaction.message.staticAccountKeys.map(k => k.toString())
       : tx.transaction.message.accountKeys.map(k => k.toString());
 
-    // Find platform wallet in the tx accounts
     const platformIdx = accountKeys.indexOf(PLATFORM_WALLET);
     if (platformIdx >= 0 && tx.meta) {
       const pre = tx.meta.preBalances[platformIdx] || 0;
       const post = tx.meta.postBalances[platformIdx] || 0;
       const received = post - pre;
-      if (received >= requiredLamports * 0.99) { // 1% tolerance for rounding
+      if (received >= requiredLamports * 0.98) { // 2% tolerance
         verified = true;
       }
     }
 
-    // Fallback: check if we can verify via paymentVerifier
+    // Fallback: paymentVerifier
     if (!verified && paymentVerifier) {
       try {
-        const pvResult = await paymentVerifier.verify(txSig, wallet, PRO_FEE_SOL);
+        const pvResult = await paymentVerifier.verify(txSig, wallet, currentPrice);
         if (pvResult?.verified) verified = true;
       } catch {}
     }
 
     if (!verified) {
       return res.status(400).json({
-        error: `Payment not verified. Send exactly ${PRO_FEE_SOL} SOL to ${PLATFORM_WALLET}`,
+        error: `Payment not verified. Current price: ${currentPrice} SOL. Send to ${PLATFORM_WALLET}`,
       });
     }
 
     await setWalletTier(wallet, "pro");
-    console.log(`[ACCESS] Pro tier activated: ${wallet} | tx: ${txSig}`);
-    res.json({ ok: true, tier: "pro", profitCut: 0 });
+    const licenseNum = await incrementProCount();
+    const newPrice = getProPrice();
+
+    // Store license metadata
+    const redis = getRedis();
+    if (redis) {
+      try {
+        await redis.set("pro_license:" + wallet, JSON.stringify({
+          number: licenseNum, price: currentPrice, tx: txSig, date: new Date().toISOString()
+        }));
+      } catch {}
+    }
+
+    console.log(`[ACCESS] Pro license #${licenseNum} activated: ${wallet} | paid: ${currentPrice} SOL | next price: ${newPrice} SOL | tx: ${txSig}`);
+    res.json({ ok: true, tier: "pro", profitCut: 0, licenseNumber: licenseNum, pricePaid: currentPrice, nextPrice: newPrice, totalLicenses: licenseNum });
 
   } catch (e) {
     console.error("[ACCESS] Pro verification error:", e.message);
@@ -675,6 +723,26 @@ app.post("/api/access/grant", async (req, res) => {
 });
 
 // Admin: view whitelist + stats
+// Public pricing endpoint — bonding curve
+app.get("/api/pricing", (req, res) => {
+  const price = getProPrice();
+  const nextPrice = getProPriceAfter();
+  // Generate curve preview: price at every 10th license up to 300
+  const curve = [];
+  for (let i = 0; i <= 300; i += 10) {
+    curve.push({ n: i, price: getProPrice(i) });
+  }
+  res.json({
+    ok: true,
+    currentPrice: price,
+    nextPrice,
+    licensesSold: proLicenseCount,
+    nextLicense: proLicenseCount + 1,
+    curve,
+    freeCut: FREE_PROFIT_CUT,
+  });
+});
+
 app.get("/api/access/whitelist", async (req, res) => {
   const secret = req.headers["x-api-secret"];
   if (secret !== CONFIG.API_SECRET) return res.status(403).json({ error: "forbidden" });
@@ -3570,9 +3638,11 @@ const PORT = CONFIG.API_PORT;
 async function start() {
   try {
     await initServices();
+    await loadProCount();
     app.use(createPaymentRoutes(paymentVerifier));
     server.listen(PORT, () => {
       const wl = getWhitelist();
+      const curPrice = getProPrice();
       console.log("");
       console.log("  \x1b[35m=========================================\x1b[0m");
       console.log("  \x1b[35m  BONDLI v3.0 — PRODUCTION SERVER\x1b[0m");
@@ -3581,7 +3651,8 @@ async function start() {
       console.log(`  WS:        ws://localhost:${PORT}/ws`);
       console.log(`  Mode:      ${CONFIG.DRY_RUN ? "\x1b[33mDRY RUN\x1b[0m" : "\x1b[31mLIVE\x1b[0m"}`);
       console.log(`  Env:       ${IS_PROD ? "production" : "development"}`);
-      console.log(`  Pro fee:   ${PRO_FEE_SOL} SOL`);
+      console.log(`  Pro price: \x1b[32m${curPrice} SOL\x1b[0m (license #${proLicenseCount + 1})`);
+      console.log(`  Licenses:  ${proLicenseCount} sold`);
       console.log(`  Free cut:  ${FREE_PROFIT_CUT}%`);
       console.log(`  VIPs:      ${wl.size > 0 ? [...wl].join(", ") : "none"}`);
       console.log("");
