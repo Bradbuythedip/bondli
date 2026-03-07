@@ -822,7 +822,7 @@ function Sparkline({ data, color = "#00ff88", height = 36 }) {
     ctx.fill();
   }, [data, color, height]);
 
-  if (!data || data.filter(v => v > 0).length < 2) return <div style={{ width: "100%", height, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ fontFamily: "'SF Mono',monospace", fontSize: 10, color: "#555" }}>{"\u2014"}</span></div>;
+  if (!data || data.filter(v => v > 0).length < 2) return <div style={{ width: "100%", height, display: "flex", alignItems: "center", justifyContent: "center" }} />;
   return <canvas ref={canvasRef} style={{ width: "100%", height, display: "block" }} />;
 }
 
@@ -877,7 +877,14 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
               buys: r.buys24 || 0, sells: r.sells24 || 0,
               image: r.image, description: "",
               score: 0, verdict: "?", bp: 0, external: true,
-            })).filter(r => r.ca));
+              volume24: r.volume24 || 0,
+              h1Change: r.h1Change || 0,
+            })).filter(r => r.ca)
+              // Dedup by CA — keep highest mcap per CA
+              .reduce((acc, r) => { const existing = acc.find(a => a.ca === r.ca); if (!existing) acc.push(r); else if (r.mcapUsd > existing.mcapUsd) { Object.assign(existing, r); } return acc; }, [])
+              // Sort by mcap descending so biggest/real one is first
+              .sort((a, b) => (b.mcapUsd || 0) - (a.mcapUsd || 0))
+            );
           }
         }
       } catch {}
@@ -885,11 +892,18 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
     return () => { cancelled = true; clearTimeout(timer); };
   }, [search]);
 
-  // Merge: local hits first, then API results (deduped)
+  // Merge: local hits first, then API results (deduped by CA)
   const mergedExternal = [...(externalResult ? [externalResult] : []), ...apiSearchResults];
-  const displayTokens = search.length >= 2
+  const allTokens_deduped = search.length >= 2
     ? [...tokens, ...mergedExternal.filter(e => e.ca && !tokens.some(t => t.ca === e.ca))]
     : tokens;
+  // Final dedup by CA — shouldn't have dupes but safety net
+  const seenCAsDisplay = new Set();
+  const uniqueDisplay = allTokens_deduped.filter(t => { if (seenCAsDisplay.has(t.ca)) return false; seenCAsDisplay.add(t.ca); return true; });
+  // Pin: held tokens always at top (user's bags are most important)
+  const heldTokens = uniqueDisplay.filter(t => heldMints?.has(t.ca));
+  const otherTokens = uniqueDisplay.filter(t => !heldMints?.has(t.ca));
+  const displayTokens = [...heldTokens, ...otherTokens];
 
   const fetchRadar = async () => {
     try {
@@ -1007,7 +1021,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
     return (
     <div style={{
       borderBottom: "1px solid " + T.border + "22",
-      background: flashing ? T.green + "15" : "transparent",
+      background: flashing ? T.green + "15" : held ? T.green + "06" : "transparent",
       transition: "background .4s",
     }}>
       {/* Main row — tap to expand buy panel */}
@@ -1020,16 +1034,18 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
         <div style={{ position: "relative", width: mobile ? 48 : 56, height: mobile ? 48 : 56, borderRadius: 10, overflow: "hidden", flexShrink: 0, background: T.bg }}>
           {t.image ? <img src={t.image} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt="" onError={e => { e.target.style.display = "none"; }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 20, color: T.faint + "55", fontWeight: 900 }}>{(t.ticker || "?")[0]}</div>}
           {t.bundled && <div style={{ position: "absolute", bottom: 1, left: 1, background: "#ff6600cc", color: "#fff", fontFamily: mono, fontSize: 6, fontWeight: 800, padding: "0 2px", borderRadius: 2 }}>B</div>}
+          {held && <div style={{ position: "absolute", top: 1, right: 1, background: T.green, color: "#000", fontFamily: mono, fontSize: 6, fontWeight: 900, padding: "1px 3px", borderRadius: 2 }}>HELD</div>}
         </div>
 
-        {/* Name + ticker + age */}
-        <div style={{ minWidth: 0, width: mobile ? 90 : 120, flexShrink: 0 }}>
+        {/* Name + ticker + age + CA snippet */}
+        <div style={{ minWidth: 0, width: mobile ? 100 : 130, flexShrink: 0 }}>
           <div style={{ fontFamily: mono, fontSize: mobile ? 13 : 14, fontWeight: 800, color: T.text, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{t.name || t.ticker}</div>
           <div style={{ display: "flex", alignItems: "center", gap: 5, marginTop: 2 }}>
             <span style={{ fontFamily: mono, fontSize: mobile ? 10 : 11, color: T.green, fontWeight: 700 }}>{t.ticker}</span>
             {t.twitter && <span style={{ fontSize: 9, color: T.dim }}>{"𝕏"}</span>}
             {ageStr && <span style={{ fontFamily: mono, fontSize: 9, color: T.faint }}>{ageStr}</span>}
           </div>
+          <div style={{ fontFamily: mono, fontSize: 8, color: T.faint + "88", marginTop: 1 }}>{t.ca?.slice(0, 6)}...{t.ca?.slice(-4)}</div>
         </div>
 
         {/* Mini sparkline chart */}
@@ -1037,10 +1053,10 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
           <Sparkline data={t.spark || []} color={t.spark && t.spark.length > 1 && t.spark[t.spark.length - 1] >= t.spark[0] ? T.green : "#ff4444"} height={mobile ? 36 : 44} />
         </div>
 
-        {/* MCap */}
-        <div style={{ textAlign: "right", flexShrink: 0, minWidth: mobile ? 60 : 70 }}>
-          <div style={{ fontFamily: mono, fontSize: mobile ? 14 : 16, fontWeight: 800, color: t.mcapUsd >= 100000 ? T.green : T.text }}>${fmt(t.mcapUsd)}</div>
-          {held && <div style={{ fontFamily: mono, fontSize: 8, color: T.green, marginTop: 1, fontWeight: 700 }}>HELD</div>}
+        {/* MCap + change */}
+        <div style={{ textAlign: "right", flexShrink: 0, minWidth: mobile ? 65 : 80 }}>
+          <div style={{ fontFamily: mono, fontSize: mobile ? 14 : 16, fontWeight: 800, color: (t.mcapUsd || 0) >= 1e6 ? "#ffaa00" : (t.mcapUsd || 0) >= 100000 ? T.green : T.text }}>${fmt(t.mcapUsd)}</div>
+          {t.h1Change ? <div style={{ fontFamily: mono, fontSize: 10, color: t.h1Change > 0 ? T.green : "#ff4444", marginTop: 1 }}>{t.h1Change > 0 ? "+" : ""}{typeof t.h1Change === "number" ? t.h1Change.toFixed(1) : t.h1Change}%</div> : null}
         </div>
       </div>
 
