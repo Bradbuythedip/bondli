@@ -4,7 +4,7 @@ const API = "https://bondli-production.up.railway.app";
 window.__BONDLI_API = API;
 const WS_URL = "wss://bondli-production.up.railway.app/ws";
 const PLATFORM_WALLET = "anal.sol"; // Display name — actual pubkey set in env
-const PRO_FEE_SOL = 10;
+const PRO_FEE_SOL = 10; // fallback, actual price fetched from bonding curve
 const FREE_PROFIT_CUT = 25; // percent
 
 // === DETERMINISTIC AVATAR + USERNAME FROM WALLET ===
@@ -245,6 +245,14 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
   const T = useTheme(); const mobile = useIsMobile();
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
+  const [proPrice, setProPrice] = useState(PRO_FEE_SOL);
+  const [proLicenses, setProLicenses] = useState(0);
+
+  useEffect(() => {
+    fetch(API + "/api/pricing").then(r => r.json()).then(d => {
+      if (d.ok) { setProPrice(d.currentPrice); setProLicenses(d.licensesSold); }
+    }).catch(() => {});
+  }, []);
 
   const getProvider = () => { if (window?.phantom?.solana?.isPhantom) return window.phantom.solana; if (window?.solana?.isPhantom) return window.solana; return null; };
 
@@ -376,8 +384,8 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
           </div>
           <div style={{ background: T.surface, border: "1px solid " + T.green + "44", borderRadius: 16, padding: mobile ? 20 : 28 }}>
             <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.yellow, marginBottom: 8 }}>PRO</div>
-            <div style={{ fontFamily: mono, fontSize: mobile ? 28 : 36, fontWeight: 900, color: T.text }}>{PRO_FEE_SOL} <span style={{ fontSize: 14, color: T.dim }}>SOL</span></div>
-            <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginTop: 4 }}>Keep 100% forever</div>
+            <div style={{ fontFamily: mono, fontSize: mobile ? 28 : 36, fontWeight: 900, color: T.green }}>{proPrice} <span style={{ fontSize: 14, color: T.dim }}>SOL</span></div>
+            <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 4 }}>{proLicenses} sold {"·"} price rises with each license</div>
             <Btn onClick={connectPhantom} full disabled={connecting} style={{ marginTop: 16, borderRadius: 10, fontSize: 13, background: "linear-gradient(135deg, #534bb1, #551bf9)" }}>Go Pro</Btn>
           </div>
         </div>
@@ -403,7 +411,17 @@ function TierGate({ user, onSelect, onDisconnect }) {
   const [txSig, setTxSig] = useState("");
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState("");
-  const [mode, setMode] = useState(null); // null = choosing, "free" = activating, "pro" = paying
+  const [mode, setMode] = useState(null);
+  const [proPrice, setProPrice] = useState(PRO_FEE_SOL);
+  const [proNextPrice, setProNextPrice] = useState(PRO_FEE_SOL);
+  const [proLicenses, setProLicenses] = useState(0);
+
+  // Fetch current bonding curve price
+  useEffect(() => {
+    fetch(API + "/api/pricing").then(r => r.json()).then(d => {
+      if (d.ok) { setProPrice(d.currentPrice); setProNextPrice(d.nextPrice); setProLicenses(d.licensesSold); }
+    }).catch(() => {});
+  }, []);
 
   const activateFree = async () => {
     setVerifying(true); setError("");
@@ -456,9 +474,10 @@ function TierGate({ user, onSelect, onDisconnect }) {
               <Btn onClick={() => setMode("free")} full ghost color={T.green} style={{ borderRadius: 12 }}>Start Free</Btn>
             </div>
             <div style={{ background: T.bg, border: "2px solid " + T.green + "44", borderRadius: 16, padding: 24, textAlign: "center", transition: "all .3s" }}>
-              <div style={{ fontFamily: mono, fontSize: 32, fontWeight: 900, color: T.text, marginBottom: 4 }}>{PRO_FEE_SOL} SOL</div>
-              <div style={{ fontFamily: mono, fontSize: 14, color: T.yellow, marginBottom: 16 }}>Keep 100% forever</div>
-              <div style={{ fontSize: 13, color: T.faint, marginBottom: 20, lineHeight: 1.6 }}>One-time payment. Zero profit share. Every lamport stays in your wallet.</div>
+              <div style={{ fontFamily: mono, fontSize: 32, fontWeight: 900, color: T.text, marginBottom: 4 }}>{proPrice} SOL</div>
+              <div style={{ fontFamily: mono, fontSize: 14, color: T.yellow, marginBottom: 8 }}>Keep 100% forever</div>
+              <div style={{ fontFamily: mono, fontSize: 11, color: T.faint, marginBottom: 16 }}>License #{proLicenses + 1} {"·"} next: {proNextPrice} SOL</div>
+              <div style={{ fontSize: 13, color: T.faint, marginBottom: 20, lineHeight: 1.6 }}>Price goes up with every license sold. Early users pay less.</div>
               <Btn onClick={() => setMode("pro")} full style={{ borderRadius: 12, background: "linear-gradient(135deg, #534bb1, #551bf9)" }}><Ic.Crown /> Go Pro</Btn>
             </div>
           </div>
@@ -482,12 +501,13 @@ function TierGate({ user, onSelect, onDisconnect }) {
         {mode === "pro" && (
           <div>
             <div style={{ padding: 20, background: T.bg, borderRadius: 14, border: "1px solid " + T.border, marginBottom: 20 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
-                <span style={{ fontSize: 14, color: T.dim, fontFamily: mono, fontWeight: 600 }}>LIFETIME ACCESS</span>
-                <span style={{ fontSize: 24, fontFamily: mono, fontWeight: 800, color: T.green }}>{PRO_FEE_SOL} SOL</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span style={{ fontSize: 14, color: T.dim, fontFamily: mono, fontWeight: 600 }}>LICENSE #{proLicenses + 1}</span>
+                <span style={{ fontSize: 28, fontFamily: mono, fontWeight: 900, color: T.green }}>{proPrice} SOL</span>
               </div>
+              <div style={{ fontFamily: mono, fontSize: 11, color: T.faint, marginBottom: 14, textAlign: "right" }}>Next license: {proNextPrice} SOL</div>
               <div style={{ padding: "12px 14px", background: T.surface, borderRadius: 10, border: "1px dashed " + T.border, fontFamily: mono, fontSize: mobile ? 14 : 16, color: T.green, wordBreak: "break-all", textAlign: "center", fontWeight: 600 }}>{PLATFORM_WALLET}</div>
-              <p style={{ fontSize: 13, color: T.faint, textAlign: "center", marginTop: 10 }}>Send {PRO_FEE_SOL} SOL, paste tx signature below</p>
+              <p style={{ fontSize: 13, color: T.faint, textAlign: "center", marginTop: 10 }}>Send {proPrice} SOL, paste tx signature below</p>
             </div>
             <div style={{ marginBottom: 16 }}><Label>Transaction Signature</Label><Input value={txSig} onChange={setTxSig} placeholder="Paste tx signature..." big /></div>
             <Btn onClick={verifyPro} full disabled={!txSig || verifying} style={{ marginBottom: 12 }}><Ic.Check /> {verifying ? "Verifying..." : "Verify & Unlock Pro"}</Btn>
