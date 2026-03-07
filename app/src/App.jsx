@@ -295,7 +295,7 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
   ];
 
   return (
-    <div style={{ minHeight: "100dvh", background: T.bg, color: T.text, fontFamily: sans, transition: "all .3s" }}>
+    <div style={{ minHeight: "100dvh", background: T.bg, color: T.text, fontFamily: sans, transition: "all .3s", paddingBottom: "max(20px, env(safe-area-inset-bottom, 20px))" }}>
       <div style={{ position: "fixed", inset: 0, opacity: T.mode === "dark" ? 0.03 : 0.04, backgroundImage: T.gridLines, backgroundSize: "60px 60px", pointerEvents: "none" }} />
 
       {/* Top bar */}
@@ -930,7 +930,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
 
   useEffect(() => {
     let alive = true;
-    const poll = async () => { while (alive) { if (enabled) await fetchRadar(); await new Promise(r => setTimeout(r, 3000)); } };
+    const poll = async () => { while (alive) { if (enabled) await fetchRadar(); await new Promise(r => setTimeout(r, 4000)); } };
     fetchRadar(); poll();
     return () => { alive = false; };
   }, [enabled]);
@@ -1258,7 +1258,7 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tra
   useEffect(() => {
     if (!user?.pubkey) return;
     fetchPositions();
-    const iv = setInterval(fetchPositions, 5000); // 5s — axiomatic: balance must always be accurate
+    const iv = setInterval(fetchPositions, 8000); // 8s poll
     return () => clearInterval(iv);
   }, [user?.pubkey]);
 
@@ -1898,7 +1898,7 @@ export default function App() {
       else toast(d.error || "Failed", "error");
     } catch { toast("Network error", "error"); }
   };
-  useEffect(() => { if (!launched || !launchCA) return; const iv = setInterval(async () => { try { const res = await fetch(API + "/api/fleet", { headers: { "X-Wallet": user?.pubkey } }); if (res.ok) { const data = await res.json(); setFleetStatus(data); if (data.curveProgress) setCurveProgress(data.curveProgress); } } catch {} }, 3000); return () => clearInterval(iv); }, [launched, launchCA]);
+  useEffect(() => { if (!launched || !launchCA) return; const iv = setInterval(async () => { try { const res = await fetch(API + "/api/fleet", { headers: { "X-Wallet": user?.pubkey } }); if (res.ok) { const data = await res.json(); setFleetStatus(data); if (data.curveProgress) setCurveProgress(data.curveProgress); } } catch {} }, 5000); return () => clearInterval(iv); }, [launched, launchCA]);
   useEffect(() => { if (!launched) return; const iv = setInterval(() => setCurveProgress(p => Math.min(1, p + Math.random() * 0.004)), 2000); return () => clearInterval(iv); }, [launched]);
   const walletCount = totalSol < 0.5 ? 3 : totalSol < 1 ? 5 : totalSol < 5 ? 9 : totalSol < 10 ? 11 : totalSol < 25 ? 15 : 20;
   const activeRoles = useMemo(() => { if (walletCount <= 3) return ROLES.filter(r => ["accumulator","momentum","whale"].includes(r.id)); if (walletCount <= 5) return ROLES.filter(r => ["sniper","accumulator","momentum","whale","liquidator"].includes(r.id)); if (walletCount <= 9) return ROLES.filter(r => r.id !== "recycler"); return ROLES; }, [walletCount]);
@@ -1937,7 +1937,7 @@ export default function App() {
     const fetchWallet = () => fetch(API + "/api/trading-wallet/" + user.pubkey).then(r => r.json()).then(d => { if (d.tradingWallet) { setTradingWallet(d.tradingWallet); setTradingBalance(d.balance || 0); } }).catch(() => {});
     fetchWallet();
     // Poll balance every 5 seconds — axiomatic: balance must always be accurate
-    const balPoll = setInterval(fetchWallet, 5000);
+    const balPoll = setInterval(fetchWallet, 10000);
     // Also load keys for deploy auto-fill
     fetch(API + "/api/trading-wallet/export", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) }).then(r => r.json()).then(d => { if (d.ok && d.privateKey) setTradingKeys(d); }).catch(() => {});
     return () => clearInterval(balPoll);
@@ -2154,7 +2154,7 @@ export default function App() {
       {!user && <LandingPage onConnect={setUser} isDark={isDark} toggleTheme={toggleTheme} />}
       {needsTier && <TierGate user={user} onSelect={handleTierSelect} onDisconnect={disconnect} />}
       {user && hasAccess && (
-        <div style={{ minHeight: "100dvh", background: T.bg, color: T.text, fontFamily: sans }}>
+        <div style={{ minHeight: "100dvh", background: T.bg, color: T.text, fontFamily: sans, paddingBottom: "max(20px, env(safe-area-inset-bottom, 20px))" }}>
           <div style={{ position: "fixed", inset: 0, opacity: T.mode === "dark" ? 0.015 : 0.025, pointerEvents: "none", zIndex: 0, backgroundImage: T.gridLines, backgroundSize: "60px 60px" }} />
           <header style={{ padding: mobile ? "10px 14px" : "12px 28px", borderBottom: "1px solid " + T.border, display: "flex", alignItems: "center", justifyContent: "space-between", position: "relative", zIndex: 10, background: T.bg + "ee", backdropFilter: "blur(10px)" }}>
             <div onClick={() => { setLaunched(false); setLaunchCA(""); setActiveSessionId(""); setCaAnalysis(null); setShowSettings(false); setFleetStatus(null); setFleetKeys([]); setDevSecret(""); setSessionDetail(null); setWantsHome(true); }} style={{ display: "flex", alignItems: "center", gap: mobile ? 8 : 12, cursor: "pointer", userSelect: "none" }}>
@@ -2163,7 +2163,10 @@ export default function App() {
               {wsConnected && <span style={{ fontSize: 10, fontFamily: mono, color: T.green, opacity: 0.8 }}>{"●"} live</span>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: mobile ? 6 : 10 }}>
-              {(launched || heldMints.size > 0 || pastSessions.filter(s => s.status !== "closed" && s.status !== "swept" && s.status !== "recovered").length > 0) && (<button onClick={closeAllSessions} disabled={isClosing} style={{ background: T.red + "15", border: "1px solid " + T.red + "44", borderRadius: 8, padding: "5px 10px", cursor: isClosing ? "wait" : "pointer", color: T.red, fontFamily: mono, fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Exiting..." : "EXIT ALL"}</button>)}
+              {(launched || heldMints.size > 0 || pastSessions.filter(s => s.status !== "closed" && s.status !== "swept" && s.status !== "recovered").length > 0) && (<>
+                <button onClick={closeAllSessions} disabled={isClosing} style={{ background: T.red + "15", border: "1px solid " + T.red + "44", borderRadius: 8, padding: "5px 10px", cursor: isClosing ? "wait" : "pointer", color: T.red, fontFamily: mono, fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Exiting..." : "EXIT ALL"}</button>
+                <button onClick={async () => { toast("Sweeping...", "info"); for (const s of pastSessions.filter(ss => ss.status !== "closed")) { try { const r = await fetch(API + "/api/session/force-recover", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user.pubkey }) }); const d = await r.json(); if (d.totalRecovered > 0) toast("Swept " + d.totalRecovered.toFixed(4) + " SOL", "success"); } catch {} } toast("Sweep done", "success"); }} style={{ background: (T.yellow || "#ffaa00") + "15", border: "1px solid " + (T.yellow || "#ffaa00") + "44", borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: T.yellow || "#ffaa00", fontFamily: mono, fontSize: 11, fontWeight: 700 }}>SWEEP</button>
+              </>)}
               <button onClick={() => setShowSettings(!showSettings)} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: T.dim, fontSize: 14 }}><Ic.Cpu /></button>
               <ThemeToggle isDark={isDark} toggle={toggleTheme} mobile={mobile} />
               {tierLabel && <span style={{ padding: "3px 8px", borderRadius: 6, fontFamily: mono, fontSize: 10, fontWeight: 700, background: tierColor + "18", color: tierColor, border: "1px solid " + tierColor + "33" }}>{tierLabel}</span>}
@@ -2343,6 +2346,7 @@ export default function App() {
                 {/* ═══ CONTROLS ═══ */}
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={closeAllSessions} disabled={isClosing} style={{ flex: 1, padding: "14px", background: T.red + "10", border: "1px solid " + T.red, color: T.red, fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.5 : 1 }}>{isClosing ? "Exiting..." : "EXIT ALL"}</button>
+                  <button onClick={async () => { toast("Sweeping all sessions...", "info"); for (const s of pastSessions.filter(ss => ss.status !== "closed")) { try { await fetch(API + "/api/session/force-recover", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user.pubkey }) }).then(r => r.json()).then(d => { if (d.totalRecovered > 0) toast("Swept " + d.totalRecovered.toFixed(4) + " SOL from " + (s.tokenConfig?.ticker || s.id.slice(0, 8)), "success"); }); } catch {} } toast("Sweep complete", "success"); }} style={{ flex: 1, padding: "14px", background: (T.yellow || "#ffaa00") + "10", border: "1px solid " + (T.yellow || "#ffaa00"), color: T.yellow || "#ffaa00", fontFamily: mono, fontSize: 14, fontWeight: 800, borderRadius: 10, cursor: "pointer" }}>SWEEP ALL</button>
                   <button onClick={() => { setLaunched(false); setLaunchCA(""); setCaAnalysis(null); setFleetStatus(null); setFleetKeys([]); setDevSecret(""); setWantsHome(true); }} style={{ padding: "14px 20px", background: "none", border: "1px solid " + T.border, color: T.dim, fontFamily: mono, fontSize: 13, borderRadius: 10, cursor: "pointer" }}>New</button>
                 </div>
               </div>
@@ -2520,11 +2524,12 @@ export default function App() {
                     </div>
                   )}
                   {pastSessions.map(s => (<div key={s.id} style={{ marginBottom: 8 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid " + T.border + "22" }}>
-                      <span style={{ fontFamily: mono, fontSize: 13, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || s.tokenConfig?.name || "?"} {"\u2014"} <span style={{ color: T.faint, fontSize: 11 }}>{s.tokenCA?.slice(0, 8)}...</span></span>
-                      <button onClick={() => sellAndSweep(s.id)} disabled={isSweeping || isClosing} style={{ background: T.red + "15", color: T.red, border: "1px solid " + T.red + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: (isSweeping || isClosing) ? "wait" : "pointer", opacity: (isSweeping || isClosing) ? 0.5 : 1 }}>{isSweeping ? "..." : "Close"}</button>
-                      <button onClick={async () => { try { const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) }); const data = await res.json(); if (data.ok && data.status === "running") { setLaunchCA(data.tokenCA); setLaunched(true); } else if (data.ok) { setSessionDetail(data); } else toast(data.error || "Failed", "error"); } catch (e) { toast(e.message, "error"); } }} style={{ background: T.green + "15", color: T.green, border: "1px solid " + T.green + "33", fontFamily: mono, fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 6, cursor: "pointer" }}>View</button>
-                      <button onClick={() => recoverSession(s.id)} disabled={isRecovering} style={{ background: "none", color: T.faint, border: "1px solid " + T.border, fontFamily: mono, fontSize: 10, fontWeight: 600, padding: "5px 8px", borderRadius: 6, cursor: isRecovering ? "wait" : "pointer", opacity: isRecovering ? 0.5 : 1 }}>{isRecovering ? "..." : "Recover SOL"}</button>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 0", borderBottom: "1px solid " + T.border + "22", flexWrap: "wrap" }}>
+                      <span style={{ fontFamily: mono, fontSize: 13, color: T.mid, flex: 1, minWidth: 80 }}>{s.tokenConfig?.ticker || s.tokenConfig?.name || "?"} {"\u2014"} <span style={{ color: T.faint, fontSize: 11 }}>{s.tokenCA?.slice(0, 8)}...</span></span>
+                      <button onClick={() => sellAndSweep(s.id)} disabled={isSweeping || isClosing} style={{ background: T.red + "15", color: T.red, border: "1px solid " + T.red + "33", fontFamily: mono, fontSize: 10, fontWeight: 700, padding: "4px 8px", borderRadius: 6, cursor: (isSweeping || isClosing) ? "wait" : "pointer", opacity: (isSweeping || isClosing) ? 0.5 : 1 }}>{isSweeping ? "..." : "Close"}</button>
+                      <button onClick={() => recoverSession(s.id)} disabled={isRecovering} style={{ background: (T.yellow || "#ffaa00") + "15", color: T.yellow || "#ffaa00", border: "1px solid " + (T.yellow || "#ffaa00") + "33", fontFamily: mono, fontSize: 10, fontWeight: 700, padding: "4px 8px", borderRadius: 6, cursor: isRecovering ? "wait" : "pointer", opacity: isRecovering ? 0.5 : 1 }}>{isRecovering ? "..." : "Sweep"}</button>
+                      <button onClick={async () => { try { const res = await fetch(API + "/api/session/export-keys", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user.pubkey }) }); const d = await res.json(); if (d.ok && d.keys?.length > 0) { const txt = d.keys.map(k => k.role + " (" + k.pubkey.slice(0, 8) + "): " + k.secret).join("\n"); navigator.clipboard?.writeText(txt); toast(d.keys.length + " keys copied!", "success"); } else toast("No keys found — session may have expired", "error"); } catch { toast("Failed to export", "error"); } }} style={{ background: "none", color: T.faint, border: "1px solid " + T.border, fontFamily: mono, fontSize: 10, fontWeight: 600, padding: "4px 8px", borderRadius: 6, cursor: "pointer" }}>Keys</button>
+                      <button onClick={async () => { try { const res = await fetch(API + "/api/session/resume", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user?.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user?.pubkey }) }); const data = await res.json(); if (data.ok && data.status === "running") { setLaunchCA(data.tokenCA); setLaunched(true); } else if (data.ok) { setSessionDetail(data); } else toast(data.error || "Failed", "error"); } catch (e) { toast(e.message, "error"); } }} style={{ background: T.green + "15", color: T.green, border: "1px solid " + T.green + "33", fontFamily: mono, fontSize: 10, fontWeight: 700, padding: "4px 8px", borderRadius: 6, cursor: "pointer" }}>View</button>
                     </div>
                     {sessionDetail && sessionDetail.session?.id === s.id && (<div style={{ padding: "12px 0" }}>
                       <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginBottom: 8 }}>Total SOL in fleet: <span style={{ color: T.green, fontWeight: 700, fontSize: 14 }}>{(sessionDetail.totalBalance || 0).toFixed(4)}</span></div>
