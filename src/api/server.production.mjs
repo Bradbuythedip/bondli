@@ -973,6 +973,8 @@ function computeMovers() {
       bundleScore: t.bundleScore || 0,
       bundleFlags: t.bundleFlags || [],
       bundled: (t.bundleScore || 0) >= 40, // boolean shortcut
+      // Sparkline: last 30 mcap values for inline chart
+      spark: (t.priceHistory || []).slice(-30).map(p => p.mcap || 0),
     };
 
     allScored.push({ ...base, scores });
