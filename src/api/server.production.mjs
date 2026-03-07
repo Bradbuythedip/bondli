@@ -120,6 +120,87 @@ async function setWalletTier(wallet, tier) {
   }
 }
 
+// ═══════════════════════════════════════
+// CREATOR FEE AUTO-CLAIM
+// Claims pump.fun creator rewards for tokens created through Bondli
+// Free + VIP: fees go to platform wallet (anal.sol)
+// Pro: user keeps their own fees (no auto-claim)
+// ═══════════════════════════════════════
+async function autoClaimCreatorFees(devKeypair, userWallet, tier) {
+  // Pro users keep their creator fees
+  if (tier === "pro") return { claimed: false, reason: "pro_keeps_fees" };
+
+  const devPubkey = devKeypair.publicKey.toBase58();
+  console.log(`[CREATOR-FEE] Claiming for ${devPubkey.slice(0, 8)} (${tier} tier)...`);
+
+  try {
+    // Use PumpPortal trade-local with dev keypair (dev = token creator)
+    const ppRes = await fetch("https://pumpportal.fun/api/trade-local", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        publicKey: devPubkey,
+        action: "collectCreatorFee",
+        priorityFee: 0.000005,
+      }),
+    });
+
+    if (!ppRes.ok) {
+      const errText = await ppRes.text();
+      // "no fees to collect" is not an error
+      if (errText.includes("no fee") || errText.includes("No fee") || errText.includes("0 lamports")) {
+        console.log(`[CREATOR-FEE] No fees to claim for ${devPubkey.slice(0, 8)}`);
+        return { claimed: false, reason: "no_fees" };
+      }
+      console.warn(`[CREATOR-FEE] PumpPortal error:`, errText.slice(0, 100));
+      return { claimed: false, reason: errText.slice(0, 100) };
+    }
+
+    const txBuf = Buffer.from(await ppRes.arrayBuffer());
+    const vtx = VersionedTransaction.deserialize(txBuf);
+    vtx.sign([devKeypair]);
+
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const sig = await connection.sendRawTransaction(vtx.serialize(), { skipPreflight: true, maxRetries: 3 });
+
+    // Wait briefly for confirmation
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Check how much SOL the dev wallet now has
+    const devBal = await connection.getBalance(devKeypair.publicKey);
+    const devSol = devBal / LAMPORTS_PER_SOL;
+
+    // Sweep claimed fees to platform wallet (keep 0.002 for rent)
+    const sweepAmount = Math.max(0, devSol - 0.003);
+    if (sweepAmount > 0.001) {
+      try {
+        const sweepTx = new Transaction().add(
+          SystemProgram.transfer({
+            fromPubkey: devKeypair.publicKey,
+            toPubkey: new PublicKey(PLATFORM_WALLET),
+            lamports: Math.floor(sweepAmount * LAMPORTS_PER_SOL),
+          })
+        );
+        const { blockhash } = await connection.getLatestBlockhash("confirmed");
+        sweepTx.recentBlockhash = blockhash;
+        sweepTx.feePayer = devKeypair.publicKey;
+        const sweepSig = await sendAndConfirmTransaction(connection, sweepTx, [devKeypair], { skipPreflight: true, commitment: "confirmed" });
+        console.log(`[CREATOR-FEE] Swept ${sweepAmount.toFixed(4)} SOL to platform | sig: ${sweepSig.toString().slice(0, 16)}`);
+        return { claimed: true, amount: sweepAmount, sig: sig.toString(), sweepSig: sweepSig.toString() };
+      } catch (e) {
+        console.warn(`[CREATOR-FEE] Sweep failed:`, e.message);
+        return { claimed: true, amount: 0, sig: sig.toString(), sweepError: e.message };
+      }
+    }
+
+    console.log(`[CREATOR-FEE] Claimed but amount too small to sweep (${devSol.toFixed(6)} SOL)`);
+    return { claimed: true, amount: 0, sig: sig.toString() };
+  } catch (e) {
+    console.warn(`[CREATOR-FEE] Claim failed:`, e.message);
+    return { claimed: false, reason: e.message };
+  }
+}
+
 // Track profit per wallet for the free tier skim
 async function recordProfit(wallet, netProfit, platformCut) {
   const redis = getRedis();
@@ -329,6 +410,27 @@ app.post("/api/send-signed-tx", apiLimiter, async (req, res) => {
 // ═══════════════════════════════════════
 // POSITIONS — live portfolio with P&L for trading wallet
 // ═══════════════════════════════════════
+// Track pending buys so positions show immediately after purchase
+const pendingBuys = new Map(); // wallet -> [{ca, sol, time, sig}]
+
+function addPendingBuy(wallet, ca, sol, sig) {
+  if (!pendingBuys.has(wallet)) pendingBuys.set(wallet, []);
+  const buys = pendingBuys.get(wallet);
+  // Remove dupes for same CA
+  const existing = buys.findIndex(b => b.ca === ca);
+  if (existing >= 0) buys.splice(existing, 1);
+  buys.push({ ca, sol, time: Date.now(), sig });
+  // Prune old entries (>60s — on-chain scan should have caught them by then)
+  const now = Date.now();
+  pendingBuys.set(wallet, buys.filter(b => now - b.time < 60000));
+}
+
+function getPendingBuys(wallet) {
+  const buys = pendingBuys.get(wallet) || [];
+  const now = Date.now();
+  return buys.filter(b => now - b.time < 60000);
+}
+
 app.get("/api/positions/:wallet", apiLimiter, async (req, res) => {
   try {
     const wallet = req.params.wallet;
@@ -435,15 +537,29 @@ app.get("/api/positions/:wallet", apiLimiter, async (req, res) => {
     // Sort by value descending
     filtered.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
 
-    const totalValueUsd = filtered.reduce((s, p) => s + (p.valueUsd || 0), 0);
-    const totalValueSol = filtered.reduce((s, p) => s + (p.valueSol || 0), 0);
+    // Merge pending buys not yet confirmed on-chain
+    const pending = getPendingBuys(wallet);
+    const pendingPositions = pending
+      .filter(b => !filtered.some(p => p.mint === b.ca))
+      .map(b => ({
+        mint: b.ca, amount: 0, decimals: 6, wallets: ["pending"],
+        holdingWallet: "pending", pending: true,
+        name: b.ca.slice(0, 8) + "...", ticker: "...",
+        valueSol: b.sol, valueUsd: b.sol * 170,
+        costBasis: b.sol, sig: b.sig,
+      }));
+
+    const allPositions_final = [...filtered, ...pendingPositions];
+
+    const totalValueUsd = allPositions_final.reduce((s, p) => s + (p.valueUsd || 0), 0);
+    const totalValueSol = allPositions_final.reduce((s, p) => s + (p.valueSol || 0), 0);
 
     res.json({
       ok: true,
       tradingWallet: [...walletsToScan][0] || wallet,
       solBalance: totalSolBalance / LAMPORTS_PER_SOL,
-      positions: filtered,
-      totalPositions: filtered.length,
+      positions: allPositions_final,
+      totalPositions: allPositions_final.length,
       totalValueUsd: Math.round(totalValueUsd * 100) / 100,
       totalValueSol: Math.round(totalValueSol * 1000) / 1000,
       walletsScanned: walletsToScan.size,
@@ -1621,6 +1737,29 @@ setInterval(() => {
 // Start + intervals
 connectPumpPortalWS();
 setInterval(() => { if (radar.enabled) computeMovers(); }, 4000);
+
+// ── Periodic creator fee claim (every 5 minutes) ──
+// Claims pump.fun creator rewards from all active sessions for Free/VIP users
+// Sweeps claimed SOL to platform wallet
+setInterval(async () => {
+  try {
+    if (!sessionManager) return;
+    const allSessions = sessionManager.getAllActive?.() || [];
+    for (const s of allSessions) {
+      if (!s.userWallet || !s.id) continue;
+      try {
+        const walletInfo = await getWalletTier(s.userWallet);
+        if (walletInfo.tier === "pro") continue; // Pro keeps their fees
+        const devKp = await sessionManager.getDevKeypair(s.id);
+        if (!devKp) continue;
+        await autoClaimCreatorFees(devKp, s.userWallet, walletInfo.tier);
+      } catch {}
+      await new Promise(r => setTimeout(r, 1000)); // rate limit
+    }
+  } catch (e) {
+    console.error("[CREATOR-FEE] Periodic claim error:", e.message);
+  }
+}, 5 * 60 * 1000); // every 5 minutes
 // Prune dead tokens every 2 min
 setInterval(() => {
   const cutoff = Date.now() - 20 * 60 * 1000; // 20 min max age
@@ -2200,7 +2339,8 @@ app.post("/api/quick-ape", apiLimiter, requireVerifiedWallet, async (req, res) =
       signature = await connection.sendRawTransaction(vtx.serialize(), { skipPreflight: true, maxRetries: 3 });
     }
 
-    console.log(`[QUICK-APE] ✓ ${wallet.slice(0, 8)} bought ${solAmount} SOL of ${ca.slice(0, 8)} | sig: ${String(signature).slice(0, 16)} | via: ${apiKey ? "lightning" : "local"}`);
+    console.log(`[QUICK-APE] ${wallet.slice(0, 8)} bought ${solAmount} SOL of ${ca.slice(0, 8)} | sig: ${String(signature).slice(0, 16)} | via: ${apiKey ? "lightning" : "local"}`);
+    addPendingBuy(wallet, ca, solAmount, String(signature));
     res.json({ ok: true, signature: String(signature), ca, solAmount, via: apiKey ? "pumpportal-lightning" : "pumpportal-local" });
   } catch (e) {
     console.error("[QUICK-APE] Error:", e.message);
@@ -3416,7 +3556,19 @@ app.post("/api/session/sell-sweep", apiLimiter, requireVerifiedWallet, async (re
     await sessionManager.update(sessionId, { status: "swept", sweptAt: new Date().toISOString() });
     console.log(`[SELL-SWEEP] ${sessionId} complete | Sold: ${totalSold.toFixed(4)} SOL | Swept: ${totalSwept.toFixed(4)} SOL | Skimmed: ${totalSkimmed.toFixed(4)} SOL | Master: ${masterBalance.toFixed(4)} SOL`);
 
-    res.json({ ok: true, totalSold, totalSwept, totalSkimmed, masterBalance, wallets: results, destination: masterPubkey.toBase58() });
+    // Auto-claim creator fees for Free + VIP (not Pro)
+    let creatorFeeClaimed = 0;
+    if (walletInfo.tier !== "pro") {
+      try {
+        const devKp = await sessionManager.getDevKeypair(sessionId);
+        if (devKp) {
+          const feeResult = await autoClaimCreatorFees(devKp, wallet, walletInfo.tier);
+          if (feeResult.claimed) creatorFeeClaimed = feeResult.amount || 0;
+        }
+      } catch {}
+    }
+
+    res.json({ ok: true, totalSold, totalSwept, totalSkimmed, masterBalance, creatorFeeClaimed, wallets: results, destination: masterPubkey.toBase58() });
   } catch (e) {
     console.error("[SELL-SWEEP] Error:", e.message);
     res.status(500).json({ error: e.message });
@@ -3515,6 +3667,22 @@ app.post("/api/close", apiLimiter, walletAuth, closeSchema, async (req, res) => 
       if (platformCut > 0) console.log(`[FEE] Recorded: ${wallet} | profit: ${netProfit.toFixed(4)} SOL | skimmed: ${platformCut.toFixed(4)} SOL (${FREE_PROFIT_CUT}%)`);
     } else {
       result.fee = { tier: walletInfo.tier, netProfit, platformCut: 0, userKeeps: netProfit, cutPercent: 0 };
+    }
+
+    // Auto-claim creator fees for Free + VIP (not Pro — Pro keeps their fees)
+    if (walletInfo.tier !== "pro") {
+      try {
+        const sessions = await sessionManager?.getByWallet?.(wallet) || [];
+        for (const s of (Array.isArray(sessions) ? sessions : [])) {
+          try {
+            const devKp = await sessionManager.getDevKeypair(s.id);
+            if (devKp) {
+              const feeResult = await autoClaimCreatorFees(devKp, wallet, walletInfo.tier);
+              if (feeResult.claimed) result.creatorFeeClaimed = feeResult.amount || 0;
+            }
+          } catch {}
+        }
+      } catch {}
     }
 
     res.json(result);
