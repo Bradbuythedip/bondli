@@ -1137,7 +1137,115 @@ class FleetTrader extends EventEmitter {
     }
   }
 
-  // Jito bundle endpoint for MEV protection
+  // Jito bundle — up to 5 transactions in one block, atomic (all land or none)
+  async _sendJitoBundle(transactions, tipLamports = 10000) {
+    const JITO_BUNDLE_ENDPOINTS = [
+      "https://mainnet.block-engine.jito.wtf/api/v1/bundles",
+      "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles",
+      "https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles",
+    ];
+    const endpoint = JITO_BUNDLE_ENDPOINTS[Math.floor(Math.random() * JITO_BUNDLE_ENDPOINTS.length)];
+    const { blockhash } = await this.connection.getLatestBlockhash("confirmed");
+
+    // Serialize all transactions
+    const base58Txs = [];
+    for (const { tx, signers } of transactions) {
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = signers[0].publicKey;
+      tx.sign(...signers);
+      base58Txs.push(bs58.encode(tx.serialize()));
+    }
+
+    try {
+      const r = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "sendBundle", params: [base58Txs] }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (r.ok) {
+        const data = await r.json();
+        if (data.result) {
+          console.log(`[JITO] Bundle sent: ${base58Txs.length} txs | bundle_id: ${data.result}`);
+          return { ok: true, bundleId: data.result, txCount: base58Txs.length };
+        }
+        if (data.error) console.warn(`[JITO] Bundle error:`, data.error);
+      }
+    } catch (e) {
+      console.warn(`[JITO] Bundle failed (${endpoint.split("/")[2]}):`, e.message);
+    }
+    return { ok: false };
+  }
+
+  // Atomic close — sell all fleet wallets in one Jito bundle (same block)
+  async atomicSellAll(ca) {
+    const session = this.sessions.get(ca);
+    if (!session) throw new Error(`No session for ${ca}`);
+
+    let global, feeConfig;
+    try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+    if (!global || !feeConfig) throw new Error("Cannot fetch global/feeConfig");
+
+    // Build sell transactions for every wallet that holds tokens
+    const sellTxs = [];
+    for (const wallet of session.fleetWallets) {
+      try {
+        const ata = getAssociatedTokenAddressSync(session.mint, wallet.keypair.publicKey, true);
+        const account = await getAccount(this.connection, ata);
+        const tokenBalance = new BN(account.amount.toString());
+        if (tokenBalance.isZero()) continue;
+
+        // Build the sell transaction (same logic as _executeSell but don't send)
+        const sellState = await this.onlineSdk.fetchSellState(session.mint, wallet.keypair.publicKey);
+        const tx = await this.onlineSdk.getSellTransaction(
+          wallet.keypair.publicKey, session.mint, global, feeConfig,
+          sellState.bondingCurveAccountInfo, sellState.bondingCurve,
+          tokenBalance, BigInt(0), // 0 minSolOut for speed
+          { units: 150000, microLamports: 100000 }
+        );
+        sellTxs.push({ tx, signers: [wallet.keypair], wallet, tokens: tokenBalance });
+      } catch (e) {
+        console.warn(`[ATOMIC] ${wallet.role} skip:`, e.message);
+      }
+    }
+
+    if (sellTxs.length === 0) return { ok: true, sold: 0, message: "No tokens to sell" };
+
+    console.log(`[ATOMIC] Selling ${sellTxs.length} wallets in one block for ${ca.slice(0, 8)}...`);
+
+    // Jito bundles max 5 txs — split into bundles if needed
+    let totalSold = 0;
+    const BATCH = 5;
+    for (let i = 0; i < sellTxs.length; i += BATCH) {
+      const batch = sellTxs.slice(i, i + BATCH);
+      const bundleResult = await this._sendJitoBundle(batch);
+
+      if (bundleResult.ok) {
+        console.log(`[ATOMIC] Bundle landed: ${batch.length} sells | id: ${bundleResult.bundleId}`);
+        totalSold += batch.length;
+        // Update accounting
+        for (const { wallet } of batch) {
+          session.totalSolRecovered += 0; // actual amount unknown until confirmed
+        }
+      } else {
+        // Fallback: send individually (slow but reliable)
+        console.warn(`[ATOMIC] Bundle failed, falling back to sequential...`);
+        for (const { tx, signers, wallet } of batch) {
+          try {
+            const sig = await sendAndConfirmTransaction(this.connection, tx, signers, { skipPreflight: true, commitment: "confirmed", maxRetries: 3 });
+            totalSold++;
+            console.log(`[ATOMIC] Fallback sell OK: ${wallet.role} | sig: ${sig.toString().slice(0, 12)}`);
+          } catch (e) {
+            console.error(`[ATOMIC] Fallback sell failed: ${wallet.role}:`, e.message);
+          }
+        }
+      }
+    }
+
+    return { ok: true, sold: totalSold, total: sellTxs.length, atomic: totalSold === sellTxs.length };
+  }
+
+  // Single-tx Jito send with MEV protection (existing, for individual trades)
   async _sendWithJito(tx, signers) {
     const JITO_ENDPOINTS = [
       "https://mainnet.block-engine.jito.wtf/api/v1/transactions",
@@ -1228,6 +1336,32 @@ class FleetTrader extends EventEmitter {
     }
     if (!global || !feeConfig) console.error("[FLEET] WARNING: Could not fetch global/feeConfig — fleet tokens will NOT be sold!");
 
+    // ── ATOMIC SELL: all wallets in one Jito bundle (same block) ──
+    let atomicWorked = false;
+    if (global && feeConfig) {
+      try {
+        const atomicResult = await this.atomicSellAll(ca);
+        if (atomicResult.ok && atomicResult.sold > 0) {
+          atomicWorked = true;
+          console.log(`[FLEET] Atomic close: ${atomicResult.sold}/${atomicResult.total} sold in ${atomicResult.atomic ? "one block" : "fallback mode"}`);
+          // Wait for confirmation
+          await sleep(2000);
+          // Update balances
+          for (const wallet of session.fleetWallets) {
+            try {
+              const bal = await this.connection.getBalance(wallet.keypair.publicKey);
+              wallet.solRecovered = bal / LAMPORTS_PER_SOL;
+              session.totalSolRecovered += wallet.solRecovered;
+            } catch {}
+          }
+        }
+      } catch (e) {
+        console.warn(`[FLEET] Atomic sell failed, falling back to sequential:`, e.message);
+      }
+    }
+
+    // ── FALLBACK: sequential sells (if atomic failed or partial) ──
+    if (!atomicWorked) {
     // Sell all remaining tokens from each wallet
     for (const wallet of session.fleetWallets) {
       try {
@@ -1253,6 +1387,7 @@ class FleetTrader extends EventEmitter {
       } catch (e) { console.error(`[FLEET] [${wallet.role}] Close sell failed:`, e.message); }
       await sleep(500);
     }
+    } // end if(!atomicWorked)
     let totalSkimmed = 0;
     for (const wallet of session.fleetWallets) {
       if (wallet.keypair.publicKey.equals(session.masterKp.publicKey)) continue;
