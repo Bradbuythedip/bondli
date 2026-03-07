@@ -31,8 +31,10 @@ export function rateLimit(opts = {}) {
   return async (req, res, next) => {
     if (!redis) return next();
 
+    // Key by wallet first (more accurate), fallback to IP
+    const wallet = req.headers["x-wallet"] || req.query?.wallet || req.body?.wallet;
     const ip = req.headers["x-real-ip"] || req.headers["x-forwarded-for"]?.split(",")[0] || req.ip;
-    const key = `${keyPrefix}${ip}`;
+    const key = `${keyPrefix}${wallet || ip}`;
     const now = Date.now();
     const windowStart = now - windowMs;
 
@@ -57,13 +59,17 @@ export function rateLimit(opts = {}) {
       res.set("X-RateLimit-Remaining", (max - count - 1).toString());
       next();
     } catch (e) {
-      console.error("[RATE-LIMIT]", e.message);
+      // On Redis error, let request through
       next();
     }
   };
 }
 
-export const apiLimiter = rateLimit({ max: 60, windowMs: 60_000, keyPrefix: "rl:api:" });
-export const launchLimiter = rateLimit({ max: 3, windowMs: 300_000, keyPrefix: "rl:launch:", message: "Launch rate limited. Max 3 per 5 minutes." });
-export const paymentLimiter = rateLimit({ max: 10, windowMs: 60_000, keyPrefix: "rl:pay:" });
-export const wsLimiter = rateLimit({ max: 5, windowMs: 60_000, keyPrefix: "rl:ws:" });
+// API: 300/min (polling uses ~60, user actions need headroom)
+export const apiLimiter = rateLimit({ max: 300, windowMs: 60_000, keyPrefix: "rl:api:" });
+// Launch: 5 per 5 min
+export const launchLimiter = rateLimit({ max: 5, windowMs: 300_000, keyPrefix: "rl:launch:", message: "Launch rate limited. Max 5 per 5 minutes." });
+// Payment: 15/min
+export const paymentLimiter = rateLimit({ max: 15, windowMs: 60_000, keyPrefix: "rl:pay:" });
+// WS: 10/min
+export const wsLimiter = rateLimit({ max: 10, windowMs: 60_000, keyPrefix: "rl:ws:" });
