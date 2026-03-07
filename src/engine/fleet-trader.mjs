@@ -522,6 +522,23 @@ class FleetTrader extends EventEmitter {
     const walletKeys = fleetWallets.map(w => ({ role: w.role, pubkey: w.pubkey, secret: bs58.encode(w.keypair.secretKey), allocation: w.allocation, tokenShare: w.tokenShare }));
     session._walletKeys = walletKeys;
 
+    // ═══ CRITICAL: Persist wallet keys to Redis — NEVER lose user funds ═══
+    if (this.redis) {
+      try {
+        await this.redis.set("walletkeys:" + session.id, JSON.stringify(walletKeys), "EX", 7 * 86400); // 7 day TTL
+        console.log(`[SESSION] Wallet keys persisted for ${session.id} (${walletKeys.length} wallets)`);
+      } catch (e) { console.error(`[SESSION] FAILED to persist wallet keys:`, e.message); }
+    }
+
+    // Also update session in Redis with fleet wallet pubkeys for recovery
+    if (this.redis) {
+      try {
+        const sessionWithWallets = { ...session, fleetWalletPubkeys: walletKeys.map(w => w.pubkey) };
+        delete sessionWithWallets._walletKeys; // don't double-store
+        await this.redis.set("session:" + session.id, JSON.stringify(sessionWithWallets), "EX", 7 * 86400); // extend to 7 days
+      } catch {}
+    }
+
     if (duration > 0) setTimeout(() => { if (session.running) { session.running = false; session.phase = "duration_complete"; } }, duration * 60 * 1000);
 
     // Start game state monitoring (opponent trade feed)
