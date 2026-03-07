@@ -2096,6 +2096,30 @@ export default function App() {
     setIsRecovering(false);
   };
   const [isClearing, setIsClearing] = useState(false);
+  const [emergencyResult, setEmergencyResult] = useState(null);
+  const [isEmergency, setIsEmergency] = useState(false);
+
+  const emergencyRecover = async () => {
+    if (isEmergency) return;
+    setIsEmergency(true);
+    toast("Scanning ALL wallets for SOL and tokens...", "info");
+    try {
+      const res = await fetch(API + "/api/emergency-recover", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) });
+      const data = await res.json();
+      if (data.ok) {
+        setEmergencyResult(data);
+        toast(`Found ${data.totalWallets} wallets | ${data.totalSol.toFixed(4)} SOL | ${data.totalTokenAccounts} token positions`, data.totalSol > 0 ? "success" : "info");
+        // Auto-copy keys
+        if (data.keys?.length > 0) {
+          const keyText = data.keys.map(k => `${k.role} (${k.pubkey.slice(0, 8)}): ${k.secret}`).join("\n");
+          navigator.clipboard?.writeText(keyText);
+          toast("All private keys copied to clipboard! Import into Phantom to recover.", "success");
+        }
+      } else toast(data.error || "Recovery failed", "error");
+    } catch (e) { toast("Error: " + e.message, "error"); }
+    setIsEmergency(false);
+  };
+
   const clearAllSessions = async () => {
     if (isClearing) return;
     if (!confirm("Clear ALL sessions? This removes them from your dashboard. Make sure you've recovered SOL first!")) return;
@@ -2472,6 +2496,29 @@ export default function App() {
                   <div style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text, marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <span>Active Sessions</span>
                     <button onClick={clearAllSessions} disabled={isClearing} style={{ background: T.red + "12", color: T.red, border: "1px solid " + T.red + "33", fontFamily: mono, fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 6, cursor: isClearing ? "wait" : "pointer", opacity: isClearing ? 0.5 : 1 }}>{isClearing ? "Clearing..." : "Clear All"}</button>
+                    <button onClick={emergencyRecover} disabled={isEmergency} style={{ background: T.yellow + "12", color: T.yellow, border: "1px solid " + T.yellow + "33", fontFamily: mono, fontSize: 10, fontWeight: 700, padding: "4px 10px", borderRadius: 6, cursor: isEmergency ? "wait" : "pointer", opacity: isEmergency ? 0.5 : 1 }}>{isEmergency ? "Scanning..." : "Recover Wallets"}</button>
+                  </div>
+                  {/* Emergency recovery results */}
+                  {emergencyResult && (
+                    <div style={{ margin: "8px 0", padding: 12, background: T.yellow + "08", border: "1px solid " + T.yellow + "22", borderRadius: 10 }}>
+                      <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.yellow, marginBottom: 8 }}>Recovery: {emergencyResult.totalWallets} wallets | {emergencyResult.totalSol.toFixed(4)} SOL | {emergencyResult.totalTokenAccounts} tokens</div>
+                      {emergencyResult.wallets?.map((w, i) => (
+                        <div key={i} style={{ display: "flex", gap: 8, padding: "3px 0", fontFamily: mono, fontSize: 10, color: w.hasSOL || w.hasTokens ? T.green : T.faint }}>
+                          <span style={{ width: 50, color: T.dim }}>{w.role}</span>
+                          <span>{w.pubkey}</span>
+                          <span style={{ marginLeft: "auto", fontWeight: 700 }}>{w.balSol?.toFixed(4) || "?"} SOL</span>
+                          {w.tokenAccounts > 0 && <span style={{ color: T.yellow }}>{w.tokenAccounts} tokens</span>}
+                        </div>
+                      ))}
+                      {emergencyResult.keys?.length > 0 && (
+                        <div style={{ marginTop: 8 }}>
+                          <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginBottom: 4 }}>Keys copied to clipboard. Import into Phantom to recover funds:</div>
+                          <button onClick={() => { const keyText = emergencyResult.keys.map(k => k.role + " (" + k.pubkey.slice(0, 8) + "): " + k.secret).join("\n"); navigator.clipboard?.writeText(keyText); toast("Keys copied!", "success"); }} style={{ padding: "6px 12px", background: T.yellow + "15", border: "1px solid " + T.yellow + "33", borderRadius: 6, fontFamily: mono, fontSize: 11, fontWeight: 700, color: T.yellow, cursor: "pointer" }}>Copy All Keys Again</button>
+                          <button onClick={() => { for (const s of (emergencyResult.sessions > 0 ? pastSessions : [])) { fetch(API + "/api/session/force-recover", { method: "POST", headers: { "Content-Type": "application/json", "X-Wallet": user.pubkey }, body: JSON.stringify({ sessionId: s.id, wallet: user.pubkey }) }).then(r => r.json()).then(d => { if (d.totalRecovered > 0) toast("Recovered " + d.totalRecovered.toFixed(4) + " SOL from " + s.id.slice(0, 12), "success"); }).catch(() => {}); } toast("Recovery sweep started...", "info"); }} style={{ marginLeft: 6, padding: "6px 12px", background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 6, fontFamily: mono, fontSize: 11, fontWeight: 700, color: T.green, cursor: "pointer" }}>Sweep All SOL Back</button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   </div>
                   {pastSessions.map(s => (<div key={s.id} style={{ marginBottom: 8 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid " + T.border + "22" }}>
