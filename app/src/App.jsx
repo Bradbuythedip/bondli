@@ -245,7 +245,7 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
   const T = useTheme(); const mobile = useIsMobile();
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState("");
-  const [proPrice, setProPrice] = useState(PRO_FEE_SOL);
+  const [proPrice, setProPrice] = useState(1);
   const [proLicenses, setProLicenses] = useState(0);
 
   useEffect(() => {
@@ -311,10 +311,10 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
       <section style={{ maxWidth: 800, margin: "0 auto", padding: mobile ? "60px 20px 50px" : "100px 40px 70px", textAlign: "center", position: "relative", zIndex: 1 }}>
         <div style={{ animation: "pillFloat 3s ease infinite", marginBottom: 32, display: "flex", justifyContent: "center" }}><RedPill size={mobile ? 56 : 72} /></div>
         <h1 style={{ fontFamily: sans, fontWeight: 900, fontSize: mobile ? 34 : 60, lineHeight: 1.05, letterSpacing: "-.03em", marginBottom: 20 }}>
-          <span style={{ color: T.green }}>7 wallets.</span><br />One brain.
+          <span style={{ color: T.green }}>Launchpad</span> for<br />pump.fun
         </h1>
         <p style={{ fontSize: mobile ? 16 : 19, color: T.dim, maxWidth: 480, margin: "0 auto 40px", lineHeight: 1.6, fontFamily: mono }}>
-          Fleet trading engine for pump.fun. Game theory in, SOL out.
+          Deploy tokens. Fleet trade. Lightning API. Game theory engine.
         </p>
         {error && <p style={{ fontSize: 14, color: T.red, marginBottom: 14, fontFamily: mono }}>{error}</p>}
         <div style={{ display: "flex", gap: 14, justifyContent: "center", flexWrap: "wrap" }}>
@@ -323,7 +323,7 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
         </div>
       </section>
 
-      {/* WHAT IT DOES — one line each */}
+      {/* WHAT IT DOES */}
       <section style={{ maxWidth: 600, margin: "0 auto", padding: mobile ? "0 20px 40px" : "0 40px 50px", position: "relative", zIndex: 1 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
           {[
@@ -338,19 +338,19 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
         </div>
       </section>
 
-      {/* YOU vs THE MARKET — visual comparison */}
+      {/* YOU vs BONDLI */}
       <section style={{ maxWidth: 700, margin: "0 auto", padding: mobile ? "0 20px 50px" : "0 40px 70px", position: "relative", zIndex: 1 }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: mobile ? 10 : 16 }}>
           <div style={{ background: T.surface, border: "1px solid " + T.red + "33", borderRadius: 16, padding: mobile ? 16 : 24 }}>
             <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, color: T.red, marginBottom: 12, textTransform: "uppercase", letterSpacing: ".08em" }}>Manual trading</div>
-            {["One wallet = one target", "Visible on-chain fingerprint", "Slow reaction to dumps", "Emotional sells", "Sleep = miss moves"].map((x, i) => (
-              <div key={i} style={{ fontFamily: mono, fontSize: mobile ? 11 : 13, color: T.dim, padding: "6px 0", borderBottom: i < 4 ? "1px solid " + T.border + "15" : "none" }}>{"/"} {x}</div>
+            {["One wallet, one target", "Visible on-chain fingerprint", "Slow reaction to dumps", "Emotional sells", "Sleep = miss moves"].map((x, i) => (
+              <div key={i} style={{ fontFamily: mono, fontSize: mobile ? 11 : 13, color: T.dim, padding: "6px 0", borderBottom: i < 4 ? "1px solid " + T.border + "15" : "none" }}>{x}</div>
             ))}
           </div>
           <div style={{ background: T.surface, border: "1px solid " + T.green + "33", borderRadius: 16, padding: mobile ? 16 : 24 }}>
             <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, color: T.green, marginBottom: 12, textTransform: "uppercase", letterSpacing: ".08em" }}>Bondli fleet</div>
             {["7 wallets, 7 strategies", "Gaussian timing, random sizes", "Exits in seconds, not minutes", "Nash equilibrium, not vibes", "24/7 radar never sleeps"].map((x, i) => (
-              <div key={i} style={{ fontFamily: mono, fontSize: mobile ? 11 : 13, color: T.green, padding: "6px 0", borderBottom: i < 4 ? "1px solid " + T.border + "15" : "none" }}>{"+"} {x}</div>
+              <div key={i} style={{ fontFamily: mono, fontSize: mobile ? 11 : 13, color: T.green, padding: "6px 0", borderBottom: i < 4 ? "1px solid " + T.border + "15" : "none" }}>{x}</div>
             ))}
           </div>
         </div>
@@ -373,20 +373,27 @@ function LandingPage({ onConnect, isDark, toggleTheme }) {
         </div>
       </section>
 
-      {/* PRICING — compact */}
-      <section style={{ maxWidth: 600, margin: "0 auto", padding: mobile ? "0 20px 60px" : "0 40px 80px", position: "relative", zIndex: 1 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 16, padding: mobile ? 20 : 28 }}>
+      {/* PRICING */}
+      <section style={{ maxWidth: 750, margin: "0 auto", padding: mobile ? "0 20px 60px" : "0 40px 80px", position: "relative", zIndex: 1 }}>
+        <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr" : "1fr 1fr 1fr", gap: 12 }}>
+          <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 16, padding: mobile ? 20 : 24 }}>
             <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.green, marginBottom: 8 }}>FREE</div>
-            <div style={{ fontFamily: mono, fontSize: mobile ? 28 : 36, fontWeight: 900, color: T.text }}>0</div>
-            <div style={{ fontFamily: mono, fontSize: 12, color: T.dim, marginTop: 4 }}>{FREE_PROFIT_CUT}% on close</div>
+            <div style={{ fontFamily: mono, fontSize: mobile ? 28 : 32, fontWeight: 900, color: T.text }}>0</div>
+            <div style={{ fontFamily: mono, fontSize: 11, color: T.dim, marginTop: 4 }}>{FREE_PROFIT_CUT}% on close</div>
             <Btn onClick={connectPhantom} full disabled={connecting} ghost color={T.green} style={{ marginTop: 16, borderRadius: 10, fontSize: 13 }}>Start</Btn>
           </div>
-          <div style={{ background: T.surface, border: "1px solid " + T.green + "44", borderRadius: 16, padding: mobile ? 20 : 28 }}>
+          <div style={{ background: T.surface, border: "1px solid " + T.green + "44", borderRadius: 16, padding: mobile ? 20 : 24 }}>
             <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.yellow, marginBottom: 8 }}>PRO</div>
-            <div style={{ fontFamily: mono, fontSize: mobile ? 28 : 36, fontWeight: 900, color: T.green }}>{proPrice} <span style={{ fontSize: 14, color: T.dim }}>SOL</span></div>
-            <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 4 }}>{proLicenses} sold {"·"} price rises with each license</div>
+            <div style={{ fontFamily: mono, fontSize: mobile ? 28 : 32, fontWeight: 900, color: T.green }}>~{proPrice < 2 ? "1" : proPrice} <span style={{ fontSize: 13, color: T.dim }}>SOL</span></div>
+            <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 4 }}>{proLicenses > 0 ? proLicenses + " sold" : "Bonding curve"} {"·"} price rises</div>
+            <div style={{ fontFamily: mono, fontSize: 10, color: T.dim, marginTop: 2 }}>Keep 100% forever</div>
             <Btn onClick={connectPhantom} full disabled={connecting} style={{ marginTop: 16, borderRadius: 10, fontSize: 13, background: "linear-gradient(135deg, #534bb1, #551bf9)" }}>Go Pro</Btn>
+          </div>
+          <div style={{ background: T.surface, border: "1px solid " + T.yellow + "33", borderRadius: 16, padding: mobile ? 20 : 24 }}>
+            <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.yellow, marginBottom: 8 }}>ENTERPRISE</div>
+            <div style={{ fontFamily: mono, fontSize: mobile ? 18 : 20, fontWeight: 900, color: T.text, marginTop: 4 }}>API access</div>
+            <div style={{ fontFamily: mono, fontSize: 10, color: T.faint, marginTop: 6, lineHeight: 1.5 }}>Fleet engine as a service. Custom endpoints. White-label.</div>
+            <a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{ display: "block", width: "100%", marginTop: 16, padding: "10px 0", background: "none", border: "1px solid " + T.yellow + "44", borderRadius: 10, color: T.yellow, fontFamily: mono, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>Contact</a>
           </div>
         </div>
       </section>
@@ -412,8 +419,8 @@ function TierGate({ user, onSelect, onDisconnect }) {
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState(null);
-  const [proPrice, setProPrice] = useState(PRO_FEE_SOL);
-  const [proNextPrice, setProNextPrice] = useState(PRO_FEE_SOL);
+  const [proPrice, setProPrice] = useState(1);
+  const [proNextPrice, setProNextPrice] = useState(1);
   const [proLicenses, setProLicenses] = useState(0);
 
   // Fetch current bonding curve price
@@ -910,13 +917,8 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
       const r = await fetch(window.__BONDLI_API + "/api/radar");
       if (r.ok) {
         const d = await r.json();
-        // Only update state if data actually changed (prevents unnecessary re-renders)
         const newTabs = d.tabs || { hot: d.tokens || [], new: [], graduating: [], momentum: [] };
-        const hash = JSON.stringify(Object.keys(newTabs).map(k => (newTabs[k] || []).map(t => t.ca + t.score).join(",")).join("|"));
-        if (hash !== lastDataHash.current) {
-          lastDataHash.current = hash;
-          setTabs(newTabs);
-        }
+        setTabs(newTabs);
         setWsAlive(d.wsAlive || false);
         setPoolSize(d.poolSize || 0);
         setEnabled(d.enabled !== false);
@@ -928,7 +930,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
 
   useEffect(() => {
     let alive = true;
-    const poll = async () => { while (alive) { if (enabled) await fetchRadar(); await new Promise(r => setTimeout(r, 4000)); } };
+    const poll = async () => { while (alive) { if (enabled) await fetchRadar(); await new Promise(r => setTimeout(r, 3000)); } };
     fetchRadar(); poll();
     return () => { alive = false; };
   }, [enabled]);
