@@ -764,6 +764,48 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
 // ═══════════════════════════════════════
 // RADAR — Full-screen card grid scanner (pump.fun style)
 // ═══════════════════════════════════════
+// ── Sparkline — lightweight canvas mini chart for radar rows ──
+function Sparkline({ data, color = "#00ff88", height = 36 }) {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !data || data.length < 2) return;
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width = canvas.offsetWidth * 2;
+    const h = canvas.height = height * 2;
+    ctx.clearRect(0, 0, w, h);
+    const pts = data.filter(v => v > 0);
+    if (pts.length < 2) return;
+    const min = Math.min(...pts);
+    const max = Math.max(...pts);
+    const range = max - min || 1;
+    const pad = 4;
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    for (let i = 0; i < pts.length; i++) {
+      const x = (i / (pts.length - 1)) * (w - pad * 2) + pad;
+      const y = h - pad - ((pts[i] - min) / range) * (h - pad * 2);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    // Fill gradient under line
+    ctx.lineTo((pts.length - 1) / (pts.length - 1) * (w - pad * 2) + pad, h);
+    ctx.lineTo(pad, h);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, color + "22");
+    grad.addColorStop(1, color + "02");
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }, [data, color, height]);
+
+  if (!data || data.length < 2) return <div style={{ width: "100%", height, opacity: 0.2, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'SF Mono',monospace", fontSize: 9, color: "#666" }}>no data</div>;
+  return <canvas ref={canvasRef} style={{ width: "100%", height, display: "block" }} />;
+}
+
 function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScreen, tradingBalance, heldMints, toast }) {
   const mono = "'SF Mono',SFMono-Regular,ui-monospace,'Cascadia Mono',Menlo,monospace";
   const [tabs, setTabs] = useState({ new: [], hot: [], graduating: [], momentum: [] });
@@ -970,9 +1012,9 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
           </div>
         </div>
 
-        {/* Mini chart area — GMGN embed or placeholder sparkline */}
-        <div style={{ flex: 1, height: mobile ? 36 : 44, overflow: "hidden", borderRadius: 4, position: "relative" }}>
-          <iframe src={"https://www.gmgn.cc/kline/sol/" + t.ca + "?theme=dark"} style={{ width: "100%", height: mobile ? 60 : 70, border: "none", marginTop: mobile ? -12 : -13, pointerEvents: "none", opacity: 0.7 }} title="" loading="lazy" />
+        {/* Mini sparkline chart */}
+        <div style={{ flex: 1, height: mobile ? 36 : 44, position: "relative" }}>
+          <Sparkline data={t.spark || []} color={t.spark && t.spark.length > 1 && t.spark[t.spark.length - 1] >= t.spark[0] ? T.green : "#ff4444"} height={mobile ? 36 : 44} />
         </div>
 
         {/* MCap */}
