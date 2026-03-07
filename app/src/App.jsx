@@ -802,7 +802,7 @@ function Sparkline({ data, color = "#00ff88", height = 36 }) {
     ctx.fill();
   }, [data, color, height]);
 
-  if (!data || data.length < 2) return <div style={{ width: "100%", height, opacity: 0.2, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'SF Mono',monospace", fontSize: 9, color: "#666" }}>no data</div>;
+  if (!data || data.filter(v => v > 0).length < 2) return <div style={{ width: "100%", height, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ fontFamily: "'SF Mono',monospace", fontSize: 10, color: "#555" }}>{"\u2014"}</span></div>;
   return <canvas ref={canvasRef} style={{ width: "100%", height, display: "block" }} />;
 }
 
@@ -1189,7 +1189,7 @@ function RadarFeed({ T, mobile, onApe, onQuickApe, onQuickSell, isVip, fullScree
 // ═══════════════════════════════════════
 // PORTFOLIO — Live positions with P&L + sell buttons + search
 // ═══════════════════════════════════════
-function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tradingBalance, onPositionsUpdate, getCostBasis, onApe }) {
+function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tradingBalance, recentBuys, onPositionsUpdate, getCostBasis, onApe }) {
   const [positions, setPositions] = useState([]);
   const [solBal, setSolBal] = useState(tradingBalance || 0);
   const [totalVal, setTotalVal] = useState(0);
@@ -1220,7 +1220,7 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tra
   useEffect(() => {
     if (!user?.pubkey) return;
     fetchPositions();
-    const iv = setInterval(fetchPositions, 10000);
+    const iv = setInterval(fetchPositions, 5000); // 5s — axiomatic: balance must always be accurate
     return () => clearInterval(iv);
   }, [user?.pubkey]);
 
@@ -1300,7 +1300,7 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tra
       {/* Positions */}
       {loading ? (
         <div style={{ padding: 40, textAlign: "center", fontFamily: mono, fontSize: 14, color: T.dim, animation: "pulse 1.5s infinite" }}>Scanning wallets...</div>
-      ) : positions.length === 0 && search.length < 2 ? (
+      ) : positions.length === 0 && (!recentBuys || recentBuys.length === 0) && search.length < 2 ? (
         <div style={{ padding: "40px 20px", textAlign: "center" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}><StatusIc.Bag size={28} /></div>
           <div style={{ fontFamily: mono, fontSize: 14, color: T.faint, marginBottom: 4 }}>No bags yet</div>
@@ -1308,6 +1308,19 @@ function PortfolioPanel({ T, mobile, mono, user, quickSell, quickApe, toast, tra
         </div>
       ) : (
         <div>
+          {/* Pending buys — show immediately before on-chain scan picks them up */}
+          {(recentBuys || []).filter(b => !positions.some(p => p.mint === b.ca)).map(b => (
+            <div key={b.ca} style={{ padding: "12px 20px", borderBottom: "1px solid " + T.border + "33", opacity: 0.7 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 28, height: 28, borderRadius: 8, background: T.green + "15", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: mono, fontSize: 10, color: T.green, fontWeight: 800 }}>NEW</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontFamily: mono, fontSize: 13, fontWeight: 700, color: T.text }}>{b.ca.slice(0, 12)}...</div>
+                  <div style={{ fontFamily: mono, fontSize: 10, color: T.faint }}>Bought {b.sol} SOL — confirming...</div>
+                </div>
+                <div style={{ fontFamily: mono, fontSize: 12, color: T.green, fontWeight: 700, animation: "pulse 1.5s infinite" }}>{b.sol} SOL</div>
+              </div>
+            </div>
+          ))}
           {positions.map(p => {
             const isUp = (p.h1Change || 0) >= 0;
             return (
@@ -1854,6 +1867,7 @@ export default function App() {
   const [tradingKeys, setTradingKeys] = useState(null);
   const [showTradingSetup, setShowTradingSetup] = useState(false);
   const [heldMints, setHeldMints] = useState(new Set());
+  const [recentBuys, setRecentBuys] = useState([]); // pending buys not yet in on-chain scan
 
   // P&L cost basis tracking (localStorage)
   const recordBuy = (ca, solAmount) => {
@@ -1873,9 +1887,14 @@ export default function App() {
     try { const buys = JSON.parse(localStorage.getItem("bondli_buys") || "{}"); delete buys[ca]; localStorage.setItem("bondli_buys", JSON.stringify(buys)); } catch {}
   };
 
-  useEffect(() => { if (!user?.pubkey || user.demo) return; fetch(API + "/api/trading-wallet/" + user.pubkey).then(r => r.json()).then(d => { if (d.tradingWallet) { setTradingWallet(d.tradingWallet); setTradingBalance(d.balance || 0); } }).catch(() => {}); 
+  useEffect(() => { if (!user?.pubkey || user.demo) return; 
+    const fetchWallet = () => fetch(API + "/api/trading-wallet/" + user.pubkey).then(r => r.json()).then(d => { if (d.tradingWallet) { setTradingWallet(d.tradingWallet); setTradingBalance(d.balance || 0); } }).catch(() => {});
+    fetchWallet();
+    // Poll balance every 5 seconds — axiomatic: balance must always be accurate
+    const balPoll = setInterval(fetchWallet, 5000);
     // Also load keys for deploy auto-fill
     fetch(API + "/api/trading-wallet/export", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) }).then(r => r.json()).then(d => { if (d.ok && d.privateKey) setTradingKeys(d); }).catch(() => {});
+    return () => clearInterval(balPoll);
   }, [user]);
 
   const createTradingWallet = async () => { try { toast("Creating trading wallet...", "info"); const r = await fetch(API + "/api/trading-wallet/create", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) }); const d = await r.json(); if (d.ok) { setTradingWallet(d.tradingWallet); setTradingKeys({ apiKey: d.apiKey, privateKey: d.privateKey }); setShowTradingSetup(false); toast("Trading wallet created! Deposit SOL to start.", "success"); } else toast(d.error || "Failed", "error"); } catch { toast("Network error", "error"); } };
@@ -1929,6 +1948,8 @@ export default function App() {
       recordBuy(ca, solAmount);
       // Update held mints immediately
       setHeldMints(prev => { const n = new Set(prev); n.add(ca); return n; });
+      // Push to recentBuys so bags shows it before next on-chain scan
+      setRecentBuys(prev => [...prev.filter(b => b.ca !== ca), { ca, sol: solAmount, time: Date.now() }]);
       return d.signature;
     } catch (e) { toast("Buy failed: " + (e.message || "network error"), "error"); }
   };
@@ -2284,7 +2305,7 @@ export default function App() {
 
                 {/* ═══ PORTFOLIO TAB (positions + P&L + sell) ═══ */}
                 {appTab === "portfolio" && (
-                  <PortfolioPanel T={T} mobile={mobile} mono={mono} user={user} quickSell={quickSell} quickApe={quickApe} toast={toast} tradingBalance={tradingBalance} onPositionsUpdate={(positions) => setHeldMints(new Set(positions.map(p => p.mint)))} getCostBasis={getCostBasis} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} />
+                  <PortfolioPanel T={T} mobile={mobile} mono={mono} user={user} quickSell={quickSell} quickApe={quickApe} toast={toast} tradingBalance={tradingBalance} recentBuys={recentBuys} onPositionsUpdate={(positions) => { setHeldMints(new Set(positions.map(p => p.mint))); setRecentBuys(prev => prev.filter(b => !positions.some(p => p.mint === b.ca))); }} getCostBasis={getCostBasis} onApe={(ca) => { setExistingCA(ca); analyzeCA(ca); setAppTab("trade"); }} />
                 )}
 
                 {/* ═══ TRADE TAB (wizard) ═══ */}
