@@ -3072,6 +3072,161 @@ app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, 
 
 // EMERGENCY: Force sweep all wallets in a session directly to user
 // This is a standalone sweep that doesn't depend on orch
+// ═══════════════════════════════════════
+// EMERGENCY RECOVERY — find and sweep ALL wallets from ALL sessions
+// ═══════════════════════════════════════
+app.post("/api/emergency-recover", apiLimiter, async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const destination = new PublicKey(wallet);
+    const redis = getRedis();
+
+    // Find ALL sessions for this wallet
+    const sessions = await sessionManager?.getByWallet?.(wallet) || [];
+    const allKeypairs = []; // { role, kp, sessionId, pubkey }
+    const allKeys = []; // { role, pubkey, secret, sessionId } for export
+
+    // Trading wallet
+    if (userStore) {
+      const user = await userStore.get(wallet);
+      if (user?.ppPrivateKey && user.ppPrivateKey !== "") {
+        try {
+          const kp = Keypair.fromSecretKey(bs58.decode(user.ppPrivateKey));
+          allKeypairs.push({ role: "trading", kp, sessionId: "trading", pubkey: kp.publicKey.toBase58() });
+          allKeys.push({ role: "trading", pubkey: kp.publicKey.toBase58(), secret: user.ppPrivateKey, sessionId: "trading" });
+        } catch {}
+      }
+    }
+
+    for (const s of (Array.isArray(sessions) ? sessions : [])) {
+      // Dev keypair
+      try {
+        const devKp = await sessionManager.getDevKeypair(s.id);
+        if (devKp) {
+          const pub = devKp.publicKey.toBase58();
+          if (!allKeypairs.some(k => k.pubkey === pub)) {
+            allKeypairs.push({ role: "dev", kp: devKp, sessionId: s.id, pubkey: pub });
+            allKeys.push({ role: "dev", pubkey: pub, secret: bs58.encode(devKp.secretKey), sessionId: s.id });
+          }
+        }
+      } catch {}
+
+      // Fleet wallets from Redis backup
+      if (redis) {
+        try {
+          const keysRaw = await redis.get("walletkeys:" + s.id);
+          if (keysRaw) {
+            const savedKeys = JSON.parse(keysRaw);
+            for (const wk of savedKeys) {
+              if (wk.secret && !allKeypairs.some(k => k.pubkey === wk.pubkey)) {
+                try {
+                  const kp = Keypair.fromSecretKey(bs58.decode(wk.secret));
+                  allKeypairs.push({ role: wk.role, kp, sessionId: s.id, pubkey: wk.pubkey });
+                  allKeys.push({ role: wk.role, pubkey: wk.pubkey, secret: wk.secret, sessionId: s.id });
+                } catch {}
+              }
+            }
+          }
+        } catch {}
+      }
+
+      // Fleet wallets from runtime session
+      if (s.fleetWallets) {
+        for (const fw of s.fleetWallets) {
+          if (fw.secret && !allKeypairs.some(k => k.pubkey === fw.pubkey)) {
+            try {
+              const kp = Keypair.fromSecretKey(bs58.decode(fw.secret));
+              allKeypairs.push({ role: fw.role, kp, sessionId: s.id, pubkey: fw.pubkey });
+              allKeys.push({ role: fw.role, pubkey: fw.pubkey, secret: fw.secret, sessionId: s.id });
+            } catch {}
+          }
+        }
+      }
+    }
+
+    console.log(`[EMERGENCY] Found ${allKeypairs.length} wallets for ${wallet.slice(0, 8)}`);
+
+    // Scan all wallets for balances
+    const walletInfo = [];
+    let totalSol = 0;
+    let totalTokenAccounts = 0;
+
+    for (const { role, kp, sessionId, pubkey } of allKeypairs) {
+      try {
+        const bal = await connection.getBalance(kp.publicKey);
+        const balSol = bal / LAMPORTS_PER_SOL;
+        const tokenAccts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: TOKEN_PROGRAM_ID });
+        const tokens = tokenAccts.value.filter(a => (a.account.data.parsed?.info?.tokenAmount?.uiAmount || 0) > 0).length;
+
+        walletInfo.push({ role, pubkey: pubkey.slice(0, 12) + "...", sessionId, balSol: +balSol.toFixed(6), tokenAccounts: tokens, hasSOL: balSol > 0.001, hasTokens: tokens > 0 });
+        totalSol += balSol;
+        totalTokenAccounts += tokens;
+      } catch (e) {
+        walletInfo.push({ role, pubkey: pubkey.slice(0, 12) + "...", sessionId, error: e.message });
+      }
+    }
+
+    res.json({
+      ok: true,
+      totalWallets: allKeypairs.length,
+      totalSol: +totalSol.toFixed(6),
+      totalTokenAccounts,
+      wallets: walletInfo,
+      // Include full keys so user can import into Phantom
+      keys: allKeys.map(k => ({ role: k.role, pubkey: k.pubkey, secret: k.secret, sessionId: k.sessionId })),
+      sessions: sessions.length,
+      note: "Use 'keys' to import wallets into Phantom. Use /api/session/force-recover to sweep SOL back.",
+    });
+  } catch (e) {
+    console.error("[EMERGENCY]", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Export ALL wallet keys for a session (including fleet)
+app.post("/api/session/export-keys", apiLimiter, async (req, res) => {
+  try {
+    const { sessionId, wallet } = req.body;
+    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
+
+    const session = await sessionManager.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
+
+    const keys = [];
+
+    // Dev key
+    if (session.devSecret) {
+      keys.push({ role: "dev", pubkey: session.devWallet, secret: session.devSecret });
+    }
+
+    // Fleet keys from Redis backup
+    const redis = getRedis();
+    if (redis) {
+      try {
+        const keysRaw = await redis.get("walletkeys:" + sessionId);
+        if (keysRaw) {
+          const savedKeys = JSON.parse(keysRaw);
+          for (const wk of savedKeys) { keys.push(wk); }
+        }
+      } catch {}
+    }
+
+    // Fleet keys from runtime
+    if (session._walletKeys) {
+      for (const wk of session._walletKeys) {
+        if (!keys.some(k => k.pubkey === wk.pubkey)) keys.push(wk);
+      }
+    }
+
+    console.log(`[EXPORT-KEYS] ${sessionId} | ${keys.length} keys exported for ${wallet.slice(0, 8)}`);
+    res.json({ ok: true, sessionId, keys, count: keys.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post("/api/session/force-recover", apiLimiter, async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
@@ -3109,6 +3264,25 @@ app.post("/api/session/force-recover", apiLimiter, async (req, res) => {
           } catch (e) { console.error(`[FORCE-RECOVER] Bad secret for ${fw.role}: ${e.message}`); }
         }
       }
+    }
+
+    // Fleet wallets from Redis persistence (critical backup)
+    const redis = getRedis();
+    if (redis && keypairs.length <= 1) {
+      try {
+        const keysRaw = await redis.get("walletkeys:" + sessionId);
+        if (keysRaw) {
+          const savedKeys = JSON.parse(keysRaw);
+          for (const wk of savedKeys) {
+            if (wk.secret && !keypairs.some(k => k.kp.publicKey.toBase58() === wk.pubkey)) {
+              try {
+                keypairs.push({ role: wk.role || "fleet", kp: Keypair.fromSecretKey(bs58.decode(wk.secret)), allocation: wk.allocation || 0 });
+              } catch {}
+            }
+          }
+          console.log(`[FORCE-RECOVER] Loaded ${savedKeys.length} wallet keys from Redis backup`);
+        }
+      } catch {}
     }
 
     console.log(`[FORCE-RECOVER] ${sessionId} | Found ${keypairs.length} keypairs | Destination: ${wallet.slice(0, 8)} | Tier: ${walletInfo.tier}`);
