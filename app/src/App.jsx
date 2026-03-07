@@ -2519,7 +2519,6 @@ export default function App() {
                       )}
                     </div>
                   )}
-                  </div>
                   {pastSessions.map(s => (<div key={s.id} style={{ marginBottom: 8 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0", borderBottom: "1px solid " + T.border + "22" }}>
                       <span style={{ fontFamily: mono, fontSize: 13, color: T.mid, flex: 1 }}>{s.tokenConfig?.ticker || s.tokenConfig?.name || "?"} {"\u2014"} <span style={{ color: T.faint, fontSize: 11 }}>{s.tokenCA?.slice(0, 8)}...</span></span>
