@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useMemo, createContext, useContext } from 
 const API = "https://bondli-production.up.railway.app";
 window.__BONDLI_API = API;
 const WS_URL = "wss://bondli-production.up.railway.app/ws";
-const PLATFORM_WALLET = "anal.sol"; // Display name — actual pubkey set in env
+const PLATFORM_WALLET = "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
 const PRO_FEE_SOL = 10; // fallback, actual price fetched from bonding curve
 const FREE_PROFIT_CUT = 25; // percent
 
@@ -1843,7 +1843,15 @@ export default function App() {
   const [editingUsername, setEditingUsername] = useState(false);
   const [usernameInput, setUsernameInput] = useState("");
   const [appTab, setAppTab] = useState("radar"); // "trade" or "radar"
-  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [wantsHome, setWantsHome] = useState(false);
+  const [caAnalysis, setCaAnalysis] = useState(null); const [showSettings, setShowSettings] = useState(false); const [showChart, setShowChart] = useState(false); const [isClosing, setIsClosing] = useState(false); const [sessionDetail, setSessionDetail] = useState(null); const [isRecovering, setIsRecovering] = useState(false); const [showUpgrade, setShowUpgrade] = useState(false); const [upgradeTxSig, setUpgradeTxSig] = useState(""); const [upgradeError, setUpgradeError] = useState(""); const [upgradeVerifying, setUpgradeVerifying] = useState(false); const [upgradePrice, setUpgradePrice] = useState(null); const [upgradeNextPrice, setUpgradeNextPrice] = useState(null); const [upgradeLicenses, setUpgradeLicenses] = useState(0); const [wantsHome, setWantsHome] = useState(false);
+
+  // Fetch bonding curve price when upgrade modal opens
+  useEffect(() => {
+    if (!showUpgrade) return;
+    fetch(API + "/api/pricing").then(r => r.json()).then(d => {
+      if (d.ok) { setUpgradePrice(d.currentPrice); setUpgradeNextPrice(d.nextPrice); setUpgradeLicenses(d.licensesSold); }
+    }).catch(() => {});
+  }, [showUpgrade]);
   const [toasts, setToasts] = useState([]);
   const toast = (msg, type = "info") => { const id = Date.now(); setToasts(t => [...t, { id, msg, type }]); setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 4000); };
   const mobile = useIsMobile();
@@ -2177,8 +2185,9 @@ export default function App() {
           {user.tier === "free" && !user.whitelisted && (<div style={{ background: T.green + "08", borderBottom: "1px solid " + T.green + "22", padding: "6px 20px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}><span style={{ fontSize: 12, fontFamily: mono, color: T.green }}>{FREE_PROFIT_CUT}% profit share</span><button onClick={() => setShowUpgrade(true)} style={{ background: T.green, color: T.bg, border: "none", borderRadius: 6, padding: "3px 10px", fontFamily: mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Upgrade</button></div>)}
           {showUpgrade && (<div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowUpgrade(false)}><div onClick={e => e.stopPropagation()} style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 20, padding: mobile ? 24 : 36, maxWidth: 440, width: "100%" }}>
             <h3 style={{ fontFamily: sans, fontWeight: 900, fontSize: 22, color: T.text, marginBottom: 8, textAlign: "center" }}>Upgrade to Pro</h3>
-            <p style={{ fontSize: 14, color: T.dim, textAlign: "center", marginBottom: 20 }}>Send <span style={{ color: T.green, fontWeight: 800 }}>{PRO_FEE_SOL} SOL</span> to the address below, then paste the tx signature.</p>
-            <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: "10px 14px", marginBottom: 14, wordBreak: "break-all", fontSize: 12, fontFamily: mono, color: T.green, cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(PLATFORM_WALLET); toast("Copied!", "success"); }}>{PLATFORM_WALLET} <span style={{ color: T.faint, fontSize: 10 }}>tap to copy</span></div>
+            <p style={{ fontSize: 14, color: T.dim, textAlign: "center", marginBottom: 16 }}>Send <span style={{ color: T.green, fontWeight: 800 }}>{upgradePrice || "..."} SOL</span> to the address below, then paste the tx signature.</p>
+            {upgradeLicenses > 0 && <div style={{ textAlign: "center", fontFamily: mono, fontSize: 11, color: T.faint, marginBottom: 12 }}>License #{upgradeLicenses + 1} {"·"} {upgradeLicenses} sold {"·"} next: {upgradeNextPrice} SOL</div>}
+            <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: "12px 14px", marginBottom: 14, wordBreak: "break-all", fontSize: 13, fontFamily: mono, color: T.green, cursor: "pointer", textAlign: "center" }} onClick={() => { navigator.clipboard?.writeText(PLATFORM_WALLET); toast("Copied!", "success"); }}>{PLATFORM_WALLET}<div style={{ fontSize: 9, color: T.faint, marginTop: 4 }}>tap to copy</div></div>
             <input value={upgradeTxSig} onChange={e => setUpgradeTxSig(e.target.value)} placeholder="Paste transaction signature..." style={{ width: "100%", padding: "12px 14px", background: T.bg, border: "1px solid " + T.border, borderRadius: 10, color: T.text, fontFamily: mono, fontSize: 13, outline: "none", boxSizing: "border-box", marginBottom: 12 }} />
             {upgradeError && <p style={{ fontSize: 13, color: T.red, fontFamily: mono, marginBottom: 10, textAlign: "center" }}>{upgradeError}</p>}
             <button onClick={async () => {
@@ -2187,7 +2196,7 @@ export default function App() {
               try {
                 const res = await fetch(API + "/api/access/activate-pro", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ wallet: user?.pubkey, txSig: upgradeTxSig }) });
                 const data = await res.json();
-                if (data.ok) { setUser(u => ({ ...u, tier: "pro", paid: true })); setShowUpgrade(false); toast("Upgraded to Pro!", "success"); }
+                if (data.ok) { setUser(u => ({ ...u, tier: "pro", paid: true })); setShowUpgrade(false); toast("Upgraded to Pro! License #" + (data.licenseNumber || "?") + " — paid " + (data.pricePaid || "?") + " SOL", "success"); }
                 else setUpgradeError(data.error || "Payment not verified");
               } catch { setUpgradeError("Network error"); }
               setUpgradeVerifying(false);
