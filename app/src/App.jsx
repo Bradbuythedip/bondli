@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
+import { Fragment, useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
 
 const API = "https://bondli-production.up.railway.app";
 window.__BONDLI_API = API;
@@ -957,13 +957,13 @@ function WalletBreakdown({ ca, wallets, T, mobile }) {
         {!mobile && <div style={{ color: T.faint, fontWeight: 700, textAlign: "right" }}>% Supply</div>}
         {/* Rows */}
         {wallets.map((w, i) => (
-          <React.Fragment key={i}>
+          <Fragment key={i}>
             <div style={{ color: w.isOurs ? T.green : T.dim, fontWeight: w.isOurs ? 700 : 400 }}>{w.role}</div>
             <div style={{ color: w.isOurs ? T.green + "cc" : T.faint, overflow: "hidden", textOverflow: "ellipsis" }}>{w.pubkey?.slice(0, mobile ? 8 : 12)}...</div>
             <div style={{ textAlign: "right", color: w.sol > 0.001 ? T.text : T.faint }}>{w.sol?.toFixed(3)}</div>
             <div style={{ textAlign: "right", color: w.tokens > 0 ? T.text : T.faint }}>{w.tokens > 1e9 ? (w.tokens / 1e9).toFixed(1) + "B" : w.tokens > 1e6 ? (w.tokens / 1e6).toFixed(1) + "M" : w.tokens > 1e3 ? (w.tokens / 1e3).toFixed(0) + "K" : w.tokens}</div>
             {!mobile && <div style={{ textAlign: "right", color: w.pctSupply > 1 ? T.yellow : T.faint }}>{w.pctSupply?.toFixed(2)}%</div>}
-          </React.Fragment>
+          </Fragment>
         ))}
       </div>
     </div>
@@ -2027,11 +2027,9 @@ const hapticSell = () => haptic([30, 15, 30]);
 const hapticSuccess = () => haptic([10, 20, 10, 20, 40]);
 const hapticError = () => haptic([80]);
 
-// ── iOS install detection ──
-const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-const isStandalone = window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator?.standalone;
-
 export default function App() {
+  const isIOS = /iPad|iPhone|iPod/.test(navigator?.userAgent || "");
+  const isStandalone = window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator?.standalone;
   const [isDark, setIsDark] = useState(() => { try { return localStorage.getItem("bondli_theme") !== "light"; } catch { return true; } });
   const T = isDark ? dark : light;
   const toggleTheme = () => setIsDark(d => { try { localStorage.setItem("bondli_theme", d ? "light" : "dark"); } catch {} return !d; });
