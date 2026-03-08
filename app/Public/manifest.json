@@ -1,33 +1,10 @@
 {
   "name": "Bondli",
   "short_name": "Bondli",
-  "description": "AI game theory trading engine for pump.fun",
+  "description": "Launchpad + trading engine for pump.fun",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0a0a0a",
-  "theme_color": "#00ff88",
-  "icons": [
-    {
-      "src": "/bondli-icon.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "/bondli-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "/apple-touch-icon.png",
-      "sizes": "180x180",
-      "type": "image/png"
-    },
-    {
-      "src": "/og-image.png",
-      "sizes": "1200x630",
-      "type": "image/png"
-    }
-  ]
+  "background_color": "#0a0a0f",
+  "theme_color": "#00e676",
+  "orientation": "portrait"
 }
