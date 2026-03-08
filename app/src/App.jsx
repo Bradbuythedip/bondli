@@ -2161,13 +2161,14 @@ export default function App() {
   useEffect(() => { if (!launched) return; const iv = setInterval(() => setCurveProgress(p => Math.min(1, p + Math.random() * 0.004)), 2000); return () => clearInterval(iv); }, [launched]);
   const walletCount = totalSol < 0.5 ? 3 : totalSol < 1 ? 5 : totalSol < 5 ? 9 : totalSol < 10 ? 11 : totalSol < 25 ? 15 : 20;
   const activeRoles = useMemo(() => { if (walletCount <= 3) return ROLES.filter(r => ["accumulator","momentum","whale"].includes(r.id)); if (walletCount <= 5) return ROLES.filter(r => ["sniper","accumulator","momentum","whale","liquidator"].includes(r.id)); if (walletCount <= 9) return ROLES.filter(r => r.id !== "recycler"); return ROLES; }, [walletCount]);
-  const isApe = !!existingCA; const canLaunch = tradingWallet && (existingCA || (tokenName && ticker)); const preview = calcDevBuyPreview(totalSol, isApe);
+  const isApe = !!existingCA; const preview = calcDevBuyPreview(totalSol, isApe);
   const disconnect = async () => { try { const p = window?.phantom?.solana || window?.solana; await p?.disconnect(); } catch {} setUser(null); };
   const handleTierSelect = (tier) => setUser({ ...user, tier, paid: tier === "pro" });
   const analyzeCA = async (ca) => { if (!ca || ca.length < 32) return; setCaAnalysis({ ca, loading: true, error: null, data: null }); try { const res = await fetch(API + "/api/analyze/" + ca); if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "Not found"); } const coin = await res.json(); setCaAnalysis({ ca, loading: false, error: null, data: coin }); } catch (e) { setCaAnalysis({ ca, loading: false, error: e.message || "Analysis failed", data: null }); } };
 
   // ═══ TRADING WALLET (PumpPortal Lightning) ═══
   const [tradingWallet, setTradingWallet] = useState(null);
+  const canLaunch = (tradingWallet || isApe) && (existingCA || (tokenName && ticker));
   const [tradingBalance, setTradingBalance] = useState(0);
   const [tradingKeys, setTradingKeys] = useState(null);
   const [showTradingSetup, setShowTradingSetup] = useState(false);
