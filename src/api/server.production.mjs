@@ -1398,7 +1398,25 @@ async function fetchDexScreenerMomentum() {
 
     radar.movers.momentum = [...byName.values()]
       .sort((a, b) => b.score - a.score)
-      .slice(0, 40);
+      .slice(0, 40)
+      .map(t => {
+        // Generate synthetic sparkline from h1/h6/h24 price changes
+        // Creates a believable 10-point curve from DexScreener change data
+        const h1 = t.priceChange?.h1 || 0;
+        const h6 = t.priceChange?.h6 || 0;
+        const h24 = t.priceChange?.h24 || 0;
+        const mcap = t.mcapUsd || 1000;
+        const spark = [];
+        for (let i = 0; i < 10; i++) {
+          const pct = i / 9;
+          // Interpolate: start from h24 change, through h6, to h1 (most recent)
+          const change = pct < 0.3 ? h24 * (1 - pct / 0.3) + h6 * (pct / 0.3)
+            : pct < 0.7 ? h6 * (1 - (pct - 0.3) / 0.4) + h1 * ((pct - 0.3) / 0.4)
+            : h1;
+          spark.push(Math.max(1, mcap * (1 + change / 100 * (pct - 0.5))));
+        }
+        return { ...t, h1Change: h1, spark };
+      });
 
     console.log(`[RADAR] DexScreener momentum: ${radar.movers.momentum.length} tokens (from ${results.length} candidates)`);
   } catch (e) {
@@ -1510,6 +1528,11 @@ function analyzeBundle(t) {
   t.bundleFlags = flags;
 }
 
+// ═══════════════════════════════════════
+// SNIPE MODE — watch wallets, auto-buy on create
+// ═══════════════════════════════════════
+const snipeTargets = new Map(); // targetWallet -> { userWallet, solAmount, maxBuys, buyCount, active }
+
 function connectPumpPortalWS() {
   if (!radar.enabled) return;
   console.log("[RADAR] Connecting to PumpPortal WebSocket...");
@@ -1535,6 +1558,12 @@ function connectPumpPortalWS() {
       activeCAs.forEach(ca => radar.subbed.add(ca));
       console.log(`[RADAR] Re-subscribed to ${activeCAs.length} token trades`);
     }
+    // Subscribe to snipe target wallets
+    const snipeWallets = [...snipeTargets.keys()].filter(w => snipeTargets.get(w).active);
+    if (snipeWallets.length > 0) {
+      ws.send(JSON.stringify({ method: "subscribeAccountTrade", keys: snipeWallets }));
+      console.log(`[SNIPE] Subscribed to ${snipeWallets.length} wallet(s)`);
+    }
   });
 
   ws.on("message", (raw) => {
@@ -1550,6 +1579,34 @@ function connectPumpPortalWS() {
       // New token created
       if (msg.txType === "create" && msg.mint) {
         const ca = msg.mint;
+        const creator = msg.traderPublicKey || "";
+
+        // ═══ SNIPE CHECK: if creator is a watched wallet, auto-buy ═══
+        if (creator && snipeTargets.has(creator)) {
+          const target = snipeTargets.get(creator);
+          if (target.active && target.buyCount < target.maxBuys) {
+            target.buyCount++;
+            console.log(`[SNIPE] 🎯 Target ${creator.slice(0, 8)} created ${ca.slice(0, 8)} — auto-buying ${target.solAmount} SOL!`);
+            // Fire quick-ape in background (don't block WS)
+            (async () => {
+              try {
+                const user = userStore ? await userStore.get(target.userWallet) : null;
+                const apiKey = user?.ppApiKey && user.ppApiKey !== "" ? user.ppApiKey : null;
+                if (apiKey) {
+                  const ppRes = await fetch("https://pumpportal.fun/api/trade?api-key=" + apiKey, {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "buy", mint: ca, amount: target.solAmount, denominatedInSol: "true", slippage: 40, priorityFee: 0.002, pool: "pump" }),
+                  });
+                  const result = await ppRes.json();
+                  if (result.signature) {
+                    addPendingBuy(target.userWallet, ca, target.solAmount, result.signature);
+                    console.log(`[SNIPE] ✓ Auto-bought ${target.solAmount} SOL of ${ca.slice(0, 8)} | sig: ${result.signature.toString().slice(0, 16)}`);
+                  } else { console.warn(`[SNIPE] Buy failed:`, result.errors || result.error); }
+                } else { console.warn(`[SNIPE] No API key for ${target.userWallet.slice(0, 8)}`); }
+              } catch (e) { console.error(`[SNIPE] Auto-buy error:`, e.message); }
+            })();
+          }
+        }
         if (!radar.pool.has(ca)) {
           radar.pool.set(ca, {
             name: msg.name || "?", ticker: msg.symbol || "?",
@@ -2438,6 +2495,45 @@ app.post("/api/quick-sell", apiLimiter, requireVerifiedWallet, async (req, res) 
     res.status(500).json({ error: e.message });
   }
 });
+
+// ═══ SNIPE MODE ENDPOINTS ═══
+app.post("/api/snipe/add", apiLimiter, async (req, res) => {
+  const { wallet, target, solAmount, maxBuys } = req.body;
+  if (!wallet || !target) return res.status(400).json({ error: "wallet and target required" });
+  if (snipeTargets.size >= 10) return res.status(400).json({ error: "Max 10 snipe targets" });
+
+  const sol = Math.min(Math.max(parseFloat(solAmount) || 0.1, 0.01), 10);
+  const max = Math.min(Math.max(parseInt(maxBuys) || 5, 1), 50);
+
+  snipeTargets.set(target, { userWallet: wallet, solAmount: sol, maxBuys: max, buyCount: 0, active: true, addedAt: Date.now() });
+
+  // Subscribe on WS
+  if (radar.wsRef?.readyState === 1) {
+    radar.wsRef.send(JSON.stringify({ method: "subscribeAccountTrade", keys: [target] }));
+  }
+
+  console.log(`[SNIPE] Added target: ${target.slice(0, 8)} | ${sol} SOL | max ${max} buys | by ${wallet.slice(0, 8)}`);
+  res.json({ ok: true, target, solAmount: sol, maxBuys: max, totalTargets: snipeTargets.size });
+});
+
+app.post("/api/snipe/remove", apiLimiter, (req, res) => {
+  const { target } = req.body;
+  if (!target) return res.status(400).json({ error: "target required" });
+  snipeTargets.delete(target);
+  if (radar.wsRef?.readyState === 1) {
+    radar.wsRef.send(JSON.stringify({ method: "unsubscribeAccountTrade", keys: [target] }));
+  }
+  res.json({ ok: true, removed: target, totalTargets: snipeTargets.size });
+});
+
+app.get("/api/snipe/list", apiLimiter, (req, res) => {
+  const wallet = req.query.wallet;
+  const targets = [...snipeTargets.entries()]
+    .filter(([_, v]) => !wallet || v.userWallet === wallet)
+    .map(([k, v]) => ({ target: k, ...v }));
+  res.json({ ok: true, targets, count: targets.length });
+});
+
 app.post("/api/radar/toggle", apiLimiter, (req, res) => {
   radar.enabled = !radar.enabled;
   if (!radar.enabled && radar.wsRef) {
