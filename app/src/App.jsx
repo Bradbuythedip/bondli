@@ -791,6 +791,185 @@ function PriceChart({ trades, mobile, T, ca, wsChart, gameState }) {
 // ═══════════════════════════════════════
 // RADAR — Full-screen card grid scanner (pump.fun style)
 // ═══════════════════════════════════════
+// ══════════════════════════════════════════
+// CANDLESTICK CHART — canvas, touch-enabled, real-time
+// ══════════════════════════════════════════
+function CandlestickChart({ candles = [], trades = [], height = 280, mobile, onCrosshair }) {
+  const canvasRef = useRef(null);
+  const [offset, setOffset] = useState(0);
+  const [zoom, setZoom] = useState(1);
+  const [crosshair, setCrosshair] = useState(null);
+  const touchRef = useRef({ startX: 0, startOffset: 0, startDist: 0, startZoom: 1 });
+  const T = useTheme();
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || candles.length < 2) return;
+    const ctx = canvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+
+    const candleWidth = Math.max(3, Math.min(20, (w / 60) * zoom));
+    const gap = Math.max(1, candleWidth * 0.2);
+    const totalW = candleWidth + gap;
+    const visibleCount = Math.floor(w / totalW);
+    const startIdx = Math.max(0, candles.length - visibleCount - Math.round(offset));
+    const visible = candles.slice(startIdx, startIdx + visibleCount);
+    if (visible.length === 0) return;
+
+    const chartH = h * 0.75;
+    const volH = h * 0.2;
+    const maxP = Math.max(...visible.map(c => c.h));
+    const minP = Math.min(...visible.map(c => c.l));
+    const range = maxP - minP || 1;
+    const maxVol = Math.max(...visible.map(c => c.vol)) || 1;
+
+    const priceY = (p) => 8 + (1 - (p - minP) / range) * (chartH - 16);
+    const volY = (v) => chartH + volH - (v / maxVol) * (volH - 4);
+
+    // Background
+    ctx.fillStyle = T.bg; ctx.fillRect(0, 0, w, h);
+
+    // Grid lines
+    ctx.strokeStyle = T.border + "33"; ctx.lineWidth = 0.5;
+    for (let i = 0; i < 4; i++) {
+      const y = 8 + i * (chartH - 16) / 3;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      const price = maxP - (i / 3) * range;
+      ctx.fillStyle = T.faint; ctx.font = "9px monospace"; ctx.textAlign = "right";
+      ctx.fillText("$" + (price >= 1000 ? (price / 1000).toFixed(1) + "K" : price.toFixed(0)), w - 4, y - 2);
+    }
+
+    // Candles
+    visible.forEach((c, i) => {
+      const x = i * totalW + gap;
+      const isGreen = c.c >= c.o;
+      const color = isGreen ? "#00e676" : "#ff1744";
+      const bodyTop = priceY(Math.max(c.o, c.c));
+      const bodyBot = priceY(Math.min(c.o, c.c));
+      const bodyH = Math.max(1, bodyBot - bodyTop);
+
+      // Wick
+      ctx.strokeStyle = color; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x + candleWidth / 2, priceY(c.h));
+      ctx.lineTo(x + candleWidth / 2, priceY(c.l));
+      ctx.stroke();
+
+      // Body
+      ctx.fillStyle = color;
+      ctx.fillRect(x, bodyTop, candleWidth, bodyH);
+
+      // Volume bar
+      ctx.fillStyle = (isGreen ? "#00e676" : "#ff1744") + "44";
+      ctx.fillRect(x, volY(c.vol), candleWidth, chartH + volH - volY(c.vol));
+    });
+
+    // Crosshair
+    if (crosshair && crosshair.x >= 0 && crosshair.x < w) {
+      const idx = Math.floor(crosshair.x / totalW);
+      if (idx >= 0 && idx < visible.length) {
+        const c = visible[idx];
+        ctx.strokeStyle = T.dim + "88"; ctx.lineWidth = 0.5; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(crosshair.x, 0); ctx.lineTo(crosshair.x, h); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, crosshair.y); ctx.lineTo(w, crosshair.y); ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Price label
+        ctx.fillStyle = T.surface; ctx.fillRect(w - 65, crosshair.y - 10, 62, 20);
+        ctx.fillStyle = c.c >= c.o ? "#00e676" : "#ff1744"; ctx.font = "bold 10px monospace"; ctx.textAlign = "right";
+        ctx.fillText("$" + (c.c >= 1000 ? (c.c / 1000).toFixed(2) + "K" : c.c.toFixed(0)), w - 6, crosshair.y + 4);
+
+        // OHLCV overlay
+        ctx.fillStyle = T.text; ctx.font = "10px monospace"; ctx.textAlign = "left";
+        ctx.fillText(`O:${(c.o/1000).toFixed(1)}K H:${(c.h/1000).toFixed(1)}K L:${(c.l/1000).toFixed(1)}K C:${(c.c/1000).toFixed(1)}K V:${c.vol.toFixed(2)}`, 4, h - 4);
+      }
+    }
+  }, [candles, offset, zoom, crosshair, T]);
+
+  // Touch handlers
+  const handleTouchStart = (e) => {
+    if (e.touches.length === 1) {
+      touchRef.current.startX = e.touches[0].clientX;
+      touchRef.current.startOffset = offset;
+    } else if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      touchRef.current.startDist = Math.sqrt(dx * dx + dy * dy);
+      touchRef.current.startZoom = zoom;
+    }
+  };
+  const handleTouchMove = (e) => {
+    e.preventDefault();
+    if (e.touches.length === 1) {
+      const dx = e.touches[0].clientX - touchRef.current.startX;
+      setOffset(Math.max(0, touchRef.current.startOffset + dx * 0.3));
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (rect) setCrosshair({ x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top });
+    } else if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const scale = dist / (touchRef.current.startDist || 1);
+      setZoom(Math.max(0.5, Math.min(5, touchRef.current.startZoom * scale)));
+    }
+  };
+  const handleTouchEnd = () => { setTimeout(() => setCrosshair(null), 2000); };
+  const handleMouseMove = (e) => { const rect = canvasRef.current?.getBoundingClientRect(); if (rect) setCrosshair({ x: e.clientX - rect.left, y: e.clientY - rect.top }); };
+  const handleMouseLeave = () => setCrosshair(null);
+  const handleWheel = (e) => { e.preventDefault(); if (e.ctrlKey) { setZoom(z => Math.max(0.5, Math.min(5, z - e.deltaY * 0.005))); } else { setOffset(o => Math.max(0, o + e.deltaY * 0.5)); } };
+
+  return (
+    <div style={{ position: "relative", width: "100%", height, background: T.bg, borderRadius: 12, overflow: "hidden", border: "1px solid " + T.border }}>
+      <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block", touchAction: "none" }}
+        onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd}
+        onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave} onWheel={handleWheel} />
+      {candles.length < 2 && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace", fontSize: 12, color: T.faint }}>Waiting for trades...</div>}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════
+// WALLET BREAKDOWN — shows all fleet wallets + balances in deployed token
+// ══════════════════════════════════════════
+function WalletBreakdown({ ca, wallets, T, mobile }) {
+  if (!wallets || wallets.length === 0) return null;
+  const mono = "'SF Mono', SFMono-Regular, ui-monospace, monospace";
+  const totalTokens = wallets.reduce((s, w) => s + (w.tokens || 0), 0);
+  const totalSol = wallets.reduce((s, w) => s + (w.sol || 0), 0);
+
+  return (
+    <div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 12, padding: mobile ? 10 : 14, marginTop: 8 }}>
+      <div style={{ fontFamily: mono, fontSize: 11, fontWeight: 700, color: T.dim, marginBottom: 8, display: "flex", justifyContent: "space-between" }}>
+        <span>WALLET BREAKDOWN</span>
+        <span style={{ color: T.green }}>{wallets.filter(w => w.isOurs).length} wallets | {totalSol.toFixed(3)} SOL</span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: mobile ? "50px 1fr 50px 50px" : "60px 1fr 70px 70px 50px", gap: "4px 8px", fontFamily: mono, fontSize: mobile ? 9 : 10, lineHeight: "22px" }}>
+        {/* Header */}
+        <div style={{ color: T.faint, fontWeight: 700 }}>Role</div>
+        <div style={{ color: T.faint, fontWeight: 700 }}>Address</div>
+        <div style={{ color: T.faint, fontWeight: 700, textAlign: "right" }}>SOL</div>
+        <div style={{ color: T.faint, fontWeight: 700, textAlign: "right" }}>Tokens</div>
+        {!mobile && <div style={{ color: T.faint, fontWeight: 700, textAlign: "right" }}>% Supply</div>}
+        {/* Rows */}
+        {wallets.map((w, i) => (
+          <React.Fragment key={i}>
+            <div style={{ color: w.isOurs ? T.green : T.dim, fontWeight: w.isOurs ? 700 : 400 }}>{w.role}</div>
+            <div style={{ color: w.isOurs ? T.green + "cc" : T.faint, overflow: "hidden", textOverflow: "ellipsis" }}>{w.pubkey?.slice(0, mobile ? 8 : 12)}...</div>
+            <div style={{ textAlign: "right", color: w.sol > 0.001 ? T.text : T.faint }}>{w.sol?.toFixed(3)}</div>
+            <div style={{ textAlign: "right", color: w.tokens > 0 ? T.text : T.faint }}>{w.tokens > 1e9 ? (w.tokens / 1e9).toFixed(1) + "B" : w.tokens > 1e6 ? (w.tokens / 1e6).toFixed(1) + "M" : w.tokens > 1e3 ? (w.tokens / 1e3).toFixed(0) + "K" : w.tokens}</div>
+            {!mobile && <div style={{ textAlign: "right", color: w.pctSupply > 1 ? T.yellow : T.faint }}>{w.pctSupply?.toFixed(2)}%</div>}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Sparkline — lightweight canvas mini chart for radar rows ──
 function Sparkline({ data, color = "#00ff88", height = 36 }) {
   const canvasRef = useRef(null);
@@ -1861,6 +2040,77 @@ export default function App() {
   const [launched, setLaunched] = useState(false); const [curveProgress, setCurveProgress] = useState(0); const [wsConnected, setWsConnected] = useState(false);
   const [launchCA, setLaunchCA] = useState(""); const [launchPumpUrl, setLaunchPumpUrl] = useState(""); const [activeSessionId, setActiveSessionId] = useState("");
   const [pastSessions, setPastSessions] = useState([]); const [fleetStatus, setFleetStatus] = useState(null);
+  const [chartCandles, setChartCandles] = useState([]);
+  const [walletBreakdown, setWalletBreakdown] = useState(null);
+  const wsTradeRef = useRef(null); // PumpPortal WS for real-time price
+
+  // Fetch candlestick chart data for deployed token
+  useEffect(() => {
+    if (!launched || !launchCA) return;
+    let alive = true;
+    const fetchChart = async () => {
+      try {
+        const r = await fetch(API + "/api/chart/" + launchCA + "?interval=5");
+        if (r.ok && alive) { const d = await r.json(); if (d.candles) setChartCandles(d.candles); }
+      } catch {}
+    };
+    fetchChart();
+    const iv = setInterval(fetchChart, 5000);
+    return () => { alive = false; clearInterval(iv); };
+  }, [launched, launchCA]);
+
+  // Fetch wallet breakdown for deployed token
+  useEffect(() => {
+    if (!launched || !launchCA) return;
+    let alive = true;
+    const fetchBreakdown = async () => {
+      try {
+        const r = await fetch(API + "/api/fleet/wallets/" + launchCA);
+        if (r.ok && alive) { const d = await r.json(); if (d.wallets) setWalletBreakdown(d.wallets); }
+      } catch {}
+    };
+    fetchBreakdown();
+    const iv = setInterval(fetchBreakdown, 15000); // slower poll — RPC heavy
+    return () => { alive = false; clearInterval(iv); };
+  }, [launched, launchCA]);
+
+  // Real-time WS price subscription for deployed token
+  useEffect(() => {
+    if (!launched || !launchCA) return;
+    let ws;
+    try {
+      ws = new WebSocket("wss://pumpportal.fun/api/data");
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [launchCA] }));
+        console.log("[WS-CHART] Subscribed to", launchCA.slice(0, 8));
+      };
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.mint === launchCA && msg.marketCapSol) {
+            const mcap = Math.round((msg.marketCapSol || 0) * 170);
+            const sol = msg.solAmount || 0;
+            const isBuy = msg.txType === "buy";
+            setChartCandles(prev => {
+              if (prev.length === 0) return [{ time: Date.now(), o: mcap, h: mcap, l: mcap, c: mcap, vol: sol, buyVol: isBuy ? sol : 0, sellVol: isBuy ? 0 : sol }];
+              const last = { ...prev[prev.length - 1] };
+              const now = Date.now();
+              if (now - last.time > 5000) {
+                return [...prev, { time: now, o: mcap, h: mcap, l: mcap, c: mcap, vol: sol, buyVol: isBuy ? sol : 0, sellVol: isBuy ? 0 : sol }];
+              }
+              last.h = Math.max(last.h, mcap); last.l = Math.min(last.l, mcap); last.c = mcap;
+              last.vol += sol; if (isBuy) last.buyVol += sol; else last.sellVol += sol;
+              return [...prev.slice(0, -1), last];
+            });
+          }
+        } catch {}
+      };
+      ws.onerror = () => {};
+      ws.onclose = () => {};
+      wsTradeRef.current = ws;
+    } catch {}
+    return () => { if (ws) ws.close(); };
+  }, [launched, launchCA]);
   const [fleetKeys, setFleetKeys] = useState([]); const [devSecret, setDevSecret] = useState("");
   const [copied, setCopied] = useState(false);
   const [onlineCount, setOnlineCount] = useState(0);
@@ -1920,6 +2170,36 @@ export default function App() {
   const [tradingKeys, setTradingKeys] = useState(null);
   const [showTradingSetup, setShowTradingSetup] = useState(false);
   const [heldMints, setHeldMints] = useState(new Set());
+  const [realtimePrices, setRealtimePrices] = useState(new Map()); // mint -> { mcap, price, side, time }
+  const wsPriceRef = useRef(null);
+
+  // Real-time WS price updates for held positions
+  useEffect(() => {
+    if (heldMints.size === 0) return;
+    let ws;
+    try {
+      ws = new WebSocket("wss://pumpportal.fun/api/data");
+      ws.onopen = () => {
+        const mints = [...heldMints];
+        ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: mints }));
+      };
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.mint && msg.marketCapSol && heldMints.has(msg.mint)) {
+            setRealtimePrices(prev => {
+              const n = new Map(prev);
+              n.set(msg.mint, { mcap: Math.round(msg.marketCapSol * 170), price: msg.priceUsd || 0, side: msg.txType, time: Date.now() });
+              return n;
+            });
+          }
+        } catch {}
+      };
+      ws.onerror = () => {};
+      wsPriceRef.current = ws;
+    } catch {}
+    return () => { if (ws) ws.close(); };
+  }, [heldMints.size]); // reconnect when held mints change
   const [recentBuys, setRecentBuys] = useState([]); // pending buys not yet in on-chain scan
 
   // P&L cost basis tracking (localStorage)
@@ -2258,7 +2538,7 @@ export default function App() {
           <div style={{ maxWidth: launched ? 1100 : appTab === "radar" ? 1400 : appTab === "portfolio" ? 800 : 760, margin: "0 auto", padding: appTab === "radar" ? (mobile ? "10px 6px" : "16px 12px") : (mobile ? "16px 12px" : "28px 24px"), position: "relative", zIndex: 1 }}>
             {launched && launchCA ? (
               <div>
-                {/* ═══ CHART ═══ */}
+                {/* ═══ CHART — custom candlestick ═══ */}
                 <div style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 14, overflow: "hidden", marginBottom: 12 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", borderBottom: "1px solid " + T.border }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -2267,13 +2547,16 @@ export default function App() {
                     </div>
                     <span style={{ fontFamily: mono, fontSize: 12, color: T.mid, cursor: "pointer" }} onClick={() => { navigator.clipboard?.writeText(launchCA); toast("CA copied", "success"); }}>{launchCA.slice(0, 6)}...{launchCA.slice(-4)} copy</span>
                   </div>
-                  <PriceChart trades={(fleetStatus?.trades || []).slice(0, 30)} mobile={mobile} T={T} ca={launchCA} wsChart={fleetStatus?.wsChart} gameState={fleetStatus?.gameState} />
+                  <CandlestickChart candles={chartCandles} trades={fleetStatus?.trades || []} height={mobile ? 240 : 320} mobile={mobile} />
                   <div style={{ padding: "6px 12px", background: T.bg, borderTop: "1px solid " + T.border, display: "flex", gap: 8, justifyContent: "center" }}>
                     <a href={"https://pump.fun/coin/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.green, textDecoration: "none" }}>pump.fun {"→"}</a>
                     <a href={"https://dexscreener.com/solana/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.dim, textDecoration: "none" }}>dexscreener {"→"}</a>
                     <a href={"https://solscan.io/token/" + launchCA} target="_blank" rel="noopener" style={{ fontSize: 11, fontFamily: mono, color: T.dim, textDecoration: "none" }}>solscan {"→"}</a>
                   </div>
                 </div>
+
+                {/* ═══ WALLET BREAKDOWN ═══ */}
+                {walletBreakdown && <WalletBreakdown ca={launchCA} wallets={walletBreakdown} T={T} mobile={mobile} />}
 
                 {/* ═══ LINKS ═══ */}
                 <div style={{ display: "grid", gridTemplateColumns: mobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
