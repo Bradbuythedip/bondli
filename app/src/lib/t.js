@@ -18,6 +18,7 @@ input,button,textarea,select{font-family:inherit;-webkit-appearance:none}
 @keyframes gp{0%,100%{box-shadow:0 0 0 0 ${T.gn}33}70%{box-shadow:0 0 0 5px ${T.gn}00}}
 @keyframes gl{0%,100%{box-shadow:0 0 12px #551bf922}50%{box-shadow:0 0 24px #551bf944}}
 @keyframes pf{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
+@keyframes su{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
 input[type=range]{-webkit-appearance:none;height:3px;border-radius:2px;background:${T.bl};outline:none;margin:6px 0}
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:${T.gn};cursor:pointer;box-shadow:0 0 4px ${T.gn}44;border:2px solid ${T.bg}}
 input[type=range]::-webkit-slider-thumb:active{box-shadow:0 0 8px ${T.gn}66}
