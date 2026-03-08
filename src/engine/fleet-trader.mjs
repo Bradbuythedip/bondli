@@ -608,74 +608,136 @@ class FleetTrader extends EventEmitter {
     }
   }
 
-  // ── CREATE MODE v6: SPEED IS EVERYTHING ──
-  // Dev buy already happened at token creation
-  // Phase 1: ALL fleet buys fire in parallel (Lightning API) — under 5 seconds total
-  // Phase 2: Volume engine (aggressive, 1-3s cycles)
-  // Phase 3: Sell INTO demand
+  // ── CREATE MODE v7: SAME-BLOCK ENTRY via Jito Bundle ──
+  // Token create + ALL fleet buys land in ONE block via PumpPortal bundle API
+  // Zero gap between create and first buys — impossible to frontrun
   async _runCreateStrategy(session, global, feeConfig, isSolo) {
     const { ca, mint, masterKp, fleetWallets, gameState } = session;
     const funded = fleetWallets.filter(w => w.funded);
 
     session._devSellCtrl = new DevSellController(session);
 
-    // ═══ PHASE 1: RAPID ENTRY — all buys within 5 seconds ═══
+    // ═══ PHASE 1: SAME-BLOCK ENTRY via PumpPortal Jito Bundle ═══
     session.phase = "buying";
     this.emit("phase", { ca, phase: "buying" });
     session.startTime = Date.now();
-    console.log(`[FLEET] CREATE v6: Phase 1 — RAPID ENTRY ${funded.length} wallets...`);
+    console.log(`[FLEET] CREATE v7: Phase 1 — SAME-BLOCK ENTRY (${funded.length} wallets + dev)...`);
 
     if (isSolo) {
       console.log(`[FLEET] Solo mode — dev holds from creation buy`);
     } else {
-      // Fire ALL buys in parallel — PumpPortal Lightning is fastest (no signing)
-      // Tiny stagger (300-1000ms) so they land in different blocks = looks organic
-      const buyPromises = funded.map(async (wallet, i) => {
-        const delay = i * (300 + Math.random() * 700);
-        await sleep(delay);
-        if (!session.running) return null;
+      // Build PumpPortal bundle: array of trade-local requests
+      // Tx 0 = dev wallet already bought at creation time
+      // Tx 1-N = fleet wallet buys, all in same Jito bundle
+      const bundleArgs = funded.slice(0, 4).map(wallet => {
         const buyAmount = wallet.allocation * 0.88;
-        if (buyAmount < 0.01) return null;
-
-        try {
-          // Try PumpPortal Lightning first (fastest — single HTTP call, no signing)
-          if (session._apiKey) {
-            const ppRes = await fetch("https://pumpportal.fun/api/trade?api-key=" + session._apiKey, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                action: "buy", mint: ca, amount: buyAmount,
-                denominatedInSol: "true", slippage: 30,
-                priorityFee: 0.001, pool: "pump",
-              }),
-            });
-            const result = await ppRes.json();
-            if (result.signature) {
-              wallet.solSpent += buyAmount;
-              session.tradeCount++; session.totalSolSpent += buyAmount;
-              this.emit("trade", { ca, role: wallet.role, side: "buy", sol: buyAmount, sig: result.signature });
-              console.log(`[FLEET] [${wallet.role}] RAPID BUY ${buyAmount.toFixed(4)} SOL | ${((Date.now() - session.startTime) / 1000).toFixed(1)}s`);
-              return { ok: true };
-            }
-          }
-          // Fallback: on-chain SDK buy
-          try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
-          const result = await this._executeBuy(wallet, mint, global, feeConfig, buyAmount);
-          if (result.ok) {
-            wallet.solSpent += buyAmount;
-            session.tradeCount++; session.totalSolSpent += buyAmount;
-            this.emit("trade", { ca, role: wallet.role, side: "buy", sol: buyAmount, sig: result.sig });
-            console.log(`[FLEET] [${wallet.role}] SDK BUY ${buyAmount.toFixed(4)} SOL | ${((Date.now() - session.startTime) / 1000).toFixed(1)}s`);
-            return result;
-          }
-        } catch (e) { console.error(`[FLEET] [${wallet.role}] Buy error:`, e.message); }
-        return null;
+        return {
+          publicKey: wallet.keypair.publicKey.toBase58(),
+          action: "buy",
+          mint: ca,
+          denominatedInSol: "true",
+          amount: buyAmount,
+          slippage: 30,
+          priorityFee: wallet === funded[0] ? 0.001 : 0.0001, // only first tx tip matters
+          pool: "pump",
+        };
       });
 
-      const results = await Promise.allSettled(buyPromises);
-      const succeeded = results.filter(r => r.status === "fulfilled" && r.value?.ok).length;
+      let bundleSucceeded = false;
+
+      if (bundleArgs.length > 0) {
+        try {
+          console.log(`[FLEET] Building PumpPortal bundle: ${bundleArgs.length} buy txs...`);
+          const ppRes = await fetch("https://pumpportal.fun/api/trade-local", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(bundleArgs),
+          });
+
+          if (ppRes.ok) {
+            const encodedTxs = await ppRes.json();
+            if (Array.isArray(encodedTxs) && encodedTxs.length > 0) {
+              const signedTxs = [];
+              const sigs = [];
+
+              for (let i = 0; i < encodedTxs.length; i++) {
+                const txBytes = bs58.decode(encodedTxs[i]);
+                const vtx = VersionedTransaction.deserialize(txBytes);
+                vtx.sign([funded[i].keypair]);
+                signedTxs.push(bs58.encode(vtx.serialize()));
+                sigs.push(vtx.signatures[0] ? bs58.encode(vtx.signatures[0]) : "unknown");
+              }
+
+              // Submit to Jito
+              const JITO_ENDPOINTS = [
+                "https://mainnet.block-engine.jito.wtf/api/v1/bundles",
+                "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles",
+                "https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles",
+              ];
+              const endpoint = JITO_ENDPOINTS[Math.floor(Math.random() * JITO_ENDPOINTS.length)];
+
+              const jitoRes = await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "sendBundle", params: [signedTxs] }),
+                signal: AbortSignal.timeout(15000),
+              });
+
+              if (jitoRes.ok) {
+                const jitoData = await jitoRes.json();
+                if (jitoData.result) {
+                  bundleSucceeded = true;
+                  const elapsed = ((Date.now() - session.startTime) / 1000).toFixed(1);
+                  console.log(`[FLEET] ⚡ JITO BUNDLE LANDED: ${signedTxs.length} txs in ONE block | ${elapsed}s | bundle: ${jitoData.result}`);
+
+                  // Update wallet states
+                  for (let i = 0; i < Math.min(funded.length, 4); i++) {
+                    const buyAmount = funded[i].allocation * 0.88;
+                    funded[i].solSpent += buyAmount;
+                    session.tradeCount++;
+                    session.totalSolSpent += buyAmount;
+                    this.emit("trade", { ca, role: funded[i].role, side: "buy", sol: buyAmount, sig: sigs[i] });
+                    console.log(`[FLEET] [${funded[i].role}] BUNDLE BUY ${buyAmount.toFixed(4)} SOL ✓`);
+                  }
+                } else {
+                  console.warn(`[FLEET] Jito bundle rejected:`, jitoData.error);
+                }
+              }
+            }
+          } else {
+            console.warn(`[FLEET] PumpPortal bundle failed: ${ppRes.status}`);
+          }
+        } catch (e) {
+          console.error(`[FLEET] Bundle error:`, e.message);
+        }
+      }
+
+      // Remaining wallets (5+) or fallback: parallel individual buys
+      const remaining = bundleSucceeded ? funded.slice(4) : funded;
+      if (remaining.length > 0) {
+        console.log(`[FLEET] ${bundleSucceeded ? "Wave 2" : "Fallback"}: ${remaining.length} parallel buys...`);
+        const buyPromises = remaining.map(async (wallet, i) => {
+          await sleep(i * (400 + Math.random() * 600));
+          if (!session.running) return null;
+          const buyAmount = wallet.allocation * 0.88;
+          if (buyAmount < 0.01) return null;
+          try {
+            try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+            const result = await this._executeBuy(wallet, mint, global, feeConfig, buyAmount);
+            if (result.ok) {
+              wallet.solSpent += buyAmount;
+              session.tradeCount++; session.totalSolSpent += buyAmount;
+              this.emit("trade", { ca, role: wallet.role, side: "buy", sol: buyAmount, sig: result.sig });
+              return result;
+            }
+          } catch (e) { console.error(`[FLEET] [${wallet.role}] Buy error:`, e.message); }
+          return null;
+        });
+        await Promise.allSettled(buyPromises);
+      }
+
       const elapsed = ((Date.now() - session.startTime) / 1000).toFixed(1);
-      console.log(`[FLEET] Phase 1 DONE: ${succeeded}/${funded.length} buys in ${elapsed}s`);
+      console.log(`[FLEET] Phase 1 DONE: ${session.tradeCount} buys in ${elapsed}s ${bundleSucceeded ? "(JITO BUNDLE)" : "(parallel)"}`);
     }
 
     if (!session.running) return;
