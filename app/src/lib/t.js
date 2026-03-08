@@ -5,7 +5,7 @@ export const TC=createContext(D);
 export const uT=()=>useContext(TC);
 export function css(T){return`
 *{box-sizing:border-box;margin:0;padding:0}
-html{-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent}
+html{-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent;scroll-behavior:smooth}
 body{background:${T.bg};color:${T.tx};overflow-x:hidden;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;overscroll-behavior:none}
 input,button,textarea,select{font-family:inherit;-webkit-appearance:none}
 ::selection{background:${T.gn}33}
@@ -28,5 +28,7 @@ input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.2)}
 input[type=range]::-webkit-slider-thumb:active{transform:scale(1.1);box-shadow:0 0 16px ${T.gn}88}
 input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:${T.gn};cursor:pointer;border:2px solid ${T.bg}}
 input[type=range]::-moz-range-track{height:6px;border-radius:3px;background:${T.bd}}
+.glass{background:rgba(21,21,30,.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.06)}
+.hover-lift{transition:transform .2s cubic-bezier(.4,0,.2,1),box-shadow .2s}.hover-lift:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.3)}
 .st>*{animation:fu .4s ease both}.st>:nth-child(1){animation-delay:.04s}.st>:nth-child(2){animation-delay:.08s}.st>:nth-child(3){animation-delay:.12s}.st>:nth-child(4){animation-delay:.16s}.st>:nth-child(5){animation-delay:.2s}.st>:nth-child(6){animation-delay:.24s}.st>:nth-child(7){animation-delay:.28s}.st>:nth-child(8){animation-delay:.32s}
 `;}
