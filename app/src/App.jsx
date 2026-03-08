@@ -1841,6 +1841,13 @@ function NumInput({ label, value, onChange, min, max, step, T, decimals }) {
     </div>
   );
 }
+// ── Haptic feedback for mobile ──
+const haptic = (pattern = [15]) => { try { navigator?.vibrate?.(pattern); } catch {} };
+const hapticBuy = () => haptic([10, 30, 10]); // short buzz-pause-buzz
+const hapticSell = () => haptic([30, 15, 30]); // strong buzz-pause-strong
+const hapticSuccess = () => haptic([10, 20, 10, 20, 40]); // celebration
+const hapticError = () => haptic([80]); // single long buzz
+
 export default function App() {
   const [isDark, setIsDark] = useState(() => { try { return localStorage.getItem("bondli_theme") !== "light"; } catch { return true; } });
   const T = isDark ? dark : light;
@@ -1989,7 +1996,7 @@ export default function App() {
       const r = await fetch(API + "/api/quick-ape", { method: "POST", headers: { "Content-Type": "application/json", "x-wallet": user.pubkey }, body: JSON.stringify({ wallet: user.pubkey, ca, solAmount }) });
       const d = await r.json();
       if (!d.ok) { toast(d.error || "Buy failed — check trading wallet balance", "error"); return; }
-      toast(`Bought ${solAmount} SOL — position open`, "success");
+      toast(`Bought ${solAmount} SOL — position open`, "success"); hapticBuy();
       setTradingBalance(prev => Math.max(0, prev - solAmount - 0.001));
       recordBuy(ca, solAmount);
       // Update held mints immediately
