@@ -4117,6 +4117,148 @@ app.post("/api/admin/set-tier", async (req, res) => {
   res.json({ ok: true, wallet, tier });
 });
 
+// ═══ ADMIN: RECOVER ALL SOL from all sessions to platform wallet ═══
+app.post("/api/admin/recover-all", async (req, res) => {
+  // Platform wallet owner only
+  const adminSecret = req.headers["x-admin-secret"];
+  const callerWallet = req.body?.wallet || req.headers["x-wallet"];
+  if (adminSecret !== CONFIG.API_SECRET && callerWallet !== PLATFORM_WALLET) {
+    return res.status(403).json({ error: "Admin or platform wallet required" });
+  }
+
+  const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+  const destination = new PublicKey(PLATFORM_WALLET);
+  const redis = getRedis();
+  const results = [];
+  let totalRecovered = 0;
+  let totalWallets = 0;
+
+  console.log(`[ADMIN-RECOVER] Starting full platform sweep to ${PLATFORM_WALLET.slice(0, 8)}...`);
+
+  // 1. Scan all sessions from Redis
+  const sessionKeys = [];
+  if (redis) {
+    try {
+      const keys = await redis.keys("session:*");
+      sessionKeys.push(...keys);
+    } catch {}
+  }
+
+  // 2. Also check in-memory sessions from orch
+  const memSessions = orch.sessions ? [...orch.sessions.values()] : [];
+
+  // 3. Collect all keypairs from all sources
+  const allKeypairs = new Map(); // pubkey -> keypair (dedup)
+
+  for (const key of sessionKeys) {
+    try {
+      const raw = await redis.get(key);
+      if (!raw) continue;
+      const session = JSON.parse(raw);
+
+      // Dev keypair
+      if (session.devSecret) {
+        try {
+          const kp = Keypair.fromSecretKey(bs58.decode(session.devSecret));
+          allKeypairs.set(kp.publicKey.toBase58(), kp);
+        } catch {}
+      }
+
+      // Fleet wallet keys from Redis backup
+      const sessionId = session.id || key.replace("session:", "");
+      try {
+        const wkRaw = await redis.get("walletkeys:" + sessionId);
+        if (wkRaw) {
+          const wks = JSON.parse(wkRaw);
+          for (const wk of wks) {
+            if (wk.secret) {
+              try {
+                const kp = Keypair.fromSecretKey(bs58.decode(wk.secret));
+                allKeypairs.set(kp.publicKey.toBase58(), kp);
+              } catch {}
+            }
+          }
+        }
+      } catch {}
+    } catch {}
+  }
+
+  // In-memory sessions
+  for (const session of memSessions) {
+    if (session.masterKp) allKeypairs.set(session.masterKp.publicKey.toBase58(), session.masterKp);
+    for (const fw of (session.fleetWallets || [])) {
+      if (fw.keypair) allKeypairs.set(fw.keypair.publicKey.toBase58(), fw.keypair);
+    }
+  }
+
+  // 4. Also sweep all user trading wallets
+  if (userStore) {
+    try {
+      const allUsers = await userStore.list?.() || [];
+      for (const u of allUsers) {
+        if (u.ppPrivateKey && u.ppPrivateKey !== "") {
+          try {
+            const kp = Keypair.fromSecretKey(bs58.decode(u.ppPrivateKey));
+            // Don't sweep trading wallets — those belong to users
+            // Only sweep session wallets (dev + fleet)
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  totalWallets = allKeypairs.size;
+  console.log(`[ADMIN-RECOVER] Found ${totalWallets} wallets to sweep`);
+
+  // 5. Sweep each wallet
+  for (const [pubkey, kp] of allKeypairs) {
+    if (kp.publicKey.equals(destination)) continue; // don't sweep to self
+
+    try {
+      // First: close any token accounts (reclaim rent)
+      try {
+        const tokenAccts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: TOKEN_PROGRAM_ID });
+        for (const acct of tokenAccts.value) {
+          try {
+            const closeIx = createCloseAccountInstruction(acct.pubkey, kp.publicKey, kp.publicKey);
+            const tx = new Transaction().add(closeIx);
+            const { blockhash } = await connection.getLatestBlockhash("confirmed");
+            tx.recentBlockhash = blockhash;
+            tx.feePayer = kp.publicKey;
+            await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
+          } catch {}
+        }
+      } catch {}
+
+      // Now sweep SOL
+      const balance = await connection.getBalance(kp.publicKey);
+      const sweepAmount = balance - 5000; // leave 5000 lamports for rent
+      if (sweepAmount <= 0) {
+        results.push({ pubkey: pubkey.slice(0, 12), balance: balance / LAMPORTS_PER_SOL, status: "dust" });
+        continue;
+      }
+
+      const tx = new Transaction().add(
+        SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: destination, lamports: sweepAmount })
+      );
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = kp.publicKey;
+      const sig = await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
+
+      const swept = sweepAmount / LAMPORTS_PER_SOL;
+      totalRecovered += swept;
+      results.push({ pubkey: pubkey.slice(0, 12), swept, sig: sig.toString().slice(0, 16), status: "swept" });
+      console.log(`[ADMIN-RECOVER] Swept ${swept.toFixed(4)} SOL from ${pubkey.slice(0, 8)}`);
+    } catch (e) {
+      results.push({ pubkey: pubkey.slice(0, 12), status: "error", error: e.message });
+    }
+  }
+
+  console.log(`[ADMIN-RECOVER] DONE: ${totalRecovered.toFixed(4)} SOL recovered from ${results.filter(r => r.status === "swept").length}/${totalWallets} wallets`);
+  res.json({ ok: true, totalRecovered, totalWallets, swept: results.filter(r => r.status === "swept").length, results });
+});
+
 // ═══════════════════════════════════════
 // 404 + Error
 // ═══════════════════════════════════════
