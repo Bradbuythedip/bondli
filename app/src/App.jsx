@@ -31,6 +31,10 @@ const I={
   Copy:({s:z=12,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>,
   X:({s:z=14,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill={c}><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>,
   Zap:({s:z=16,c="#00e676"})=><svg width={z} height={z} viewBox="0 0 24 24" fill={c}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,
+  Settings:({s:z=18,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>,
+  Users:({s:z=18,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>,
+  Upload:({s:z=28,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
+  Crown:({s:z=18,c="#ffd600"})=><svg width={z} height={z} viewBox="0 0 24 24" fill={c}><path d="M2 20h20v2H2v-2zm1-7l4.5 3L12 4l4.5 12L21 13l-2 7H5l-2-7z"/></svg>,
 };
 const Spin=({s:z=16,c})=><svg width={z} height={z} viewBox="0 0 24 24" style={{animation:"sp .8s linear infinite"}}><circle cx="12" cy="12" r="10" fill="none" stroke={c||"#00e676"} strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round"/></svg>;
 const Avi=({pk,s:z=24})=>{const h=hW(pk||"x"),hu=h%360,h2=(hu+120)%360,c=z/2;return<svg width={z} height={z}><defs><linearGradient id={`v${h}`} x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor={`hsl(${hu},75%,55%)`}/><stop offset="100%" stopColor={`hsl(${h2},70%,40%)`}/></linearGradient></defs><path d={h%2?`M${c},${z*.08}L${z*.88},${c}L${c},${z*.92}L${z*.12},${c}Z`:`M${c},${z*.08}L${z*.88},${z*.3}L${z*.88},${z*.7}L${c},${z*.92}L${z*.12},${z*.7}L${z*.12},${z*.3}Z`} fill={`url(#v${h})`}/><circle cx={c} cy={c} r={z*.13} fill={`hsl(${hu},60%,70%)`} opacity=".3"/></svg>};
@@ -49,6 +53,47 @@ return<div style={{padding:mb?20:40,textAlign:"center",animation:"fu .4s ease"}}
 <div style={{fontFamily:M,fontSize:13,color:T.dm,maxWidth:400,margin:"0 auto 24px",lineHeight:1.6}}>Your trading key is a dedicated Solana wallet for all Bondli trades. Quick buys, fleet exits, and sweeps all flow through it.</div>
 <Btn onClick={async()=>{sC(true);hp([10,30,10]);try{const r=await a.ctw(a.w);if(r.ok){hp([10,20,10,20,40]);onCreated(r);toast("Trading key created! Deposit SOL to start.","success")}else toast(r.error||"Failed","error")}catch(e){toast(e.message,"error")}sC(false)}} disabled={creating} style={{padding:"16px 40px",fontSize:16,borderRadius:14}}>{creating?<><Spin s={16}/> Creating...</>:<><I.Key s={18} c="#0a0a0f"/> Create Trading Key</>}</Btn>
 <div style={{fontFamily:M,fontSize:11,color:T.ft,marginTop:16}}>One click. No signing needed.</div>
+</div>}
+
+// ═══ IMAGE UPLOAD ═══
+function ImgUp({image,onChange,mb}){const T=uT(),ref=useRef(null);
+const read=(f)=>{const r=new FileReader();r.onload=()=>onChange(r.result);r.readAsDataURL(f)};
+return<div onClick={()=>ref.current?.click()} onDrop={e=>{e.preventDefault();if(e.dataTransfer.files[0])read(e.dataTransfer.files[0])}} onDragOver={e=>e.preventDefault()} style={{width:mb?100:130,height:mb?100:130,borderRadius:14,border:"2px dashed "+(image?T.gn+"44":T.bd),background:image?"url("+image+") center/cover":T.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,cursor:"pointer",flexShrink:0,position:"relative",transition:"border-color .2s"}}>
+{!image&&<><I.Upload s={24} c={T.dm}/><span style={{fontSize:10,color:T.ft,fontFamily:M}}>512×512</span></>}
+{image&&<div style={{position:"absolute",bottom:4,right:4,width:20,height:20,borderRadius:6,background:T.gn,display:"flex",alignItems:"center",justifyContent:"center"}}><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="3"><polyline points="20 6 9 17 4 12"/></svg></div>}
+<input ref={ref} type="file" accept="image/*" style={{display:"none"}} onChange={e=>{if(e.target.files?.[0])read(e.target.files[0])}}/>
+</div>}
+
+// ═══ ADMIN PANEL ═══
+function AdminPanel({user,toast,mb}){const T=uT();
+const[users,sUsers]=useState([]);const[stats,sStats]=useState(null);const[loading,sL]=useState(false);
+const isAdmin=user?.whitelisted||user?.tier==="vip";
+if(!isAdmin)return null;
+const fetchAdmin=async()=>{sL(true);try{
+const[u,s]=await Promise.all([
+fetch(API+"/api/admin/users",{headers:{"x-admin-secret":"bondli_default"}}).then(r=>r.ok?r.json():{users:[]}),
+fetch(API+"/api/admin/stats",{headers:{"x-admin-secret":"bondli_default"}}).then(r=>r.ok?r.json():{}),
+]);sUsers(u.users||[]);sStats(s)}catch(e){toast("Admin fetch failed: "+e.message,"error")}sL(false)};
+useEffect(()=>{if(isAdmin)fetchAdmin()},[isAdmin]);
+return<div style={{background:T.sf,border:"1px solid "+T.pu+"33",borderRadius:16,padding:mb?14:20,animation:"si .3s ease"}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14}}>
+<div style={{display:"flex",alignItems:"center",gap:8}}><I.Crown s={20}/><span style={{fontFamily:M,fontSize:16,fontWeight:800,color:T.yl}}>Admin Panel</span></div>
+<button onClick={fetchAdmin} disabled={loading} style={{background:"none",border:"1px solid "+T.bd,borderRadius:8,padding:"4px 10px",cursor:"pointer",fontFamily:M,fontSize:11,color:T.dm}}>{loading?<Spin s={12}/>:"↻ Refresh"}</button>
+</div>
+{stats&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:2,background:T.bd+"44",borderRadius:8,overflow:"hidden",marginBottom:14}}>
+{[{k:"Users",v:stats.totalUsers||users.length},{k:"Launches",v:stats.totalLaunches||0},{k:"SOL In",v:fs(stats.totalSolIn,2)},{k:"Platform Cut",v:fs(stats.totalPlatformCut,2)}].map(s=><div key={s.k} style={{background:T.bg,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:15,fontFamily:M,fontWeight:800,color:T.gn}}>{s.v}</div><div style={{fontSize:9,color:T.ft,fontFamily:M,marginTop:2}}>{s.k}</div></div>)}
+</div>}
+<div style={{fontFamily:M,fontSize:12,fontWeight:700,color:T.dm,marginBottom:8}}><I.Users s={14} c={T.dm}/> Connected Users ({users.length})</div>
+<div style={{maxHeight:300,overflowY:"auto"}}>
+{users.slice(0,50).map((u,i)=><div key={u.wallet||i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid "+T.bd+"22",fontSize:11,fontFamily:M}}>
+<Avi pk={u.wallet||""} s={18}/>
+<span style={{color:T.md,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{u.username||tp(u.wallet,8,4)}</span>
+<span style={{color:u.tier==="pro"?T.pu:u.tier==="vip"?T.yl:T.gn,fontWeight:700,fontSize:9}}>{(u.tier||"free").toUpperCase()}</span>
+<span style={{color:T.ft,fontSize:9}}>{u.totalLaunches||0}L</span>
+<span style={{color:(u.totalProfit||0)>0?T.gn:T.ft,fontSize:9}}>{fs(u.totalProfit,2)}</span>
+</div>)}
+{users.length===0&&!loading&&<div style={{textAlign:"center",padding:20,color:T.ft}}>No users yet</div>}
+</div>
 </div>}
 
 // ═══ MAIN APP ═══
@@ -71,7 +116,7 @@ const[toasts,sToasts]=useState([]);
 const[radarTabs,sRT]=useState({new:[],hot:[],graduating:[],momentum:[]});
 const[rTab,sRTab]=useState("momentum");const[rLoad,sRL]=useState(true);const[rPool,sRP]=useState(0);
 const[rExp,sRExp]=useState(null);const[buying,sBuy]=useState(null);const[selling,sSell]=useState(null);const[rSearch,sRS]=useState("");
-const[rEnabled,sRE]=useState(true);
+const[rEnabled,sRE]=useState(true);const[img,sImg]=useState(null);const[showAdmin,sShowAdmin]=useState(false);const[showKeys,sShowKeys]=useState(false);
 
 const toast=useCallback((m,t="info")=>{const id=Date.now()+Math.random();sToasts(x=>[...x,{id,msg:m,type:t}]);setTimeout(()=>sToasts(x=>x.filter(y=>y.id!==id)),4000)},[]);
 const hasAccess=user&&(user.demo||user.tier==="free"||user.tier==="pro"||user.tier==="vip");
@@ -125,6 +170,8 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <div style={{display:"flex",alignItems:"center",gap:mb?4:8}}>
 {launched&&<button onClick={async()=>{if(!confirm("EXIT ALL?"))return;toast("Closing...","info");try{for(const s of pSess)try{await a.ss(s.id,user.pubkey)}catch{};toast("Done","success");resetHome();a.ls(user.pubkey).then(d=>{if(d.sessions)sPS(d.sessions.filter(s=>s.tokenCA&&s.status!=="closed").slice(0,5))}).catch(()=>{})}catch(e){toast(e.message,"error")}}} style={{background:T.rd+"15",border:"1px solid "+T.rd+"40",borderRadius:8,padding:"4px 10px",cursor:"pointer",color:T.rd,fontFamily:M,fontSize:10,fontWeight:700}}>EXIT ALL</button>}
 <button onClick={tog} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:10,padding:"5px 7px",cursor:"pointer",color:T.dm,display:"flex",alignItems:"center"}}>{isDark?<I.Sun/>:<I.Moon/>}</button>
+{(user?.whitelisted||user?.tier==="vip")&&<button onClick={()=>sShowAdmin(!showAdmin)} style={{background:showAdmin?T.pu+"20":"none",border:"1px solid "+(showAdmin?T.pu+"44":T.bd),borderRadius:10,padding:"5px 7px",cursor:"pointer",color:showAdmin?T.pu:T.dm,display:"flex",alignItems:"center"}}><I.Users s={16}/></button>}
+<button onClick={()=>sShowKeys(!showKeys)} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:10,padding:"5px 7px",cursor:"pointer",color:T.dm,display:"flex",alignItems:"center"}}><I.Settings s={16}/></button>
 {tierLabel&&<span style={{padding:"2px 7px",borderRadius:6,fontFamily:M,fontSize:9,fontWeight:700,background:tierColor+"18",color:tierColor,border:"1px solid "+tierColor+"33"}}>{tierLabel}</span>}
 <div style={{display:"flex",alignItems:"center",gap:5,padding:"3px 8px",background:T.sf,borderRadius:10,border:"1px solid "+T.bd}}><Avi pk={user.pubkey||"demo"} s={18}/><span style={{fontFamily:M,fontSize:11,color:T.md,maxWidth:mb?60:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user.demo?"demo":(cUser||wN(user.pubkey||""))}</span><button onClick={disconnect} style={{background:"none",border:"none",cursor:"pointer",color:T.ft,fontSize:10,padding:0}}>✕</button></div>
 </div></header>
@@ -132,7 +179,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 {/* TRADING WALLET BANNER */}
 {trW?<div style={{background:T.sf,borderBottom:"1px solid "+T.bd,padding:"5px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:6,flexWrap:"wrap"}}>
 <div style={{display:"flex",alignItems:"center",gap:6,flex:1,minWidth:0}}><I.Zap s={12}/><span onClick={()=>{navigator.clipboard?.writeText(trW);toast("Copied!","success")}} style={{fontSize:10,fontFamily:M,color:T.ft,cursor:"pointer",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{tp(trW,10,6)}</span><span style={{fontSize:10,fontFamily:M,color:trB>.01?T.gn:T.rd,fontWeight:700}}>{trB.toFixed(3)} SOL</span></div>
-<div style={{display:"flex",gap:3}}><button onClick={()=>{navigator.clipboard?.writeText(trW);toast("Deposit address copied!","success")}} style={{background:T.gn+"15",border:"1px solid "+T.gn+"33",borderRadius:6,padding:"2px 8px",fontFamily:M,fontSize:9,color:T.gn,cursor:"pointer",fontWeight:700}}>Deposit</button></div>
+<div style={{display:"flex",gap:3}}><button onClick={async()=>{toast("Scanning...","info");try{const s=await a.is(user.pubkey);if(!s.ok||s.totalAccounts===0){toast("No empty accounts","info");return}toast(`Closing ${s.totalAccounts} accounts...`,"info");const c=await a.ic(user.pubkey);if(c.ok){toast(`Reclaimed ${c.totalReclaimed.toFixed(4)} SOL!`,"success");sTrB(b=>b+c.totalReclaimed)}else toast(c.error||"Failed","error")}catch(e){toast(e.message,"error")}}} style={{background:T.or+"15",border:"1px solid "+T.or+"33",borderRadius:6,padding:"2px 8px",fontFamily:M,fontSize:9,color:T.or,cursor:"pointer",fontWeight:700}}>Reclaim</button><button onClick={async()=>{try{const r=await a.etw(user.pubkey);if(r.ok&&r.privateKey){navigator.clipboard?.writeText(r.privateKey);toast("Trading key copied! Clears in 60s","success");setTimeout(()=>navigator.clipboard?.writeText(""),60000)}else toast("No key found","error")}catch(e){toast(e.message,"error")}}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:6,padding:"2px 8px",fontFamily:M,fontSize:9,color:T.ft,cursor:"pointer"}}>Keys</button><button onClick={()=>{navigator.clipboard?.writeText(trW);toast("Deposit address copied!","success")}} style={{background:T.gn+"15",border:"1px solid "+T.gn+"33",borderRadius:6,padding:"2px 8px",fontFamily:M,fontSize:9,color:T.gn,cursor:"pointer",fontWeight:700}}>Deposit</button></div>
 </div>:null}
 
 {/* MAIN: Active session or tabbed interface */}
@@ -212,8 +259,12 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 {/* Token config */}
 <div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:16,padding:mb?16:24,marginBottom:mb?10:14}}>
 <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:mb?12:16}}><I.Rocket s={24}/><span style={{fontFamily:S,fontWeight:800,fontSize:mb?17:21}}>Token</span></div>
+<div style={{display:"flex",gap:16,marginBottom:12}}>
+<ImgUp image={img} onChange={sImg} mb={mb}/>
+<div style={{flex:1}}>
 <div style={{display:"flex",gap:12,marginBottom:12}}><div style={{flex:1}}><div style={{fontSize:10,fontFamily:M,color:T.ft,marginBottom:4}}>NAME</div><Inp value={tn} onChange={sTn} placeholder="Token name"/></div><div style={{flex:1}}><div style={{fontSize:10,fontFamily:M,color:T.ft,marginBottom:4}}>TICKER</div><Inp value={tk} onChange={sTk} placeholder="$TICKER"/></div></div>
 <div style={{fontSize:10,fontFamily:M,color:T.ft,marginBottom:4}}>DESCRIPTION</div><Inp value={desc} onChange={sDs} placeholder="Optional description"/>
+</div></div>
 <div style={{marginTop:12}}><div style={{fontSize:10,fontFamily:M,color:T.ft,marginBottom:4}}>OR APE EXISTING CA</div><Inp value={eCA} onChange={sECA} placeholder="Paste contract address..."/></div>
 </div>
 {/* Fleet config */}
@@ -226,7 +277,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 </div>
 {/* Launch button */}
 <div style={{background:canLaunch?T.gn+"08":T.sf,border:"1px solid "+(canLaunch?T.gn+"40":T.bd),borderRadius:16,padding:mb?16:24,marginBottom:mb?10:14}}>
-<Btn full disabled={!canLaunch} onClick={async()=>{if(!canLaunch)return;hp([10,30,10]);toast("Creating session...","info");try{const r=await a.sc({totalSol:sol,tokenConfig:{name:tn,ticker:tk,description:desc,existingCA:eCA},wallet:user.pubkey,fleetConfig:{sniperCount:snc,slippage:slip,duration:dur,jitoTip:jt},masterSeed:trK?.privateKey||""});if(r.useMaster&&r.funded){toast("Launching...","info");const l=await a.sl(r.sessionId,user.pubkey);if(l.tokenCA){sLCA(l.tokenCA);sLd(true);sAsid(r.sessionId);hp([10,20,10,20,40]);toast("LIVE!","success")}else toast("Launch returned no CA","error")}else{toast("Send "+sol+" SOL to: "+r.devWallet,"info");navigator.clipboard?.writeText(r.devWallet);const poll=setInterval(async()=>{try{const b=await a.sb(r.sessionId,user.pubkey);if(b.funded){clearInterval(poll);toast("Funded! Launching...","info");const l=await a.sl(r.sessionId,user.pubkey);if(l.tokenCA){sLCA(l.tokenCA);sLd(true);sAsid(r.sessionId);hp([10,20,10,20,40]);toast("LIVE!","success")}}}catch{}},4000);setTimeout(()=>clearInterval(poll),300000)}}catch(e){toast(e.message,"error")}}} style={{animation:canLaunch?"gp 2s infinite":"none"}}><I.Rocket s={18} c={canLaunch?"#0a0a0f":"#888"}/> {isApe?"Ape "+(eCA.slice(0,8)||"")+"...":"Launch "+(tn||"Token")}</Btn>
+<Btn full disabled={!canLaunch} onClick={async()=>{if(!canLaunch)return;hp([10,30,10]);toast("Creating session...","info");try{const r=await a.sc({totalSol:sol,tokenConfig:{name:tn,ticker:tk,description:desc,image:img,twitter:tw,telegram:tg,website:wb,existingCA:eCA},wallet:user.pubkey,fleetConfig:{sniperCount:snc,slippage:slip,duration:dur,jitoTip:jt},masterSeed:trK?.privateKey||""});if(r.useMaster&&r.funded){toast("Launching...","info");const l=await a.sl(r.sessionId,user.pubkey);if(l.tokenCA){sLCA(l.tokenCA);sLd(true);sAsid(r.sessionId);hp([10,20,10,20,40]);toast("LIVE!","success")}else toast("Launch returned no CA","error")}else{toast("Send "+sol+" SOL to: "+r.devWallet,"info");navigator.clipboard?.writeText(r.devWallet);const poll=setInterval(async()=>{try{const b=await a.sb(r.sessionId,user.pubkey);if(b.funded){clearInterval(poll);toast("Funded! Launching...","info");const l=await a.sl(r.sessionId,user.pubkey);if(l.tokenCA){sLCA(l.tokenCA);sLd(true);sAsid(r.sessionId);hp([10,20,10,20,40]);toast("LIVE!","success")}}}catch{}},4000);setTimeout(()=>clearInterval(poll),300000)}}catch(e){toast(e.message,"error")}}} style={{animation:canLaunch?"gp 2s infinite":"none"}}><I.Rocket s={18} c={canLaunch?"#0a0a0f":"#888"}/> {isApe?"Ape "+(eCA.slice(0,8)||"")+"...":"Launch "+(tn||"Token")}</Btn>
 {!canLaunch&&<div style={{fontFamily:M,fontSize:11,color:T.ft,marginTop:8,textAlign:"center"}}>{!trW?"Need trading key":!tn&&!eCA?"Enter token name or paste CA":!tk&&!eCA?"Enter ticker":""}</div>}
 </div>
 {/* Sessions */}
@@ -242,6 +293,24 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 </div></EB>}
 </div>
 </>}
+
+{/* ADMIN PANEL (VIP only) */}
+{showAdmin&&<div style={{padding:mb?"0 10px 10px":"0 24px 24px"}}><EB l="Admin"><AdminPanel user={user} toast={toast} mb={mb}/></EB></div>}
+
+{/* SETTINGS OVERLAY */}
+{showKeys&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",padding:16,animation:"fi .2s ease"}} onClick={()=>sShowKeys(false)}>
+<div onClick={e=>e.stopPropagation()} style={{background:T.sf,border:"2px solid "+T.gn+"33",borderRadius:20,padding:24,maxWidth:480,width:"100%",animation:"si .3s ease"}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}><span style={{fontFamily:S,fontWeight:800,fontSize:20}}><I.Settings s={20}/> Settings</span><button onClick={()=>sShowKeys(false)} style={{background:"none",border:"none",color:T.ft,fontSize:20,cursor:"pointer"}}>✕</button></div>
+{trW&&<div style={{marginBottom:16}}>
+<div style={{fontFamily:M,fontSize:11,fontWeight:700,color:T.ft,textTransform:"uppercase",marginBottom:6}}>Trading Key</div>
+<div onClick={()=>{navigator.clipboard?.writeText(trW);toast("Copied!","success")}} style={{padding:"10px 14px",background:T.bg,border:"1px solid "+T.bd,borderRadius:10,fontFamily:M,fontSize:13,color:T.gn,cursor:"pointer",wordBreak:"break-all"}}>{trW}</div>
+<div style={{display:"flex",gap:6,marginTop:8}}>
+<button onClick={async()=>{try{const r=await a.etw(user.pubkey);if(r.ok&&r.privateKey){navigator.clipboard?.writeText(r.privateKey);toast("Private key copied! Auto-clears in 60s","success");setTimeout(()=>navigator.clipboard?.writeText(""),60000)}else toast("No key","error")}catch(e){toast(e.message,"error")}}} style={{flex:1,padding:"8px 0",background:T.yl+"12",border:"1px solid "+T.yl+"33",borderRadius:8,fontFamily:M,fontSize:11,fontWeight:700,color:T.yl,cursor:"pointer"}}><I.Key s={14} c={T.yl}/> Export Private Key</button>
+<button onClick={async()=>{toast("Scanning...","info");try{const r=await a.er(user.pubkey);toast(`Found ${r.totalWallets} wallets | ${fs(r.totalSol,4)} SOL`,"success")}catch(e){toast(e.message,"error")}}} style={{flex:1,padding:"8px 0",background:T.or+"12",border:"1px solid "+T.or+"33",borderRadius:8,fontFamily:M,fontSize:11,fontWeight:700,color:T.or,cursor:"pointer"}}>Emergency Recover</button>
+</div>
+</div>}
+<div style={{fontFamily:M,fontSize:11,color:T.ft,textAlign:"center",marginTop:8}}>SOL Price: ${solP.toFixed(2)} (live)</div>
+</div></div>}
 
 {/* FOOTER */}
 {!mb&&<footer style={{padding:"10px 28px",borderTop:"1px solid "+T.bd,marginTop:24,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:11,color:T.ft,fontFamily:M}}><span>BONDLI v4.0{online>0&&<span style={{marginLeft:10,color:T.gn,opacity:.5,fontSize:10}}>{online} online</span>}</span><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{color:T.dm,textDecoration:"none",display:"flex",alignItems:"center",gap:4}}><I.X s={12} c={T.dm}/>@Bondlifun</a><span>{launched?<span style={{color:T.gn}}>● ACTIVE</span>:"● IDLE"}</span></footer>}
