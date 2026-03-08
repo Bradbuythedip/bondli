@@ -22,5 +22,11 @@ input,button,textarea,select{font-family:inherit;-webkit-appearance:none}
 @keyframes gp{0%,100%{box-shadow:0 0 0 0 ${T.gn}44}70%{box-shadow:0 0 0 10px ${T.gn}00}}
 @keyframes sh{0%{background-position:-200% 0}100%{background-position:200% 0}}
 @keyframes rb{0%{transform:scale(1)}50%{transform:scale(.97)}100%{transform:scale(1)}}
+input[type=range]{-webkit-appearance:none;height:6px;border-radius:3px;background:${T.bd};outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:${T.gn};cursor:pointer;box-shadow:0 0 8px ${T.gn}66;border:2px solid ${T.bg};transition:transform .15s}
+input[type=range]::-webkit-slider-thumb:hover{transform:scale(1.2)}
+input[type=range]::-webkit-slider-thumb:active{transform:scale(1.1);box-shadow:0 0 16px ${T.gn}88}
+input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:${T.gn};cursor:pointer;border:2px solid ${T.bg}}
+input[type=range]::-moz-range-track{height:6px;border-radius:3px;background:${T.bd}}
 .st>*{animation:fu .4s ease both}.st>:nth-child(1){animation-delay:.04s}.st>:nth-child(2){animation-delay:.08s}.st>:nth-child(3){animation-delay:.12s}.st>:nth-child(4){animation-delay:.16s}.st>:nth-child(5){animation-delay:.2s}.st>:nth-child(6){animation-delay:.24s}.st>:nth-child(7){animation-delay:.28s}.st>:nth-child(8){animation-delay:.32s}
 `;}
