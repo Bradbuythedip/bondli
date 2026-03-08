@@ -1036,6 +1036,91 @@ app.get("/api/fleet", apiLimiter, (req, res) => {
   });
 });
 
+// Wallet breakdown — shows all wallets in the deployed token with balances
+app.get("/api/fleet/wallets/:ca", apiLimiter, async (req, res) => {
+  try {
+    const ca = req.params.ca;
+    const session = orch.sessions?.get(ca);
+    if (!session) return res.status(404).json({ error: "No active session for this CA" });
+
+    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+    const mint = new PublicKey(ca);
+    const wallets = [];
+    let totalTokens = 0;
+
+    // Dev/master wallet
+    const devBal = await connection.getBalance(session.masterKp.publicKey);
+    let devTokens = 0;
+    try {
+      const devAta = getAssociatedTokenAddressSync(mint, session.masterKp.publicKey, true);
+      const devAcct = await getAccount(connection, devAta);
+      devTokens = Number(devAcct.amount);
+    } catch {}
+    totalTokens += devTokens;
+    wallets.push({ role: "dev", pubkey: session.masterKp.publicKey.toBase58(), sol: devBal / LAMPORTS_PER_SOL, tokens: devTokens, isOurs: true });
+
+    // Fleet wallets
+    for (const fw of session.fleetWallets) {
+      const bal = await connection.getBalance(fw.keypair.publicKey);
+      let tokens = 0;
+      try {
+        const ata = getAssociatedTokenAddressSync(mint, fw.keypair.publicKey, true);
+        const acct = await getAccount(connection, ata);
+        tokens = Number(acct.amount);
+      } catch {}
+      totalTokens += tokens;
+      wallets.push({ role: fw.role, pubkey: fw.keypair.publicKey.toBase58(), sol: bal / LAMPORTS_PER_SOL, tokens, spent: fw.solSpent, recovered: fw.solRecovered, isOurs: true });
+    }
+
+    // Calculate percentages
+    const supply = 1_000_000_000 * 1e6; // pump.fun default: 1B tokens, 6 decimals
+    for (const w of wallets) {
+      w.pctSupply = totalTokens > 0 ? ((w.tokens / supply) * 100) : 0;
+      w.pctHeld = totalTokens > 0 ? ((w.tokens / totalTokens) * 100) : 0;
+    }
+
+    res.json({ ok: true, ca, wallets, totalTokens, ourTotal: totalTokens, ourPctSupply: (totalTokens / supply * 100) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Candlestick data from WS trades — aggregated into time buckets
+app.get("/api/chart/:ca", apiLimiter, (req, res) => {
+  const ca = req.params.ca;
+  const interval = parseInt(req.query.interval) || 5; // seconds per candle
+  const token = radar.pool.get(ca);
+  const trades = token?.priceHistory || [];
+
+  if (trades.length < 2) return res.json({ ok: true, candles: [], trades: trades.slice(-100) });
+
+  // Build candles from trade data
+  const candles = [];
+  let bucketStart = trades[0]?.time || Date.now();
+  let o = trades[0]?.mcap || 0, h = o, l = o, c = o, vol = 0, buyVol = 0, sellVol = 0;
+
+  for (const t of trades) {
+    const time = t.time || 0;
+    const price = t.mcap || 0;
+    if (!price) continue;
+
+    if (time >= bucketStart + interval * 1000) {
+      candles.push({ time: bucketStart, o, h, l, c, vol, buyVol, sellVol });
+      bucketStart = Math.floor(time / (interval * 1000)) * interval * 1000;
+      o = price; h = price; l = price; c = price; vol = 0; buyVol = 0; sellVol = 0;
+    }
+
+    h = Math.max(h, price);
+    l = Math.min(l, price);
+    c = price;
+    vol += t.sol || 0;
+    if (t.side === "buy") buyVol += t.sol || 0;
+    else sellVol += t.sol || 0;
+  }
+  // Final candle
+  if (vol > 0 || candles.length === 0) candles.push({ time: bucketStart, o, h, l, c, vol, buyVol, sellVol });
+
+  res.json({ ok: true, candles: candles.slice(-200), interval, totalTrades: trades.length });
+});
+
 // Price proxy for client-side chart (avoids CORS)
 app.get("/api/price/:ca", apiLimiter, async (req, res) => {
   try {
