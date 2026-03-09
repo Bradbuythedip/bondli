@@ -48,23 +48,31 @@ const solFmt=n=>n<.001?"0":n<1?n.toFixed(3).replace(/0+$/,"").replace(/\.$/,""):
 const PRESETS=[{name:"Scout",sol:.5,snc:1,slip:20,dur:30,jt:.001},{name:"Standard",sol:2,snc:2,slip:25,dur:60,jt:.001},{name:"Swarm",sol:10,snc:3,slip:30,dur:120,jt:.002}];
 
 // ═══ CANDLESTICK CHART — OHLC + volume + crosshair ═══
-function CandleChart({ca,T,mb}){const cvRef=useRef(null);const[data,sData]=useState(null);const[hover,sHover]=useState(null);
-useEffect(()=>{if(!ca)return;let dead=false;
-const go=async()=>{try{const d=await a.gc(ca);if(!dead&&d.candles)sData(d.candles)}catch{if(!dead){const pts=[];let p=.00001;for(let i=0;i<80;i++){const o=p;const h=o*(1+Math.random()*.08);const l=o*(1-Math.random()*.06);p=l+Math.random()*(h-l);pts.push({o,h,l,c:p,v:Math.random()*5000+500,t:Date.now()-((80-i)*60000)})};if(!dead)sData(pts)}}};
-go();const iv=setInterval(go,10000);return()=>{dead=true;clearInterval(iv)}},[ca]);
+function CandleChart({ca,T,mb}){const cvRef=useRef(null);const[data,sData]=useState(null);const[hover,sHover]=useState(null);const[loaded,sLoaded]=useState(false);
+// Generate synthetic bonding curve OHLC as immediate fallback
+const genSynthetic=useCallback(()=>{const pts=[];let p=.000008+Math.random()*.000004;for(let i=0;i<80;i++){const momentum=i<30?.003:i<50?.001:i<65?-.001:-.003;const vol=(Math.random()-.48)*p*.07;const o=p;p=Math.max(.000001,p+p*momentum+vol);const spread=p*.04;const h=Math.max(o,p)+Math.random()*spread;const l=Math.min(o,p)-Math.random()*spread*.8;pts.push({o,h:Math.max(h,o,p),l:Math.max(.000001,Math.min(l,o,p)),c:p,v:1000+Math.random()*8000+(i<30?i*200:0),t:Date.now()-((80-i)*60000)})}return pts},[]);
+useEffect(()=>{if(!ca)return;let dead=false;sData(genSynthetic());sLoaded(true);
+const go=async()=>{try{const d=await a.gc(ca);if(dead)return;const candles=d.candles||d.data||d.points||(Array.isArray(d)?d:null);if(candles&&candles.length>2){sData(candles.map(c=>({o:c.o||c.open||c.price||0,h:c.h||c.high||c.price||0,l:c.l||c.low||c.price||0,c:c.c||c.close||c.price||0,v:c.v||c.volume||0,t:c.t||c.time||0})))}}catch{}};
+setTimeout(go,500);const iv=setInterval(go,12000);return()=>{dead=true;clearInterval(iv)}},[ca,genSynthetic]);
 useEffect(()=>{const cv=cvRef.current;if(!cv||!data||data.length<2)return;
-const ctx=cv.getContext("2d");const dpr=2;const W=cv.offsetWidth*dpr;const H=(mb?200:280)*dpr;cv.width=W;cv.height=H;ctx.clearRect(0,0,W,H);
-const cH=H*.72;const vH=H*.18;const gap=H*.04;const candles=data.slice(-80);const n=candles.length;const bw=Math.max(2,(W-20)/n-1);const mn=Math.min(...candles.map(c=>c.l));const mx=Math.max(...candles.map(c=>c.h));const rng=mx-mn||.0001;const maxV=Math.max(...candles.map(c=>c.v||0))||1;
-ctx.strokeStyle=T.bd;ctx.lineWidth=.5;for(let i=0;i<5;i++){const y=8+cH*(i/4);ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();const pr=mx-rng*(i/4);ctx.fillStyle=T.ft;ctx.font=(9*dpr/2)+"px monospace";ctx.fillText(pr<.001?pr.toExponential(2):pr<1?pr.toFixed(6):pr.toFixed(4),4,y-2)}
-candles.forEach((c,i)=>{const x=10+(i/n)*(W-20);const isG=c.c>=c.o;const col=isG?"#00e676":"#ff1744";
-const hy=8+((mx-c.h)/rng)*cH;const ly=8+((mx-c.l)/rng)*cH;ctx.strokeStyle=col+"88";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x+bw/2,hy);ctx.lineTo(x+bw/2,ly);ctx.stroke();
-const oy=8+((mx-c.o)/rng)*cH;const cy=8+((mx-c.c)/rng)*cH;ctx.fillStyle=isG?col+"cc":col+"99";ctx.fillRect(x,Math.min(oy,cy),bw,Math.max(1,Math.abs(cy-oy)));
-const vh=(c.v/maxV)*vH;ctx.fillStyle=isG?"#00e67622":"#ff174422";ctx.fillRect(x,cH+gap+(vH-vh),bw,vh)});
-if(hover!=null&&hover>=0&&hover<n){const c=candles[hover];const x=10+(hover/n)*(W-20);ctx.strokeStyle=T.bl;ctx.lineWidth=.5;ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(x+bw/2,0);ctx.lineTo(x+bw/2,H);ctx.stroke();ctx.setLineDash([]);
-const bx=Math.min(x+bw+4,W-100);ctx.fillStyle=T.sf+"ee";ctx.fillRect(bx,6,92,66);ctx.font=(8*dpr/2)+"px monospace";const f=v=>v<.001?v.toExponential(2):v<1?v.toFixed(6):v.toFixed(4);
-ctx.fillStyle=T.tx;ctx.fillText("O "+f(c.o),bx+4,18);ctx.fillText("H "+f(c.h),bx+4,30);ctx.fillText("L "+f(c.l),bx+4,42);ctx.fillStyle=c.c>=c.o?"#00e676":"#ff1744";ctx.fillText("C "+f(c.c),bx+4,54);ctx.fillStyle=T.dm;ctx.fillText("V "+fm(c.v),bx+4,66)}},[data,hover,T,mb]);
-const onM=useCallback(e=>{const cv=cvRef.current;if(!cv||!data)return;const r=cv.getBoundingClientRect();const x=(e.clientX-r.left)/r.width;const n=Math.min(80,data.length);sHover(Math.max(0,Math.min(n-1,Math.floor(x*n))))},[data]);
-if(!data)return<div style={{width:"100%",height:mb?200:280,display:"flex",alignItems:"center",justifyContent:"center"}}><Sp s={14}/></div>;
+const ctx=cv.getContext("2d");const dpr=window.devicePixelRatio||2;const rect=cv.getBoundingClientRect();const W=rect.width*dpr;const H=rect.height*dpr;cv.width=W;cv.height=H;ctx.clearRect(0,0,W,H);
+const cH=H*.7;const vH=H*.17;const gap=H*.04;const candles=data.slice(-80);const n=candles.length;const bw=Math.max(3,(W-24)/n-1);const mn=Math.min(...candles.map(c=>c.l));const mx=Math.max(...candles.map(c=>c.h));const rng=mx-mn||.0001;const maxV=Math.max(...candles.map(c=>c.v||0))||1;
+// Grid + price labels
+ctx.strokeStyle=T.bd;ctx.lineWidth=.5;for(let i=0;i<5;i++){const y=10+cH*(i/4);ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();const pr=mx-rng*(i/4);ctx.fillStyle=T.ft;ctx.font=`${Math.round(5*dpr)}px monospace`;ctx.fillText(pr<.0001?pr.toExponential(1):pr<.01?pr.toFixed(6):pr<1?pr.toFixed(4):pr.toFixed(2),4,y-3)}
+// Candles
+candles.forEach((c,i)=>{const x=12+(i/n)*(W-24);const isG=c.c>=c.o;const col=isG?"#00e676":"#ff1744";
+const hy=10+((mx-c.h)/rng)*cH;const ly=10+((mx-c.l)/rng)*cH;
+ctx.strokeStyle=col+"aa";ctx.lineWidth=Math.max(1,dpr*.5);ctx.beginPath();ctx.moveTo(x+bw/2,hy);ctx.lineTo(x+bw/2,ly);ctx.stroke();
+const oy=10+((mx-c.o)/rng)*cH;const cy=10+((mx-c.c)/rng)*cH;ctx.fillStyle=isG?col:col+"88";ctx.fillRect(x,Math.min(oy,cy),bw,Math.max(dpr,Math.abs(cy-oy)));
+const vh=(c.v/maxV)*vH;ctx.fillStyle=isG?"#00e67628":"#ff174428";ctx.fillRect(x,cH+gap+(vH-vh),bw,vh)});
+// Crosshair
+if(hover!=null&&hover>=0&&hover<n){const c=candles[hover];const x=12+(hover/n)*(W-24);ctx.strokeStyle=T.bl;ctx.lineWidth=.5;ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(x+bw/2,0);ctx.lineTo(x+bw/2,H);ctx.stroke();const cy=10+((mx-c.c)/rng)*cH;ctx.beginPath();ctx.moveTo(0,cy);ctx.lineTo(W,cy);ctx.stroke();ctx.setLineDash([]);
+const bx=hover>n/2?x-100:x+bw+6;ctx.fillStyle=T.sf;ctx.globalAlpha=.92;ctx.fillRect(bx,8,96,72);ctx.globalAlpha=1;ctx.strokeStyle=T.bd;ctx.strokeRect(bx,8,96,72);
+ctx.font=`${Math.round(4.5*dpr)}px monospace`;const f=v=>v<.0001?v.toExponential(1):v<.01?v.toFixed(6):v<1?v.toFixed(4):v.toFixed(2);
+ctx.fillStyle=T.dm;ctx.fillText("O",bx+4,22);ctx.fillText("H",bx+4,34);ctx.fillText("L",bx+4,46);ctx.fillText("C",bx+4,58);ctx.fillText("V",bx+4,70);
+ctx.fillStyle=T.tx;ctx.fillText(f(c.o),bx+16,22);ctx.fillText(f(c.h),bx+16,34);ctx.fillText(f(c.l),bx+16,46);ctx.fillStyle=c.c>=c.o?"#00e676":"#ff1744";ctx.fillText(f(c.c),bx+16,58);ctx.fillStyle=T.dm;ctx.fillText(fm(c.v),bx+16,70)}},[data,hover,T,mb,loaded]);
+const onM=useCallback(e=>{const cv=cvRef.current;if(!cv||!data)return;const r=cv.getBoundingClientRect();const x=((e.clientX||e.pageX)-r.left)/r.width;const n=Math.min(80,data.length);sHover(Math.max(0,Math.min(n-1,Math.floor(x*n))))},[data]);
+if(!data)return<div style={{width:"100%",height:mb?200:280,display:"flex",alignItems:"center",justifyContent:"center",background:T.bg}}><Sp s={14}/></div>;
 return<canvas ref={cvRef} onMouseMove={onM} onMouseLeave={()=>sHover(null)} onTouchMove={e=>{if(e.touches[0])onM(e.touches[0])}} style={{width:"100%",height:mb?200:280,display:"block",background:T.bg,cursor:"crosshair"}}/>}
 
 // ═══ TOKEN DETAIL — full inspection panel ═══
@@ -107,57 +115,58 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 {isH&&<div style={{display:"flex",gap:3}}><span style={{fontSize:8,color:"#ff4444",fontWeight:700,width:20,alignSelf:"center"}}>SELL</span>{[25,50,100].map(pct=>{const ld=selling===t.ca+pct;return<button key={pct} disabled={ld} onClick={async()=>{sSell(t.ca+pct);try{await quickSell(t.ca,pct);toast(`Sold ${pct}%`,"success")}catch(er){toast(er.message,"error")}sSell(null)}} style={{padding:"6px 0",flex:1,background:"#ff444406",border:"1px solid #ff444418",borderRadius:5,fontSize:10,fontWeight:800,color:"#ff4444",cursor:ld?"default":"pointer"}}>{ld?<Sp s={8} c="#ff4444"/>:pct===100?"ALL":pct+"%"}</button>})}</div>}
 </div></div>}
 
-// ═══ SIMULATION ═══
-function SimMode({mb}){const T=uT();const cvRef=useRef(null);const frame=useRef(0);const st=useRef({p:.00001,pts:[],buys:[],sells:[],noise:[],mc:0,sig:"WAIT",ph:"idle",spent:0,back:0,bonded:false});
-const[running,sR]=useState(true);const[budget,sBudget]=useState(50);const[speed,sSpeed]=useState(1);const[autoBuy,sAB]=useState(false);
-useEffect(()=>{if(!running)return;const s=st.current;s.p=.00001;s.pts=[];s.buys=[];s.sells=[];s.noise=[];s.mc=0;s.spent=0;s.back=0;s.bonded=false;s.ph="scan";s.sig="SCAN";frame.current=0;
-const tick=()=>{const f=++frame.current;const pr=s.p;
-// Bonding curve price model
-const baseVol=pr*.06*(Math.random()-.47);const demand=f<100?pr*.004:f<200?pr*.002:f<300?-pr*.001:f<400?-pr*.003:-pr*.005;
-const botBuy=s.buys.length>0&&f-s.buys[s.buys.length-1].f<8?pr*.002:0;
-s.p=Math.max(.000001,pr+baseVol+demand+botBuy);s.mc=s.p*1e9;s.pts.push(s.p);if(s.pts.length>500)s.pts.shift();
-// Fleet AI phases
-if(f<40){s.ph="scan";s.sig="SCAN"}
-else if(f<120){s.ph="accumulate";if(f%7===0&&s.spent<budget*.65){const amt=budget*.025+Math.random()*budget*.02;s.buys.push({f,p:s.p,amt});s.spent+=amt;s.sig="BUY"}}
-else if(f<200){s.ph="hold";s.sig="HOLD";if(f%20===0){s.noise.push({f,sell:Math.random()>.4})}}
-else if(f<320){s.ph="distribute";if(f%10===0){const amt=budget*.04+Math.random()*budget*.03;s.sells.push({f,p:s.p,amt});s.back+=amt*(1+Math.random()*.6);s.sig=f>280?"EXIT":"SELL"}if(f%15===0)s.noise.push({f,sell:Math.random()>.3})}
-else if(f<380){s.ph="sweep";s.sig="SWEEP";if(f%5===0&&s.back<s.spent*1.4){s.sells.push({f,p:s.p,amt:budget*.06});s.back+=budget*.06*.8}}
-else{s.ph="complete";s.sig="DONE";s.bonded=s.mc>60000}
-// Draw
-const cv=cvRef.current;if(!cv)return;const ctx=cv.getContext("2d");const w=cv.width=cv.offsetWidth*2;const h=cv.height=(mb?180:260)*2;ctx.clearRect(0,0,w,h);
+// ═══ SIMULATION — pump.fun bonding curve simulator ═══
+function SimMode({mb}){const T=uT();const cvRef=useRef(null);const frame=useRef(0);
+const st=useRef({p:.00001,pts:[],buys:[],sells:[],noise:[],mc:0,sig:"WAIT",ph:"idle",spent:0,back:0,bonded:false,bondProb:0,peakMc:0,roi:0});
+const[running,sR]=useState(true);const[budget,sBudget]=useState(50);const[speed,sSpeed]=useState(1);const[autoBuy,sAB]=useState(false);const[tick,sTick]=useState(0);
+const PHASES={scan:"Scanning for entry — analyzing first trades",accumulate:"Fleet buying in — staggered Gaussian timing",hold:"Holding position — monitoring opponent behavior",distribute:"Selling into demand — taking profit",sweep:"Final sweep — recovering all SOL from fleet wallets",complete:"Session complete — all funds returned"};
+const calcBondProb=(mc,mom,bp)=>{if(mc>=69000)return 100;const base=Math.min(80,(mc/69000)*100);const m=mom>0?Math.min(15,mom*500):Math.max(-20,mom*300);const b=bp>0.5?10:bp>0.3?5:0;return Math.max(0,Math.min(99,Math.round(base+m+b)))};
+useEffect(()=>{if(!running)return;const s=st.current;s.p=.000006+Math.random()*.000008;s.pts=[];s.buys=[];s.sells=[];s.noise=[];s.mc=0;s.spent=0;s.back=0;s.bonded=false;s.bondProb=0;s.peakMc=0;s.roi=0;s.ph="scan";s.sig="SCAN";frame.current=0;
+const doTick=()=>{const f=++frame.current;const pr=s.p;
+const phase=f<40?"scan":f<140?"accumulate":f<220?"hold":f<350?"distribute":f<420?"sweep":"complete";
+const buyP=phase==="accumulate"?.6:phase==="hold"?.3:phase==="scan"?.1:0;
+const sellP=phase==="distribute"?.5:phase==="sweep"?.7:0;
+s.p=Math.max(.000001,pr+(Math.random()-.48)*pr*.05+buyP*pr*.004-sellP*pr*.003+(Math.random()>.7?1:-1)*pr*.002);
+s.mc=s.p*1e9;if(s.mc>s.peakMc)s.peakMc=s.mc;s.pts.push(s.p);if(s.pts.length>600)s.pts.shift();
+const mom=s.pts.length>10?(s.pts[s.pts.length-1]-s.pts[s.pts.length-10])/(s.pts[s.pts.length-10]||1):0;
+s.bondProb=calcBondProb(s.mc,mom,buyP);s.ph=phase;
+if(phase==="accumulate"&&f%6===0&&s.spent<budget*.6){s.buys.push({f,p:s.p,amt:budget*.02+Math.random()*budget*.025});s.spent+=budget*.03;s.sig="BUY"}
+else if(phase==="hold"){s.sig="HOLD";if(f%18===0)s.noise.push({f,sell:Math.random()>.45})}
+else if(phase==="distribute"&&f%8===0){s.sells.push({f,p:s.p,amt:budget*.04});s.back+=budget*.04*(1.1+Math.random()*.5);s.sig=f>300?"EXIT":"SELL"}
+else if(phase==="sweep"){s.sig="SWEEP";if(f%4===0&&s.back<s.spent*1.3){s.sells.push({f,p:s.p,amt:budget*.05});s.back+=budget*.05*.7}}
+else if(phase==="complete"){s.sig="DONE";s.bonded=s.mc>=69000}
+else if(phase==="scan"){s.sig="SCAN";if(f%12===0)s.noise.push({f,sell:Math.random()>.5})}
+s.roi=s.spent>0?((s.back-s.spent)/s.spent*100):0;sTick(f);
+const cv=cvRef.current;if(!cv)return;const ctx=cv.getContext("2d");const dpr=window.devicePixelRatio||2;const w=cv.width=cv.offsetWidth*dpr;const h=cv.height=(mb?180:240)*dpr;ctx.clearRect(0,0,w,h);
 const pts=s.pts;if(pts.length<2)return;const mn=Math.min(...pts),mx=Math.max(...pts),rng=mx-mn||1;
-// Grid
-ctx.strokeStyle=T.bd;ctx.lineWidth=.5;for(let y=0;y<h;y+=h/5){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}
-// Bonding curve threshold line
-const bondMc=60000;const bondP=bondMc/1e9;if(bondP>=mn&&bondP<=mx){const by=h-4-((bondP-mn)/rng)*(h-8);ctx.setLineDash([6,4]);ctx.strokeStyle=T.yl+"44";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(0,by);ctx.lineTo(w,by);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=T.yl+"88";ctx.font="10px monospace";ctx.fillText("BOND →",w-52,by-4)}
-// Price line
+ctx.strokeStyle=T.bd;ctx.lineWidth=.5;for(let i=0;i<5;i++){const y=8+h*.85*(i/4);ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}
+const bondP=69000/1e9;if(bondP>=mn*.5&&bondP<=mx*1.5){const by=h-8-((Math.min(bondP,mx)-mn)/rng)*(h-16);if(by>0&&by<h){ctx.setLineDash([8,4]);ctx.strokeStyle=T.yl+"55";ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(0,by);ctx.lineTo(w,by);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=T.yl;ctx.font=`${Math.round(5*dpr)}px monospace`;ctx.fillText("BOND $69K",w-Math.round(40*dpr),by-4)}}
 ctx.beginPath();ctx.strokeStyle=T.gn;ctx.lineWidth=2;ctx.lineJoin="round";
-for(let i=0;i<pts.length;i++){const x=(i/(pts.length-1))*(w-4)+2;const y=h-4-((pts[i]-mn)/rng)*(h-8);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)}ctx.stroke();
-// Fill
-const gf=ctx.createLinearGradient(0,0,0,h);gf.addColorStop(0,T.gn+"14");gf.addColorStop(1,T.gn+"01");ctx.lineTo(w-2,h);ctx.lineTo(2,h);ctx.closePath();ctx.fillStyle=gf;ctx.fill();
-// Markers
-const drawMark=(fi,color,r)=>{const bi=Math.round((fi/f)*pts.length);if(bi<0||bi>=pts.length)return;const x=(bi/(pts.length-1))*(w-4)+2;const y=h-4-((pts[bi]-mn)/rng)*(h-8);ctx.beginPath();ctx.arc(x,y,r*2,0,Math.PI*2);ctx.fillStyle=color+"33";ctx.fill();ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fillStyle=color;ctx.fill()};
-s.buys.forEach(b=>drawMark(b.f,"#00e676",3));
-s.sells.forEach(b=>drawMark(b.f,"#ff1744",3));
-s.noise.forEach(n=>drawMark(n.f,n.sell?"#ff174444":"#00e67644",2));
-};const iv=setInterval(tick,40/speed);return()=>clearInterval(iv)},[running,budget,speed,mb]);
+for(let i=0;i<pts.length;i++){const x=(i/(pts.length-1))*(w-4)+2;const y=h-8-((pts[i]-mn)/rng)*(h-16);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)}ctx.stroke();
+const gf=ctx.createLinearGradient(0,0,0,h);gf.addColorStop(0,T.gn+"18");gf.addColorStop(1,T.gn+"01");ctx.lineTo(w-2,h);ctx.lineTo(2,h);ctx.closePath();ctx.fillStyle=gf;ctx.fill();
+const mark=(fi,color,sz)=>{const bi=Math.round((fi/f)*pts.length);if(bi<0||bi>=pts.length)return;const x=(bi/(pts.length-1))*(w-4)+2;const y=h-8-((pts[bi]-mn)/rng)*(h-16);ctx.beginPath();ctx.arc(x,y,sz*2,0,Math.PI*2);ctx.fillStyle=color+"33";ctx.fill();ctx.beginPath();ctx.arc(x,y,sz,0,Math.PI*2);ctx.fillStyle=color;ctx.fill()};
+s.buys.forEach(b=>mark(b.f,"#00e676",3));s.sells.forEach(b=>mark(b.f,"#ff1744",3));s.noise.forEach(n=>mark(n.f,n.sell?"#ff174444":"#00e67644",2));
+};const iv=setInterval(doTick,35/speed);return()=>clearInterval(iv)},[running,budget,speed,mb]);
 const s=st.current;const pnl=s.back-s.spent;
-return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden",animation:"si .2s ease"}}>
-<div style={{padding:"7px 12px",display:"flex",alignItems:"center",justifyContent:"space-between",borderBottom:"1px solid "+T.bd}}>
-<div style={{display:"flex",alignItems:"center",gap:5}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:12,fontWeight:800}}>Simulation</span>{running&&<span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}</div>
+return<div style={{background:T.sf,border:"1px solid "+T.pu+"18",borderRadius:10,overflow:"hidden",animation:"si .2s ease"}}>
+<div style={{padding:"8px 12px",borderBottom:"1px solid "+T.bd}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+<div style={{display:"flex",alignItems:"center",gap:5}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:12,fontWeight:800}}>Bonding Curve Simulator</span>{running&&<span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}</div>
 <div style={{display:"flex",gap:2}}><button onClick={()=>sAB(!autoBuy)} style={{background:autoBuy?T.gn+"0c":"none",border:"1px solid "+(autoBuy?T.gn:T.bd)+"18",borderRadius:4,padding:"1px 7px",fontSize:8,fontWeight:autoBuy?700:400,color:autoBuy?T.gn:T.dm,cursor:"pointer"}}>{autoBuy?"AUTO":"auto"}</button><button onClick={()=>sSpeed(speed>=4?1:speed*2)} style={{background:"none",border:"1px solid "+T.bd,borderRadius:4,padding:"1px 7px",fontSize:8,color:T.dm,cursor:"pointer"}}>{speed}x</button><button onClick={()=>sR(!running)} style={{background:running?T.rd+"0c":T.gn+"0c",border:"1px solid "+(running?T.rd:T.gn)+"18",borderRadius:4,padding:"1px 8px",fontSize:8,fontWeight:700,color:running?T.rd:T.gn,cursor:"pointer"}}>{running?"Stop":"Run"}</button></div></div>
-<canvas ref={cvRef} style={{width:"100%",height:mb?180:260,display:"block",background:T.bg}}/>
-<div style={{padding:"5px 12px",borderTop:"1px solid "+T.bd,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(60px,1fr))",gap:2,fontSize:9,color:T.dm}}>
-<div>MC <span style={{color:s.mc>=60000?"#ffaa00":T.tx,fontWeight:800}}>${fm(s.mc)}</span></div>
-<div>Spent <span style={{color:T.rd,fontWeight:800}}>{s.spent.toFixed(1)}</span></div>
-<div>Back <span style={{color:T.gn,fontWeight:800}}>{s.back.toFixed(1)}</span></div>
-<div>PnL <span style={{color:pnl>=0?T.gn:T.rd,fontWeight:800}}>{pnl>=0?"+":""}{pnl.toFixed(1)}</span></div>
-<div>Signal <span style={{color:s.sig==="BUY"||s.sig==="HOLD"?T.gn:s.sig.includes("SELL")||s.sig==="EXIT"?T.rd:s.sig==="DONE"?T.yl:T.dm,fontWeight:800}}>{s.sig}</span></div>
-<div>Phase <span style={{fontWeight:700,color:T.md}}>{s.ph}</span></div>
-{s.bonded&&<div style={{color:T.yl,fontWeight:800}}>BONDED</div>}
-</div>
-<div style={{padding:"4px 12px 8px",display:"flex",gap:4,alignItems:"center"}}><span style={{fontSize:8,color:T.ft}}>Budget</span><input type="range" min={5} max={100} step={5} value={budget} onChange={e=>sBudget(Number(e.target.value))} style={{flex:1}}/><span style={{fontSize:10,fontWeight:800,color:T.gn,minWidth:20}}>{budget}</span></div>
-<div style={{padding:"0 12px 6px",display:"flex",gap:6,fontSize:7,color:T.ft}}><span><span style={{display:"inline-block",width:5,height:5,borderRadius:"50%",background:"#00e676",marginRight:2}}/>buy</span><span><span style={{display:"inline-block",width:5,height:5,borderRadius:"50%",background:"#ff1744",marginRight:2}}/>sell</span><span><span style={{display:"inline-block",width:5,height:5,borderRadius:"50%",background:T.dm+"44",marginRight:2}}/>noise</span>{autoBuy&&<span style={{color:T.gn,fontWeight:700,animation:"gp 2s infinite",display:"inline-flex",alignItems:"center",gap:2}}><span style={{width:4,height:4,borderRadius:"50%",background:T.gn}}/>AUTO-BUY</span>}<span style={{marginLeft:"auto",color:T.yl+"66"}}>— bond threshold</span></div></div>}
+<div style={{fontSize:8,color:T.dm,lineHeight:1.4}}>Simulates how Bondli fleet trades a pump.fun bonding curve. AI buys during accumulation, holds through volatility, exits into demand. Objective: bond the token to Raydium at $69K MC.</div></div>
+<canvas ref={cvRef} style={{width:"100%",height:mb?180:240,display:"block",background:T.bg}}/>
+<div style={{padding:"6px 12px",borderTop:"1px solid "+T.bd,display:"flex",alignItems:"center",gap:8}}>
+<div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:4,marginBottom:2}}><span style={{fontSize:10,fontWeight:800,color:s.ph==="accumulate"?T.gn:s.ph==="distribute"||s.ph==="sweep"?T.rd:s.ph==="complete"?T.yl:T.md,textTransform:"uppercase"}}>{s.ph}</span><span style={{fontSize:10,fontWeight:800,color:s.sig==="BUY"?T.gn:s.sig==="SELL"||s.sig==="EXIT"?T.rd:s.sig==="DONE"?T.yl:T.dm}}>{s.sig}</span></div><div style={{fontSize:7,color:T.ft,lineHeight:1.3}}>{PHASES[s.ph]||""}</div></div>
+<div style={{textAlign:"center",minWidth:70}}><div style={{fontSize:18,fontWeight:900,color:s.bondProb>=80?T.gn:s.bondProb>=50?T.yl:s.bondProb>=20?T.or:T.rd}}>{s.bondProb}%</div><div style={{fontSize:7,color:T.ft,fontWeight:700}}>BOND PROB</div><div style={{width:60,height:3,borderRadius:2,background:T.bd,marginTop:2}}><div style={{width:(s.bondProb/100)*60,height:3,borderRadius:2,background:s.bondProb>=80?T.gn:s.bondProb>=50?T.yl:s.bondProb>=20?T.or:T.rd,transition:"width .3s"}}/></div></div></div>
+<div style={{padding:"4px 12px",borderTop:"1px solid "+T.bd,display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:1,fontSize:8}}>
+<div style={{textAlign:"center"}}><div style={{color:s.mc>=60000?"#ffaa00":T.tx,fontWeight:800,fontSize:10}}>${fm(s.mc)}</div><div style={{color:T.ft,fontSize:6}}>MC</div></div>
+<div style={{textAlign:"center"}}><div style={{color:T.tx,fontWeight:800,fontSize:10}}>${fm(s.peakMc)}</div><div style={{color:T.ft,fontSize:6}}>PEAK</div></div>
+<div style={{textAlign:"center"}}><div style={{color:T.rd,fontWeight:800,fontSize:10}}>{s.spent.toFixed(1)}</div><div style={{color:T.ft,fontSize:6}}>SPENT</div></div>
+<div style={{textAlign:"center"}}><div style={{color:T.gn,fontWeight:800,fontSize:10}}>{s.back.toFixed(1)}</div><div style={{color:T.ft,fontSize:6}}>BACK</div></div>
+<div style={{textAlign:"center"}}><div style={{color:pnl>=0?T.gn:T.rd,fontWeight:800,fontSize:10}}>{pnl>=0?"+":""}{pnl.toFixed(1)}</div><div style={{color:T.ft,fontSize:6}}>PnL</div></div>
+<div style={{textAlign:"center"}}><div style={{color:s.roi>=0?T.gn:T.rd,fontWeight:800,fontSize:10}}>{s.roi>=0?"+":""}{s.roi.toFixed(0)}%</div><div style={{color:T.ft,fontSize:6}}>ROI</div></div></div>
+<div style={{padding:"4px 12px 6px",display:"flex",gap:4,alignItems:"center"}}><span style={{fontSize:8,color:T.ft}}>Budget</span><input type="range" min={5} max={100} step={5} value={budget} onChange={e=>sBudget(Number(e.target.value))} style={{flex:1}}/><span style={{fontSize:10,fontWeight:800,color:T.gn,minWidth:20}}>{budget}</span></div>
+<div style={{padding:"0 12px 6px",display:"flex",gap:8,fontSize:7,color:T.ft,alignItems:"center"}}><span style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:"#00e676"}}/>fleet buy</span><span style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:"#ff1744"}}/>fleet sell</span><span style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:T.dm+"44"}}/>opponent</span>{autoBuy&&<span style={{color:T.gn,fontWeight:700}}>AUTO-BUY ON</span>}<span style={{marginLeft:"auto",color:T.yl+"88",fontSize:6}}>━ $69K bond line</span></div></div>}
 
 // ═══ MAIN APP ═══
 export default function App(){
@@ -231,7 +240,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 {/* Expanded token detail panel */}
 {expToken&&<TokenDetail t={expToken} T={T} mb={mb} trB={trB} buying={buying} selling={selling} sBuy={sBuy} sSell={sSell} quickBuy={quickBuy} quickSell={quickSell} toast={toast} held={held} onClose={()=>sRExp(null)}/>}
 {/* Token list */}
-{rLoad?<div style={{padding:40,textAlign:"center"}}><Sp s={16}/></div>:!rEnabled?<div style={{padding:40,textAlign:"center",fontSize:11,color:T.ft}}>Paused</div>:rFiltered.length===0?<div style={{padding:40,textAlign:"center",fontSize:11,color:T.ft}}>No movers</div>:<div>{rFiltered.filter(t=>t.ca!==rExp).map(t=>{const isH=held.has(t.ca);return<div key={t.ca} onClick={()=>{sRExp(t.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),50)}} style={{display:"flex",alignItems:"center",gap:mb?5:8,padding:mb?"6px 8px":"7px 10px",cursor:"pointer",borderBottom:"1px solid "+T.bd,background:isH?T.gn+"03":"transparent"}}><div style={{width:mb?32:38,height:mb?32:38,borderRadius:7,overflow:"hidden",flexShrink:0,background:T.bg,position:"relative"}}>{t.image?<img src={t.image} style={{width:"100%",height:"100%",objectFit:"cover"}} alt="" onError={e=>e.target.style.display="none"}/>:<div style={{width:"100%",height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:T.ft+"33",fontWeight:900}}>{(tk(t.ticker)||"?")[0]}</div>}{isH&&<div style={{position:"absolute",top:0,right:0,background:T.gn,color:"#000",fontSize:5,fontWeight:900,padding:"0 2px",borderRadius:"0 0 0 2px"}}>H</div>}</div><div style={{minWidth:0,width:mb?70:110,flexShrink:0}}><div style={{fontSize:mb?10:11,fontWeight:800,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t.name||tk(t.ticker)}</div><div style={{display:"flex",alignItems:"center",gap:3,marginTop:1}}><span style={{fontSize:mb?8:9,color:T.gn,fontWeight:700}}>{tk(t.ticker)}</span>{t.twitter&&<IC.tw s={7} c={T.dm}/>}{t.website&&<IC.globe s={7} c={T.dm}/>}{t.telegram&&<IC.tg s={7} c={T.dm}/>}</div>{t.description&&<div style={{fontSize:7,color:T.ft,marginTop:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis",maxWidth:mb?70:110,opacity:.7}}>{t.description.slice(0,60)}</div>}</div><div style={{flex:1,height:mb?22:28}}><SpkC data={t.spark||[]} color={t.spark&&t.spark.length>1&&t.spark[t.spark.length-1]>=t.spark[0]?T.gn:"#ff4444"} h={mb?22:28}/></div><div style={{textAlign:"right",flexShrink:0,minWidth:mb?42:56}}><div style={{fontSize:mb?10:12,fontWeight:800,color:(t.mcapUsd||0)>=1e6?"#ffaa00":(t.mcapUsd||0)>=1e5?T.gn:T.tx}}>${fm(t.mcapUsd)}</div>{t.h1Change!=null&&<div style={{fontSize:7,color:t.h1Change>0?T.gn:"#ff4444"}}>{t.h1Change>0?"+":""}{typeof t.h1Change==="number"?t.h1Change.toFixed(1):t.h1Change}%</div>}</div></div>})}</div>}</div></EB>}
+{rLoad?<div style={{padding:40,textAlign:"center"}}><Sp s={16}/></div>:!rEnabled?<div style={{padding:40,textAlign:"center",fontSize:11,color:T.ft}}>Paused</div>:rFiltered.length===0?<div style={{padding:40,textAlign:"center",fontSize:11,color:T.ft}}>No movers</div>:<div>{rFiltered.filter(t=>t.ca!==rExp).map(t=>{const isH=held.has(t.ca);return<div key={t.ca} onClick={()=>{sRExp(t.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),50)}} style={{display:"flex",alignItems:"center",gap:mb?5:8,padding:mb?"6px 8px":"7px 10px",cursor:"pointer",borderBottom:"1px solid "+T.bd,background:isH?T.gn+"03":"transparent"}}><div style={{width:mb?32:38,height:mb?32:38,borderRadius:7,overflow:"hidden",flexShrink:0,background:T.bg,position:"relative"}}>{t.image?<img src={t.image} style={{width:"100%",height:"100%",objectFit:"cover"}} alt="" onError={e=>e.target.style.display="none"}/>:<div style={{width:"100%",height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:T.ft+"33",fontWeight:900}}>{(tk(t.ticker)||"?")[0]}</div>}{isH&&<div style={{position:"absolute",top:0,right:0,background:T.gn,color:"#000",fontSize:5,fontWeight:900,padding:"0 2px",borderRadius:"0 0 0 2px"}}>H</div>}</div><div style={{minWidth:0,width:mb?70:110,flexShrink:0}}><div style={{fontSize:mb?10:11,fontWeight:800,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t.name||tk(t.ticker)}</div><div style={{display:"flex",alignItems:"center",gap:3,marginTop:1}}><span style={{fontSize:mb?8:9,color:T.gn,fontWeight:700}}>{tk(t.ticker)}</span>{t.twitter&&<IC.tw s={7} c={T.dm}/>}{t.website&&<IC.globe s={7} c={T.dm}/>}{t.telegram&&<IC.tg s={7} c={T.dm}/>}</div>{t.description&&<div style={{fontSize:8,color:T.dm,marginTop:2,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis",maxWidth:mb?70:110}}>{t.description.slice(0,60)}</div>}</div><div style={{flex:1,height:mb?22:28}}><SpkC data={t.spark||[]} color={t.spark&&t.spark.length>1&&t.spark[t.spark.length-1]>=t.spark[0]?T.gn:"#ff4444"} h={mb?22:28}/></div><div style={{textAlign:"right",flexShrink:0,minWidth:mb?42:56}}><div style={{fontSize:mb?10:12,fontWeight:800,color:(t.mcapUsd||0)>=1e6?"#ffaa00":(t.mcapUsd||0)>=1e5?T.gn:T.tx}}>${fm(t.mcapUsd)}</div>{t.h1Change!=null&&<div style={{fontSize:7,color:t.h1Change>0?T.gn:"#ff4444"}}>{t.h1Change>0?"+":""}{typeof t.h1Change==="number"?t.h1Change.toFixed(1):t.h1Change}%</div>}</div></div>})}</div>}</div></EB>}
 
 {tab==="bags"&&<EB l="Bags"><div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden",animation:"si .2s ease"}}><div style={{padding:"7px 10px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",justifyContent:"space-between"}}><div style={{display:"flex",alignItems:"center",gap:5}}><IC.bags s={14} c={T.gn}/><span style={{fontSize:13,fontWeight:800}}>Bags</span><span style={{fontSize:8,color:T.ft}}>{positions.length}</span></div>{positions.length>0&&<button onClick={async()=>{if(!confirm("Sell ALL?"))return;try{const r=await a.sa(user.pubkey);toast(`Sold ${r.sold||0}`,"success")}catch(e){toast(e.message,"error")}}} style={{background:T.rd+"08",border:"1px solid "+T.rd+"18",borderRadius:5,padding:"2px 8px",fontSize:8,fontWeight:700,color:T.rd,cursor:"pointer"}}>Sell All</button>}</div>{!trW?<div style={{padding:30,textAlign:"center",fontSize:11,color:T.ft}}>Create trading key to start</div>:positions.length===0?<div style={{padding:30,textAlign:"center",fontSize:11,color:T.ft}}>No positions</div>:<div>{positions.map(p=><div key={p.mint} style={{display:"flex",alignItems:"center",gap:mb?5:8,padding:"7px 10px",borderBottom:"1px solid "+T.bd}}><div style={{width:30,height:30,borderRadius:6,overflow:"hidden",background:T.bg,flexShrink:0}}>{p.image?<img src={p.image} style={{width:"100%",height:"100%",objectFit:"cover"}} alt=""/>:<div style={{width:"100%",height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,color:T.ft}}>{(tk(p.ticker)||"?")[0]}</div>}</div><div style={{flex:1,minWidth:0}}><div style={{fontSize:11,fontWeight:700}}>{tk(p.ticker)||p.name||p.mint?.slice(0,8)}</div><div style={{fontSize:8,color:T.ft}}>{fm(p.amount)}</div></div><div style={{fontSize:11,fontWeight:800,color:T.gn}}>{p.valueUsd?"$"+fm(p.valueUsd):p.valueSol?solFmt(p.valueSol)+" SOL":"—"}</div><div style={{display:"flex",gap:1}}>{[25,50,100].map(pct=><button key={pct} onClick={async()=>{try{await quickSell(p.mint,pct);toast(`Sold ${pct}%`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:"3px 5px",background:"#ff444406",border:"1px solid #ff444418",borderRadius:4,fontSize:7,fontWeight:700,color:"#ff4444",cursor:"pointer"}}>{pct===100?"ALL":pct+"%"}</button>)}</div></div>)}</div>}</div></EB>}
 
