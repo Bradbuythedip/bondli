@@ -168,6 +168,43 @@ async function fetchPumpFunMetadata(ca) {
   }
 }
 
+// Fetch token image from metadata URI (IPFS JSON → image URL)
+async function fetchTokenImage(ca, uri) {
+  try {
+    let url = uri;
+    if (url.startsWith("ipfs://")) url = "https://cf-ipfs.com/ipfs/" + url.slice(7);
+    // pump.fun uses cf-ipfs for metadata
+    if (url.includes("bafkrei") && !url.startsWith("http")) url = "https://cf-ipfs.com/ipfs/" + url;
+    
+    const r = await fetch(url, {
+      signal: AbortSignal.timeout(8000),
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
+    });
+    if (!r.ok) return;
+    const meta = await r.json();
+    const token = radar.tokens.get(ca);
+    if (!token) return;
+    
+    let img = meta.image || meta.imageUri || "";
+    if (img.startsWith("ipfs://")) img = "https://cf-ipfs.com/ipfs/" + img.slice(7);
+    if (img && !img.startsWith("http")) img = "https://cf-ipfs.com/ipfs/" + img;
+    
+    if (img) token.image = img;
+    if (meta.name && !token.name) token.name = meta.name;
+    if (meta.symbol && !token.ticker) token.ticker = meta.symbol;
+    if (meta.description && !token.description) token.description = (meta.description || "").slice(0, 200);
+    if (meta.twitter && !token.twitter) token.twitter = meta.twitter;
+    if (meta.website && !token.website) token.website = meta.website;
+    if (meta.telegram && !token.telegram) token.telegram = meta.telegram;
+    
+    if (radar._debugCount < 10) {
+      console.log(`[IMG] ${ca.slice(0,8)}: ${token.name} → ${img?.slice(0,60) || "none"}`);
+    }
+  } catch (e) {
+    // Silent fail — image just won't load
+  }
+}
+
 function connectPumpPortal() {
   try {
     radar.ws = new WebSocket("wss://pumpportal.fun/api/data");
@@ -249,15 +286,21 @@ function processRadarMessage(data) {
     const mcUsd = Math.round(mcSol * solUsdPrice);
     const token = {
       ca: mint,
-      name: "", ticker: "", description: "", image: "",
-      twitter: "", website: "", telegram: "",
+      // PumpPortal DOES send name/symbol/uri on create events
+      name: data.name || "",
+      ticker: data.symbol || "",
+      description: (data.description || "").slice(0, 200),
+      image: "", // fetched from uri metadata JSON
+      twitter: data.twitter || "",
+      website: data.website || "",
+      telegram: data.telegram || "",
       createdAt: now,
       trades: [],
       buys: 0, sells: 0,
       volumeSol: 0,
       mcapSol: mcSol,
       mcapUsd: mcUsd,
-      prevVSol: vSol, // track for SOL amount calculation
+      prevVSol: vSol,
       uniqueBuyers: new Set(),
       spark: mcUsd > 0 ? [mcUsd] : [],
       h1Change: 0,
@@ -268,25 +311,28 @@ function processRadarMessage(data) {
     };
 
     radar.tokens.set(mint, token);
-
-    // Subscribe to this token's trades
     subscribeToToken(mint);
 
-    // Fetch metadata from pump.fun frontend API (name, image, socials)
-    fetchPumpFunMetadata(mint).then(meta => {
-      if (!meta) return;
-      const t = radar.tokens.get(mint);
-      if (!t) return;
-      t.name = meta.name;
-      t.ticker = meta.symbol;
-      t.description = meta.description;
-      t.image = meta.image;
-      t.twitter = meta.twitter;
-      t.website = meta.website;
-      t.telegram = meta.telegram;
-      if (meta.complete) t.graduated = true;
-      if (meta.marketCap && meta.marketCap > t.mcapUsd) t.mcapUsd = Math.round(meta.marketCap);
-    }).catch(() => {});
+    // Fetch image from uri (IPFS metadata JSON → image URL)
+    if (data.uri) {
+      fetchTokenImage(mint, data.uri).catch(() => {});
+    }
+
+    // Fallback: if WS didn't send name, try pump.fun API (may be blocked)
+    if (!data.name) {
+      fetchPumpFunMetadata(mint).then(meta => {
+        if (!meta) return;
+        const t = radar.tokens.get(mint);
+        if (!t) return;
+        if (!t.name && meta.name) t.name = meta.name;
+        if (!t.ticker && meta.symbol) t.ticker = meta.symbol;
+        if (!t.description && meta.description) t.description = meta.description;
+        if (!t.image && meta.image) { t.image = meta.image; }
+        if (!t.twitter && meta.twitter) t.twitter = meta.twitter;
+        if (!t.website && meta.website) t.website = meta.website;
+        if (meta.complete) t.graduated = true;
+      }).catch(() => {});
+    }
 
     // Dev buy tracking
     if (data.initialBuy > 0) {
@@ -318,7 +364,8 @@ function processRadarMessage(data) {
     if (!token) {
       const mcUsd = Math.round(mcSol * solUsdPrice);
       token = {
-        ca: mint, name: "", ticker: "", description: "", image: "",
+        ca: mint, name: data.name || "", ticker: data.symbol || "",
+        description: "", image: "",
         twitter: "", website: "", telegram: "",
         createdAt: now, trades: [], buys: 0, sells: 0, volumeSol: 0,
         mcapSol: mcSol, mcapUsd: mcUsd, prevVSol: vSol,
@@ -327,6 +374,7 @@ function processRadarMessage(data) {
       };
       radar.tokens.set(mint, token);
       subscribeToToken(mint);
+      if (data.uri) fetchTokenImage(mint, data.uri).catch(() => {});
       // Fetch metadata
       fetchPumpFunMetadata(mint).then(meta => {
         if (!meta) return;
@@ -481,9 +529,10 @@ setInterval(() => {
     .sort((a, b) => b._heat - a._heat)
     .slice(0, 50).map(serialize);
 
-  // ── GRAD: MC above initial ($3.5K+) or graduated ──
+  // ── GRAD: Real traction MC ($10K+) or graduated ($69K+) ──
+  // $2.4K = launch, $3-5K = dev buy, $10K+ = real traction, $69K = graduated
   radar.tabs.graduating = deduped
-    .filter(t => t.mcapUsd > 3500 || t.graduated)
+    .filter(t => t.mcapUsd >= 10000 || t.graduated)
     .map(t => ({
       ...t,
       _gradScore: (t.graduated ? 200 : 0) + Math.min(100, (t.mcapUsd / 69000) * 100),
