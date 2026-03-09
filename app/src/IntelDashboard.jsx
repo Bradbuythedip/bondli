@@ -13,8 +13,8 @@ const COLORS = {
   tx: "#cccce0", dm: "#5c5c7a", ft: "#3a3a50",
 };
 
-const PHASE_COLORS = { tp: "#00e676", k: "#ffd600", oc: "#ff9100", so: "#b388ff", mt: "#18ffff" };
-const PHASE_LABELS = { tp: "Tipping Point", k: "Kahneman", oc: "On-Chain", so: "Social", mt: "Timing" };
+const PHASE_COLORS = { tp: "#00e676", k: "#ffd600", oc: "#ff9100", rg: "#ff1744", so: "#b388ff", mt: "#18ffff" };
+const PHASE_LABELS = { tp: "Tipping Point", k: "Kahneman", oc: "On-Chain", rg: "Rug Detection", so: "Social", mt: "Timing" };
 
 function Bar({ value, max = 100, color, label, width }) {
   const pct = Math.min(100, (value / max) * 100);
@@ -95,6 +95,7 @@ function LiveScoringDemo() {
     const iv = setInterval(() => {
       setTick(t => t + 1);
       setTokens(prev => {
+        const rugRisk = Math.random() < 0.2 ? Math.round(40 + Math.random() * 50) : Math.round(Math.random() * 30);
         const newToken = {
           name: names[Math.floor(Math.random() * names.length)],
           ca: Math.random().toString(36).slice(2, 10),
@@ -104,6 +105,8 @@ function LiveScoringDemo() {
           kahneman: Math.round(10 + Math.random() * 80),
           velocity: Math.round(5 + Math.random() * 90),
           mcap: Math.round(1000 + Math.random() * 60000),
+          rugRisk,
+          rugFlags: rugRisk > 50 ? ["dev_dumping", "coordinated_sells"].slice(0, Math.ceil(Math.random() * 2)) : [],
           age: 0,
           similar: Math.round(Math.random() * 5),
           graduated: false,
@@ -142,6 +145,7 @@ function LiveScoringDemo() {
               <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
                 <span style={{ fontSize: 7, color: COLORS.ft }}>{t.ca}</span>
                 {t.graduated && <span style={{ fontSize: 6, padding: "0 3px", borderRadius: 2, background: COLORS.gn + "22", color: COLORS.gn, fontWeight: 800 }}>BONDED</span>}
+                {t.rugRisk > 50 && <span style={{ fontSize: 6, padding: "0 3px", borderRadius: 2, background: COLORS.rd + "22", color: COLORS.rd, fontWeight: 800 }}>RUG RISK</span>}
                 {t.similar > 0 && <span style={{ fontSize: 6, color: COLORS.pu }}>~{t.similar} similar</span>}
               </div>
             </div>
@@ -310,8 +314,10 @@ export default function IntelDashboard({ apiBase }) {
               <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 8 }}>Architecture</div>
               {[
                 { name: "Rule Engine", desc: "Tipping Point + System 1/2 heuristics", status: "active", color: COLORS.gn },
+                { name: "Rug Detection", desc: "8 on-chain patterns: dev dumps, coordinated sells, liquidity drain", status: "active", color: COLORS.rd },
                 { name: "RAG Memory", desc: `${s.memory.labeled} labeled tokens in vector store`, status: "active", color: COLORS.gn },
                 { name: "Online ML", desc: `${s.scorer.trainCount} gradient updates applied`, status: "active", color: COLORS.yl },
+                { name: "X Social Intel", desc: "Twitter profile validation + bot detection (free tier)", status: "active", color: COLORS.cy },
                 { name: "Nightly LoRA", desc: "Llama-3.1-8B fine-tune on outcomes", status: "planned", color: COLORS.ft },
               ].map(l => (
                 <div key={l.name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid " + COLORS.bd }}>
