@@ -1566,23 +1566,26 @@ app.get("/api/intel/stats", (req, res) => {
     { feature: "so_hasTwitter", weight: (1.2 + Math.random() * 0.1).toFixed(3) },
   ];
 
-  // Score with logarithmic scaling — need real activity to score high
+  // Score with strict logarithmic scaling — need REAL activity to score above 50
   const scored = (hot.length > 0 ? hot : tokens.slice(-20)).map(t => {
     const buys = t.buys || 0;
     const ub = t.uniqueBuyers?.size || 0;
     const vol = t.volumeSol || 0;
     const mc = t.mcapUsd || 0;
+    const sells = t.sells || 0;
     
-    // Logarithmic components — diminishing returns
-    const buyScore = Math.log2(buys + 1) * 6;        // 0=0, 2=6, 5=15, 10=21, 50=34, 100=40
-    const ubScore = Math.log2(ub + 1) * 5;            // 0=0, 2=5, 5=13, 10=17, 50=28
-    const volScore = Math.log2(vol + 1) * 3;          // 0=0, 1=3, 5=8, 10=10, 100=20
-    const mcScore = mc >= 69000 ? 15 : mc >= 20000 ? 10 : mc >= 10000 ? 7 : mc >= 5000 ? 4 : mc >= 3000 ? 2 : 0;
-    const socialScore = (t.twitter ? 3 : 0) + (t.website ? 2 : 0) + (t.telegram ? 1 : 0);
-    const pressureScore = buys > 0 ? (buys / Math.max(1, buys + (t.sells||0))) * 8 : 0; // buy pressure 0-8
+    // Very strict — need REAL activity for high scores
+    // Max total: 15+12+10+15+4+5 = 61 minus sell penalty
+    const buyScore = Math.min(15, Math.log2(buys + 1) * 2.5);     // 1=0, 3=5, 10=8.6, 50=14, 100=15
+    const ubScore = Math.min(12, Math.log2(ub + 1) * 2);           // 1=0, 3=4, 10=7, 50=11
+    const volScore = Math.min(10, Math.log10(vol * 100 + 1) * 3);  // 0.1=3, 1=6, 10=9, 100=10
+    const mcScore = mc >= 69000 ? 15 : mc >= 40000 ? 10 : mc >= 20000 ? 7 : mc >= 10000 ? 4 : mc >= 5000 ? 2 : 0;
+    const socialScore = (t.twitter ? 2 : 0) + (t.website ? 1 : 0) + (t.telegram ? 1 : 0); // max 4
+    const pressureScore = buys > 3 ? Math.min(5, (buys / Math.max(1, buys + sells)) * 5) : 0;
+    const sellPenalty = sells > buys * 0.7 ? Math.min(15, (sells - buys * 0.5) * 2) : 0;
     
-    const raw = buyScore + ubScore + volScore + mcScore + socialScore + pressureScore;
-    const score = Math.min(99, Math.round(raw));
+    const raw = buyScore + ubScore + volScore + mcScore + socialScore + pressureScore - sellPenalty;
+    const score = Math.max(0, Math.min(99, Math.round(raw)));
     
     return {
       ca: t.ca,
@@ -1590,6 +1593,7 @@ app.get("/api/intel/stats", (req, res) => {
       score,
       bondProb: Math.min(99, Math.round((mc / 69000) * 100)),
       mcapUsd: mc,
+      buys, ub, vol,
       time: t.createdAt,
     };
   }).sort((a, b) => b.score - a.score);
