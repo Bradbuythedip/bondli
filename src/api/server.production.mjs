@@ -27,7 +27,7 @@ import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { createClient as createRedisClient } from "redis";
 import {
-  Connection, Keypair, PublicKey, Transaction,
+  Connection, Keypair, PublicKey, Transaction, VersionedTransaction,
   SystemProgram, LAMPORTS_PER_SOL, sendAndConfirmTransaction, ComputeBudgetProgram
 } from "@solana/web3.js";
 import bs58 from "bs58";
@@ -1131,10 +1131,11 @@ app.post("/api/quick-ape", async (req, res) => {
         publicKey: tw.pubkey,
         action: "buy",
         mint: ca,
-        amount: solAmount * LAMPORTS_PER_SOL,
+        amount: solAmount,
         denominatedInSol: "true",
         slippage: 25,
-        priorityFee: 0.0005,
+        priorityFee: 0.005,
+        pool: "auto",
       }),
     });
 
@@ -1144,10 +1145,10 @@ app.post("/api/quick-ape", async (req, res) => {
     }
 
     const txBytes = await response.arrayBuffer();
-    const tx = Transaction.from(Buffer.from(txBytes));
+    const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
     const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
-    tx.sign(kp);
-    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+    tx.sign([kp]);
+    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
 
     res.json({ ok: true, signature: sig, ca });
   } catch (e) {
@@ -1185,7 +1186,8 @@ app.post("/api/quick-sell", async (req, res) => {
         amount: sellAmount.toString(),
         denominatedInSol: "false",
         slippage: 25,
-        priorityFee: 0.0005,
+        priorityFee: 0.005,
+        pool: "auto",
       }),
     });
 
@@ -1195,9 +1197,9 @@ app.post("/api/quick-sell", async (req, res) => {
     }
 
     const txBytes = await response.arrayBuffer();
-    const tx = Transaction.from(Buffer.from(txBytes));
-    tx.sign(kp);
-    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+    const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+    tx.sign([kp]);
+    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
 
     res.json({ ok: true, signature: sig, percent });
   } catch (e) {
@@ -1228,14 +1230,14 @@ app.post("/api/sell-all", async (req, res) => {
           body: JSON.stringify({
             publicKey: tw.pubkey, action: "sell", mint: info.mint,
             amount: balance.toString(), denominatedInSol: "false",
-            slippage: 30, priorityFee: 0.0005,
+            slippage: 30, priorityFee: 0.005, pool: "auto",
           }),
         });
         if (response.ok) {
           const txBytes = await response.arrayBuffer();
-          const tx = Transaction.from(Buffer.from(txBytes));
-          tx.sign(kp);
-          await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+          const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+          tx.sign([kp]);
+          await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
           sold++;
         }
       } catch {}
