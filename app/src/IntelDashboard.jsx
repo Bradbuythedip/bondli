@@ -21,8 +21,8 @@ function Bar({ value, max = 100, color, label, width }) {
   return (
     <div style={{ marginBottom: 6 }}>
       {label && <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
-        <span style={{ fontSize: 8, color: COLORS.dm, fontFamily: M }}>{label}</span>
-        <span style={{ fontSize: 8, color, fontFamily: M, fontWeight: 700 }}>{value}</span>
+        <span style={{ fontSize: 12, color: COLORS.dm, fontFamily: M }}>{label}</span>
+        <span style={{ fontSize: 12, color, fontFamily: M, fontWeight: 700 }}>{value}</span>
       </div>}
       <div style={{ height: 3, borderRadius: 2, background: COLORS.bd, width: width || "100%" }}>
         <div style={{ height: 3, borderRadius: 2, background: color, width: pct + "%", transition: "width 0.5s ease" }} />
@@ -34,9 +34,9 @@ function Bar({ value, max = 100, color, label, width }) {
 function StatBox({ label, value, color, sub }) {
   return (
     <div style={{ textAlign: "center", padding: "10px 6px", background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 8 }}>
-      <div style={{ fontSize: 20, fontWeight: 900, color: color || COLORS.gn, fontFamily: M }}>{value}</div>
-      <div style={{ fontSize: 7, color: COLORS.ft, fontWeight: 700, letterSpacing: "0.08em", marginTop: 2 }}>{label}</div>
-      {sub && <div style={{ fontSize: 7, color: COLORS.dm, marginTop: 1 }}>{sub}</div>}
+      <div style={{ fontSize: 28, fontWeight: 900, color: color || COLORS.gn, fontFamily: M }}>{value}</div>
+      <div style={{ fontSize: 11, color: COLORS.ft, fontWeight: 700, letterSpacing: "0.08em", marginTop: 2 }}>{label}</div>
+      {sub && <div style={{ fontSize: 11, color: COLORS.dm, marginTop: 1 }}>{sub}</div>}
     </div>
   );
 }
@@ -48,7 +48,7 @@ function EventRow({ event }) {
   return (
     <div style={{
       display: "flex", alignItems: "center", gap: 8, padding: "5px 8px",
-      borderBottom: "1px solid " + COLORS.bd, fontSize: 9, fontFamily: M,
+      borderBottom: "1px solid " + COLORS.bd, fontSize: 13, fontFamily: M,
     }}>
       <span style={{
         width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
@@ -62,7 +62,7 @@ function EventRow({ event }) {
         {isScore && ` → ${event.data.score}pts ${event.data.bondProb}% bond`}
         {isLearn && ` → err:${event.data.error?.toFixed(3)} acc:${event.data.accuracy}%`}
       </span>
-      <span style={{ color: COLORS.ft, fontSize: 7, flexShrink: 0 }}>{age}m</span>
+      <span style={{ color: COLORS.ft, fontSize: 11, flexShrink: 0 }}>{age}m</span>
     </div>
   );
 }
@@ -74,11 +74,11 @@ function FeatureWeight({ feature, weight }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 0" }}>
       <span style={{ width: 4, height: 4, borderRadius: "50%", background: color, flexShrink: 0 }} />
-      <span style={{ fontSize: 8, color: COLORS.dm, flex: 1, fontFamily: M }}>{label}</span>
+      <span style={{ fontSize: 12, color: COLORS.dm, flex: 1, fontFamily: M }}>{label}</span>
       <div style={{ width: 60, height: 3, borderRadius: 2, background: COLORS.bd }}>
         <div style={{ height: 3, borderRadius: 2, background: color, width: Math.min(100, (weight / 3) * 100) + "%", transition: "width 0.5s" }} />
       </div>
-      <span style={{ fontSize: 8, color, fontWeight: 700, fontFamily: M, width: 28, textAlign: "right" }}>{weight}</span>
+      <span style={{ fontSize: 12, color, fontWeight: 700, fontFamily: M, width: 28, textAlign: "right" }}>{weight}</span>
     </div>
   );
 }
@@ -127,9 +127,9 @@ function LiveScoringDemo() {
       <div style={{ padding: "8px 12px", borderBottom: "1px solid " + COLORS.bd, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ width: 5, height: 5, borderRadius: "50%", background: COLORS.gn, animation: "pulse 2s infinite" }} />
-          <span style={{ fontSize: 11, fontWeight: 800, fontFamily: M }}>Live Scoring</span>
+          <span style={{ fontSize: 16, fontWeight: 800, fontFamily: M }}>Live Scoring</span>
         </div>
-        <span style={{ fontSize: 8, color: COLORS.ft }}>{tokens.length} tracked</span>
+        <span style={{ fontSize: 12, color: COLORS.ft }}>{tokens.length} tracked</span>
       </div>
       <div style={{ maxHeight: 400, overflowY: "auto" }}>
         {tokens.map((t, i) => (
@@ -141,29 +141,29 @@ function LiveScoringDemo() {
             animation: i === 0 ? "slideIn 0.3s ease" : "none",
           }}>
             <div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: COLORS.tx, fontFamily: M }}>{t.name}</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.tx, fontFamily: M }}>{t.name}</div>
               <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
-                <span style={{ fontSize: 7, color: COLORS.ft }}>{t.ca}</span>
-                {t.graduated && <span style={{ fontSize: 6, padding: "0 3px", borderRadius: 2, background: COLORS.gn + "22", color: COLORS.gn, fontWeight: 800 }}>BONDED</span>}
-                {t.rugRisk > 50 && <span style={{ fontSize: 6, padding: "0 3px", borderRadius: 2, background: COLORS.rd + "22", color: COLORS.rd, fontWeight: 800 }}>RUG RISK</span>}
-                {t.similar > 0 && <span style={{ fontSize: 6, color: COLORS.pu }}>~{t.similar} similar</span>}
+                <span style={{ fontSize: 11, color: COLORS.ft }}>{t.ca}</span>
+                {t.graduated && <span style={{ fontSize: 10, padding: "0 3px", borderRadius: 2, background: COLORS.gn + "22", color: COLORS.gn, fontWeight: 800 }}>BONDED</span>}
+                {t.rugRisk > 50 && <span style={{ fontSize: 10, padding: "0 3px", borderRadius: 2, background: COLORS.rd + "22", color: COLORS.rd, fontWeight: 800 }}>RUG RISK</span>}
+                {t.similar > 0 && <span style={{ fontSize: 10, color: COLORS.pu }}>~{t.similar} similar</span>}
               </div>
             </div>
             <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 12, fontWeight: 900, color: t.score > 70 ? COLORS.gn : t.score > 40 ? COLORS.yl : COLORS.rd, fontFamily: M }}>{t.score}</div>
-              <div style={{ fontSize: 6, color: COLORS.ft }}>SCORE</div>
+              <div style={{ fontSize: 16, fontWeight: 900, color: t.score > 70 ? COLORS.gn : t.score > 40 ? COLORS.yl : COLORS.rd, fontFamily: M }}>{t.score}</div>
+              <div style={{ fontSize: 10, color: COLORS.ft }}>SCORE</div>
             </div>
             <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 12, fontWeight: 900, color: t.bondProb > 60 ? COLORS.gn : t.bondProb > 30 ? COLORS.yl : COLORS.ft, fontFamily: M }}>{t.bondProb}%</div>
-              <div style={{ fontSize: 6, color: COLORS.ft }}>BOND</div>
+              <div style={{ fontSize: 16, fontWeight: 900, color: t.bondProb > 60 ? COLORS.gn : t.bondProb > 30 ? COLORS.yl : COLORS.ft, fontFamily: M }}>{t.bondProb}%</div>
+              <div style={{ fontSize: 10, color: COLORS.ft }}>BOND</div>
             </div>
             <div style={{ textAlign: "center" }}>
-              <div style={{ fontSize: 12, fontWeight: 900, color: COLORS.or, fontFamily: M }}>{t.velocity}</div>
-              <div style={{ fontSize: 6, color: COLORS.ft }}>VEL</div>
+              <div style={{ fontSize: 16, fontWeight: 900, color: COLORS.or, fontFamily: M }}>{t.velocity}</div>
+              <div style={{ fontSize: 10, color: COLORS.ft }}>VEL</div>
             </div>
             <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: t.mcap > 30000 ? COLORS.yl : COLORS.tx, fontFamily: M }}>${t.mcap > 1000 ? (t.mcap / 1000).toFixed(1) + "K" : t.mcap}</div>
-              <div style={{ fontSize: 6, color: COLORS.ft }}>MC</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: t.mcap > 30000 ? COLORS.yl : COLORS.tx, fontFamily: M }}>${t.mcap > 1000 ? (t.mcap / 1000).toFixed(1) + "K" : t.mcap}</div>
+              <div style={{ fontSize: 10, color: COLORS.ft }}>MC</div>
             </div>
           </div>
         ))}
@@ -241,9 +241,9 @@ export default function IntelDashboard({ apiBase }) {
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: COLORS.gn, animation: "pulse 2s infinite" }} />
-            <span style={{ fontSize: 9, letterSpacing: "0.15em", color: COLORS.gn + "88", fontWeight: 700 }}>INTELLIGENCE ENGINE</span>
+            <span style={{ fontSize: 12, letterSpacing: "0.15em", color: COLORS.gn + "88", fontWeight: 700 }}>INTELLIGENCE ENGINE</span>
           </div>
-          <h1 style={{ fontSize: 22, fontWeight: 900, fontFamily: S, color: COLORS.tx }}>
+          <h1 style={{ fontSize: 30, fontWeight: 900, fontFamily: S, color: COLORS.tx }}>
             Meme Intelligence
           </h1>
         </div>
@@ -253,7 +253,7 @@ export default function IntelDashboard({ apiBase }) {
               padding: "5px 12px", borderRadius: 6, border: "1px solid " + (tab === t ? COLORS.gn + "33" : COLORS.bd),
               background: tab === t ? COLORS.gn + "0a" : "transparent",
               color: tab === t ? COLORS.gn : COLORS.dm,
-              fontSize: 9, fontWeight: 700, fontFamily: M, cursor: "pointer",
+              fontSize: 13, fontWeight: 700, fontFamily: M, cursor: "pointer",
             }}>{t.toUpperCase()}</button>
           ))}
         </div>
@@ -276,7 +276,7 @@ export default function IntelDashboard({ apiBase }) {
             {/* Event log */}
             <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, overflow: "hidden", flex: 1 }}>
               <div style={{ padding: "8px 12px", borderBottom: "1px solid " + COLORS.bd }}>
-                <span style={{ fontSize: 10, fontWeight: 800 }}>Event Log</span>
+                <span style={{ fontSize: 14, fontWeight: 800 }}>Event Log</span>
               </div>
               <div style={{ maxHeight: 300, overflowY: "auto" }}>
                 {s.recentEvents.map((e, i) => <EventRow key={i} event={e} />)}
@@ -285,7 +285,7 @@ export default function IntelDashboard({ apiBase }) {
 
             {/* Framework breakdown */}
             <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, padding: 12 }}>
-              <div style={{ fontSize: 10, fontWeight: 800, marginBottom: 8 }}>Framework Weights</div>
+              <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 8 }}>Framework Weights</div>
               {Object.entries(PHASE_LABELS).map(([key, label]) => (
                 <Bar key={key} label={label} value={Math.round(40 + Math.random() * 50)} color={PHASE_COLORS[key]} />
               ))}
@@ -299,8 +299,8 @@ export default function IntelDashboard({ apiBase }) {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           {/* Feature importance */}
           <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, padding: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 12 }}>Top Feature Weights</div>
-            <div style={{ fontSize: 8, color: COLORS.ft, marginBottom: 8 }}>
+            <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 12 }}>Top Feature Weights</div>
+            <div style={{ fontSize: 12, color: COLORS.ft, marginBottom: 8 }}>
               Learned from {s.scorer.trainCount} labeled outcomes. Updates on every new label.
             </div>
             {s.scorer.topFeatures.map((f, i) => (
@@ -311,7 +311,7 @@ export default function IntelDashboard({ apiBase }) {
           {/* Learning curve */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, padding: 16 }}>
-              <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 8 }}>Architecture</div>
+              <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 8 }}>Architecture</div>
               {[
                 { name: "Rule Engine", desc: "Tipping Point + System 1/2 heuristics", status: "active", color: COLORS.gn },
                 { name: "Rug Detection", desc: "8 on-chain patterns: dev dumps, coordinated sells, liquidity drain", status: "active", color: COLORS.rd },
@@ -323,30 +323,30 @@ export default function IntelDashboard({ apiBase }) {
                 <div key={l.name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid " + COLORS.bd }}>
                   <span style={{ width: 5, height: 5, borderRadius: "50%", background: l.color, flexShrink: 0 }} />
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, color: l.color }}>{l.name}</div>
-                    <div style={{ fontSize: 8, color: COLORS.dm }}>{l.desc}</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: l.color }}>{l.name}</div>
+                    <div style={{ fontSize: 12, color: COLORS.dm }}>{l.desc}</div>
                   </div>
-                  <span style={{ fontSize: 7, color: l.status === "active" ? COLORS.gn : COLORS.ft, fontWeight: 700, padding: "1px 5px", borderRadius: 3, border: "1px solid " + (l.status === "active" ? COLORS.gn : COLORS.ft) + "33" }}>{l.status}</span>
+                  <span style={{ fontSize: 11, color: l.status === "active" ? COLORS.gn : COLORS.ft, fontWeight: 700, padding: "1px 5px", borderRadius: 3, border: "1px solid " + (l.status === "active" ? COLORS.gn : COLORS.ft) + "33" }}>{l.status}</span>
                 </div>
               ))}
             </div>
 
             <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, padding: 16 }}>
-              <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 8 }}>Accuracy Trajectory</div>
+              <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 8 }}>Accuracy Trajectory</div>
               <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", gap: 16, padding: "12px 0" }}>
                 <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: 8, color: COLORS.ft }}>Baseline</div>
-                  <div style={{ fontSize: 22, fontWeight: 900, color: COLORS.ft }}>~65%</div>
+                  <div style={{ fontSize: 12, color: COLORS.ft }}>Baseline</div>
+                  <div style={{ fontSize: 30, fontWeight: 900, color: COLORS.ft }}>~65%</div>
                 </div>
                 <span style={{ color: COLORS.ft }}>→</span>
                 <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: 8, color: COLORS.yl }}>+RAG</div>
-                  <div style={{ fontSize: 22, fontWeight: 900, color: COLORS.yl }}>~80%</div>
+                  <div style={{ fontSize: 12, color: COLORS.yl }}>+RAG</div>
+                  <div style={{ fontSize: 30, fontWeight: 900, color: COLORS.yl }}>~80%</div>
                 </div>
                 <span style={{ color: COLORS.ft }}>→</span>
                 <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: 8, color: COLORS.gn }}>Current</div>
-                  <div style={{ fontSize: 22, fontWeight: 900, color: COLORS.gn }}>{s.scorer.accuracy}</div>
+                  <div style={{ fontSize: 12, color: COLORS.gn }}>Current</div>
+                  <div style={{ fontSize: 30, fontWeight: 900, color: COLORS.gn }}>{s.scorer.accuracy}</div>
                 </div>
               </div>
             </div>
@@ -358,14 +358,14 @@ export default function IntelDashboard({ apiBase }) {
       {tab === "memory" && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, padding: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 12 }}>RAG Vector Store</div>
+            <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 12 }}>RAG Vector Store</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 16 }}>
               <StatBox label="STORED" value={s.memory.total} color={COLORS.pu} />
               <StatBox label="LABELED" value={s.memory.labeled} color={COLORS.yl} />
               <StatBox label="GRADUATED" value={s.memory.graduated} color={COLORS.gn} />
               <StatBox label="GRAD RATE" value={s.memory.graduationRate} color={COLORS.or} />
             </div>
-            <div style={{ fontSize: 8, color: COLORS.dm, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 12, color: COLORS.dm, lineHeight: 1.5 }}>
               Every token that enters the radar is embedded as a 32-dimensional feature vector.
               When a new token appears, the engine finds the 5 most similar past tokens and
               checks their outcomes. If similar tokens graduated, the score gets a RAG boost.
@@ -374,8 +374,8 @@ export default function IntelDashboard({ apiBase }) {
           </div>
 
           <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, padding: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 12 }}>Outcome Labels</div>
-            <div style={{ fontSize: 8, color: COLORS.dm, marginBottom: 12 }}>
+            <div style={{ fontSize: 16, fontWeight: 800, marginBottom: 12 }}>Outcome Labels</div>
+            <div style={{ fontSize: 12, color: COLORS.dm, marginBottom: 12 }}>
               Auto-labeled at 30min, 2h, 6h, 24h checkpoints:
             </div>
             {[
@@ -385,9 +385,9 @@ export default function IntelDashboard({ apiBase }) {
               { label: "fleetPnl", desc: "Actual fleet profit/loss in SOL", pct: "reward signal" },
             ].map(l => (
               <div key={l.label} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid " + COLORS.bd }}>
-                <span style={{ fontSize: 9, fontWeight: 700, color: COLORS.gn, fontFamily: M, width: 70 }}>{l.label}</span>
-                <span style={{ fontSize: 8, color: COLORS.dm, flex: 1 }}>{l.desc}</span>
-                <span style={{ fontSize: 8, color: COLORS.yl, fontWeight: 700 }}>{l.pct}</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: COLORS.gn, fontFamily: M, width: 70 }}>{l.label}</span>
+                <span style={{ fontSize: 12, color: COLORS.dm, flex: 1 }}>{l.desc}</span>
+                <span style={{ fontSize: 12, color: COLORS.yl, fontWeight: 700 }}>{l.pct}</span>
               </div>
             ))}
           </div>
@@ -395,7 +395,7 @@ export default function IntelDashboard({ apiBase }) {
       )}
 
       {/* Footer */}
-      <div style={{ textAlign: "center", marginTop: 24, fontSize: 8, color: COLORS.ft }}>
+      <div style={{ textAlign: "center", marginTop: 24, fontSize: 12, color: COLORS.ft }}>
         BONDLI MEME INTELLIGENCE — every launch trains the model
       </div>
     </div>
