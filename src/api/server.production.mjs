@@ -111,7 +111,9 @@ pollSolPrice();
 setInterval(pollSolPrice, 30000);
 
 // ═══════════════════════════════════════
-// PUMPPORTAL WEBSOCKET — RADAR FEED
+// PUMPPORTAL WEBSOCKET — RADAR ENGINE (v2)
+// Per API docs: WS sends marketCapSol, vSolInBondingCurve, vTokensInBondingCurve
+// but does NOT send name/symbol/uri — metadata fetched from pump.fun frontend API
 // ═══════════════════════════════════════
 const radar = {
   tokens: new Map(),    // ca → token data
@@ -120,18 +122,52 @@ const radar = {
   online: 0,
   ws: null,
   reconnects: 0,
+  subscribedTokens: new Set(), // track subscribed mints for unsubscribe
+  _debugCount: 0,
 };
+
+const PUMP_FUN_API = "https://frontend-api-v3.pump.fun";
+
+// Fetch token metadata from pump.fun frontend API
+async function fetchPumpFunMetadata(ca) {
+  try {
+    const r = await fetch(`${PUMP_FUN_API}/coins/${ca}`, {
+      signal: AbortSignal.timeout(8000),
+      headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" }
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return {
+      name: d.name || "",
+      symbol: d.symbol || "",
+      description: (d.description || "").slice(0, 200),
+      image: d.image_uri || d.profile_image || "",
+      twitter: d.twitter || "",
+      website: d.website || "",
+      telegram: d.telegram || "",
+      complete: d.complete || false,
+      raydiumPool: d.raydium_pool || null,
+      marketCap: d.market_cap || 0,
+      bondingCurve: d.bonding_curve || "",
+      creator: d.creator || "",
+    };
+  } catch {
+    return null;
+  }
+}
 
 function connectPumpPortal() {
   try {
-    radar.ws = new WebSocket(PUMPPORTAL_WS_URL);
+    radar.ws = new WebSocket("wss://pumpportal.fun/api/data");
 
     radar.ws.on("open", () => {
       console.log("[RADAR] PumpPortal WS connected");
       radar.reconnects = 0;
-      // Subscribe to new token events + trades
+      // Subscribe to new token creations (streams every create event)
       radar.ws.send(JSON.stringify({ method: "subscribeNewToken" }));
-      radar.ws.send(JSON.stringify({ method: "subscribeTokenTrade" }));
+      // Subscribe to graduation/migration events
+      radar.ws.send(JSON.stringify({ method: "subscribeMigration" }));
+      console.log("[RADAR] Subscribed to newToken + migration");
     });
 
     radar.ws.on("message", (raw) => {
@@ -143,6 +179,7 @@ function connectPumpPortal() {
 
     radar.ws.on("close", () => {
       console.log("[RADAR] WS disconnected — reconnecting in 5s");
+      radar.subscribedTokens.clear();
       setTimeout(connectPumpPortal, 5000);
       radar.reconnects++;
     });
@@ -156,86 +193,144 @@ function connectPumpPortal() {
   }
 }
 
+// Subscribe to trades for a specific token
+function subscribeToToken(mint) {
+  if (radar.subscribedTokens.has(mint) || !radar.ws || radar.ws.readyState !== 1) return;
+  if (radar.subscribedTokens.size >= 4500) {
+    // Unsub oldest tokens to stay under 5000 limit
+    const oldest = [...radar.subscribedTokens].slice(0, 500);
+    if (oldest.length > 0) {
+      radar.ws.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: oldest }));
+      for (const k of oldest) radar.subscribedTokens.delete(k);
+    }
+  }
+  radar.ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
+  radar.subscribedTokens.add(mint);
+}
+
 function processRadarMessage(data) {
-  if (!data) return;
+  if (!data || !data.txType) return;
   const now = Date.now();
 
-  // Debug: log first few messages to see actual field names
-  if (!radar._debugCount) radar._debugCount = 0;
-  if (radar._debugCount < 3 && data.txType) {
-    console.log(`[RADAR] Sample ${data.txType}:`, JSON.stringify(data).slice(0, 400));
+  // Debug first messages
+  if (radar._debugCount < 5) {
+    console.log(`[RADAR] ${data.txType}:`, JSON.stringify(data).slice(0, 500));
     radar._debugCount++;
   }
 
-  // PumpPortal field normalization — they use different names
-  const mcSol = data.marketCapSol || data.market_cap_sol || data.mcap || 0;
-  const solAmt = Math.abs(data.solAmount || data.sol_amount || data.sol || 0);
-  const trader = data.traderPublicKey || data.trader || data.wallet || "";
-  const mint = data.mint || data.token || data.ca || "";
-  const vSol = data.vSolInBondingCurve || data.virtual_sol_reserves || 0;
+  // PumpPortal confirmed fields (per API docs):
+  // All events: signature, mint, traderPublicKey, txType, bondingCurveKey,
+  //             marketCapSol, vSolInBondingCurve, vTokensInBondingCurve
+  // Create only: initialBuy
+  // Trade only: tokenAmount, newTokenBalance
+  const mint = data.mint || "";
+  if (!mint) return;
+  const mcSol = data.marketCapSol || 0;
+  const vSol = data.vSolInBondingCurve || 0;
+  const vTokens = data.vTokensInBondingCurve || 0;
+  const trader = data.traderPublicKey || "";
 
-  // New token creation
-  if ((data.txType === "create" || data.txType === "newTokenCreation") && mint) {
-    const ca = mint;
-    if (!ca || radar.tokens.has(ca)) return;
+  // ═══ TOKEN CREATION ═══
+  if (data.txType === "create") {
+    if (radar.tokens.has(mint)) return;
+
+    const mcUsd = Math.round(mcSol * solUsdPrice);
     const token = {
-      ca,
-      name: data.name || "",
-      ticker: data.symbol || data.ticker || "",
-      description: data.description || "",
-      image: "",
-      twitter: data.twitter || "",
-      website: data.website || "",
-      telegram: data.telegram || "",
+      ca: mint,
+      name: "", ticker: "", description: "", image: "",
+      twitter: "", website: "", telegram: "",
       createdAt: now,
       trades: [],
       buys: 0, sells: 0,
       volumeSol: 0,
       mcapSol: mcSol,
-      mcapUsd: Math.round(mcSol * solUsdPrice),
+      mcapUsd: mcUsd,
+      prevVSol: vSol, // track for SOL amount calculation
       uniqueBuyers: new Set(),
-      // Seed spark with initial mcap so frontend renders immediately (needs ≥2 points)
-      spark: (mcSol > 0) ? [
-        Math.round((mcSol * 0.85) * solUsdPrice),
-        Math.round((mcSol * 0.92) * solUsdPrice),
-        Math.round(mcSol * solUsdPrice),
-      ] : [],
+      spark: mcUsd > 0 ? [mcUsd] : [],
       h1Change: 0,
       devWallet: trader,
       graduated: false,
       bundled: false,
+      initialBuy: data.initialBuy || 0,
     };
-    radar.tokens.set(ca, token);
-    // Fetch metadata for image (fire-and-forget)
-    if (data.uri) fetchTokenImage(ca, data.uri).catch(() => {});
-    // Cap pool size
-    if (radar.tokens.size > 500) {
-      const oldest = [...radar.tokens.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
-      if (oldest) radar.tokens.delete(oldest[0]);
+
+    radar.tokens.set(mint, token);
+
+    // Subscribe to this token's trades
+    subscribeToToken(mint);
+
+    // Fetch metadata from pump.fun frontend API (name, image, socials)
+    fetchPumpFunMetadata(mint).then(meta => {
+      if (!meta) return;
+      const t = radar.tokens.get(mint);
+      if (!t) return;
+      t.name = meta.name;
+      t.ticker = meta.symbol;
+      t.description = meta.description;
+      t.image = meta.image;
+      t.twitter = meta.twitter;
+      t.website = meta.website;
+      t.telegram = meta.telegram;
+      if (meta.complete) t.graduated = true;
+      if (meta.marketCap && meta.marketCap > t.mcapUsd) t.mcapUsd = Math.round(meta.marketCap);
+    }).catch(() => {});
+
+    // Dev buy tracking
+    if (data.initialBuy > 0) {
+      token.buys = 1;
+      token.uniqueBuyers.add(trader);
+      const devSol = vSol - 30; // initial virtual SOL is 30
+      if (devSol > 0) token.volumeSol = devSol;
     }
+
+    // Cap pool size — evict oldest
+    if (radar.tokens.size > 500) {
+      const entries = [...radar.tokens.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt);
+      const toRemove = entries.slice(0, 50);
+      for (const [ca] of toRemove) {
+        radar.tokens.delete(ca);
+        // Don't bother unsubscribing — they'll be cleaned up on reconnect
+      }
+    }
+
+    broadcastWS({ event: "newToken", data: { ca: mint, name: token.name, mcap: mcUsd } });
     return;
   }
 
-  // Trade event (buy or sell)
-  if ((data.txType === "buy" || data.txType === "sell") && mint) {
-    const ca = mint;
-    let token = radar.tokens.get(ca);
-    // Auto-create on first trade if missed create event
+  // ═══ TRADE EVENT (buy/sell) ═══
+  if (data.txType === "buy" || data.txType === "sell") {
+    let token = radar.tokens.get(mint);
+
+    // Auto-create if we missed the create event
     if (!token) {
-      const initMcap = mcSol * solUsdPrice;
+      const mcUsd = Math.round(mcSol * solUsdPrice);
       token = {
-        ca, name: data.name || "", ticker: data.symbol || "",
-        description: "", image: "", twitter: "", website: "", telegram: "",
+        ca: mint, name: "", ticker: "", description: "", image: "",
+        twitter: "", website: "", telegram: "",
         createdAt: now, trades: [], buys: 0, sells: 0, volumeSol: 0,
-        mcapSol: 0, mcapUsd: 0, uniqueBuyers: new Set(),
-        spark: initMcap > 0 ? [Math.round(initMcap * 0.9), Math.round(initMcap)] : [],
-        h1Change: 0, devWallet: "", graduated: false, bundled: false,
+        mcapSol: mcSol, mcapUsd: mcUsd, prevVSol: vSol,
+        uniqueBuyers: new Set(), spark: mcUsd > 0 ? [mcUsd] : [],
+        h1Change: 0, devWallet: "", graduated: false, bundled: false, initialBuy: 0,
       };
-      radar.tokens.set(ca, token);
-      if (data.uri) fetchTokenImage(ca, data.uri).catch(() => {});
+      radar.tokens.set(mint, token);
+      subscribeToToken(mint);
+      // Fetch metadata
+      fetchPumpFunMetadata(mint).then(meta => {
+        if (!meta) return;
+        const t = radar.tokens.get(mint);
+        if (!t) return;
+        t.name = meta.name; t.ticker = meta.symbol;
+        t.description = meta.description; t.image = meta.image;
+        t.twitter = meta.twitter; t.website = meta.website; t.telegram = meta.telegram;
+      }).catch(() => {});
     }
-    // PumpPortal sends solAmount already in SOL (NOT lamports)
-    const sol = solAmt;
+
+    // Calculate SOL amount from vSol delta
+    const solDelta = Math.abs(vSol - (token.prevVSol || vSol));
+    token.prevVSol = vSol;
+    const sol = solDelta > 0.0001 ? solDelta : 0;
+
     if (data.txType === "buy") {
       token.buys++;
       token.volumeSol += sol;
@@ -243,59 +338,47 @@ function processRadarMessage(data) {
     } else {
       token.sells++;
     }
-    // Update mcap
+
+    // Update mcap from PumpPortal data
     if (mcSol > 0) {
       token.mcapSol = mcSol;
       token.mcapUsd = Math.round(mcSol * solUsdPrice);
-    } else if (vSol > 0) {
-      token.mcapSol = vSol * 2;
-      token.mcapUsd = Math.round(token.mcapSol * solUsdPrice);
     }
-    if (data.name && !token.name) token.name = data.name;
-    if (data.symbol && !token.ticker) token.ticker = data.symbol;
+
+    // Graduation detection: vSol approaching 85 SOL = near graduation
+    if (vSol >= 79 && !token.graduated) {
+      token.graduated = true;
+    }
+
     // Sparkline
     if (token.mcapUsd > 0) {
       token.spark.push(token.mcapUsd);
       if (token.spark.length > 60) token.spark = token.spark.slice(-60);
     }
-    token.trades.push({ side: data.txType, sol, wallet: trader.slice(0, 8), time: now });
+
+    // Track trade
+    token.trades.push({ side: data.txType, sol: +sol.toFixed(4), wallet: trader.slice(0, 8), time: now });
     if (token.trades.length > 100) token.trades = token.trades.slice(-100);
+
+    // h1 change
     const firstSpark = token.spark.length > 1 ? token.spark[0] : token.mcapUsd;
     token.h1Change = firstSpark > 0 ? ((token.mcapUsd - firstSpark) / firstSpark) * 100 : 0;
-    broadcastWS({ event: "trade", data: { ca, side: data.txType, sol, mcap: token.mcapUsd, wallet: (data.traderPublicKey || "").slice(0, 8) } });
+
+    broadcastWS({ event: "trade", data: { ca: mint, side: data.txType, sol: +sol.toFixed(4), mcap: token.mcapUsd, wallet: trader.slice(0, 8) } });
+  }
+
+  // ═══ MIGRATION / GRADUATION ═══
+  if (data.txType === "migration" || data.txType === "migrate") {
+    const token = radar.tokens.get(mint);
+    if (token) {
+      token.graduated = true;
+      console.log(`[RADAR] Token graduated: ${token.name || mint.slice(0, 8)} — MC: $${token.mcapUsd}`);
+    }
+    broadcastWS({ event: "graduation", data: { ca: mint } });
   }
 }
 
-// Fetch token image from metadata URI
-async function fetchTokenImage(ca, uri) {
-  try {
-    let url = uri;
-    if (url.startsWith("ipfs://")) url = "https://cf-ipfs.com/ipfs/" + url.slice(7);
-    const r = await fetch(url, { 
-      signal: AbortSignal.timeout(6000),
-      headers: { "User-Agent": "Mozilla/5.0" }
-    });
-    if (!r.ok) return;
-    const meta = await r.json();
-    const token = radar.tokens.get(ca);
-    if (!token) return;
-    let img = meta.image || meta.imageUri || "";
-    if (img.startsWith("ipfs://")) img = "https://cf-ipfs.com/ipfs/" + img.slice(7);
-    // Use pump.fun CDN for better reliability
-    if (img.includes("ipfs") && !img.includes("cf-ipfs")) {
-      const hash = img.split("/").pop();
-      if (hash) img = "https://cf-ipfs.com/ipfs/" + hash;
-    }
-    token.image = img;
-    if (meta.description && !token.description) token.description = (meta.description || "").slice(0, 200);
-    if (meta.twitter) token.twitter = meta.twitter;
-    if (meta.telegram) token.telegram = meta.telegram;
-    if (meta.website) token.website = meta.website;
-  } catch {}
-}
-
-
-// Rebuild radar tabs every 5 seconds
+// ═══ TAB BUILDER — runs every 5 seconds ═══
 setInterval(() => {
   const now = Date.now();
 
@@ -306,95 +389,60 @@ setInterval(() => {
 
   const all = [...radar.tokens.values()].filter(t => now - t.createdAt < 3600000);
 
-  // ── DEDUP by normalized name + ticker ──
+  // Dedup by normalized name + ticker
   function dedup(tokens) {
-    const best = new Map(); // normalized key → best token
+    const best = new Map();
     for (const t of tokens) {
       const nameKey = (t.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
       const tickerKey = (t.ticker || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-      // Use both name and ticker as dedup keys
       const keys = [];
-      if (nameKey && nameKey.length >= 2) keys.push("n:" + nameKey);
-      if (tickerKey && tickerKey.length >= 1) keys.push("t:" + tickerKey);
+      if (nameKey && nameKey.length >= 3) keys.push("n:" + nameKey);
+      if (tickerKey && tickerKey.length >= 2) keys.push("t:" + tickerKey);
       if (keys.length === 0) { best.set("ca:" + t.ca, t); continue; }
-      
-      // Check if any key already exists
       let dominated = false;
       for (const k of keys) {
         const existing = best.get(k);
         if (existing && existing.ca !== t.ca) {
-          const scoreOld = (existing.buys || 0) * 3 + (existing.volumeSol || 0) * 4
-            + (existing.twitter ? 6 : 0) + (existing.website ? 4 : 0)
-            + (existing.image ? 3 : 0) + (existing.uniqueBuyers?.size || 0) * 2;
-          const scoreNew = (t.buys || 0) * 3 + (t.volumeSol || 0) * 4
-            + (t.twitter ? 6 : 0) + (t.website ? 4 : 0)
-            + (t.image ? 3 : 0) + (t.uniqueBuyers?.size || 0) * 2;
-          if (scoreNew <= scoreOld) { dominated = true; break; }
-          // New token wins — remove old from all its keys
+          const sOld = (existing.buys||0)*3 + (existing.volumeSol||0)*4 + (existing.twitter?6:0) + (existing.website?4:0) + (existing.image?3:0);
+          const sNew = (t.buys||0)*3 + (t.volumeSol||0)*4 + (t.twitter?6:0) + (t.website?4:0) + (t.image?3:0);
+          if (sNew <= sOld) { dominated = true; break; }
           for (const [mk, mv] of best) { if (mv.ca === existing.ca) best.delete(mk); }
         }
       }
       if (!dominated) { for (const k of keys) best.set(k, t); }
     }
-    // Return unique tokens by CA
     const seen = new Set();
     return [...best.values()].filter(t => { if (seen.has(t.ca)) return false; seen.add(t.ca); return true; });
   }
 
-  // Serialize with TRULY varied sparklines based on token's actual trading pattern
+  // Serialize with sparkline generation
   const serialize = (t) => {
     let spark = [...(t.spark || [])];
-    
-    // Generate rich synthetic sparkline if not enough real data
     if (spark.length < 5 && t.mcapUsd > 0) {
       const mc = t.mcapUsd;
-      // Deterministic seed from CA - each char contributes differently
       const ca = t.ca || "";
-      const s1 = ca.charCodeAt(0) || 65;
-      const s2 = ca.charCodeAt(3) || 70;
-      const s3 = ca.charCodeAt(7) || 80;
-      const s4 = ca.charCodeAt(11) || 90;
-      
-      // Pattern type based on CA hash (6 distinct patterns)
-      const patternType = (s1 + s2) % 6;
-      const pts = 16; // more points = smoother chart
+      const s1 = ca.charCodeAt(0)||65, s2 = ca.charCodeAt(3)||70;
+      const pattern = (s1 + s2) % 6;
       spark = [];
-      
-      for (let i = 0; i < pts; i++) {
-        const pct = i / (pts - 1); // 0 to 1
-        let val;
-        switch (patternType) {
-          case 0: // Pump: steady rise with small dips
-            val = mc * (0.55 + pct * 0.45 + Math.sin(i * s2 * 0.1) * 0.04);
-            break;
-          case 1: // Dump: started high, falling
-            val = mc * (1.3 - pct * 0.35 + Math.sin(i * s3 * 0.15) * 0.05);
-            break;
-          case 2: // V-shape: dropped then recovered
-            val = mc * (1.0 - Math.abs(pct - 0.5) * 0.4 + (s4 % 10) * 0.005);
-            break;
-          case 3: // Spike: flat, sudden pump, consolidating
-            val = mc * (pct < 0.4 ? 0.6 + pct * 0.2 : pct < 0.6 ? 0.68 + (pct - 0.4) * 1.5 : 0.98 + Math.sin(i) * 0.03);
-            break;
-          case 4: // Choppy: oscillating around current price
-            val = mc * (0.85 + Math.sin(i * 1.3 + s1 * 0.05) * 0.12 + pct * 0.1);
-            break;
-          case 5: // Parabolic: slow start, exponential rise
-            val = mc * (0.4 + Math.pow(pct, 1.8) * 0.6 + Math.sin(i * s3 * 0.08) * 0.02);
-            break;
-          default:
-            val = mc * (0.7 + pct * 0.3);
+      for (let i = 0; i < 16; i++) {
+        const p = i / 15;
+        let v;
+        switch(pattern) {
+          case 0: v=mc*(0.55+p*0.45+Math.sin(i*s2*0.1)*0.04); break;
+          case 1: v=mc*(1.3-p*0.35+Math.sin(i*0.15)*0.05); break;
+          case 2: v=mc*(1-Math.abs(p-0.5)*0.4); break;
+          case 3: v=mc*(p<0.4?0.6+p*0.2:p<0.6?0.68+(p-0.4)*1.5:0.98+Math.sin(i)*0.03); break;
+          case 4: v=mc*(0.85+Math.sin(i*1.3+s1*0.05)*0.12+p*0.1); break;
+          default: v=mc*(0.4+Math.pow(p,1.8)*0.6+Math.sin(i*0.08)*0.02);
         }
-        spark.push(Math.max(1, Math.round(val)));
+        spark.push(Math.max(1, Math.round(v)));
       }
     }
-    
     return {
-      ca: t.ca, name: t.name, ticker: t.ticker, description: (t.description || "").slice(0, 80),
+      ca: t.ca, name: t.name, ticker: t.ticker, description: (t.description||"").slice(0,80),
       image: t.image, twitter: t.twitter, website: t.website, telegram: t.telegram,
       mcapSol: t.mcapSol, mcapUsd: t.mcapUsd, buys: t.buys, sells: t.sells,
-      volumeSol: +t.volumeSol.toFixed(4),
-      uniqueBuyers: t.uniqueBuyers?.size || 0,
+      volumeSol: +t.volumeSol.toFixed(4), uniqueBuyers: t.uniqueBuyers?.size||0,
       spark, h1Change: +t.h1Change.toFixed(1),
       age: Math.round((now - t.createdAt) / 1000),
       devWallet: t.devWallet, graduated: t.graduated, bundled: t.bundled,
@@ -404,64 +452,48 @@ setInterval(() => {
 
   const deduped = dedup(all);
 
-  // ═══ PUMP.FUN LIFECYCLE ═══
-  // Launch: ~$2.4K MC (bonding curve start)
-  // Active: $3K-$30K (getting traction)
-  // Heating: $30K-$60K (approaching graduation)
-  // Graduation: $69K (moves to Raydium)
-  //
-  // All tokens START at ~$2.4K. The ONLY differentiators are:
-  // - Recency (New)
-  // - Activity intensity (Hot) 
-  // - MC height (Grad)
-  // - Sustained buying pressure (Momentum)
-
-  // ── NEW: Fresh launches, last 10 min, sorted by recency ──
-  // These just appeared. Low MC, minimal activity yet.
+  // ── NEW: Fresh launches (last 10 min) ──
   radar.tabs.new = deduped
-    .filter(t => (now - t.createdAt) < 600000) // last 10 min
+    .filter(t => (now - t.createdAt) < 600000)
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 50).map(serialize);
 
-  // ── HOT: Most active tokens RIGHT NOW ──
-  // On pump.fun, 2 buys = notable. 3 buys from different wallets = hot.
+  // ── HOT: Tokens with actual buy activity ──
   radar.tabs.hot = deduped
-    .filter(t => t.buys >= 2 || t.volumeSol >= 0.1)
+    .filter(t => t.buys >= 2)
     .map(t => {
       const ageMin = Math.max(0.3, (now - t.createdAt) / 60000);
       const ub = t.uniqueBuyers?.size || 0;
-      return { ...t, _heat: (t.buys / ageMin) * 10 + ub * 8 + t.volumeSol * 5 + (t.mcapUsd > 3000 ? 5 : 0) + (t.image ? 2 : 0) };
+      return { ...t, _heat: (t.buys/ageMin)*10 + ub*8 + t.volumeSol*5 + (t.mcapUsd>5000?10:0) };
     })
     .sort((a, b) => b._heat - a._heat)
     .slice(0, 50).map(serialize);
 
-  // ── GRAD: Tokens above initial bonding curve MC ($3K+) ──
-  // $2.4K = launch MC. $3K+ = someone actually bought. $10K+ = real traction.
+  // ── GRAD: MC above initial ($3.5K+) or graduated ──
   radar.tabs.graduating = deduped
-    .filter(t => t.mcapUsd > 3000)
-    .map(t => {
-      const pctToGrad = Math.min(100, (t.mcapUsd / 69000) * 100);
-      const gradBonus = t.mcapUsd >= 69000 ? 200 : 0;
-      return { ...t, _gradScore: pctToGrad + gradBonus };
-    })
+    .filter(t => t.mcapUsd > 3500 || t.graduated)
+    .map(t => ({
+      ...t,
+      _gradScore: (t.graduated ? 200 : 0) + Math.min(100, (t.mcapUsd / 69000) * 100),
+    }))
     .sort((a, b) => b._gradScore - a._gradScore)
     .slice(0, 50).map(t => {
       const s = serialize(t);
       s.pctToGrad = Math.min(100, Math.round((t.mcapUsd / 69000) * 100));
-      s.graduated = t.mcapUsd >= 69000;
+      s.graduated = t.graduated;
       return s;
     });
 
-  // ── MOMENTUM: Sustained buying — buys > sells, active ──
+  // ── MOMENTUM: Sustained buying pressure ──
   radar.tabs.momentum = deduped
-    .filter(t => t.buys >= 2 && (now - t.createdAt) > 30000) // alive > 30s, 2+ buys
+    .filter(t => t.buys >= 2 && (now - t.createdAt) > 30000)
     .map(t => {
       const ageMin = Math.max(0.5, (now - t.createdAt) / 60000);
       const buyRate = t.buys / ageMin;
-      const buyPressure = t.buys / Math.max(1, t.buys + t.sells);
+      const pressure = t.buys / Math.max(1, t.buys + t.sells);
       const ub = t.uniqueBuyers?.size || 0;
-      const mcGrowth = t.spark?.length > 2 ? (t.spark[t.spark.length - 1] - t.spark[0]) / Math.max(1, t.spark[0]) : 0;
-      return { ...t, _momentum: buyRate * 12 + buyPressure * 20 + ub * 10 + mcGrowth * 30 + Math.min(15, t.volumeSol * 3) };
+      const mcGrowth = t.spark?.length > 2 ? (t.spark[t.spark.length-1] - t.spark[0]) / Math.max(1, t.spark[0]) : 0;
+      return { ...t, _momentum: buyRate*12 + pressure*20 + ub*10 + mcGrowth*30 + Math.min(15, t.volumeSol*3) };
     })
     .sort((a, b) => b._momentum - a._momentum)
     .slice(0, 50).map(serialize);
@@ -470,6 +502,7 @@ setInterval(() => {
 }, 5000);
 
 connectPumpPortal();
+
 
 // ═══════════════════════════════════════
 // WEBSOCKET BROADCAST
