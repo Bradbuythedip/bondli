@@ -1265,25 +1265,52 @@ app.get("/api/positions/:wallet", async (req, res) => {
       const amount = parseFloat(info.tokenAmount.uiAmountString || "0");
       if (amount <= 0) continue;
       const mint = info.mint;
-      // Try to get token info from radar
-      const radarToken = radar.tokens.get(mint);
+      const decimals = info.tokenAmount.decimals || 6;
+      
+      // Get token info from radar or fetch from pump.fun
+      let radarToken = radar.tokens.get(mint);
+      
+      // If not in radar, try to fetch basic info
+      if (!radarToken) {
+        try {
+          const meta = await fetchPumpFunMetadata(mint);
+          if (meta) {
+            radarToken = { name: meta.name, ticker: meta.symbol, image: meta.image, mcapSol: 0, mcapUsd: meta.marketCap || 0 };
+          }
+        } catch {}
+      }
+      
+      // Estimate value: tokens held / total supply * mcap
+      // pump.fun total supply is ~1B tokens
+      const totalSupply = 1_000_000_000;
+      const holdPct = amount / totalSupply;
+      const mcUsd = radarToken?.mcapUsd || 0;
+      const valueUsd = mcUsd > 0 ? holdPct * mcUsd : 0;
+      const valueSol = solUsdPrice > 0 ? valueUsd / solUsdPrice : 0;
+      
       positions.push({
         mint,
         ticker: radarToken?.ticker || "",
-        name: radarToken?.name || mint.slice(0, 8),
+        name: radarToken?.name || "",
         image: radarToken?.image || "",
         amount,
+        decimals,
         mcapSol: radarToken?.mcapSol || 0,
-        mcapUsd: radarToken?.mcapUsd || 0,
+        mcapUsd: mcUsd,
         marketCapSol: radarToken?.mcapSol || 0,
-        valueSol: 0, // Would need DEX quote for accurate value
-        valueUsd: 0,
+        valueSol: +valueSol.toFixed(6),
+        valueUsd: +valueUsd.toFixed(2),
+        holdPct: +(holdPct * 100).toFixed(3),
         pnlSol: 0,
         pnlPct: 0,
       });
     }
+    
+    // Sort by value descending
+    positions.sort((a, b) => b.valueUsd - a.valueUsd);
     res.json({ positions });
   } catch (e) {
+    console.error("[POSITIONS] Error:", e.message);
     res.json({ positions: [], error: e.message });
   }
 });
