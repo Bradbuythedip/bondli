@@ -133,10 +133,21 @@ async function fetchPumpFunMetadata(ca) {
   try {
     const r = await fetch(`${PUMP_FUN_API}/coins/${ca}`, {
       signal: AbortSignal.timeout(8000),
-      headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" }
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Origin": "https://pump.fun",
+        "Referer": "https://pump.fun/",
+      }
     });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      console.log(`[META] pump.fun API ${r.status} for ${ca.slice(0,8)}`);
+      return null;
+    }
     const d = await r.json();
+    if (radar._debugCount < 8) {
+      console.log(`[META] Got: ${d.name || "?"} image: ${(d.image_uri || "none").slice(0, 60)}`);
+    }
     return {
       name: d.name || "",
       symbol: d.symbol || "",
@@ -147,11 +158,12 @@ async function fetchPumpFunMetadata(ca) {
       telegram: d.telegram || "",
       complete: d.complete || false,
       raydiumPool: d.raydium_pool || null,
-      marketCap: d.market_cap || 0,
+      marketCap: d.usd_market_cap || d.market_cap || 0,
       bondingCurve: d.bonding_curve || "",
       creator: d.creator || "",
     };
-  } catch {
+  } catch (e) {
+    console.log(`[META] Error for ${ca.slice(0,8)}: ${e.message}`);
     return null;
   }
 }
@@ -1233,22 +1245,42 @@ app.get("/api/img", async (req, res) => {
   if (!url) return res.status(400).end();
   try {
     let fetchUrl = url;
-    if (fetchUrl.startsWith("ipfs://")) fetchUrl = "https://cf-ipfs.com/ipfs/" + fetchUrl.slice(7);
-    // Try pump.fun CDN format first for IPFS hashes
-    if (fetchUrl.includes("bafkrei") && !fetchUrl.includes("http")) {
-      fetchUrl = "https://cf-ipfs.com/ipfs/" + fetchUrl;
+    if (fetchUrl.startsWith("ipfs://")) fetchUrl = fetchUrl.slice(7);
+    
+    // Extract IPFS hash if present
+    const ipfsMatch = fetchUrl.match(/(Qm[a-zA-Z0-9]{44,}|bafkrei[a-zA-Z0-9]{50,}|bafy[a-zA-Z0-9]{50,})/);
+    const ipfsHash = ipfsMatch ? ipfsMatch[1] : null;
+    
+    // Build ordered list of URLs to try
+    const urls = [];
+    if (ipfsHash) {
+      urls.push(`https://img.fotofolio.xyz/?url=https%3A%2F%2Fcf-ipfs.com%2Fipfs%2F${ipfsHash}`);
+      urls.push(`https://cf-ipfs.com/ipfs/${ipfsHash}`);
+      urls.push(`https://gateway.pinata.cloud/ipfs/${ipfsHash}`);
+      urls.push(`https://ipfs.io/ipfs/${ipfsHash}`);
     }
-    const r = await fetch(fetchUrl, { 
-      signal: AbortSignal.timeout(10000),
-      headers: { "User-Agent": "Mozilla/5.0", "Accept": "image/*,*/*" }
-    });
-    if (!r.ok) return res.status(r.status).end();
-    const ct = r.headers.get("content-type") || "image/png";
-    res.set("Content-Type", ct);
-    res.set("Cache-Control", "public, max-age=86400"); // 24h cache
-    res.set("Access-Control-Allow-Origin", "*");
-    const buf = Buffer.from(await r.arrayBuffer());
-    res.send(buf);
+    // Always try the original URL
+    if (!fetchUrl.startsWith("http")) fetchUrl = "https://" + fetchUrl;
+    urls.push(fetchUrl);
+    
+    for (const u of urls) {
+      try {
+        const r = await fetch(u, {
+          signal: AbortSignal.timeout(6000),
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "image/*,*/*" }
+        });
+        if (!r.ok) continue;
+        const ct = r.headers.get("content-type") || "image/png";
+        if (!ct.includes("image") && !ct.includes("octet")) continue;
+        res.set("Content-Type", ct);
+        res.set("Cache-Control", "public, max-age=86400");
+        res.set("Access-Control-Allow-Origin", "*");
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.length < 100) continue; // skip empty/tiny responses
+        return res.send(buf);
+      } catch { continue; }
+    }
+    res.status(404).end();
   } catch { res.status(502).end(); }
 });
 
@@ -1485,19 +1517,33 @@ app.get("/api/intel/stats", (req, res) => {
     { feature: "so_hasTwitter", weight: (1.2 + Math.random() * 0.1).toFixed(3) },
   ];
 
-  // Score and sort ALL tokens, return best ones with FULL CA
-  const scored = (hot.length > 0 ? hot : tokens.slice(-20)).map(t => ({
-    ca: t.ca, // FULL CA — not sliced
-    name: t.name || t.ticker || "",
-    score: Math.min(99, Math.round(
-      (t.buys || 0) * 4 + (t.volumeSol || 0) * 8 +
-      (t.uniqueBuyers?.size || 0) * 6 + (t.twitter ? 8 : 0) + (t.website ? 5 : 0) +
-      (t.mcapUsd > 5000 ? 10 : 0) + (t.mcapUsd > 20000 ? 15 : 0)
-    )),
-    bondProb: Math.min(99, Math.round((t.mcapUsd || 0) / 69000 * 100)),
-    mcapUsd: t.mcapUsd || 0,
-    time: t.createdAt,
-  })).sort((a, b) => b.score - a.score);
+  // Score with logarithmic scaling — need real activity to score high
+  const scored = (hot.length > 0 ? hot : tokens.slice(-20)).map(t => {
+    const buys = t.buys || 0;
+    const ub = t.uniqueBuyers?.size || 0;
+    const vol = t.volumeSol || 0;
+    const mc = t.mcapUsd || 0;
+    
+    // Logarithmic components — diminishing returns
+    const buyScore = Math.log2(buys + 1) * 6;        // 0=0, 2=6, 5=15, 10=21, 50=34, 100=40
+    const ubScore = Math.log2(ub + 1) * 5;            // 0=0, 2=5, 5=13, 10=17, 50=28
+    const volScore = Math.log2(vol + 1) * 3;          // 0=0, 1=3, 5=8, 10=10, 100=20
+    const mcScore = mc >= 69000 ? 15 : mc >= 20000 ? 10 : mc >= 10000 ? 7 : mc >= 5000 ? 4 : mc >= 3000 ? 2 : 0;
+    const socialScore = (t.twitter ? 3 : 0) + (t.website ? 2 : 0) + (t.telegram ? 1 : 0);
+    const pressureScore = buys > 0 ? (buys / Math.max(1, buys + (t.sells||0))) * 8 : 0; // buy pressure 0-8
+    
+    const raw = buyScore + ubScore + volScore + mcScore + socialScore + pressureScore;
+    const score = Math.min(99, Math.round(raw));
+    
+    return {
+      ca: t.ca,
+      name: t.name || t.ticker || "",
+      score,
+      bondProb: Math.min(99, Math.round((mc / 69000) * 100)),
+      mcapUsd: mc,
+      time: t.createdAt,
+    };
+  }).sort((a, b) => b.score - a.score);
 
   // Deduplicate by name
   const seen = new Set();
