@@ -468,9 +468,10 @@ return<div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
 <div style={{display:"flex",flexDirection:"column",gap:2}}>
 {(intelData?.recentEvents||[]).slice(0,12).map((e,i)=>{const score=e.data?.score||0;const bp=e.data?.bondProb||0;const name=e.data?.name||e.data?.ca?.slice(0,6)||"?";const sc=score>=50?T.gn:score>=25?T.yl:T.pu;return<div key={i} style={{display:"flex",alignItems:"center",gap:0,height:16}}>
 <span style={{fontSize:9,color:T.ft,width:85,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"right",paddingRight:4,flexShrink:0}}>{name}</span>
-<div style={{flex:1,height:10,borderRadius:3,background:T.sf,overflow:"hidden",position:"relative"}}>
-<div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,score)+"%",borderRadius:3,background:sc+"28",transition:"width 0.5s"}}/>
-<div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,bp)+"%",borderRadius:3,background:sc,transition:"width 0.5s"}}/>
+<div style={{flex:1,height:12,borderRadius:3,background:T.sf,overflow:"hidden",position:"relative"}}>
+<div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,score)+"%",borderRadius:3,background:sc+"40",transition:"width 0.5s"}}/>
+<div style={{position:"absolute",left:0,top:2,height:4,width:Math.min(100,bp)+"%",borderRadius:2,background:"rgba(255,255,255,0.7)",transition:"width 0.5s"}}/>
+<div style={{position:"absolute",left:0,top:7,height:3,width:Math.min(100,score)+"%",borderRadius:2,background:sc,transition:"width 0.5s",opacity:.6}}/>
 </div>
 <span style={{fontSize:9,color:sc,fontWeight:700,width:22,textAlign:"right",flexShrink:0,paddingLeft:3}}>{score}</span>
 </div>})}
