@@ -23,10 +23,9 @@
  */
 
 import express from "express";
-import cors from "cors";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import Redis from "ioredis";
+import { createClient as createRedisClient } from "redis";
 import {
   Connection, Keypair, PublicKey, Transaction,
   SystemProgram, LAMPORTS_PER_SOL, sendAndConfirmTransaction, ComputeBudgetProgram
@@ -52,7 +51,14 @@ const PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data";
 // INIT
 // ═══════════════════════════════════════
 const app = express();
-app.use(cors({ origin: "*" }));
+// CORS — inline, no npm package needed
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Content-Type, X-Wallet, x-wallet, X-Admin-Secret, X-API-Secret, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  if (req.method === "OPTIONS") return res.status(200).end();
+  next();
+});
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 // Trust proxy (Railway)
@@ -66,7 +72,8 @@ const connection = new Connection(RPC_URL, "confirmed");
 let redis = null;
 if (REDIS_URL) {
   try {
-    redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3, lazyConnect: true });
+    redis = createRedisClient({ url: REDIS_URL });
+    redis.on("error", (e) => console.warn("[REDIS] Error:", e.message));
     await redis.connect();
     console.log("[REDIS] Connected");
   } catch (e) {
