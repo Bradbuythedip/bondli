@@ -1164,18 +1164,10 @@ app.post("/api/quick-sell", async (req, res) => {
 
     const tw = await getTradingWallet(wallet);
     if (!tw) return res.status(400).json({ error: "No trading wallet" });
-
-    // Get token balance
     const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
-    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
-    const mintStr = ca;
-    const tokenAccount = tokenAccounts.value.find(a => a.account.data.parsed.info.mint === mintStr);
-    if (!tokenAccount) return res.status(400).json({ error: "No token balance" });
+    const pct = percent || 100;
 
-    const balance = tokenAccount.account.data.parsed.info.tokenAmount.amount;
-    const sellAmount = Math.floor((parseInt(balance) * (percent || 100)) / 100);
-    if (sellAmount <= 0) return res.json({ ok: true, signature: null, message: "Nothing to sell" });
-
+    // PumpPortal supports percentage strings for sells: "25%", "50%", "100%"
     const response = await fetch("https://pumpportal.fun/api/trade-local", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1183,9 +1175,9 @@ app.post("/api/quick-sell", async (req, res) => {
         publicKey: tw.pubkey,
         action: "sell",
         mint: ca,
-        amount: sellAmount.toString(),
+        amount: pct + "%",
         denominatedInSol: "false",
-        slippage: 25,
+        slippage: 30,
         priorityFee: 0.005,
         pool: "auto",
       }),
@@ -1193,7 +1185,8 @@ app.post("/api/quick-sell", async (req, res) => {
 
     if (!response.ok) {
       const err = await response.text();
-      return res.status(400).json({ error: "PumpPortal sell error: " + err });
+      console.error(`[SELL] PumpPortal ${response.status}: ${err.slice(0, 200)}`);
+      return res.status(400).json({ error: "Sell failed: " + (err.slice(0, 100)) });
     }
 
     const txBytes = await response.arrayBuffer();
@@ -1201,7 +1194,7 @@ app.post("/api/quick-sell", async (req, res) => {
     tx.sign([kp]);
     const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
 
-    res.json({ ok: true, signature: sig, percent });
+    res.json({ ok: true, signature: sig, percent: pct });
   } catch (e) {
     console.error("[QUICK-SELL] Error:", e.message);
     res.status(500).json({ error: e.message });
@@ -1229,7 +1222,7 @@ app.post("/api/sell-all", async (req, res) => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             publicKey: tw.pubkey, action: "sell", mint: info.mint,
-            amount: balance.toString(), denominatedInSol: "false",
+            amount: "100%", denominatedInSol: "false",
             slippage: 30, priorityFee: 0.005, pool: "auto",
           }),
         });
