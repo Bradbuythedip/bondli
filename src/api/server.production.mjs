@@ -298,25 +298,39 @@ setInterval(() => {
 
   const all = [...radar.tokens.values()].filter(t => now - t.createdAt < 3600000);
 
-  // ── DEDUP by normalized name ──
-  // Keep the "best" version: most buys > most volume > has socials > oldest (first mover)
+  // ── DEDUP by normalized name + ticker ──
   function dedup(tokens) {
-    const byName = new Map();
+    const best = new Map(); // normalized key → best token
     for (const t of tokens) {
-      const key = (t.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (!key || key.length < 2) { byName.set(t.ca, t); continue; }
-      const existing = byName.get(key);
-      if (!existing) { byName.set(key, t); continue; }
-      // Score which is the "real" one
-      const scoreA = (existing.buys || 0) * 2 + (existing.volumeSol || 0) * 3
-        + (existing.twitter ? 5 : 0) + (existing.website ? 5 : 0) + (existing.image ? 3 : 0)
-        + (existing.description ? 2 : 0);
-      const scoreB = (t.buys || 0) * 2 + (t.volumeSol || 0) * 3
-        + (t.twitter ? 5 : 0) + (t.website ? 5 : 0) + (t.image ? 3 : 0)
-        + (t.description ? 2 : 0);
-      if (scoreB > scoreA) byName.set(key, t);
+      const nameKey = (t.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const tickerKey = (t.ticker || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      // Use both name and ticker as dedup keys
+      const keys = [];
+      if (nameKey && nameKey.length >= 2) keys.push("n:" + nameKey);
+      if (tickerKey && tickerKey.length >= 1) keys.push("t:" + tickerKey);
+      if (keys.length === 0) { best.set("ca:" + t.ca, t); continue; }
+      
+      // Check if any key already exists
+      let dominated = false;
+      for (const k of keys) {
+        const existing = best.get(k);
+        if (existing && existing.ca !== t.ca) {
+          const scoreOld = (existing.buys || 0) * 3 + (existing.volumeSol || 0) * 4
+            + (existing.twitter ? 6 : 0) + (existing.website ? 4 : 0)
+            + (existing.image ? 3 : 0) + (existing.uniqueBuyers?.size || 0) * 2;
+          const scoreNew = (t.buys || 0) * 3 + (t.volumeSol || 0) * 4
+            + (t.twitter ? 6 : 0) + (t.website ? 4 : 0)
+            + (t.image ? 3 : 0) + (t.uniqueBuyers?.size || 0) * 2;
+          if (scoreNew <= scoreOld) { dominated = true; break; }
+          // New token wins — remove old from all its keys
+          for (const [mk, mv] of best) { if (mv.ca === existing.ca) best.delete(mk); }
+        }
+      }
+      if (!dominated) { for (const k of keys) best.set(k, t); }
     }
-    return [...byName.values()];
+    // Return unique tokens by CA
+    const seen = new Set();
+    return [...best.values()].filter(t => { if (seen.has(t.ca)) return false; seen.add(t.ca); return true; });
   }
 
   // Serialize with TRULY varied sparklines based on token's actual trading pattern
@@ -1378,13 +1392,11 @@ app.get("/api/admin/users", requireAdmin, async (req, res) => {
 // ROUTES: INTEL (meme analytics)
 // ═══════════════════════════════════════
 app.get("/api/intel/stats", (req, res) => {
-  // Real data from radar
   const tokens = [...radar.tokens.values()];
   const withMcap = tokens.filter(t => t.mcapUsd > 0);
   const graduated = tokens.filter(t => t.mcapUsd >= 69000);
-  const hot = tokens.filter(t => t.buys >= 5 && t.volumeSol > 0.5);
+  const hot = tokens.filter(t => t.buys >= 2 || t.volumeSol > 0.1);
   
-  // Top features based on what's working in radar right now
   const topFeatures = [
     { feature: "oc_buyVelocity5m", weight: (2 + Math.random() * 0.3).toFixed(3) },
     { feature: "tp_stickiness", weight: (1.9 + Math.random() * 0.3).toFixed(3) },
@@ -1396,6 +1408,29 @@ app.get("/api/intel/stats", (req, res) => {
     { feature: "so_hasTwitter", weight: (1.2 + Math.random() * 0.1).toFixed(3) },
   ];
 
+  // Score and sort ALL tokens, return best ones with FULL CA
+  const scored = (hot.length > 0 ? hot : tokens.slice(-20)).map(t => ({
+    ca: t.ca, // FULL CA — not sliced
+    name: t.name || t.ticker || "",
+    score: Math.min(99, Math.round(
+      (t.buys || 0) * 4 + (t.volumeSol || 0) * 8 +
+      (t.uniqueBuyers?.size || 0) * 6 + (t.twitter ? 8 : 0) + (t.website ? 5 : 0) +
+      (t.mcapUsd > 5000 ? 10 : 0) + (t.mcapUsd > 20000 ? 15 : 0)
+    )),
+    bondProb: Math.min(99, Math.round((t.mcapUsd || 0) / 69000 * 100)),
+    mcapUsd: t.mcapUsd || 0,
+    time: t.createdAt,
+  })).sort((a, b) => b.score - a.score);
+
+  // Deduplicate by name
+  const seen = new Set();
+  const unique = scored.filter(t => {
+    const key = (t.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (key.length > 2 && seen.has(key)) return false;
+    if (key.length > 2) seen.add(key);
+    return true;
+  });
+
   res.json({
     uptime: Math.round(process.uptime()) + "s",
     scorer: {
@@ -1404,28 +1439,15 @@ app.get("/api/intel/stats", (req, res) => {
       topFeatures,
     },
     memory: {
-      total: tokens.length,
-      labeled: withMcap.length,
+      total: tokens.length, labeled: withMcap.length,
       graduated: graduated.length,
       graduationRate: withMcap.length > 0 ? (graduated.length / withMcap.length * 100).toFixed(1) + "%" : "N/A",
     },
     monitor: { tracking: hot.length },
-    recentEvents: hot.length > 0 ? hot.slice(-8).map(t => ({
+    recentEvents: unique.slice(0, 10).map(t => ({
       type: "score",
-      data: {
-        ca: t.ca.slice(0, 8),
-        score: Math.min(99, Math.round(
-          (t.buys || 0) * 4 + (t.volumeSol || 0) * 8 +
-          (t.uniqueBuyers?.size || 0) * 6 + (t.twitter ? 8 : 0) + (t.website ? 5 : 0) +
-          (t.mcapUsd > 5000 ? 10 : 0) + (t.mcapUsd > 20000 ? 15 : 0)
-        )),
-        bondProb: Math.min(99, Math.round((t.mcapUsd || 0) / 69000 * 100)),
-      },
-      time: t.createdAt,
-    })) : tokens.slice(-6).map(t => ({
-      type: "score",
-      data: { ca: t.ca.slice(0, 8), score: Math.round(Math.random() * 30 + 10), bondProb: Math.round((t.mcapUsd || 0) / 69000 * 100) },
-      time: t.createdAt,
+      data: { ca: t.ca, score: t.score, bondProb: t.bondProb, name: t.name, mcap: t.mcapUsd },
+      time: t.time,
     })),
     solPrice: solUsdPrice,
   });
