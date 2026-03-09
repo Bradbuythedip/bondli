@@ -563,7 +563,7 @@ app.get("/api/trading-wallet/list/:wallet", async (req, res) => {
   if (primary) {
     let bal = 0;
     try { bal = await connection.getBalance(new PublicKey(primary.pubkey)) / LAMPORTS_PER_SOL; } catch {}
-    wallets.push({ pubkey: primary.pubkey, label: "Primary", balance: bal, primary: true });
+    wallets.push({ pubkey: primary.pubkey, label: primary.label || "Primary", balance: bal, primary: true });
   }
   // Extra wallets (pro/VIP)
   if (redis) {
@@ -580,6 +580,66 @@ app.get("/api/trading-wallet/list/:wallet", async (req, res) => {
     } catch {}
   }
   res.json({ ok: true, wallets, count: wallets.length });
+});
+
+// ── IMPORT WALLET: bring your own aged wallets ──
+app.post("/api/trading-wallet/import", async (req, res) => {
+  try {
+    const { wallet, privateKey, label } = req.body;
+    if (!wallet || !privateKey) return res.status(400).json({ error: "wallet and privateKey required" });
+    
+    // Validate the private key
+    let kp;
+    try { kp = Keypair.fromSecretKey(bs58.decode(privateKey)); }
+    catch { return res.status(400).json({ error: "Invalid private key (must be base58)" }); }
+    
+    const importedPubkey = kp.publicKey.toBase58();
+    let bal = 0;
+    try { bal = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL; } catch {}
+    
+    // Check if user already has a primary wallet
+    const existing = await getTradingWallet(wallet);
+    
+    if (!existing) {
+      // No primary wallet — make this the primary
+      const tw = { pubkey: importedPubkey, secret: privateKey, label: label || "Imported", createdAt: new Date().toISOString(), imported: true };
+      await saveTradingWallet(wallet, tw);
+      await saveUser(wallet, { tradingWallet: importedPubkey });
+      console.log(`[WALLET] Imported as primary for ${wallet.slice(0, 8)}: ${importedPubkey.slice(0, 8)} (${bal.toFixed(4)} SOL)`);
+      return res.json({ ok: true, pubkey: importedPubkey, balance: bal, primary: true, label: tw.label });
+    }
+    
+    // Already has primary — add as extra (pro/VIP check)
+    const user = await getUser(wallet);
+    const tierInfo = resolveTier(wallet, user);
+    if (tierInfo.tier === "free" && !tierInfo.whitelisted) {
+      return res.status(403).json({ error: "Pro/VIP required for multiple wallets. Free tier gets 1 wallet." });
+    }
+    
+    let wallets = [];
+    if (redis) {
+      try {
+        const raw = await redis.get("extra_wallets:" + wallet);
+        if (raw) wallets = JSON.parse(raw);
+      } catch {}
+    }
+    
+    // Check for duplicates
+    if (wallets.some(w => w.pubkey === importedPubkey) || existing.pubkey === importedPubkey) {
+      return res.status(400).json({ error: "Wallet already added" });
+    }
+    
+    wallets.push({ pubkey: importedPubkey, secret: privateKey, label: label || "Imported " + (wallets.length + 2), createdAt: new Date().toISOString(), imported: true });
+    if (redis) {
+      try { await redis.set("extra_wallets:" + wallet, JSON.stringify(wallets), { EX: 2592000 }); } catch {}
+    }
+    
+    console.log(`[WALLET] Imported extra for ${wallet.slice(0, 8)}: ${importedPubkey.slice(0, 8)} (${bal.toFixed(4)} SOL) — total: ${wallets.length + 1}`);
+    res.json({ ok: true, pubkey: importedPubkey, balance: bal, primary: false, label: wallets[wallets.length - 1].label, totalWallets: wallets.length + 1 });
+  } catch (e) {
+    console.error("[WALLET] Import error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ═══════════════════════════════════════
