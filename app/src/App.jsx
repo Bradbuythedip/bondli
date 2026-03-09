@@ -14,7 +14,7 @@ radar:({s:z=16,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="n
 bags:({s:z=16,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a4 4 0 00-8 0v2"/></svg>,
 deploy:({s:z=16,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>,
 trend:({s:z=12,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>,
-fire:({s:z=12,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><path d="M12 12c-2-2.67-4-4.33-4-6 0-3.31 3.13-4 4-4s4 .69 4 4c0 1.67-2 3.33-4 6z"/><path d="M8 22c0-4.42 3.58-8 8-8"/></svg>,
+fire:({s:z=12,c="#ff6600"})=><svg width={z} height={z} viewBox="0 0 24 24" fill={c}><path d="M12 23c-4.97 0-9-3.58-9-8 0-3.07 2.31-6.64 4.5-9 .42-.45 1.17-.14 1.13.47-.13 1.93.67 3.12 1.37 3.53.2-2.2 1.6-4.5 3.5-6.5.39-.41 1.07-.15 1.07.41 0 2.5 1.5 4.09 3 5.09.27-1.17.43-2.39.43-3.5 0-.36.41-.56.67-.28C21.2 7.82 23 11.1 23 15c0 4.42-4.03 8-9 8h-2z"/></svg>,
 star:({s:z=12,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>,
 grad:({s:z=12,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>,
 rocket:({s:z=16,c="#00e676"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 00-2.91-.09z"/><path d="M12 15l-3-3a22 22 0 012-3.95A12.88 12.88 0 0122 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 01-4 2z"/></svg>,
@@ -56,8 +56,8 @@ function NI({label,value,onChange,min,max,step:s=1,decimals:d}){const T=uT();ret
 function ImgUp({image,onChange,mb}){const T=uT(),ref=useRef(null);const read=f=>{const r=new FileReader();r.onload=()=>onChange(r.result);r.readAsDataURL(f)};return<div onClick={()=>ref.current?.click()} onDrop={e=>{e.preventDefault();if(e.dataTransfer.files[0])read(e.dataTransfer.files[0])}} onDragOver={e=>e.preventDefault()} style={{width:mb?72:100,height:mb?72:100,borderRadius:10,border:"1px dashed "+(image?T.gn+"33":T.bd),background:image?"url("+image+") center/cover":T.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3,cursor:"pointer",flexShrink:0,position:"relative"}}>{!image&&<><IC.upload s={18} c={T.dm}/><span style={{fontSize:8,color:T.ft,fontFamily:M}}>512x512</span></>}<input ref={ref} type="file" accept="image/*" style={{display:"none"}} onChange={e=>{if(e.target.files?.[0])read(e.target.files[0])}}/></div>}
 const tk=s=>s?s.replace(/^\$/,""):s||"";
 const solFmt=n=>n<.001?"0":n<1?n.toFixed(3).replace(/0+$/,"").replace(/\.$/,""):n<100?n.toFixed(2):Math.round(n)+"";
-// Image proxy: routes external images through backend to avoid OpaqueResponseBlocking + CORS
-const imgProxy=u=>!u?"":u.startsWith("data:")?u:(u.includes("ipfs")||u.includes("pump")||u.includes("arweave")||u.includes("nftstorage")||u.includes("storacha")||u.includes("cf-ipfs")||u.includes(".webp")||u.includes("bafkrei"))?API+"/api/img?url="+encodeURIComponent(u):u;
+// Image proxy: route ALL external images through backend to avoid CORS/blocking
+const imgProxy=u=>!u?"":u.startsWith("data:")?u:u.startsWith("/")?u:API+"/api/img?url="+encodeURIComponent(u);
 // MC correction: server uses * 170, we recalculate with live price
 const fixMc=(t,solPrice)=>{if(t.mcapSol&&solPrice)return Math.round(t.mcapSol*solPrice);if(t.marketCapSol&&solPrice)return Math.round(t.marketCapSol*solPrice);return t.mcapUsd||0};
 const PRESETS=[{name:"Scout",sol:.5,snc:1,slip:20,dur:30,jt:.001},{name:"Standard",sol:2,snc:2,slip:25,dur:60,jt:.001},{name:"Swarm",sol:10,snc:3,slip:30,dur:120,jt:.002}];
@@ -354,14 +354,16 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 {(()=>{
 const roles=["dev"];
 for(let i=1;i<=snc;i++)roles.push("sniper_"+i);
-const extras=["accumulator","volume","momentum","diamond"];
-let remaining=nw-roles.length;
-for(const e of extras){if(remaining<=0)break;roles.push(e);remaining--}
+const brainTypes=["accumulator","volume","momentum","diamond","whale_bluffer","degen_aper","momentum_rider","wash_painter","stealth_buyer","front_runner","bag_holder","exit_liquidity","sweep_bot","arb_walker","signal_follower","phantom_buyer"];
+let ri=0;
+while(roles.length<nw&&ri<brainTypes.length){roles.push(brainTypes[ri]);ri++}
+while(roles.length<nw){roles.push("fleet_"+(roles.length-snc))}
 return roles.map(role=>{
-const roleLabel=role==="dev"?"Dev Wallet":role.startsWith("sniper")?"Sniper "+role.split("_")[1]:role.charAt(0).toUpperCase()+role.slice(1);
+const roleLabel=role==="dev"?"Dev Wallet":role.startsWith("sniper")?"Sniper "+role.split("_")[1]:role.startsWith("fleet_")?"Fleet "+role.split("_")[1]:role.split("_").map(w=>w.charAt(0).toUpperCase()+w.slice(1)).join(" ");
+const roleColor=role==="dev"?T.yl:role.startsWith("sniper")?T.gn:role.startsWith("fleet")?T.dm:T.pu;
 return<div key={role} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 8px"}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:3}}>
-<span style={{fontSize:8,fontWeight:700,color:role==="dev"?T.yl:role.startsWith("sniper")?T.gn:T.pu}}>{roleLabel}</span>
+<span style={{fontSize:8,fontWeight:700,color:roleColor}}>{roleLabel}</span>
 <span style={{fontSize:7,color:T.ft}}>{role==="dev"?"required":"optional"}</span>
 </div>
 <input placeholder="Paste private key or leave empty (auto)" style={{width:"100%",padding:"4px 6px",background:T.sf,border:"1px solid "+T.bd,borderRadius:4,fontSize:8,color:T.tx,fontFamily:M,outline:"none",boxSizing:"border-box"}}
@@ -451,6 +453,28 @@ toast(name,"success")}} style={{display:"flex",alignItems:"center",gap:5,padding
 <span style={{fontSize:7,padding:"1px 5px",borderRadius:3,border:"1px solid "+l.c+"33",color:l.c,fontWeight:700}}>{l.st}</span>
 </div>)}
 </div>
+
+{/* Live ML Behavior — scoring distribution + feature weights */}
+{intelData?.scorer?.topFeatures?.length>0&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:16,marginTop:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:11,fontWeight:800}}>Model Behavior</span><span style={{fontSize:7,color:T.dm}}>live feature weights</span></div>
+{/* Feature weight bars */}
+<div style={{display:"grid",gap:4}}>
+{intelData.scorer.topFeatures.slice(0,8).map((f,i)=>{const maxW=parseFloat(intelData.scorer.topFeatures[0]?.weight)||2.5;const pct=Math.min(100,Math.round((parseFloat(f.weight)/maxW)*100));const featureNames={oc_buyVelocity5m:"Buy Velocity (5m)",tp_stickiness:"Meme Stickiness",oc_uniqueBuyers5m:"Unique Buyers (5m)",k_herdSignal:"Herd Signal",tp_lawOfFew:"Law of Few",k_cognitiveEase:"Name Ease",oc_volumeSol5m:"Volume SOL (5m)",so_hasTwitter:"Has Twitter"};return<div key={f.feature} style={{display:"flex",alignItems:"center",gap:6}}>
+<span style={{fontSize:7,color:T.dm,minWidth:90,textAlign:"right"}}>{featureNames[f.feature]||f.feature}</span>
+<div style={{flex:1,height:6,borderRadius:3,background:T.bg,overflow:"hidden"}}><div style={{width:pct+"%",height:"100%",borderRadius:3,background:`linear-gradient(90deg,${T.pu},${T.gn})`,transition:"width 1s"}}/></div>
+<span style={{fontSize:7,color:T.tx,fontWeight:700,minWidth:25}}>{f.weight}</span>
+</div>})}
+</div>
+{/* Scoring distribution */}
+{(user?.tier==="pro"||user?.whitelisted)&&intelData.recentEvents?.length>0&&<div style={{marginTop:10,borderTop:"1px solid "+T.bd,paddingTop:8}}>
+<div style={{fontSize:8,fontWeight:700,color:T.dm,marginBottom:6}}>Score Distribution</div>
+<div style={{display:"flex",alignItems:"flex-end",gap:1,height:40}}>
+{[0,10,20,30,40,50,60,70,80,90].map(bucket=>{const count=intelData.recentEvents.filter(e=>e.data?.score>=bucket&&e.data?.score<bucket+10).length;const h=count>0?Math.max(4,Math.round((count/Math.max(1,intelData.recentEvents.length))*40)):0;return<div key={bucket} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
+<div style={{width:"100%",height:h,borderRadius:2,background:bucket>=50?T.gn+"66":bucket>=25?T.yl+"66":T.ft+"44"}}/>
+<span style={{fontSize:5,color:T.ft}}>{bucket}</span>
+</div>})}
+</div></div>}
+</div>}
 
 {/* Tier features */}
 <div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:16,marginTop:8}}>
