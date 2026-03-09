@@ -251,34 +251,88 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 
 {showSim&&<div style={{padding:mb?"6px 8px":"8px 16px"}}><EB l="Sim"><SimMode mb={mb}/></EB></div>}
 
-{launched&&lCA?<EB l="Session"><div style={{padding:mb?8:16,animation:"fu .2s ease"}}><div style={{background:T.sf,border:"1px solid "+T.gn+"18",borderRadius:10,overflow:"hidden"}}>
-{/* Session header */}
-<div style={{padding:"8px 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-<div style={{display:"flex",alignItems:"center",gap:5}}><span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/><span style={{fontSize:13,fontWeight:800,color:T.gn}}>LIVE</span>{fleet?.phase&&<span style={{fontSize:8,color:T.dm,padding:"1px 5px",borderRadius:3,border:"1px solid "+T.bd}}>{fleet.phase}</span>}</div>
+{launched&&lCA?<EB l="War Room"><div style={{padding:mb?4:8,animation:"fu .2s ease"}}>
+{/* ═══ WAR ROOM HEADER ═══ */}
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 10px",background:T.sf,border:"1px solid "+T.gn+"22",borderRadius:10,marginBottom:6}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}>
+<span style={{width:8,height:8,borderRadius:"50%",background:T.gn,animation:"gp 1.5s infinite"}}/>
+<span style={{fontSize:15,fontWeight:900,color:T.gn}}>LIVE</span>
+<span style={{fontSize:10,color:T.dm,fontWeight:700}}>{tk(fleet?.ca?.slice(0,8)||lCA.slice(0,8))}</span>
+{fleet?.phase&&<span style={{fontSize:7,padding:"2px 6px",borderRadius:4,background:fleet.phase==="selling"?T.rd+"12":fleet.phase==="volume"?T.pu+"12":T.gn+"12",color:fleet.phase==="selling"?T.rd:fleet.phase==="volume"?T.pu:T.gn,fontWeight:800,textTransform:"uppercase"}}>{fleet.phase}</span>}
+</div>
 <div style={{display:"flex",gap:2}}>
-<button onClick={resetHome} style={{background:"none",border:"1px solid "+T.bd,borderRadius:5,padding:"3px 8px",fontSize:8,color:T.dm,cursor:"pointer"}}>back</button>
-<button onClick={async()=>{try{await a.ss(asid,user.pubkey);toast("Closing...","info")}catch(e){toast(e.message,"error")}}} style={{background:T.rd+"08",border:"1px solid "+T.rd+"18",borderRadius:5,padding:"3px 8px",fontSize:8,fontWeight:700,color:T.rd,cursor:"pointer"}}>Close</button>
-<button onClick={async()=>{try{const r=await a.fr(asid,user.pubkey);toast(`Swept ${(r.totalRecovered||0).toFixed(4)} SOL`,"success")}catch(e){toast(e.message,"error")}}} style={{background:T.yl+"08",border:"1px solid "+T.yl+"18",borderRadius:5,padding:"3px 8px",fontSize:8,fontWeight:700,color:T.yl,cursor:"pointer"}}>Sweep</button>
-<button onClick={async()=>{try{const k=await a.ek(asid,user.pubkey);if(k.ok&&k.keys?.length){navigator.clipboard?.writeText(k.keys.map(w=>w.role+": "+w.secret).join("\n"));toast(k.keys.length+" keys copied","success")}else toast("No keys","info")}catch(e){toast(e.message,"error")}}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:5,padding:"3px 8px",fontSize:8,color:T.ft,cursor:"pointer"}}>Keys</button>
+<button onClick={resetHome} style={{background:"none",border:"1px solid "+T.bd,borderRadius:5,padding:"4px 10px",fontSize:8,color:T.dm,cursor:"pointer"}}>← Back</button>
+<button onClick={async()=>{try{const r=await a.ss(asid,user.pubkey);toast(`Closed — ${(r.totalSwept||0).toFixed(4)} SOL swept`,"success");resetHome()}catch(e){toast(e.message,"error")}}} style={{background:T.rd+"0a",border:"1px solid "+T.rd+"22",borderRadius:5,padding:"4px 10px",fontSize:8,fontWeight:800,color:T.rd,cursor:"pointer"}}>Close + Sweep</button>
 </div></div>
-{/* Chart */}
-<iframe src={"https://www.gmgn.cc/kline/sol/"+lCA} style={{width:"100%",height:mb?260:380,border:"none",display:"block"}} title="chart"/>
-{/* Fleet stats */}
-{fleet&&<div style={{padding:"6px 12px",borderTop:"1px solid "+T.bd,display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(70px,1fr))",gap:4,fontSize:9}}>
-<div style={{textAlign:"center"}}><div style={{fontSize:12,fontWeight:800,color:T.gn}}>{fleet.tradeCount||0}</div><div style={{fontSize:6,color:T.ft}}>TRADES</div></div>
-<div style={{textAlign:"center"}}><div style={{fontSize:12,fontWeight:800,color:T.rd}}>{fs(fleet.solSpent,2)}</div><div style={{fontSize:6,color:T.ft}}>SPENT</div></div>
-<div style={{textAlign:"center"}}><div style={{fontSize:12,fontWeight:800,color:T.gn}}>{fs(fleet.solRecovered,2)}</div><div style={{fontSize:6,color:T.ft}}>BACK</div></div>
-<div style={{textAlign:"center"}}><div style={{fontSize:12,fontWeight:800,color:((fleet.solRecovered||0)-(fleet.solSpent||0))>=0?T.gn:T.rd}}>{((fleet.solRecovered||0)-(fleet.solSpent||0)).toFixed(3)}</div><div style={{fontSize:6,color:T.ft}}>PnL</div></div>
-{fleet.gameState&&<div style={{textAlign:"center"}}><div style={{fontSize:12,fontWeight:800,color:fleet.gameState.signal==="SELL_NOW"?T.rd:fleet.gameState.signal==="RIDE"?T.gn:T.yl}}>{fleet.gameState.signal}</div><div style={{fontSize:6,color:T.ft}}>SIGNAL</div></div>}
-{fleet.gameState&&<div style={{textAlign:"center"}}><div style={{fontSize:12,fontWeight:800,color:T.tx}}>{fleet.gameState.uniqueBuyers||0}</div><div style={{fontSize:6,color:T.ft}}>EXT BUYERS</div></div>}
-</div>}
-{/* Links */}
-<div style={{padding:"6px 12px",borderTop:"1px solid "+T.bd,display:"flex",gap:3}}>
-<button onClick={()=>{navigator.clipboard?.writeText(lCA);toast("Copied","success")}} style={{padding:"2px 6px",background:"none",border:"1px solid "+T.bd,borderRadius:4,fontSize:8,color:T.ft,cursor:"pointer"}}>{lCA.slice(0,10)}…</button>
-<a href={"https://pump.fun/coin/"+lCA} target="_blank" rel="noopener" style={{padding:"2px 6px",background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:4,fontSize:8,color:T.gn,textDecoration:"none",fontWeight:700}}>pump.fun</a>
-<a href={"https://www.gmgn.cc/sol/token/"+lCA} target="_blank" rel="noopener" style={{padding:"2px 6px",background:"none",border:"1px solid "+T.bd,borderRadius:4,fontSize:8,color:T.dm,textDecoration:"none"}}>gmgn</a>
-<a href={"https://dexscreener.com/solana/"+lCA} target="_blank" rel="noopener" style={{padding:"2px 6px",background:"none",border:"1px solid "+T.bd,borderRadius:4,fontSize:8,color:T.dm,textDecoration:"none"}}>dex</a>
-</div></div></div></EB>
+
+{/* ═══ P&L DASHBOARD ═══ */}
+<div style={{display:"grid",gridTemplateColumns:mb?"repeat(3,1fr)":"repeat(6,1fr)",gap:4,marginBottom:6}}>
+{[
+{l:"SPENT",v:fs(fleet?.solSpent,3),c:T.rd,ic:null},
+{l:"BACK",v:fs(fleet?.solRecovered,3),c:T.gn,ic:null},
+{l:"PnL",v:((fleet?.solRecovered||0)-(fleet?.solSpent||0)).toFixed(3),c:((fleet?.solRecovered||0)-(fleet?.solSpent||0))>=0?T.gn:T.rd},
+{l:"TRADES",v:fleet?.tradeCount||0,c:T.tx},
+{l:"SIGNAL",v:fleet?.gameState?.signal||"IDLE",c:fleet?.gameState?.signal==="SELL_NOW"?T.rd:fleet?.gameState?.signal==="RIDE"?T.gn:T.yl},
+{l:"EXT BUYERS",v:fleet?.gameState?.uniqueBuyers||0,c:T.cy||T.tx},
+].map(s=><div key={s.l} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:8,padding:"6px 4px",textAlign:"center"}}>
+<div style={{fontSize:mb?14:18,fontWeight:900,color:s.c,display:"flex",alignItems:"center",justifyContent:"center",gap:2}}>{s.v}{s.l==="PnL"&&<IC.sol s={10}/>}</div>
+<div style={{fontSize:6,color:T.ft,fontWeight:700,letterSpacing:"0.05em"}}>{s.l}</div>
+</div>)}
+</div>
+
+{/* ═══ CHART ═══ */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden",marginBottom:6}}>
+<iframe src={"https://www.gmgn.cc/kline/sol/"+lCA} style={{width:"100%",height:mb?240:360,border:"none",display:"block"}} title="chart" loading="lazy"/>
+</div>
+
+{/* ═══ TRADE FEED + WALLETS (side by side on desktop) ═══ */}
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:6,marginBottom:6}}>
+{/* Trade feed */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden"}}>
+<div style={{padding:"6px 10px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+<span style={{fontSize:10,fontWeight:800}}>Trade Feed</span>
+<span style={{fontSize:7,color:T.ft}}>live</span>
+</div>
+<div style={{maxHeight:200,overflowY:"auto",padding:"2px 0"}}>
+{(fleet?.trades||[]).slice(0,20).map((t,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 10px",fontSize:8,borderBottom:"1px solid "+T.bd+"44"}}>
+<span style={{width:4,height:4,borderRadius:"50%",background:t.side==="buy"?T.gn:T.rd,flexShrink:0}}/>
+<span style={{color:t.side==="buy"?T.gn:T.rd,fontWeight:800,width:28}}>{t.side==="buy"?"BUY":"SELL"}</span>
+<span style={{color:T.dm,flex:1}}>{t.wallet||"?"}</span>
+<span style={{color:T.tx,fontWeight:700}}>{typeof t.sol==="number"?t.sol.toFixed(4):t.sol}</span>
+<IC.sol s={8}/>
+<span style={{fontSize:7,color:T.ft,minWidth:30,textAlign:"right"}}>{t.role||""}</span>
+</div>)}
+{(!fleet?.trades||fleet.trades.length===0)&&<div style={{padding:16,textAlign:"center",fontSize:9,color:T.ft}}>Waiting for trades...</div>}
+</div></div>
+
+{/* Wallet breakdown */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden"}}>
+<div style={{padding:"6px 10px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+<span style={{fontSize:10,fontWeight:800}}>Fleet Wallets</span>
+<button onClick={async()=>{try{const k=await a.ek(asid,user.pubkey);if(k.ok&&k.keys?.length){navigator.clipboard?.writeText(k.keys.map(w=>w.role+": "+w.secret).join("\n"));toast(k.keys.length+" keys copied","success")}}catch(e){toast(e.message,"error")}}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:3,padding:"1px 5px",fontSize:7,color:T.ft,cursor:"pointer"}}>Export All</button>
+</div>
+<div style={{maxHeight:200,overflowY:"auto"}}>
+{(fleet?.wallets||[]).map((w,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderBottom:"1px solid "+T.bd+"44",fontSize:8}}>
+<span style={{width:6,height:6,borderRadius:"50%",background:w.role==="dev"?T.yl:T.gn,flexShrink:0}}/>
+<span style={{fontWeight:700,color:T.dm,minWidth:55}}>{w.role||"fleet"}</span>
+<span style={{color:T.ft,flex:1}}>{(w.pubkey||"").slice(0,8)}…</span>
+<span style={{color:T.gn,fontWeight:700}}>{w.spent!==undefined?w.spent.toFixed(3):"-"}</span>
+<span style={{color:T.ft}}>→</span>
+<span style={{color:T.tx,fontWeight:700}}>{w.recovered!==undefined?w.recovered.toFixed(3):"-"}</span>
+</div>)}
+{(!fleet?.wallets||fleet.wallets.length===0)&&<div style={{padding:16,textAlign:"center",fontSize:9,color:T.ft}}>Fleet initializing...</div>}
+</div></div>
+</div>
+
+{/* ═══ ACTION BAR ═══ */}
+<div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
+<button onClick={()=>{navigator.clipboard?.writeText(lCA);toast("CA copied","success")}} style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:9,color:T.ft,cursor:"pointer",fontFamily:M}}>{lCA.slice(0,12)}…</button>
+<a href={"https://pump.fun/coin/"+lCA} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:6,fontSize:9,color:T.gn,textDecoration:"none",fontWeight:700}}>pump.fun ↗</a>
+<a href={"https://www.gmgn.cc/sol/token/"+lCA} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:9,color:T.dm,textDecoration:"none"}}>gmgn ↗</a>
+<a href={"https://dexscreener.com/solana/"+lCA} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:9,color:T.dm,textDecoration:"none"}}>dexscreener ↗</a>
+<button onClick={async()=>{try{const r=await a.fr(asid,user.pubkey);toast(`Swept ${(r.totalRecovered||0).toFixed(4)} SOL`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:"5px 10px",background:T.yl+"08",border:"1px solid "+T.yl+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.yl,cursor:"pointer"}}>Force Sweep</button>
+</div>
+</div></EB>
 :<>
 {!mb&&<div style={{display:"flex",margin:"8px 16px 0",borderRadius:8,overflow:"hidden",background:T.sf,border:"1px solid "+T.bd}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"bags",l:"Bags",ic:IC.bags},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim}].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"9px 0",background:ac?T.gn+"08":"transparent",borderBottom:ac?"1.5px solid "+T.gn:"1.5px solid transparent",border:"none",fontSize:11,fontWeight:ac?800:500,color:ac?T.gn:T.dm,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}><t.ic s={14} c={ac?T.gn:T.dm}/>{t.l}</button>})}</div>}
 <div id="tc" style={{padding:mb?"0 6px 6px":"0 16px 16px",marginTop:mb?4:8,scrollMarginTop:50}}>
