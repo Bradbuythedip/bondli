@@ -469,15 +469,15 @@ return<div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
 {/* Live Radar Pulse — activity visualization */}
 <div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:8,maxHeight:240,overflowY:"auto"}}>
 <div style={{fontSize:11,fontWeight:700,color:T.dm,marginBottom:6}}>Radar Pulse</div>
-<div style={{display:"flex",flexDirection:"column",gap:2}}>
-{(intelData?.recentEvents||[]).slice(0,12).map((e,i)=>{const score=e.data?.score||0;const bp=e.data?.bondProb||0;const name=e.data?.name||e.data?.ca?.slice(0,6)||"?";const sc=score>=50?T.gn:score>=25?T.yl:T.pu;return<div key={i} style={{display:"flex",alignItems:"center",gap:0,height:16}}>
-<span style={{fontSize:8,color:T.ft,width:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"right",paddingRight:6,flexShrink:0,fontFamily:M}}>{name.length>14?name.slice(0,14):name}</span>
-<div style={{flex:1,height:12,borderRadius:3,background:T.sf,overflow:"hidden",position:"relative"}}>
+<div style={{display:"flex",flexDirection:"column",gap:3}}>
+{(intelData?.recentEvents||[]).slice(0,12).map((e,i)=>{const score=e.data?.score||0;const bp=e.data?.bondProb||0;const name=e.data?.name||e.data?.ca?.slice(0,6)||"?";const sc=score>=50?T.gn:score>=25?T.yl:T.pu;return<div key={i} style={{display:"flex",alignItems:"center",height:18}}>
+<div style={{width:120,flexShrink:0,paddingRight:10,textAlign:"right"}}><span style={{fontSize:10,color:T.tx,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"block"}}>{name.slice(0,16)}</span></div>
+<div style={{flex:1,height:12,borderRadius:3,background:T.sf,overflow:"hidden",position:"relative",marginRight:4}}>
 <div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,score)+"%",borderRadius:3,background:sc+"40",transition:"width 0.5s"}}/>
 <div style={{position:"absolute",left:0,top:2,height:4,width:Math.min(100,bp)+"%",borderRadius:2,background:"rgba(255,255,255,0.7)",transition:"width 0.5s"}}/>
 <div style={{position:"absolute",left:0,top:7,height:3,width:Math.min(100,score)+"%",borderRadius:2,background:sc,transition:"width 0.5s",opacity:.6}}/>
 </div>
-<span style={{fontSize:9,color:sc,fontWeight:700,width:22,textAlign:"right",flexShrink:0,paddingLeft:3}}>{score}</span>
+<span style={{fontSize:10,color:sc,fontWeight:800,width:24,textAlign:"right",flexShrink:0}}>{score}</span>
 </div>})}
 </div>
 {intelData&&<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:3,marginTop:8,paddingTop:6,borderTop:"1px solid "+T.bd}}>
