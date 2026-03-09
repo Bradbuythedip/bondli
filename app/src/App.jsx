@@ -422,19 +422,19 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 </div>
 <div style={{fontSize:8,color:T.ft,textAlign:"center"}}>{intelData?`${intelData.scorer?.trainCount||0} tokens scored · SOL $${intelData.solPrice?.toFixed(0)||"?"} · uptime ${intelData.uptime||"—"}`:"Connecting to intel engine..."}</div>
 
-{/* ═══ LIVE RADAR PULSE + SCORES (3 columns on desktop) ═══ */}
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"5fr 4fr 4fr",gap:6,marginTop:8}}>
+{/* ═══ LIVE INTEL: Scores + Spotlight + Pulse (3 columns) ═══ */}
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:6,marginTop:8}}>
 
 {/* Recent Scores */}
-{intelData?.recentEvents?.length>0&&<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:8,maxHeight:240,overflowY:"auto"}}><div style={{fontSize:8,fontWeight:700,color:T.dm,marginBottom:4}}>Recent Scores {(user?.tier==="pro"||user?.whitelisted)&&<span style={{color:T.gn,fontSize:7}}>· click to ape</span>}</div>{intelData.recentEvents.slice(0,8).map((e,i)=>{const fullCA=e.data?.ca||"";const name=e.data?.name||fullCA.slice(0,6);return<div key={i} onClick={()=>{if(!user?.whitelisted&&user?.tier==="free"){toast("Pro/VIP only","error");return}
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,maxHeight:280,overflowY:"auto"}}><div style={{fontSize:10,fontWeight:700,color:T.dm,marginBottom:6}}>Recent Scores {(user?.tier==="pro"||user?.whitelisted)&&<span style={{color:T.gn,fontSize:8}}>· click to ape</span>}</div>{(intelData?.recentEvents||[]).slice(0,8).map((e,i)=>{const fullCA=e.data?.ca||"";const name=e.data?.name||fullCA.slice(0,6);return<div key={i} onClick={()=>{if(!user?.whitelisted&&user?.tier==="free"){toast("Pro/VIP only","error");return}
 if(!fullCA||fullCA.length<20){toast("No CA available","error");return}
 sTab("radar");sRExp(fullCA);sRS("");
 setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150);
-toast(name,"success")}} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 4px",fontSize:9,color:T.dm,cursor:"pointer",borderRadius:4}}><span style={{width:6,height:6,borderRadius:"50%",background:e.data?.score>=50?T.gn:e.data?.score>=25?T.yl:T.ft,flexShrink:0}}/><span style={{color:T.tx,fontWeight:700,minWidth:60,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:100,fontSize:10}}>{name}</span><span style={{fontSize:8,color:T.ft}}>{fullCA.slice(0,6)}</span><span style={{color:e.data?.score>=50?T.gn:e.data?.score>=25?T.yl:T.ft,fontWeight:800,fontSize:10}}>{e.data?.score}pts</span><span style={{color:T.yl,fontSize:9}}>{e.data?.bondProb}%</span>{e.data?.score>=50&&<span style={{fontSize:7,padding:"1px 4px",borderRadius:2,background:T.gn+"18",color:T.gn,fontWeight:800}}>APE</span>}{e.data?.score>=25&&e.data?.score<50&&<span style={{fontSize:7,padding:"1px 4px",borderRadius:2,background:T.yl+"18",color:T.yl,fontWeight:800}}>WATCH</span>}</div>})}</div>}
+toast(name,"success")}} style={{display:"flex",alignItems:"center",gap:4,padding:"4px 2px",fontSize:10,color:T.dm,cursor:"pointer",borderRadius:4}}><span style={{width:6,height:6,borderRadius:"50%",background:e.data?.score>=50?T.gn:e.data?.score>=25?T.yl:T.ft,flexShrink:0}}/><span style={{color:T.tx,fontWeight:700,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:11}}>{name}</span><span style={{color:e.data?.score>=50?T.gn:e.data?.score>=25?T.yl:T.ft,fontWeight:800,fontSize:11,flexShrink:0}}>{e.data?.score}pts</span><span style={{color:T.yl,fontSize:9,flexShrink:0}}>{e.data?.bondProb}%</span>{e.data?.score>=50&&<span style={{fontSize:7,padding:"1px 4px",borderRadius:2,background:T.gn+"18",color:T.gn,fontWeight:800,flexShrink:0}}>APE</span>}{e.data?.score>=25&&e.data?.score<50&&<span style={{fontSize:7,padding:"1px 4px",borderRadius:2,background:T.yl+"18",color:T.yl,fontWeight:800,flexShrink:0}}>WATCH</span>}</div>})}</div>
 
 {/* Token Spotlight — top scoring token with image */}
-<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,display:"flex",flexDirection:"column"}}>
-<div style={{fontSize:9,fontWeight:700,color:T.dm,marginBottom:6}}>Top Signal</div>
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,display:"flex",flexDirection:"column",maxHeight:280}}>
+<div style={{fontSize:10,fontWeight:700,color:T.dm,marginBottom:6}}>Top Signal</div>
 {(()=>{const top=intelData?.recentEvents?.[0]?.data;if(!top)return<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:T.ft}}>Scanning...</div>;
 const allT=[...(rt.momentum||[]),...(rt.hot||[]),...(rt.new||[]),...(rt.graduating||[])];
 const match=allT.find(t=>t.ca===top.ca);
@@ -464,20 +464,21 @@ return<div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
 
 {/* Live Radar Pulse — activity visualization */}
 <div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:8,maxHeight:240,overflowY:"auto"}}>
-<div style={{fontSize:8,fontWeight:700,color:T.dm,marginBottom:6}}>Radar Pulse</div>
+<div style={{fontSize:11,fontWeight:700,color:T.dm,marginBottom:6}}>Radar Pulse</div>
 <div style={{display:"flex",flexDirection:"column",gap:2}}>
-{(intelData?.recentEvents||[]).slice(0,12).map((e,i)=>{const score=e.data?.score||0;const name=e.data?.name||e.data?.ca?.slice(0,6)||"?";return<div key={i} style={{display:"flex",alignItems:"center",gap:0,height:16}}>
-<span style={{fontSize:8,color:T.ft,width:80,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"right",paddingRight:4,flexShrink:0}}>{name}</span>
-<div style={{flex:1,height:10,borderRadius:3,background:T.sf,overflow:"hidden"}}>
-<div style={{height:"100%",width:Math.min(100,score)+"%",borderRadius:3,background:score>=50?T.gn:score>=25?T.yl:T.pu+"88",transition:"width 0.5s"}}/>
+{(intelData?.recentEvents||[]).slice(0,12).map((e,i)=>{const score=e.data?.score||0;const bp=e.data?.bondProb||0;const name=e.data?.name||e.data?.ca?.slice(0,6)||"?";const sc=score>=50?T.gn:score>=25?T.yl:T.pu;return<div key={i} style={{display:"flex",alignItems:"center",gap:0,height:16}}>
+<span style={{fontSize:9,color:T.ft,width:85,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"right",paddingRight:4,flexShrink:0}}>{name}</span>
+<div style={{flex:1,height:10,borderRadius:3,background:T.sf,overflow:"hidden",position:"relative"}}>
+<div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,score)+"%",borderRadius:3,background:sc+"28",transition:"width 0.5s"}}/>
+<div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,bp)+"%",borderRadius:3,background:sc,transition:"width 0.5s"}}/>
 </div>
-<span style={{fontSize:8,color:score>=50?T.gn:score>=25?T.yl:T.ft,fontWeight:700,width:22,textAlign:"right",flexShrink:0,paddingLeft:3}}>{score}</span>
+<span style={{fontSize:9,color:sc,fontWeight:700,width:22,textAlign:"right",flexShrink:0,paddingLeft:3}}>{score}</span>
 </div>})}
 </div>
 {intelData&&<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:3,marginTop:8,paddingTop:6,borderTop:"1px solid "+T.bd}}>
-<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.pu}}>{intelData.memory?.total||0}</div><div style={{fontSize:5,color:T.ft}}>TRACKED</div></div>
-<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.gn}}>{intelData.monitor?.tracking||0}</div><div style={{fontSize:5,color:T.ft}}>ACTIVE</div></div>
-<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.yl}}>{intelData.memory?.graduated||0}</div><div style={{fontSize:5,color:T.ft}}>GRADS</div></div>
+<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.pu}}>{intelData.memory?.total||0}</div><div style={{fontSize:7,color:T.ft}}>TRACKED</div></div>
+<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.gn}}>{intelData.monitor?.tracking||0}</div><div style={{fontSize:7,color:T.ft}}>ACTIVE</div></div>
+<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.yl}}>{intelData.memory?.graduated||0}</div><div style={{fontSize:7,color:T.ft}}>GRADS</div></div>
 </div>}
 </div>
 
