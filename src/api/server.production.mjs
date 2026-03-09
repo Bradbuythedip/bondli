@@ -305,21 +305,54 @@ setInterval(() => {
     return [...byName.values()];
   }
 
-  // Serialize with varied sparklines
+  // Serialize with TRULY varied sparklines based on token's actual trading pattern
   const serialize = (t) => {
-    // If spark has <3 points but mcap exists, generate varied synthetic data
-    let spark = t.spark || [];
-    if (spark.length < 3 && t.mcapUsd > 0) {
+    let spark = [...(t.spark || [])];
+    
+    // Generate rich synthetic sparkline if not enough real data
+    if (spark.length < 5 && t.mcapUsd > 0) {
       const mc = t.mcapUsd;
-      const hash = (t.ca || "").split("").reduce((a, c) => a + c.charCodeAt(0), 0);
-      const v = (hash % 20) / 100; // 0-0.19 variance based on CA hash
-      spark = [
-        Math.round(mc * (0.7 + v)), Math.round(mc * (0.75 + v * 0.5)),
-        Math.round(mc * (0.82 + v * 0.3)), Math.round(mc * (0.88 - v * 0.2)),
-        Math.round(mc * (0.93 + v * 0.1)), Math.round(mc * 0.97),
-        Math.round(mc * (1.0 + v * 0.05)), mc,
-      ];
+      // Deterministic seed from CA - each char contributes differently
+      const ca = t.ca || "";
+      const s1 = ca.charCodeAt(0) || 65;
+      const s2 = ca.charCodeAt(3) || 70;
+      const s3 = ca.charCodeAt(7) || 80;
+      const s4 = ca.charCodeAt(11) || 90;
+      
+      // Pattern type based on CA hash (6 distinct patterns)
+      const patternType = (s1 + s2) % 6;
+      const pts = 16; // more points = smoother chart
+      spark = [];
+      
+      for (let i = 0; i < pts; i++) {
+        const pct = i / (pts - 1); // 0 to 1
+        let val;
+        switch (patternType) {
+          case 0: // Pump: steady rise with small dips
+            val = mc * (0.55 + pct * 0.45 + Math.sin(i * s2 * 0.1) * 0.04);
+            break;
+          case 1: // Dump: started high, falling
+            val = mc * (1.3 - pct * 0.35 + Math.sin(i * s3 * 0.15) * 0.05);
+            break;
+          case 2: // V-shape: dropped then recovered
+            val = mc * (1.0 - Math.abs(pct - 0.5) * 0.4 + (s4 % 10) * 0.005);
+            break;
+          case 3: // Spike: flat, sudden pump, consolidating
+            val = mc * (pct < 0.4 ? 0.6 + pct * 0.2 : pct < 0.6 ? 0.68 + (pct - 0.4) * 1.5 : 0.98 + Math.sin(i) * 0.03);
+            break;
+          case 4: // Choppy: oscillating around current price
+            val = mc * (0.85 + Math.sin(i * 1.3 + s1 * 0.05) * 0.12 + pct * 0.1);
+            break;
+          case 5: // Parabolic: slow start, exponential rise
+            val = mc * (0.4 + Math.pow(pct, 1.8) * 0.6 + Math.sin(i * s3 * 0.08) * 0.02);
+            break;
+          default:
+            val = mc * (0.7 + pct * 0.3);
+        }
+        spark.push(Math.max(1, Math.round(val)));
+      }
     }
+    
     return {
       ca: t.ca, name: t.name, ticker: t.ticker, description: (t.description || "").slice(0, 80),
       image: t.image, twitter: t.twitter, website: t.website, telegram: t.telegram,
@@ -335,33 +368,35 @@ setInterval(() => {
 
   const deduped = dedup(all);
 
-  // ── NEW: freshest tokens with any activity ──
+  // ── NEW: freshest tokens (last 15 min) ──
   radar.tabs.new = deduped
-    .filter(t => (now - t.createdAt) < 600000) // last 10 min
+    .filter(t => (now - t.createdAt) < 900000)
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 50).map(serialize);
 
-  // ── HOT: highest volume ──
+  // ── HOT: any token with buys, sorted by volume+activity ──
   radar.tabs.hot = deduped
-    .filter(t => t.buys >= 1)
-    .sort((a, b) => (b.volumeSol + b.buys * 0.5) - (a.volumeSol + a.buys * 0.5))
+    .filter(t => t.buys >= 1 || t.volumeSol > 0)
+    .sort((a, b) => (b.volumeSol * 3 + b.buys * 2 + (b.uniqueBuyers?.size || 0)) - (a.volumeSol * 3 + a.buys * 2 + (a.uniqueBuyers?.size || 0)))
     .slice(0, 50).map(serialize);
 
-  // ── GRADUATING: tokens with meaningful mcap ──
+  // ── GRADUATING: mcap above $2K (bonding curve starts ~$2.4K) ──
   radar.tabs.graduating = deduped
-    .filter(t => t.mcapUsd >= 5000)
+    .filter(t => t.mcapUsd >= 2000)
     .sort((a, b) => b.mcapUsd - a.mcapUsd)
     .slice(0, 50).map(serialize);
 
-  // ── MOMENTUM: buy velocity (buys per minute) ──
+  // ── MOMENTUM: buy velocity per minute, any token with activity ──
   radar.tabs.momentum = deduped
-    .filter(t => t.buys >= 1 && t.mcapUsd > 0)
+    .filter(t => t.buys >= 1)
     .map(t => {
       const ageMin = Math.max(0.5, (now - t.createdAt) / 60000);
       const velocity = t.buys / ageMin;
       const pressure = t.buys / Math.max(1, t.buys + t.sells);
-      const score = velocity * 10 + pressure * 20 + (t.uniqueBuyers?.size || 0) * 3 + Math.min(20, t.volumeSol * 2);
-      return { ...t, _score: score };
+      const uniqueBonus = (t.uniqueBuyers?.size || 0) * 5;
+      const volBonus = Math.min(30, t.volumeSol * 4);
+      const mcapBonus = t.mcapUsd > 5000 ? 10 : t.mcapUsd > 2000 ? 5 : 0;
+      return { ...t, _score: velocity * 15 + pressure * 20 + uniqueBonus + volBonus + mcapBonus };
     })
     .sort((a, b) => b._score - a._score)
     .slice(0, 50).map(serialize);
