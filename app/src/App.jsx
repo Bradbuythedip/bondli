@@ -64,11 +64,10 @@ const PRESETS=[{name:"Scout",sol:.5,snc:1,slip:20,dur:30,jt:.001},{name:"Standar
 
 // ═══ CANDLESTICK CHART — OHLC + volume + crosshair ═══
 function CandleChart({ca,T,mb}){
-// Use pump.fun's live chart — always accurate, always live
 return<div style={{width:"100%",borderRadius:6,overflow:"hidden",background:T.bg}}>
-<iframe src={`https://www.gmgn.cc/kline/sol/${ca}`} style={{width:"100%",height:mb?200:280,border:"none",display:"block"}} title="chart" loading="lazy"/>
-<div style={{display:"flex",gap:3,padding:"4px 8px",borderTop:"1px solid "+T.bd}}>
-<a href={`https://pump.fun/coin/${ca}`} target="_blank" rel="noopener" style={{fontSize:7,color:T.dm,textDecoration:"none"}}>open full chart →</a>
+<iframe src={`https://www.gmgn.cc/kline/sol/${ca}?theme=dark&interval=15s&header=0`} style={{width:"100%",height:mb?220:300,border:"none",display:"block"}} title="chart" loading="lazy" sandbox="allow-scripts allow-same-origin"/>
+<div style={{display:"flex",gap:6,padding:"4px 8px",borderTop:"1px solid "+T.bd}}>
+<a href={`https://pump.fun/coin/${ca}`} target="_blank" rel="noopener" style={{fontSize:7,color:T.gn,textDecoration:"none",fontWeight:700}}>open full chart →</a>
 <a href={`https://dexscreener.com/solana/${ca}`} target="_blank" rel="noopener" style={{fontSize:7,color:T.dm,textDecoration:"none"}}>dexscreener →</a>
 </div></div>}
 
@@ -221,8 +220,8 @@ const quickSell=async(ca,pct)=>{if(!user?.pubkey)return;const r=await a.qs(user.
 
 if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHeight:"100dvh",background:T.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:M,padding:20}}><div style={{animation:"pf 3s ease infinite",marginBottom:24}}><Logo s={mb?44:56}/></div><div style={{fontWeight:800,fontSize:mb?24:40,letterSpacing:"-.02em",marginBottom:4}}>BOND<span style={{color:T.rd}}>LI</span></div><div style={{fontSize:mb?12:14,color:T.dm,marginBottom:28}}>Fleet trading engine for pump.fun</div><B onClick={connect} style={{padding:"12px 28px",fontSize:14,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)",animation:"gl 3s infinite"}}><IC.ph/> Connect</B><button onClick={()=>sU({pubkey:"demo",tier:"demo",demo:true})} style={{marginTop:10,background:"none",border:"none",fontSize:11,color:T.ft,cursor:"pointer"}}>demo</button></div></TC.Provider>;
 
-const rTokens=rt[rTab]||[];const allRadar=[...(rt.momentum||[]),...(rt.hot||[]),...(rt.new||[]),...(rt.graduating||[])];const rFiltered=rSearch?allRadar.filter(t=>(t.name||"").toLowerCase().includes(rSearch.toLowerCase())||(tk(t.ticker)||"").toLowerCase().includes(rSearch.toLowerCase())||t.ca?.includes(rSearch)):rTokens;
-const expToken=rExp?rFiltered.find(t=>t.ca===rExp)||rTokens.find(t=>t.ca===rExp):null;
+const rTokens=rt[rTab]||[];const allRadar=(()=>{const seen=new Set();return[...(rt.momentum||[]),...(rt.hot||[]),...(rt.new||[]),...(rt.graduating||[])].filter(t=>{if(seen.has(t.ca))return false;seen.add(t.ca);return true})})();const rFiltered=rSearch?allRadar.filter(t=>(t.name||"").toLowerCase().includes(rSearch.toLowerCase())||(tk(t.ticker)||"").toLowerCase().includes(rSearch.toLowerCase())||t.ca?.includes(rSearch)||t.ca?.startsWith(rSearch)):rTokens;
+const expToken=rExp?rFiltered.find(t=>t.ca===rExp)||rTokens.find(t=>t.ca===rExp)||allRadar.find(t=>t.ca===rExp):null;
 
 return<TC.Provider value={T}><style>{css(T)}</style>
 {toasts.length>0&&<div style={{position:"fixed",top:mb?4:60,left:"50%",transform:"translateX(-50%)",zIndex:9999,display:"flex",flexDirection:"column",gap:3,maxWidth:mb?"95%":480,width:"auto",minWidth:200}}>{toasts.map(t=><div key={t.id} onClick={()=>sToasts(x=>x.filter(y=>y.id!==t.id))} style={{padding:"8px 16px",borderRadius:8,fontFamily:M,fontSize:11,fontWeight:600,background:t.type==="error"?T.rd+"15":t.type==="success"?T.gn+"15":T.sf,color:t.type==="error"?T.rd:t.type==="success"?T.gn:T.tx,border:"1px solid "+(t.type==="error"?T.rd+"33":t.type==="success"?T.gn+"33":T.bd),animation:"fd .15s ease",cursor:"pointer",backdropFilter:"blur(8px)",textAlign:"center",wordBreak:"break-word"}}>{t.msg}</div>)}</div>}
@@ -349,22 +348,28 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 
 {/* ═══ WALLET SELECTION (Pro/VIP) ═══ */}
 {expert&&(user?.tier==="pro"||user?.whitelisted)&&<div style={{background:T.sf,border:"1px solid "+T.pu+"18",borderRadius:10,padding:mb?10:16,marginBottom:6}}>
-<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><IC.key s={14} c={T.pu}/><span style={{fontSize:12,fontWeight:800}}>Fleet Wallets</span><span style={{fontSize:8,color:T.dm}}>Import your own or auto-generate</span></div>
-<div style={{fontSize:8,color:T.dm,marginBottom:8,lineHeight:1.5}}>Assign imported wallets to fleet roles. Aged wallets with tx history look organic on-chain. Leave empty = fresh keypair auto-generated.</div>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><IC.key s={14} c={T.pu}/><span style={{fontSize:12,fontWeight:800}}>Fleet Wallets</span><span style={{fontSize:8,color:T.dm}}>({nw} wallets)</span></div>
+<div style={{fontSize:8,color:T.dm,marginBottom:8,lineHeight:1.5}}>Paste private keys for aged wallets. Empty = fresh keypair auto-generated.</div>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4}}>
-{["dev","sniper_1","sniper_2","accumulator","volume","momentum"].slice(0,nw).map(role=>{
-const roleLabel=role==="dev"?"Dev Wallet":role.includes("sniper")?"Sniper "+role.slice(-1):role.charAt(0).toUpperCase()+role.slice(1);
-const stateKey="wk_"+role;
+{(()=>{
+const roles=["dev"];
+for(let i=1;i<=snc;i++)roles.push("sniper_"+i);
+const extras=["accumulator","volume","momentum","diamond"];
+let remaining=nw-roles.length;
+for(const e of extras){if(remaining<=0)break;roles.push(e);remaining--}
+return roles.map(role=>{
+const roleLabel=role==="dev"?"Dev Wallet":role.startsWith("sniper")?"Sniper "+role.split("_")[1]:role.charAt(0).toUpperCase()+role.slice(1);
 return<div key={role} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 8px"}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:3}}>
-<span style={{fontSize:8,fontWeight:700,color:role==="dev"?T.yl:T.gn}}>{roleLabel}</span>
+<span style={{fontSize:8,fontWeight:700,color:role==="dev"?T.yl:role.startsWith("sniper")?T.gn:T.pu}}>{roleLabel}</span>
 <span style={{fontSize:7,color:T.ft}}>{role==="dev"?"required":"optional"}</span>
 </div>
 <input placeholder="Paste private key or leave empty (auto)" style={{width:"100%",padding:"4px 6px",background:T.sf,border:"1px solid "+T.bd,borderRadius:4,fontSize:8,color:T.tx,fontFamily:M,outline:"none",boxSizing:"border-box"}}
 data-role={role}/>
-</div>})}
+</div>})
+})()}
 </div>
-<div style={{marginTop:6,fontSize:7,color:T.ft}}>Imported keys are used for the fleet. Empty slots get fresh keypairs. Pro/VIP only.</div>
+<div style={{marginTop:6,fontSize:7,color:T.ft}}>Imported keys used for fleet. Empty slots get fresh keypairs.</div>
 </div>}
 
 <div style={{background:canLaunch?T.gn+"04":T.sf,border:"1px solid "+(canLaunch?T.gn+"22":T.bd),borderRadius:10,padding:mb?10:16,marginBottom:6}}>
@@ -414,13 +419,11 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 {[{l:"TOKENS",v:intelData?.memory?.total||"—",c:T.pu},{l:"ACCURACY",v:intelData?.scorer?.accuracy||"—",c:T.gn},{l:"GRAD RATE",v:intelData?.memory?.graduationRate||"—",c:T.yl},{l:"TRACKING",v:intelData?.monitor?.tracking||"—",c:T.or}].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:16,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:6,color:T.ft,fontWeight:700,marginTop:2}}>{s.l}</div></div>)}
 </div>
 <div style={{fontSize:8,color:T.ft,textAlign:"center"}}>{intelData?`${intelData.scorer?.trainCount||0} tokens scored · SOL $${intelData.solPrice?.toFixed(0)||"?"} · uptime ${intelData.uptime||"—"}`:"Connecting to intel engine..."}</div>
-{intelData?.recentEvents?.length>0&&<div style={{marginTop:8,background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:8,maxHeight:180,overflowY:"auto"}}><div style={{fontSize:8,fontWeight:700,color:T.dm,marginBottom:4}}>Recent Scores {(user?.tier==="pro"||user?.whitelisted)&&<span style={{color:T.gn,fontSize:7}}>· click to ape</span>}</div>{intelData.recentEvents.slice(-8).reverse().map((e,i)=>{const ca8=e.data?.ca||"";return<div key={i} onClick={async()=>{if(!user?.tier||user.tier==="free"&&!user?.whitelisted){toast("Pro/VIP only","error");return}
-// Find full CA from radar
-const allTokens=[...(rt.momentum||[]),...(rt.hot||[]),...(rt.new||[]),...(rt.graduating||[])];
-const match=allTokens.find(t=>t.ca?.startsWith(ca8)||t.ca?.includes(ca8));
-if(match){sTab("radar");setTimeout(()=>{sRExp(match.ca);document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"})},100);toast(`${match.name||match.ticker||ca8}`,"success")}else{
-// Try searching by CA prefix directly
-sTab("radar");sRS(ca8);toast(`Searching ${ca8}...`,"info")}}} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 4px",fontSize:8,color:T.dm,cursor:"pointer",borderRadius:4,":hover":{background:T.sf}}}><span style={{width:5,height:5,borderRadius:"50%",background:e.data?.score>=50?T.gn:e.data?.score>=25?T.yl:T.ft,flexShrink:0}}/><span style={{color:T.tx,fontWeight:700,minWidth:55}}>{ca8}</span><span style={{color:e.data?.score>=50?T.gn:e.data?.score>=25?T.yl:T.ft,fontWeight:800}}>{e.data?.score}pts</span><span style={{color:T.yl}}>{e.data?.bondProb}%</span>{e.data?.score>=50&&<span style={{fontSize:6,padding:"1px 4px",borderRadius:2,background:T.gn+"18",color:T.gn,fontWeight:800}}>APE</span>}{e.data?.score>=25&&e.data?.score<50&&<span style={{fontSize:6,padding:"1px 4px",borderRadius:2,background:T.yl+"18",color:T.yl,fontWeight:800}}>WATCH</span>}</div>})}</div>}
+{intelData?.recentEvents?.length>0&&<div style={{marginTop:8,background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:8,maxHeight:180,overflowY:"auto"}}><div style={{fontSize:8,fontWeight:700,color:T.dm,marginBottom:4}}>Recent Scores {(user?.tier==="pro"||user?.whitelisted)&&<span style={{color:T.gn,fontSize:7}}>· click to ape</span>}</div>{intelData.recentEvents.slice(0,8).map((e,i)=>{const fullCA=e.data?.ca||"";const name=e.data?.name||fullCA.slice(0,6);return<div key={i} onClick={()=>{if(!user?.whitelisted&&user?.tier==="free"){toast("Pro/VIP only","error");return}
+if(!fullCA||fullCA.length<20){toast("No CA available","error");return}
+sTab("radar");sRExp(fullCA);sRS("");
+setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150);
+toast(name,"success")}} style={{display:"flex",alignItems:"center",gap:5,padding:"3px 4px",fontSize:8,color:T.dm,cursor:"pointer",borderRadius:4}}><span style={{width:5,height:5,borderRadius:"50%",background:e.data?.score>=50?T.gn:e.data?.score>=25?T.yl:T.ft,flexShrink:0}}/><span style={{color:T.tx,fontWeight:700,minWidth:50,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:80}}>{name}</span><span style={{fontSize:7,color:T.ft}}>{fullCA.slice(0,6)}</span><span style={{color:e.data?.score>=50?T.gn:e.data?.score>=25?T.yl:T.ft,fontWeight:800}}>{e.data?.score}pts</span><span style={{color:T.yl}}>{e.data?.bondProb}%</span>{e.data?.score>=50&&<span style={{fontSize:6,padding:"1px 4px",borderRadius:2,background:T.gn+"18",color:T.gn,fontWeight:800}}>APE</span>}{e.data?.score>=25&&e.data?.score<50&&<span style={{fontSize:6,padding:"1px 4px",borderRadius:2,background:T.yl+"18",color:T.yl,fontWeight:800}}>WATCH</span>}</div>})}</div>}
 </div>
 
 {/* Scoring frameworks */}
