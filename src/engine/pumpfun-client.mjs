@@ -1,10 +1,15 @@
 // BONDLI v3.0 — PumpFun Bonding Curve Client
-import { Connection, Keypair, PublicKey, Transaction, SystemProgram } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, Transaction, SystemProgram, TransactionInstruction, ComputeBudgetProgram } from "@solana/web3.js";
+import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import CONFIG from "./config.mjs";
 
 const PUMP_PROGRAM = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 const PUMP_FEE = new PublicKey("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbCJt85gtBk6jR");
 const PUMP_GLOBAL = new PublicKey("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf");
+const PUMP_EVENT_AUTH = new PublicKey("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1");
+const RENT_PROGRAM = new PublicKey("SysvarRent111111111111111111111111111111111");
+const BUY_DISCRIMINATOR = Buffer.from([102, 6, 61, 18, 1, 218, 235, 234]);
+const SELL_DISCRIMINATOR = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
 
 export class PumpFunClient {
   constructor(connection) {
@@ -106,28 +111,47 @@ export class PumpFunClient {
   }
 
   async _sendPumpTx(keypair, mint, side, amount, minOut, opts) {
-    // Instruction encoding for pump.fun buy/sell
-    // This is a simplified stub - full impl requires anchor IDL decoding
+    const mintPk = new PublicKey(mint);
+    const curve = await this.getBondingCurve(mint);
+    const curveAta = getAssociatedTokenAddressSync(mintPk, curve, true);
+    const userAta = getAssociatedTokenAddressSync(mintPk, keypair.publicKey, true);
+
     const tx = new Transaction();
     tx.feePayer = keypair.publicKey;
     const { blockhash } = await this.connection.getLatestBlockhash();
     tx.recentBlockhash = blockhash;
 
-    // Priority fee
+    // Priority fee via compute budget
     if (CONFIG.PRIORITY_FEE > 0) {
-      tx.add(
-        SystemProgram.transfer({
-          fromPubkey: keypair.publicKey,
-          toPubkey: keypair.publicKey,
-          lamports: 0,
-        })
-      );
+      tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: CONFIG.PRIORITY_FEE }));
+      tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }));
     }
 
-    // TODO: Add actual pump.fun instruction encoding
-    // For now this is a scaffold
+    // Build pump.fun instruction data: discriminator(8) + amount(u64) + minOut(u64)
+    const data = Buffer.alloc(24);
+    const disc = side === "buy" ? BUY_DISCRIMINATOR : SELL_DISCRIMINATOR;
+    disc.copy(data, 0);
+    data.writeBigUInt64LE(BigInt(Math.floor(side === "buy" ? amount * 1e9 : amount)), 8);
+    data.writeBigUInt64LE(BigInt(Math.floor(minOut)), 16);
+
+    const keys = [
+      { pubkey: PUMP_GLOBAL, isSigner: false, isWritable: false },
+      { pubkey: PUMP_FEE, isSigner: false, isWritable: true },
+      { pubkey: mintPk, isSigner: false, isWritable: false },
+      { pubkey: curve, isSigner: false, isWritable: true },
+      { pubkey: curveAta, isSigner: false, isWritable: true },
+      { pubkey: userAta, isSigner: false, isWritable: true },
+      { pubkey: keypair.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: RENT_PROGRAM, isSigner: false, isWritable: false },
+      { pubkey: PUMP_EVENT_AUTH, isSigner: false, isWritable: false },
+      { pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false },
+    ];
+
+    tx.add(new TransactionInstruction({ programId: PUMP_PROGRAM, keys, data }));
+
     console.log(`[PUMP] ${side.toUpperCase()} ${amount} on ${mint}`);
-    
     tx.sign(keypair);
     const sig = await this.connection.sendRawTransaction(tx.serialize(), {
       skipPreflight: true,

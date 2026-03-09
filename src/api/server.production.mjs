@@ -6,7 +6,7 @@
  *
  * Deploy: Railway (or any Node.js host)
  * Env vars: RPC_URL, REDIS_URL, PLATFORM_WALLET, ADMIN_SECRET,
- *           PUMPPORTAL_API_KEY (optional), PORT
+ *           PORT
  *
  * This file handles:
  *   - PumpPortal WebSocket → real-time radar feed
@@ -640,7 +640,7 @@ async function saveUser(wallet, data) {
 // MIDDLEWARE
 // ═══════════════════════════════════════
 function requireWallet(req, res, next) {
-  const wallet = req.headers["x-wallet"] || req.headers["x-wallet"] || req.body?.wallet || req.query?.wallet;
+  const wallet = req.headers["x-wallet"] || req.headers["X-Wallet"] || req.body?.wallet || req.query?.wallet;
   if (!wallet) return res.status(400).json({ error: "Wallet required" });
   req.wallet = wallet;
   next();
@@ -681,7 +681,26 @@ app.post("/api/access/activate-free", async (req, res) => {
 app.post("/api/access/activate-pro", async (req, res) => {
   const { wallet, txSig } = req.body;
   if (!wallet || !txSig) return res.status(400).json({ error: "wallet and txSig required" });
-  // TODO: verify on-chain payment to PLATFORM_WALLET
+  // Verify on-chain payment to PLATFORM_WALLET
+  try {
+    const tx = await connection.getTransaction(txSig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+    if (!tx) return res.status(400).json({ error: "Transaction not found or not confirmed" });
+    const meta = tx.meta;
+    if (meta?.err) return res.status(400).json({ error: "Transaction failed on-chain" });
+    const keys = tx.transaction.message.staticAccountKeys
+      ? tx.transaction.message.staticAccountKeys.map(k => k.toBase58())
+      : tx.transaction.message.accountKeys.map(k => k.toBase58());
+    const platformIdx = keys.indexOf(PLATFORM_WALLET);
+    const senderIdx = keys.indexOf(wallet);
+    if (platformIdx < 0) return res.status(400).json({ error: "Payment not sent to platform wallet" });
+    if (senderIdx < 0) return res.status(400).json({ error: "Transaction sender doesn't match wallet" });
+    const preBalance = (meta.preBalances?.[platformIdx] || 0);
+    const postBalance = (meta.postBalances?.[platformIdx] || 0);
+    const received = (postBalance - preBalance) / LAMPORTS_PER_SOL;
+    if (received < 9.99) return res.status(400).json({ error: `Insufficient payment: ${received.toFixed(4)} SOL (need 10)` });
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to verify transaction: " + err.message });
+  }
   await saveUser(wallet, { tier: "pro", paid: true, proTx: txSig });
   res.json({ ok: true, tier: "pro" });
 });
