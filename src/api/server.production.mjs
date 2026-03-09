@@ -1167,11 +1167,12 @@ app.post("/api/quick-sell", async (req, res) => {
     const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
     const pct = percent || 100;
 
-    // PumpPortal supports percentage strings for sells: "25%", "50%", "100%"
-    const response = await fetch("https://pumpportal.fun/api/trade-local", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    // Try selling with different pool options
+    const pools = ["pump", "auto", "raydium"];
+    let lastErr = "";
+    
+    for (const pool of pools) {
+      const reqBody = {
         publicKey: tw.pubkey,
         action: "sell",
         mint: ca,
@@ -1179,22 +1180,44 @@ app.post("/api/quick-sell", async (req, res) => {
         denominatedInSol: "false",
         slippage: 30,
         priorityFee: 0.005,
-        pool: "auto",
-      }),
-    });
+        pool,
+      };
+      
+      console.log(`[SELL] Trying pool=${pool}: ${JSON.stringify(reqBody).slice(0, 200)}`);
+      
+      try {
+        const response = await fetch("https://pumpportal.fun/api/trade-local", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(reqBody),
+        });
 
-    if (!response.ok) {
-      const err = await response.text();
-      console.error(`[SELL] PumpPortal ${response.status}: ${err.slice(0, 200)}`);
-      return res.status(400).json({ error: "Sell failed: " + (err.slice(0, 100)) });
+        if (!response.ok) {
+          lastErr = await response.text();
+          console.log(`[SELL] pool=${pool} failed ${response.status}: ${lastErr.slice(0, 150)}`);
+          continue; // try next pool
+        }
+
+        const txBytes = await response.arrayBuffer();
+        if (txBytes.byteLength < 100) {
+          lastErr = "Empty response from PumpPortal";
+          continue;
+        }
+        
+        const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+        tx.sign([kp]);
+        const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+        
+        console.log(`[SELL] Success pool=${pool}: ${sig}`);
+        return res.json({ ok: true, signature: sig, percent: pct, pool });
+      } catch (e) {
+        lastErr = e.message;
+        console.log(`[SELL] pool=${pool} error: ${e.message}`);
+        continue;
+      }
     }
-
-    const txBytes = await response.arrayBuffer();
-    const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
-    tx.sign([kp]);
-    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-
-    res.json({ ok: true, signature: sig, percent: pct });
+    
+    res.status(400).json({ error: "Sell failed on all pools: " + lastErr.slice(0, 100) });
   } catch (e) {
     console.error("[QUICK-SELL] Error:", e.message);
     res.status(500).json({ error: e.message });
