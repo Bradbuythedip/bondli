@@ -160,16 +160,16 @@ function processRadarMessage(data) {
   if (!data) return;
   const now = Date.now();
 
-  // New token creation
-  if (data.txType === "create" || data.mint) {
-    const ca = data.mint || data.ca;
-    if (!ca) return;
-    const token = radar.tokens.get(ca) || {
+  // New token creation — only on explicit create events
+  if (data.txType === "create" && data.mint) {
+    const ca = data.mint;
+    if (radar.tokens.has(ca)) return;
+    const token = {
       ca,
       name: data.name || "",
       ticker: data.symbol || data.ticker || "",
       description: data.description || "",
-      image: data.uri || data.image || data.imageUri || "",
+      image: "",
       twitter: data.twitter || "",
       website: data.website || "",
       telegram: data.telegram || "",
@@ -177,8 +177,8 @@ function processRadarMessage(data) {
       trades: [],
       buys: 0, sells: 0,
       volumeSol: 0,
-      mcapSol: 0,
-      mcapUsd: 0,
+      mcapSol: data.marketCapSol || 0,
+      mcapUsd: Math.round((data.marketCapSol || 0) * solUsdPrice),
       uniqueBuyers: new Set(),
       spark: [],
       h1Change: 0,
@@ -186,68 +186,85 @@ function processRadarMessage(data) {
       graduated: false,
       bundled: false,
     };
-    // Update with creation data
-    if (data.name) token.name = data.name;
-    if (data.symbol) token.ticker = data.symbol;
-    if (data.description) token.description = data.description;
-    if (data.uri) token.image = data.uri;
-    if (data.twitter) token.twitter = data.twitter;
-    if (data.website) token.website = data.website;
-    if (data.telegram) token.telegram = data.telegram;
-
     radar.tokens.set(ca, token);
+    // Fetch metadata for image (fire-and-forget)
+    if (data.uri) fetchTokenImage(ca, data.uri).catch(() => {});
+    // Cap pool size
+    if (radar.tokens.size > 500) {
+      const oldest = [...radar.tokens.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt)[0];
+      if (oldest) radar.tokens.delete(oldest[0]);
+    }
+    return;
   }
 
-  // Trade event
-  if (data.txType === "buy" || data.txType === "sell") {
-    const ca = data.mint || data.ca;
-    if (!ca) return;
-    const token = radar.tokens.get(ca);
-    if (!token) return;
-
-    const sol = (data.solAmount || data.sol || 0) / (data.solAmount > 100 ? LAMPORTS_PER_SOL : 1);
-    const isBuy = data.txType === "buy";
-
-    if (isBuy) {
+  // Trade event (buy or sell)
+  if ((data.txType === "buy" || data.txType === "sell") && data.mint) {
+    const ca = data.mint;
+    let token = radar.tokens.get(ca);
+    // Auto-create on first trade if missed create event
+    if (!token) {
+      token = {
+        ca, name: data.name || "", ticker: data.symbol || "",
+        description: "", image: "", twitter: "", website: "", telegram: "",
+        createdAt: now, trades: [], buys: 0, sells: 0, volumeSol: 0,
+        mcapSol: 0, mcapUsd: 0, uniqueBuyers: new Set(), spark: [],
+        h1Change: 0, devWallet: "", graduated: false, bundled: false,
+      };
+      radar.tokens.set(ca, token);
+      if (data.uri) fetchTokenImage(ca, data.uri).catch(() => {});
+    }
+    // PumpPortal sends solAmount already in SOL (NOT lamports)
+    const sol = Math.abs(data.solAmount || 0);
+    if (data.txType === "buy") {
       token.buys++;
       token.volumeSol += sol;
       if (data.traderPublicKey) token.uniqueBuyers.add(data.traderPublicKey);
     } else {
       token.sells++;
     }
-
-    // Update mcap — FIX: use solUsdPrice instead of 170
-    if (data.marketCapSol) {
+    // Update mcap
+    if (data.marketCapSol > 0) {
       token.mcapSol = data.marketCapSol;
       token.mcapUsd = Math.round(data.marketCapSol * solUsdPrice);
-    } else if (data.vSolInBondingCurve) {
+    } else if (data.vSolInBondingCurve > 0) {
       token.mcapSol = data.vSolInBondingCurve * 2;
       token.mcapUsd = Math.round(token.mcapSol * solUsdPrice);
     }
-
-    // Sparkline data (mcap snapshots)
+    if (data.name && !token.name) token.name = data.name;
+    if (data.symbol && !token.ticker) token.ticker = data.symbol;
+    // Sparkline
     if (token.mcapUsd > 0) {
       token.spark.push(token.mcapUsd);
       if (token.spark.length > 60) token.spark = token.spark.slice(-60);
     }
-
-    // Track recent trades for bundle detection
-    token.trades.push({
-      side: data.txType,
-      sol,
-      wallet: data.traderPublicKey || "",
-      time: now,
-    });
+    token.trades.push({ side: data.txType, sol, wallet: (data.traderPublicKey || "").slice(0, 8), time: now });
     if (token.trades.length > 100) token.trades = token.trades.slice(-100);
-
-    // 1h change approximation
     const firstSpark = token.spark.length > 1 ? token.spark[0] : token.mcapUsd;
     token.h1Change = firstSpark > 0 ? ((token.mcapUsd - firstSpark) / firstSpark) * 100 : 0;
-
-    // Broadcast trade to WebSocket clients
     broadcastWS({ event: "trade", data: { ca, side: data.txType, sol, mcap: token.mcapUsd, wallet: (data.traderPublicKey || "").slice(0, 8) } });
   }
 }
+
+// Fetch token image from metadata URI
+async function fetchTokenImage(ca, uri) {
+  try {
+    let url = uri;
+    if (url.startsWith("ipfs://")) url = "https://cf-ipfs.com/ipfs/" + url.slice(7);
+    const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return;
+    const meta = await r.json();
+    const token = radar.tokens.get(ca);
+    if (!token) return;
+    let img = meta.image || "";
+    if (img.startsWith("ipfs://")) img = "https://cf-ipfs.com/ipfs/" + img.slice(7);
+    token.image = img;
+    if (meta.description && !token.description) token.description = (meta.description || "").slice(0, 200);
+    if (meta.twitter) token.twitter = meta.twitter;
+    if (meta.telegram) token.telegram = meta.telegram;
+    if (meta.website) token.website = meta.website;
+  } catch {}
+}
+
 
 // Rebuild radar tabs every 5 seconds
 setInterval(() => {
@@ -894,6 +911,26 @@ app.get("/api/positions/:wallet", async (req, res) => {
   } catch (e) {
     res.json({ positions: [], error: e.message });
   }
+});
+
+// ═══════════════════════════════════════
+// IMAGE PROXY — fixes OpaqueResponseBlocking for IPFS/pump.fun images
+// ═══════════════════════════════════════
+app.get("/api/img", async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).end();
+  try {
+    let fetchUrl = url;
+    if (fetchUrl.startsWith("ipfs://")) fetchUrl = "https://cf-ipfs.com/ipfs/" + fetchUrl.slice(7);
+    const r = await fetch(fetchUrl, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return res.status(r.status).end();
+    const ct = r.headers.get("content-type") || "image/png";
+    res.set("Content-Type", ct);
+    res.set("Cache-Control", "public, max-age=3600");
+    res.set("Access-Control-Allow-Origin", "*");
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.send(buf);
+  } catch { res.status(502).end(); }
 });
 
 // ═══════════════════════════════════════
