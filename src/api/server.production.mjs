@@ -396,37 +396,81 @@ setInterval(() => {
 
   const deduped = dedup(all);
 
-  // ── NEW: freshest tokens (last 15 min) ──
+  // ═══ PUMP.FUN LIFECYCLE ═══
+  // Launch: ~$2.4K MC (bonding curve start)
+  // Active: $3K-$30K (getting traction)
+  // Heating: $30K-$60K (approaching graduation)
+  // Graduation: $69K (moves to Raydium)
+  //
+  // All tokens START at ~$2.4K. The ONLY differentiators are:
+  // - Recency (New)
+  // - Activity intensity (Hot) 
+  // - MC height (Grad)
+  // - Sustained buying pressure (Momentum)
+
+  // ── NEW: Fresh launches, last 10 min, sorted by recency ──
+  // These just appeared. Low MC, minimal activity yet.
   radar.tabs.new = deduped
-    .filter(t => (now - t.createdAt) < 900000)
+    .filter(t => (now - t.createdAt) < 600000) // last 10 min
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 50).map(serialize);
 
-  // ── HOT: any token with buys, sorted by volume+activity ──
+  // ── HOT: Highest activity RIGHT NOW — what's pumping ──
+  // Requires: multiple buys from different wallets + real volume
+  // NOT just "has 1 buy" — needs actual heat signals
   radar.tabs.hot = deduped
-    .filter(t => t.buys >= 1 || t.volumeSol > 0)
-    .sort((a, b) => (b.volumeSol * 3 + b.buys * 2 + (b.uniqueBuyers?.size || 0)) - (a.volumeSol * 3 + a.buys * 2 + (a.uniqueBuyers?.size || 0)))
-    .slice(0, 50).map(serialize);
-
-  // ── GRADUATING: mcap above $2K (bonding curve starts ~$2.4K) ──
-  radar.tabs.graduating = deduped
-    .filter(t => t.mcapUsd >= 2000)
-    .sort((a, b) => b.mcapUsd - a.mcapUsd)
-    .slice(0, 50).map(serialize);
-
-  // ── MOMENTUM: buy velocity per minute, any token with activity ──
-  radar.tabs.momentum = deduped
-    .filter(t => t.buys >= 1)
+    .filter(t => {
+      const ub = t.uniqueBuyers?.size || 0;
+      return (t.buys >= 3 && ub >= 2) || (t.volumeSol >= 0.5 && t.buys >= 2) || (t.mcapUsd > 5000);
+    })
     .map(t => {
       const ageMin = Math.max(0.5, (now - t.createdAt) / 60000);
-      const velocity = t.buys / ageMin;
-      const pressure = t.buys / Math.max(1, t.buys + t.sells);
-      const uniqueBonus = (t.uniqueBuyers?.size || 0) * 5;
-      const volBonus = Math.min(30, t.volumeSol * 4);
-      const mcapBonus = t.mcapUsd > 5000 ? 10 : t.mcapUsd > 2000 ? 5 : 0;
-      return { ...t, _score: velocity * 15 + pressure * 20 + uniqueBonus + volBonus + mcapBonus };
+      const buyRate = t.buys / ageMin; // buys per minute
+      const ub = t.uniqueBuyers?.size || 0;
+      return { ...t, _heat: buyRate * 10 + ub * 8 + t.volumeSol * 5 + Math.min(20, t.mcapUsd / 1000) };
     })
-    .sort((a, b) => b._score - a._score)
+    .sort((a, b) => b._heat - a._heat)
+    .slice(0, 50).map(serialize);
+
+  // ── GRAD: Approaching or past graduation ($69K) ──
+  // $10K+ MC = bonding curve is filling. $40K+ = almost there. $69K+ = graduated.
+  radar.tabs.graduating = deduped
+    .filter(t => t.mcapUsd >= 10000)
+    .map(t => {
+      // Prioritize tokens closest to graduating or just graduated
+      const pctToGrad = Math.min(100, (t.mcapUsd / 69000) * 100);
+      const gradBonus = t.mcapUsd >= 69000 ? 200 : 0; // graduated tokens float to top
+      return { ...t, _gradScore: pctToGrad + gradBonus };
+    })
+    .sort((a, b) => b._gradScore - a._gradScore)
+    .slice(0, 50).map(t => {
+      const s = serialize(t);
+      s.pctToGrad = Math.min(100, Math.round((t.mcapUsd / 69000) * 100));
+      s.graduated = t.mcapUsd >= 69000;
+      return s;
+    });
+
+  // ── MOMENTUM: Sustained buying pressure over time ──
+  // NOT just fast buys — needs: buys >> sells, growing buyer count, volume
+  // Must have been alive > 2 min (not just a flash)
+  radar.tabs.momentum = deduped
+    .filter(t => {
+      const ageMin = (now - t.createdAt) / 60000;
+      return ageMin >= 1 && t.buys >= 3 && (t.uniqueBuyers?.size || 0) >= 2;
+    })
+    .map(t => {
+      const ageMin = Math.max(1, (now - t.createdAt) / 60000);
+      const buyRate = t.buys / ageMin;
+      const buyPressure = t.buys / Math.max(1, t.buys + t.sells); // 1.0 = all buys, 0.5 = even
+      const ub = t.uniqueBuyers?.size || 0;
+      const ubRate = ub / ageMin; // new unique buyers per minute
+      const mcGrowth = t.spark?.length > 2 ? (t.spark[t.spark.length - 1] - t.spark[0]) / Math.max(1, t.spark[0]) : 0;
+      return {
+        ...t,
+        _momentum: buyRate * 12 + buyPressure * 25 + ubRate * 15 + mcGrowth * 30 + Math.min(15, t.volumeSol * 3)
+      };
+    })
+    .sort((a, b) => b._momentum - a._momentum)
     .slice(0, 50).map(serialize);
 
   radar.poolSize = radar.tokens.size;
