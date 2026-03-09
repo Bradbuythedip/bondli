@@ -42,4 +42,4 @@ grf(w){return this.f(`/api/referral/${w}`)}
 arf(w,c){return this.f("/api/referral/apply",{method:"POST",body:{wallet:w,refCode:c}})}
 dr(d){return this.f("/api/dry-run",{method:"POST",body:d})}
 }
-export const a=new A();export default a;use
+export const a=new A();export default a;
