@@ -271,13 +271,21 @@ async function fetchTokenImage(ca, uri) {
   try {
     let url = uri;
     if (url.startsWith("ipfs://")) url = "https://cf-ipfs.com/ipfs/" + url.slice(7);
-    const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const r = await fetch(url, { 
+      signal: AbortSignal.timeout(6000),
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
     if (!r.ok) return;
     const meta = await r.json();
     const token = radar.tokens.get(ca);
     if (!token) return;
-    let img = meta.image || "";
+    let img = meta.image || meta.imageUri || "";
     if (img.startsWith("ipfs://")) img = "https://cf-ipfs.com/ipfs/" + img.slice(7);
+    // Use pump.fun CDN for better reliability
+    if (img.includes("ipfs") && !img.includes("cf-ipfs")) {
+      const hash = img.split("/").pop();
+      if (hash) img = "https://cf-ipfs.com/ipfs/" + hash;
+    }
     token.image = img;
     if (meta.description && !token.description) token.description = (meta.description || "").slice(0, 200);
     if (meta.twitter) token.twitter = meta.twitter;
@@ -415,31 +423,25 @@ setInterval(() => {
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 50).map(serialize);
 
-  // ── HOT: Highest activity RIGHT NOW — what's pumping ──
-  // Requires: multiple buys from different wallets + real volume
-  // NOT just "has 1 buy" — needs actual heat signals
+  // ── HOT: Most active tokens RIGHT NOW ──
+  // On pump.fun, 2 buys = notable. 3 buys from different wallets = hot.
   radar.tabs.hot = deduped
-    .filter(t => {
-      const ub = t.uniqueBuyers?.size || 0;
-      return (t.buys >= 3 && ub >= 2) || (t.volumeSol >= 0.5 && t.buys >= 2) || (t.mcapUsd > 5000);
-    })
+    .filter(t => t.buys >= 2 || t.volumeSol >= 0.1)
     .map(t => {
-      const ageMin = Math.max(0.5, (now - t.createdAt) / 60000);
-      const buyRate = t.buys / ageMin; // buys per minute
+      const ageMin = Math.max(0.3, (now - t.createdAt) / 60000);
       const ub = t.uniqueBuyers?.size || 0;
-      return { ...t, _heat: buyRate * 10 + ub * 8 + t.volumeSol * 5 + Math.min(20, t.mcapUsd / 1000) };
+      return { ...t, _heat: (t.buys / ageMin) * 10 + ub * 8 + t.volumeSol * 5 + (t.mcapUsd > 3000 ? 5 : 0) + (t.image ? 2 : 0) };
     })
     .sort((a, b) => b._heat - a._heat)
     .slice(0, 50).map(serialize);
 
-  // ── GRAD: Approaching or past graduation ($69K) ──
-  // $10K+ MC = bonding curve is filling. $40K+ = almost there. $69K+ = graduated.
+  // ── GRAD: Tokens above initial bonding curve MC ($3K+) ──
+  // $2.4K = launch MC. $3K+ = someone actually bought. $10K+ = real traction.
   radar.tabs.graduating = deduped
-    .filter(t => t.mcapUsd >= 10000)
+    .filter(t => t.mcapUsd > 3000)
     .map(t => {
-      // Prioritize tokens closest to graduating or just graduated
       const pctToGrad = Math.min(100, (t.mcapUsd / 69000) * 100);
-      const gradBonus = t.mcapUsd >= 69000 ? 200 : 0; // graduated tokens float to top
+      const gradBonus = t.mcapUsd >= 69000 ? 200 : 0;
       return { ...t, _gradScore: pctToGrad + gradBonus };
     })
     .sort((a, b) => b._gradScore - a._gradScore)
@@ -450,25 +452,16 @@ setInterval(() => {
       return s;
     });
 
-  // ── MOMENTUM: Sustained buying pressure over time ──
-  // NOT just fast buys — needs: buys >> sells, growing buyer count, volume
-  // Must have been alive > 2 min (not just a flash)
+  // ── MOMENTUM: Sustained buying — buys > sells, active ──
   radar.tabs.momentum = deduped
-    .filter(t => {
-      const ageMin = (now - t.createdAt) / 60000;
-      return ageMin >= 1 && t.buys >= 3 && (t.uniqueBuyers?.size || 0) >= 2;
-    })
+    .filter(t => t.buys >= 2 && (now - t.createdAt) > 30000) // alive > 30s, 2+ buys
     .map(t => {
-      const ageMin = Math.max(1, (now - t.createdAt) / 60000);
+      const ageMin = Math.max(0.5, (now - t.createdAt) / 60000);
       const buyRate = t.buys / ageMin;
-      const buyPressure = t.buys / Math.max(1, t.buys + t.sells); // 1.0 = all buys, 0.5 = even
+      const buyPressure = t.buys / Math.max(1, t.buys + t.sells);
       const ub = t.uniqueBuyers?.size || 0;
-      const ubRate = ub / ageMin; // new unique buyers per minute
       const mcGrowth = t.spark?.length > 2 ? (t.spark[t.spark.length - 1] - t.spark[0]) / Math.max(1, t.spark[0]) : 0;
-      return {
-        ...t,
-        _momentum: buyRate * 12 + buyPressure * 25 + ubRate * 15 + mcGrowth * 30 + Math.min(15, t.volumeSol * 3)
-      };
+      return { ...t, _momentum: buyRate * 12 + buyPressure * 20 + ub * 10 + mcGrowth * 30 + Math.min(15, t.volumeSol * 3) };
     })
     .sort((a, b) => b._momentum - a._momentum)
     .slice(0, 50).map(serialize);
@@ -1208,11 +1201,18 @@ app.get("/api/img", async (req, res) => {
   try {
     let fetchUrl = url;
     if (fetchUrl.startsWith("ipfs://")) fetchUrl = "https://cf-ipfs.com/ipfs/" + fetchUrl.slice(7);
-    const r = await fetch(fetchUrl, { signal: AbortSignal.timeout(8000) });
+    // Try pump.fun CDN format first for IPFS hashes
+    if (fetchUrl.includes("bafkrei") && !fetchUrl.includes("http")) {
+      fetchUrl = "https://cf-ipfs.com/ipfs/" + fetchUrl;
+    }
+    const r = await fetch(fetchUrl, { 
+      signal: AbortSignal.timeout(10000),
+      headers: { "User-Agent": "Mozilla/5.0", "Accept": "image/*,*/*" }
+    });
     if (!r.ok) return res.status(r.status).end();
     const ct = r.headers.get("content-type") || "image/png";
     res.set("Content-Type", ct);
-    res.set("Cache-Control", "public, max-age=3600");
+    res.set("Cache-Control", "public, max-age=86400"); // 24h cache
     res.set("Access-Control-Allow-Origin", "*");
     const buf = Buffer.from(await r.arrayBuffer());
     res.send(buf);
