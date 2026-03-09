@@ -160,10 +160,24 @@ function processRadarMessage(data) {
   if (!data) return;
   const now = Date.now();
 
-  // New token creation — only on explicit create events
-  if (data.txType === "create" && data.mint) {
-    const ca = data.mint;
-    if (radar.tokens.has(ca)) return;
+  // Debug: log first few messages to see actual field names
+  if (!radar._debugCount) radar._debugCount = 0;
+  if (radar._debugCount < 3 && data.txType) {
+    console.log(`[RADAR] Sample ${data.txType}:`, JSON.stringify(data).slice(0, 400));
+    radar._debugCount++;
+  }
+
+  // PumpPortal field normalization — they use different names
+  const mcSol = data.marketCapSol || data.market_cap_sol || data.mcap || 0;
+  const solAmt = Math.abs(data.solAmount || data.sol_amount || data.sol || 0);
+  const trader = data.traderPublicKey || data.trader || data.wallet || "";
+  const mint = data.mint || data.token || data.ca || "";
+  const vSol = data.vSolInBondingCurve || data.virtual_sol_reserves || 0;
+
+  // New token creation
+  if ((data.txType === "create" || data.txType === "newTokenCreation") && mint) {
+    const ca = mint;
+    if (!ca || radar.tokens.has(ca)) return;
     const token = {
       ca,
       name: data.name || "",
@@ -177,17 +191,17 @@ function processRadarMessage(data) {
       trades: [],
       buys: 0, sells: 0,
       volumeSol: 0,
-      mcapSol: data.marketCapSol || 0,
-      mcapUsd: Math.round((data.marketCapSol || 0) * solUsdPrice),
+      mcapSol: mcSol,
+      mcapUsd: Math.round(mcSol * solUsdPrice),
       uniqueBuyers: new Set(),
       // Seed spark with initial mcap so frontend renders immediately (needs ≥2 points)
-      spark: (data.marketCapSol > 0) ? [
-        Math.round((data.marketCapSol * 0.85) * solUsdPrice),
-        Math.round((data.marketCapSol * 0.92) * solUsdPrice),
-        Math.round(data.marketCapSol * solUsdPrice),
+      spark: (mcSol > 0) ? [
+        Math.round((mcSol * 0.85) * solUsdPrice),
+        Math.round((mcSol * 0.92) * solUsdPrice),
+        Math.round(mcSol * solUsdPrice),
       ] : [],
       h1Change: 0,
-      devWallet: data.traderPublicKey || "",
+      devWallet: trader,
       graduated: false,
       bundled: false,
     };
@@ -203,12 +217,12 @@ function processRadarMessage(data) {
   }
 
   // Trade event (buy or sell)
-  if ((data.txType === "buy" || data.txType === "sell") && data.mint) {
-    const ca = data.mint;
+  if ((data.txType === "buy" || data.txType === "sell") && mint) {
+    const ca = mint;
     let token = radar.tokens.get(ca);
     // Auto-create on first trade if missed create event
     if (!token) {
-      const initMcap = (data.marketCapSol || 0) * solUsdPrice;
+      const initMcap = mcSol * solUsdPrice;
       token = {
         ca, name: data.name || "", ticker: data.symbol || "",
         description: "", image: "", twitter: "", website: "", telegram: "",
@@ -221,20 +235,20 @@ function processRadarMessage(data) {
       if (data.uri) fetchTokenImage(ca, data.uri).catch(() => {});
     }
     // PumpPortal sends solAmount already in SOL (NOT lamports)
-    const sol = Math.abs(data.solAmount || 0);
+    const sol = solAmt;
     if (data.txType === "buy") {
       token.buys++;
       token.volumeSol += sol;
-      if (data.traderPublicKey) token.uniqueBuyers.add(data.traderPublicKey);
+      if (trader) token.uniqueBuyers.add(trader);
     } else {
       token.sells++;
     }
     // Update mcap
-    if (data.marketCapSol > 0) {
-      token.mcapSol = data.marketCapSol;
-      token.mcapUsd = Math.round(data.marketCapSol * solUsdPrice);
-    } else if (data.vSolInBondingCurve > 0) {
-      token.mcapSol = data.vSolInBondingCurve * 2;
+    if (mcSol > 0) {
+      token.mcapSol = mcSol;
+      token.mcapUsd = Math.round(mcSol * solUsdPrice);
+    } else if (vSol > 0) {
+      token.mcapSol = vSol * 2;
       token.mcapUsd = Math.round(token.mcapSol * solUsdPrice);
     }
     if (data.name && !token.name) token.name = data.name;
@@ -244,7 +258,7 @@ function processRadarMessage(data) {
       token.spark.push(token.mcapUsd);
       if (token.spark.length > 60) token.spark = token.spark.slice(-60);
     }
-    token.trades.push({ side: data.txType, sol, wallet: (data.traderPublicKey || "").slice(0, 8), time: now });
+    token.trades.push({ side: data.txType, sol, wallet: trader.slice(0, 8), time: now });
     if (token.trades.length > 100) token.trades = token.trades.slice(-100);
     const firstSpark = token.spark.length > 1 ? token.spark[0] : token.mcapUsd;
     token.h1Change = firstSpark > 0 ? ((token.mcapUsd - firstSpark) / firstSpark) * 100 : 0;
