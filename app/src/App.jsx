@@ -55,8 +55,8 @@ function NI({label,value,onChange,min,max,step:s=1,decimals:d}){const T=uT();ret
 function ImgUp({image,onChange,mb}){const T=uT(),ref=useRef(null);const read=f=>{const r=new FileReader();r.onload=()=>onChange(r.result);r.readAsDataURL(f)};return<div onClick={()=>ref.current?.click()} onDrop={e=>{e.preventDefault();if(e.dataTransfer.files[0])read(e.dataTransfer.files[0])}} onDragOver={e=>e.preventDefault()} style={{width:mb?72:100,height:mb?72:100,borderRadius:10,border:"1px dashed "+(image?T.gn+"33":T.bd),background:image?"url("+image+") center/cover":T.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3,cursor:"pointer",flexShrink:0,position:"relative"}}>{!image&&<><IC.upload s={18} c={T.dm}/><span style={{fontSize:8,color:T.ft,fontFamily:M}}>512x512</span></>}<input ref={ref} type="file" accept="image/*" style={{display:"none"}} onChange={e=>{if(e.target.files?.[0])read(e.target.files[0])}}/></div>}
 const tk=s=>s?s.replace(/^\$/,""):s||"";
 const solFmt=n=>n<.001?"0":n<1?n.toFixed(3).replace(/0+$/,"").replace(/\.$/,""):n<100?n.toFixed(2):Math.round(n)+"";
-// Image proxy: routes IPFS/pump.fun images through backend to avoid OpaqueResponseBlocking
-const imgProxy=u=>!u?"":u.startsWith("data:")?u:u.includes("cf-ipfs.com")||u.includes("ipfs")||u.includes("pump")||u.includes("arweave")||u.includes("nftstorage")||u.includes("storacha")?API+"/api/img?url="+encodeURIComponent(u):u;
+// Image proxy: routes external images through backend to avoid OpaqueResponseBlocking + CORS
+const imgProxy=u=>!u?"":u.startsWith("data:")?u:(u.includes("ipfs")||u.includes("pump")||u.includes("arweave")||u.includes("nftstorage")||u.includes("storacha")||u.includes("cf-ipfs")||u.includes(".webp")||u.includes("bafkrei"))?API+"/api/img?url="+encodeURIComponent(u):u;
 // MC correction: server uses * 170, we recalculate with live price
 const fixMc=(t,solPrice)=>{if(t.mcapSol&&solPrice)return Math.round(t.mcapSol*solPrice);if(t.marketCapSol&&solPrice)return Math.round(t.marketCapSol*solPrice);return t.mcapUsd||0};
 const PRESETS=[{name:"Scout",sol:.5,snc:1,slip:20,dur:30,jt:.001},{name:"Standard",sol:2,snc:2,slip:25,dur:60,jt:.001},{name:"Swarm",sol:10,snc:3,slip:30,dur:120,jt:.002}];
@@ -204,6 +204,7 @@ const[rEnabled,sRE]=useState(true);const[img,sImg]=useState(null);const[showKeys
 const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");const[refMsg,sRefMsg]=useState("");
 const[expert,sExpert]=useState(false);const[showSim,sShowSim]=useState(false);const[launchStep,sLS]=useState(null);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
+const[intelData,sIntel]=useState(null);
 
 const toast=useCallback((m,t="info")=>{const id=Date.now()+Math.random();sToasts(x=>[...x,{id,msg:m,type:t}]);setTimeout(()=>sToasts(x=>x.filter(y=>y.id!==id)),5000)},[]);
 const hasAccess=user&&(user.demo||user.tier==="free"||user.tier==="pro"||user.tier==="vip");
@@ -224,6 +225,8 @@ useEffect(()=>{if(!user?.pubkey||user.demo)return;const f=()=>a.gtw(user.pubkey)
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.gu(user.pubkey).then(d=>{if(d.username)sCU(d.username)}).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null)sOl(d.online)}).catch(()=>{})},15000);return()=>clearInterval(iv)},[]);
 useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(d=>sFl(d)).catch(()=>{})},5000);return()=>clearInterval(iv)},[launched,lCA]);
+// Intel tab polling
+useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>r.json()).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs)sRT(d.tabs);if(d.poolSize!=null)sRP(d.poolSize);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,5000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
 useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,20000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.grf(user.pubkey).then(d=>sRefData(d)).catch(()=>{})},[user?.pubkey]);
@@ -347,9 +350,10 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.sim s={16} c={T.pu}/><span style={{fontSize:14,fontWeight:800}}>Meme Intelligence</span><span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/></div>
 <div style={{fontSize:9,color:T.dm,marginBottom:12,lineHeight:1.5}}>Self-evolving scoring engine. Every pump.fun token gets scored using Tipping Point + Kahneman System 1/2 frameworks. The model learns from every outcome — graduated tokens, rug pulls, fleet P&L — and improves on every single launch.</div>
 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:10}}>
-{[{l:"TOKENS",v:"—",c:T.pu},{l:"ACCURACY",v:"—",c:T.gn},{l:"GRAD RATE",v:"—",c:T.yl},{l:"TRACKING",v:"—",c:T.or}].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:16,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:6,color:T.ft,fontWeight:700,marginTop:2}}>{s.l}</div></div>)}
+{[{l:"TOKENS",v:intelData?.memory?.total||"—",c:T.pu},{l:"ACCURACY",v:intelData?.scorer?.accuracy||"—",c:T.gn},{l:"GRAD RATE",v:intelData?.memory?.graduationRate||"—",c:T.yl},{l:"TRACKING",v:intelData?.monitor?.tracking||"—",c:T.or}].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:16,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:6,color:T.ft,fontWeight:700,marginTop:2}}>{s.l}</div></div>)}
 </div>
-<div style={{fontSize:8,color:T.ft,textAlign:"center"}}>Connect to /api/intel/stats for live data. Engine processes every radar token automatically.</div>
+<div style={{fontSize:8,color:T.ft,textAlign:"center"}}>{intelData?`${intelData.scorer?.trainCount||0} tokens scored · SOL $${intelData.solPrice?.toFixed(0)||"?"} · uptime ${intelData.uptime||"—"}`:"Connecting to intel engine..."}</div>
+{intelData?.recentEvents?.length>0&&<div style={{marginTop:8,background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:8,maxHeight:120,overflowY:"auto"}}><div style={{fontSize:8,fontWeight:700,color:T.dm,marginBottom:4}}>Recent Scores</div>{intelData.recentEvents.slice(-6).reverse().map((e,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"2px 0",fontSize:8,color:T.dm}}><span style={{width:5,height:5,borderRadius:"50%",background:T.gn,flexShrink:0}}/><span style={{color:T.tx,fontWeight:700}}>{e.data?.ca}</span><span>→ {e.data?.score}pts</span><span style={{color:T.yl}}>{e.data?.bondProb}% bond</span></div>)}</div>}
 </div>
 
 {/* Scoring frameworks */}
