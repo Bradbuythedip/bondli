@@ -12,17 +12,8 @@
  *   6. Remaining SOL distributes to fleet
  *   7. Fleet trades autonomously
  *
- * Dev buy formula (v3.1 — optimized):
- *   < 0.5 SOL → 15% (min 0.03, max 0.075)
- *   0.5-2 SOL → 12% (min 0.06, max 0.24)
- *   2-5 SOL   → 10% (min 0.15, max 0.5)
- *   5-15 SOL  → 8%  (min 0.3, max 1.2)
- *   15+ SOL   → 5%  (min 0.5, max 2.0)
- *
- * Axiom: Dev buy creates a VISIBLE candle without moving the curve
- * so far that fleet pays inflated prices. On pump.fun (~30 SOL virtual
- * reserves), 0.1 SOL moves price ~0.33%. Old 40-50% formula moved
- * price 3-6% which made fleet entry expensive and dev buy detectable.
+ * Status lifecycle:
+ *   awaiting_deposit → funded → creating → live → closing → closed
  */
 
 import {
@@ -35,32 +26,24 @@ import bs58 from "bs58";
 import CONFIG from "./config.mjs";
 
 // ═══════════════════════════════════════
-// DEV BUY CALCULATOR (v3.1 — optimized sweet spot)
-// Target: 0.3-1.5% price impact (visible candle, cheap fleet entry)
+// DEV BUY CALCULATOR
 // ═══════════════════════════════════════
 export function calculateDevBuy(totalSol) {
   let pct, min, max;
 
-  if (totalSol < 0.5) {
-    // Micro budget: 15% — just enough to show on chart
-    pct = 0.15; min = 0.03; max = 0.075;
-  } else if (totalSol < 2) {
-    // Small budget: 12% — visible candle, leaves 88% for fleet
-    pct = 0.12; min = 0.06; max = 0.24;
+  if (totalSol < 1) {
+    pct = 0.50; min = 0.1; max = 0.5;
   } else if (totalSol < 5) {
-    // Medium budget: 10% — solid candle, 90% fleet
-    pct = 0.10; min = 0.15; max = 0.5;
+    pct = 0.40; min = 0.3; max = 2.0;
   } else if (totalSol < 15) {
-    // Large budget: 8% — enough for attention, 92% fleet
-    pct = 0.08; min = 0.3; max = 1.2;
+    pct = 0.25; min = 1.0; max = 4.0;
   } else {
-    // Whale budget: 5% — don't be the biggest candle
-    pct = 0.05; min = 0.5; max = 2.0;
+    pct = 0.15; min = 2.0; max = 8.0;
   }
 
   const raw = totalSol * pct;
   const devBuy = Math.min(max, Math.max(min, raw));
-  const fleetBudget = totalSol - devBuy - 0.02; // 0.02 SOL reserve for token creation tx fee
+  const fleetBudget = totalSol - devBuy - 0.02;
 
   return {
     devBuy: +devBuy.toFixed(4),
@@ -82,7 +65,7 @@ export function calculateDevBuy(totalSol) {
 export class SessionManager {
   constructor(redis) {
     this.redis = redis;
-    this.sessions = new Map(); // in-memory fallback
+    this.sessions = new Map();
     this.pollIntervals = new Map();
   }
 
@@ -117,7 +100,7 @@ export class SessionManager {
       id: "sess_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8),
       userWallet,
       devWallet,
-      devSecret, // stored encrypted in prod — plaintext for now
+      devSecret,
       totalSol,
       tier: tier || "free",
       devBuy: devBuyInfo.devBuy,
@@ -127,7 +110,7 @@ export class SessionManager {
         name: tokenConfig.name || "",
         ticker: tokenConfig.ticker || "",
         description: tokenConfig.description || "",
-        image: tokenConfig.image || null, // base64 or URI
+        image: tokenConfig.image || null,
         twitter: tokenConfig.twitter || "",
         telegram: tokenConfig.telegram || "",
         website: tokenConfig.website || "",
@@ -140,30 +123,29 @@ export class SessionManager {
         jitoTip: fleetConfig?.jitoTip || 0.001,
       },
       useMaster: !!masterSeed,
-      status: masterSeed ? "funded" : "awaiting_deposit", // awaiting_deposit → funded → creating → live → closing → closed
+      status: masterSeed ? "funded" : "awaiting_deposit",
       funded: !!masterSeed,
       depositTx: null,
       tokenCA: tokenConfig.existingCA || null,
       createdAt: new Date().toISOString(),
       fundedAt: null,
       launchedAt: null,
+      closedAt: null,
     };
 
-    // Store
     this.sessions.set(session.id, session);
     if (this.redis) {
       try {
-        await this.redis.set("session:" + session.id, JSON.stringify(session), "EX", 86400); // 24h TTL
+        await this.redis.set("session:" + session.id, JSON.stringify(session), "EX", 86400);
       } catch {}
     }
 
     console.log(`[SESSION] Created ${session.id} | dev: ${devWallet} | budget: ${totalSol} SOL | devBuy: ${devBuyInfo.devBuy} SOL`);
 
-    // Return info including private key — user needs this for pumpfun creator fees
     return {
       sessionId: session.id,
       devWallet,
-      devSecret, // user imports this into Phantom to claim creator fees
+      devSecret,
       totalSol,
       devBuy: devBuyInfo.devBuy,
       creationFee: devBuyInfo.creationFee,
@@ -207,6 +189,100 @@ export class SessionManager {
     return session;
   }
 
+  // ═══ CLOSE SESSION — mark closed + return keys ═══
+  async closeSession(sessionId) {
+    const session = await this.get(sessionId);
+    if (!session) return { ok: false, error: "Session not found" };
+    
+    await this.update(sessionId, {
+      status: "closed",
+      closedAt: new Date().toISOString(),
+    });
+
+    // Gather all keys for this session
+    const keys = [];
+    if (session.devSecret) {
+      keys.push({ role: "dev", pubkey: session.devWallet, secret: session.devSecret });
+    }
+
+    // Fleet keys from Redis
+    const fleetKeys = await this.getFleetKeys(sessionId);
+    if (fleetKeys.length > 0) {
+      keys.push(...fleetKeys);
+    }
+
+    console.log(`[SESSION] Closed ${sessionId} | ${keys.length} keys available`);
+    return { ok: true, keys, sessionId };
+  }
+
+  // ═══ FLEET KEY STORAGE ═══
+  // Store fleet wallet keys when session launches (called from orchestrator)
+  async storeFleetKeys(sessionId, walletKeys) {
+    // walletKeys = [{ role, pubkey, secret }, ...]
+    if (!walletKeys || walletKeys.length === 0) return;
+    
+    // Store in memory on session object
+    const session = await this.get(sessionId);
+    if (session) {
+      session._fleetKeys = walletKeys;
+      this.sessions.set(sessionId, session);
+    }
+
+    // Store in Redis with 48h TTL (longer than session TTL so keys survive)
+    if (this.redis) {
+      try {
+        await this.redis.set(
+          "fleetkeys:" + sessionId,
+          JSON.stringify(walletKeys),
+          "EX",
+          172800 // 48 hours
+        );
+      } catch {}
+    }
+    console.log(`[SESSION] Stored ${walletKeys.length} fleet keys for ${sessionId}`);
+  }
+
+  // Retrieve fleet keys for a session
+  async getFleetKeys(sessionId) {
+    // Check in-memory first
+    const session = this.sessions.get(sessionId);
+    if (session?._fleetKeys?.length > 0) {
+      return session._fleetKeys;
+    }
+
+    // Check Redis
+    if (this.redis) {
+      try {
+        const raw = await this.redis.get("fleetkeys:" + sessionId);
+        if (raw) {
+          const keys = JSON.parse(raw);
+          // Cache in memory
+          if (session) {
+            session._fleetKeys = keys;
+            this.sessions.set(sessionId, session);
+          }
+          return keys;
+        }
+      } catch {}
+    }
+
+    return [];
+  }
+
+  // ═══ GET ALL KEYS for a session (dev + fleet) ═══
+  async getAllKeys(sessionId) {
+    const session = await this.get(sessionId);
+    if (!session) return [];
+
+    const keys = [];
+    if (session.devSecret) {
+      keys.push({ role: "dev", pubkey: session.devWallet, secret: session.devSecret });
+    }
+    const fleetKeys = await this.getFleetKeys(sessionId);
+    keys.push(...fleetKeys);
+    return keys;
+  }
+
   // Verify deposit arrived on-chain
   async verifyDeposit(sessionId, txSig) {
     const session = await this.get(sessionId);
@@ -216,7 +292,6 @@ export class SessionManager {
     try {
       const connection = new Connection(CONFIG.RPC_URL, "confirmed");
 
-      // Check tx
       const tx = await connection.getTransaction(txSig, {
         maxSupportedTransactionVersion: 0,
         commitment: "confirmed",
@@ -225,11 +300,9 @@ export class SessionManager {
       if (!tx) return { ok: false, error: "Transaction not found. Wait for confirmation." };
       if (tx.meta?.err) return { ok: false, error: "Transaction failed on-chain" };
 
-      // Verify SOL arrived at dev wallet
       const balance = await connection.getBalance(new PublicKey(session.devWallet));
       const balanceSol = balance / LAMPORTS_PER_SOL;
 
-      // Need at least 95% of expected amount (tolerance for fees)
       const expectedMin = session.totalSol * 0.95;
       if (balanceSol < expectedMin) {
         return {
@@ -240,7 +313,6 @@ export class SessionManager {
         };
       }
 
-      // Mark funded
       await this.update(sessionId, {
         funded: true,
         depositTx: txSig,
@@ -279,13 +351,62 @@ export class SessionManager {
   // List user's sessions
   async listForUser(userWallet) {
     const results = [];
+    
+    // In-memory sessions
     for (const [, session] of this.sessions) {
       if (session.userWallet === userWallet) {
-        const { devSecret, ...pub } = session;
+        const { devSecret, _fleetKeys, ...pub } = session;
         results.push(pub);
       }
     }
-    return results.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Also scan Redis for any sessions not in memory
+    if (this.redis) {
+      try {
+        let cursor = "0";
+        do {
+          const [nextCursor, keys] = await this.redis.scan(cursor, "MATCH", "session:sess_*", "COUNT", 100);
+          cursor = nextCursor;
+          for (const key of keys) {
+            const sid = key.replace("session:", "");
+            if (!this.sessions.has(sid)) {
+              try {
+                const raw = await this.redis.get(key);
+                if (raw) {
+                  const session = JSON.parse(raw);
+                  if (session.userWallet === userWallet) {
+                    const { devSecret, _fleetKeys, ...pub } = session;
+                    results.push(pub);
+                    this.sessions.set(sid, session); // cache
+                  }
+                }
+              } catch {}
+            }
+          }
+        } while (cursor !== "0");
+      } catch {}
+    }
+
+    // Deduplicate by id
+    const seen = new Set();
+    const unique = [];
+    for (const s of results) {
+      if (!seen.has(s.id)) { seen.add(s.id); unique.push(s); }
+    }
+
+    return unique.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  }
+
+  // Get all active sessions (for admin/monitoring)
+  async getAllActive() {
+    const results = [];
+    for (const [, session] of this.sessions) {
+      if (session.status !== "closed") {
+        const { devSecret, _fleetKeys, ...pub } = session;
+        results.push(pub);
+      }
+    }
+    return results;
   }
 
   // Delete a single session
@@ -294,9 +415,18 @@ export class SessionManager {
     if (this.redis) {
       try {
         await this.redis.del("session:" + sessionId);
-        await this.redis.del("fleetkeys:" + sessionId);
+        // Keep fleet keys for 48h even after session delete
+        // so user can still export them
       } catch {}
     }
+    return true;
+  }
+
+  // Soft delete — marks closed but keeps keys accessible
+  async softDelete(sessionId) {
+    await this.update(sessionId, { status: "closed", closedAt: new Date().toISOString() });
+    // Remove from memory after 10 minutes (keys still in Redis)
+    setTimeout(() => { this.sessions.delete(sessionId); }, 10 * 60 * 1000);
     return true;
   }
 
@@ -308,49 +438,9 @@ export class SessionManager {
       if (session.userWallet === userWallet) toDelete.push(id);
     }
     for (const id of toDelete) {
-      await this.delete(id);
+      await this.softDelete(id);
       count++;
     }
     return count;
-  }
-
-  // ═══════════════════════════════════════
-  // GET BY WALLET — returns all sessions for a user (with fleet keys)
-  // CRITICAL: /api/positions and /api/quick-sell depend on this method.
-  // Without it, fleet wallets are never scanned for token holdings.
-  // ═══════════════════════════════════════
-  async getByWallet(userWallet) {
-    const results = [];
-    const seenIds = new Set();
-
-    // Check in-memory sessions
-    for (const [, session] of this.sessions) {
-      if (session.userWallet === userWallet) {
-        results.push(session);
-        seenIds.add(session.id);
-      }
-    }
-
-    // Check Redis for any sessions not in memory
-    if (this.redis) {
-      try {
-        const keys = await this.redis.keys("session:*");
-        for (const key of keys) {
-          const raw = await this.redis.get(key);
-          if (!raw) continue;
-          try {
-            const session = JSON.parse(raw);
-            if (session.userWallet === userWallet && !seenIds.has(session.id)) {
-              results.push(session);
-              seenIds.add(session.id);
-              // Hydrate in-memory cache
-              this.sessions.set(session.id, session);
-            }
-          } catch {}
-        }
-      } catch {}
-    }
-
-    return results;
   }
 }
