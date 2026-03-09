@@ -1,4337 +1,1145 @@
-// BONDLI v3.0 — PRODUCTION API Server
-// Tiers: Free (25% profit share), Pro (10 SOL one-time, 0%), VIP (whitelisted, 0%)
-import express from "express";
-import { createServer } from "http";
-import WebSocket, { WebSocketServer } from "ws";
-import { Connection, PublicKey, LAMPORTS_PER_SOL, SystemProgram, Transaction, Keypair, sendAndConfirmTransaction, ComputeBudgetProgram, VersionedTransaction } from "@solana/web3.js";
-import bs58 from "bs58";
+/**
+ * ═══════════════════════════════════════════════════════════════
+ * BONDLI v4 — server.production.mjs
+ * Express API + PumpPortal WebSocket Radar + Fleet Trading
+ * ═══════════════════════════════════════════════════════════════
+ *
+ * Deploy: Railway (or any Node.js host)
+ * Env vars: RPC_URL, REDIS_URL, PLATFORM_WALLET, ADMIN_SECRET,
+ *           PUMPPORTAL_API_KEY (optional), PORT
+ *
+ * This file handles:
+ *   - PumpPortal WebSocket → real-time radar feed
+ *   - Session lifecycle (create → fund → launch → close)
+ *   - Fleet trading (via fleet-trader.mjs)
+ *   - Trading wallet management
+ *   - Quick buy/sell (PumpPortal Lightning)
+ *   - Positions / portfolio tracking
+ *   - SOL price (server-to-server, no CORS)
+ *   - Admin/owner dashboard endpoints
+ *   - Referral system
+ *   - Username system
+ * ═══════════════════════════════════════════════════════════════
+ */
 
-// Engine
-import { FleetTrader } from "../engine/fleet-trader.mjs";
-import { skimSweep } from "../engine/fleet-trader.mjs";
-import { calculateFee, getFeeTier, isOwnerWallet, registerOwner } from "../engine/fee-engine.mjs";
+import express from "express";
+import cors from "cors";
+import { createServer } from "http";
+import { WebSocketServer, WebSocket } from "ws";
+import Redis from "ioredis";
+import {
+  Connection, Keypair, PublicKey, Transaction,
+  SystemProgram, LAMPORTS_PER_SOL, sendAndConfirmTransaction, ComputeBudgetProgram
+} from "@solana/web3.js";
+import bs58 from "bs58";
+import crypto from "crypto";
+import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
+import { FleetTrader, skimSweep } from "../engine/fleet-trader.mjs";
+import { createToken } from "../engine/token-creator.mjs";
+import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, PLATFORM_WALLET } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
 
-// Security middleware
-import { securityHeaders, requestId, bodyLimit, extractIP } from "../middleware/security.mjs";
-import { initRedis, getRedis, apiLimiter, launchLimiter } from "../middleware/rate-limiter.mjs";
-import { requireAuth, optionalAuth } from "../middleware/auth.mjs";
-import { launchSchema, closeSchema } from "../middleware/validate.mjs";
-
-// Payments
-import PaymentVerifier from "../payments/payment-verifier.mjs";
-import createPaymentRoutes from "../payments/payment-routes.mjs";
-
-// Sessions
-import SessionStore from "../db/session-store.mjs";
-
-// User tracking (persistent)
-import UserStore from "../db/user-store.mjs";
-
-// Wallet signature auth
-import { generateChallenge, verifySolanaSignature, issueAuthToken, requireVerifiedWallet, requireStrictAuth, nonces } from "../middleware/wallet-auth.mjs";
-
-// Launch Sessions (dev wallet generation + funding)
-import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
-import { createToken } from "../engine/token-creator.mjs";
-import { getAssociatedTokenAddressSync, getAccount, TOKEN_PROGRAM_ID, createCloseAccountInstruction } from "@solana/spl-token";
-import BN from "bn.js";
-import { getSellSolAmountFromTokenAmount, getBuyTokenAmountFromSolAmount, PumpSdk, OnlinePumpSdk } from "@pump-fun/pump-sdk";
-
 // ═══════════════════════════════════════
-// TIER + ACCESS SYSTEM
+// ENVIRONMENT
 // ═══════════════════════════════════════
-const PRO_FEE_SOL = parseFloat(process.env.PRO_FEE_SOL || "10");
-
-// ═══════════════════════════════════════
-// PRO LICENSE BONDING CURVE
-// price = BASE + (K * totalSold) + (ACCEL * totalSold^1.5 / 100)
-// Starts ~1 SOL, reaches ~10 SOL around license #200
-// ═══════════════════════════════════════
-const PRO_CURVE = {
-  BASE: 1.0,        // floor price in SOL
-  K: 0.015,         // linear component per license
-  ACCEL: 0.002,     // acceleration component
-};
-
-let proLicenseCount = 0; // loaded from Redis on start
-
-async function loadProCount() {
-  const redis = getRedis();
-  if (!redis) return;
-  try {
-    const count = await redis.get("bondli:pro_license_count");
-    if (count) proLicenseCount = parseInt(count);
-    console.log(`[CURVE] Loaded pro license count: ${proLicenseCount}`);
-  } catch {}
-}
-
-async function incrementProCount() {
-  proLicenseCount++;
-  const redis = getRedis();
-  if (redis) {
-    try { await redis.set("bondli:pro_license_count", proLicenseCount.toString()); } catch {}
-  }
-  return proLicenseCount;
-}
-
-function getProPrice(n = proLicenseCount) {
-  const price = PRO_CURVE.BASE + (PRO_CURVE.K * n) + (PRO_CURVE.ACCEL * Math.pow(n, 1.5) / 100);
-  return Math.round(price * 1000) / 1000; // 3 decimal places
-}
-
-function getProPriceAfter(n = proLicenseCount) {
-  return getProPrice(n + 1);
-}
-const FREE_PROFIT_CUT = parseFloat(process.env.FREE_PROFIT_CUT || "25"); // percent
-const PLATFORM_WALLET = process.env.PLATFORM_WALLET || "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
-if (PLATFORM_WALLET === "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx") console.log("[INFO] Using hardcoded platform wallet");
-
-function getWhitelist() {
-  const raw = process.env.WHITELISTED_WALLETS || "";
-  return new Set(raw.split(",").map(w => w.trim()).filter(Boolean));
-}
-
-// tier: "free" | "pro" | "vip"
-// whitelisted wallets bypass everything
-async function getWalletTier(wallet) {
-  // Platform wallet is always VIP
-  if (wallet === PLATFORM_WALLET) return { tier: "vip", whitelisted: true, paid: true, profitCut: 0 };
-
-  const whitelist = getWhitelist();
-  if (whitelist.has(wallet)) return { tier: "vip", whitelisted: true, paid: true, profitCut: 0 };
-
-  const redis = getRedis();
-  if (redis) {
-    try {
-      const tier = await redis.get("tier:" + wallet);
-      if (tier === "pro") return { tier: "pro", whitelisted: false, paid: true, profitCut: 0 };
-      if (tier === "vip") return { tier: "vip", whitelisted: true, paid: true, profitCut: 0 };
-    } catch {}
-  }
-  // Default is FREE — never return "none"
-  return { tier: "free", whitelisted: false, paid: false, profitCut: FREE_PROFIT_CUT };
-}
-
-async function setWalletTier(wallet, tier) {
-  const redis = getRedis();
-  if (redis) {
-    try { await redis.set("tier:" + wallet, tier); } catch {}
-  }
-}
-
-// ═══════════════════════════════════════
-// CREATOR FEE AUTO-CLAIM
-// Claims pump.fun creator rewards for tokens created through Bondli
-// Free + VIP: fees go to platform wallet (anal.sol)
-// Pro: user keeps their own fees (no auto-claim)
-// ═══════════════════════════════════════
-async function autoClaimCreatorFees(devKeypair, userWallet, tier) {
-  // Pro users keep their creator fees
-  if (tier === "pro") return { claimed: false, reason: "pro_keeps_fees" };
-
-  const devPubkey = devKeypair.publicKey.toBase58();
-  console.log(`[CREATOR-FEE] Claiming for ${devPubkey.slice(0, 8)} (${tier} tier)...`);
-
-  try {
-    // Use PumpPortal trade-local with dev keypair (dev = token creator)
-    const ppRes = await fetch("https://pumpportal.fun/api/trade-local", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        publicKey: devPubkey,
-        action: "collectCreatorFee",
-        priorityFee: 0.000005,
-      }),
-    });
-
-    if (!ppRes.ok) {
-      const errText = await ppRes.text();
-      // "no fees to collect" is not an error
-      if (errText.includes("no fee") || errText.includes("No fee") || errText.includes("0 lamports")) {
-        console.log(`[CREATOR-FEE] No fees to claim for ${devPubkey.slice(0, 8)}`);
-        return { claimed: false, reason: "no_fees" };
-      }
-      console.warn(`[CREATOR-FEE] PumpPortal error:`, errText.slice(0, 100));
-      return { claimed: false, reason: errText.slice(0, 100) };
-    }
-
-    const txBuf = Buffer.from(await ppRes.arrayBuffer());
-    const vtx = VersionedTransaction.deserialize(txBuf);
-    vtx.sign([devKeypair]);
-
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const sig = await connection.sendRawTransaction(vtx.serialize(), { skipPreflight: true, maxRetries: 3 });
-
-    // Wait briefly for confirmation
-    await new Promise(r => setTimeout(r, 2000));
-
-    // Check how much SOL the dev wallet now has
-    const devBal = await connection.getBalance(devKeypair.publicKey);
-    const devSol = devBal / LAMPORTS_PER_SOL;
-
-    // Sweep claimed fees to platform wallet (keep 0.002 for rent)
-    const sweepAmount = Math.max(0, devSol - 0.003);
-    if (sweepAmount > 0.001) {
-      try {
-        const sweepTx = new Transaction().add(
-          SystemProgram.transfer({
-            fromPubkey: devKeypair.publicKey,
-            toPubkey: new PublicKey(PLATFORM_WALLET),
-            lamports: Math.floor(sweepAmount * LAMPORTS_PER_SOL),
-          })
-        );
-        const { blockhash } = await connection.getLatestBlockhash("confirmed");
-        sweepTx.recentBlockhash = blockhash;
-        sweepTx.feePayer = devKeypair.publicKey;
-        const sweepSig = await sendAndConfirmTransaction(connection, sweepTx, [devKeypair], { skipPreflight: true, commitment: "confirmed" });
-        console.log(`[CREATOR-FEE] Swept ${sweepAmount.toFixed(4)} SOL to platform | sig: ${sweepSig.toString().slice(0, 16)}`);
-        return { claimed: true, amount: sweepAmount, sig: sig.toString(), sweepSig: sweepSig.toString() };
-      } catch (e) {
-        console.warn(`[CREATOR-FEE] Sweep failed:`, e.message);
-        return { claimed: true, amount: 0, sig: sig.toString(), sweepError: e.message };
-      }
-    }
-
-    console.log(`[CREATOR-FEE] Claimed but amount too small to sweep (${devSol.toFixed(6)} SOL)`);
-    return { claimed: true, amount: 0, sig: sig.toString() };
-  } catch (e) {
-    console.warn(`[CREATOR-FEE] Claim failed:`, e.message);
-    return { claimed: false, reason: e.message };
-  }
-}
-
-// Track profit per wallet for the free tier skim
-async function recordProfit(wallet, netProfit, platformCut) {
-  const redis = getRedis();
-  if (!redis) return;
-  try {
-    const key = "profit:" + wallet;
-    const existing = JSON.parse(await redis.get(key) || "{}");
-    existing.totalProfit = (existing.totalProfit || 0) + netProfit;
-    existing.totalSkimmed = (existing.totalSkimmed || 0) + platformCut;
-    existing.closes = (existing.closes || 0) + 1;
-    existing.lastClose = new Date().toISOString();
-    await redis.set(key, JSON.stringify(existing));
-  } catch {}
-}
+const PORT = parseInt(process.env.PORT || "3001");
+const RPC_URL = process.env.RPC_URL || CONFIG.RPC_URL || "https://api.mainnet-beta.solana.com";
+const REDIS_URL = process.env.REDIS_URL || null;
+const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
+const PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data";
 
 // ═══════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════
 const app = express();
-const IS_PROD = process.env.NODE_ENV === "production";
-if (IS_PROD) app.set("trust proxy", 1);
-
-app.use(requestId);
-app.use(extractIP);
-app.use(securityHeaders);
-
-// CORS - after securityHeaders so we get the last word
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Headers", "Content-Type, X-Wallet, X-API-Secret, X-Admin-Secret, Authorization");
-  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  if (req.method === "OPTIONS") return res.status(200).end();
-  next();
-});
-
-app.use(bodyLimit(5_000_000)); // 5MB for base64 images
+app.use(cors({ origin: "*" }));
 app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ extended: true }));
+// Trust proxy (Railway)
+app.set("trust proxy", 1);
 
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on("finish", () => {
-    const ms = Date.now() - start;
-    const status = res.statusCode;
-    const color = status >= 500 ? "\x1b[31m" : status >= 400 ? "\x1b[33m" : "\x1b[32m";
-    console.log(`${color}${req.method} ${req.path} ${status}\x1b[0m ${ms}ms [${req.clientIP}] ${req.id?.slice(0,8)}`);
-  });
-  next();
-});
+const server = createServer(app);
+const wss = new WebSocketServer({ server, path: "/ws" });
+const connection = new Connection(RPC_URL, "confirmed");
 
-// ═══════════════════════════════════════
-// SERVICES
-// ═══════════════════════════════════════
-let sessionStore, paymentVerifier, sessionManager, userStore;
-const orch = new FleetTrader();
-
-async function initServices() {
-  const redis = await initRedis(process.env.REDIS_URL);
-  sessionStore = new SessionStore(redis);
-  sessionManager = new SessionManager(redis);
-  userStore = new UserStore(redis);
-  const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-  paymentVerifier = new PaymentVerifier(connection);
-  await paymentVerifier.init();
-  console.log("[INIT] All services ready (userStore, sessionStore, sessionManager)");
-}
-
-// Simple wallet auth — checks X-Wallet header
-async function walletAuth(req, res, next) {
-  const wallet = req.headers["x-wallet"] || req.body?.wallet || req.query?.wallet;
-  if (!wallet) return res.status(401).json({ error: "Wallet required. Pass X-Wallet header." });
-  const info = await getWalletTier(wallet);
-  req.user = { wallet, tier: info.tier, whitelisted: info.whitelisted, profitCut: info.profitCut };
-  next();
-}
-
-// Wallet identification only — no tier check (for session create)
-async function walletIdentify(req, res, next) {
-  const wallet = req.headers["x-wallet"] || req.body?.wallet || req.query?.wallet;
-  if (!wallet) return res.status(401).json({ error: "Wallet required." });
-  const info = await getWalletTier(wallet);
-  req.user = { wallet, tier: info.tier, whitelisted: info.whitelisted, profitCut: info.profitCut };
-  next();
-}
-
-// ═══════════════════════════════════════
-// ROUTES — Auth (wallet signature verification)
-// ═══════════════════════════════════════
-
-// Step 1: Get challenge message to sign
-app.post("/api/auth/challenge", apiLimiter, (req, res) => {
-  const { wallet } = req.body;
-  if (!wallet) return res.status(400).json({ error: "wallet required" });
-  const challenge = generateChallenge(wallet);
-  res.json({ ok: true, ...challenge });
-});
-
-// Step 2: Verify signed challenge → issue JWT
-app.post("/api/auth/verify", apiLimiter, async (req, res) => {
-  const { wallet, signature, message } = req.body;
-  if (!wallet || !signature || !message) return res.status(400).json({ error: "wallet, signature, and message required" });
-
-  // Check nonce exists
-  const stored = nonces.get(wallet);
-  if (!stored || stored.message !== message) return res.status(400).json({ error: "Invalid or expired challenge. Request a new one." });
-
-  // Verify signature
-  const valid = verifySolanaSignature(wallet, signature, message);
-  if (!valid) return res.status(401).json({ error: "Signature verification failed" });
-
-  // Clean up nonce
-  nonces.delete(wallet);
-
-  // Get or create user record
-  const user = userStore ? await userStore.getOrCreate(wallet) : { tier: "free" };
-  const walletInfo = await getWalletTier(wallet);
-
-  // Issue token
-  const token = issueAuthToken(wallet, walletInfo.tier);
-
-  res.json({
-    ok: true,
-    token,
-    wallet,
-    tier: walletInfo.tier,
-    referralCode: user.referralCode || "",
-    totalLaunches: user.totalLaunches || 0,
-    verified: true,
-  });
-});
-
-// Apply referral code
-app.post("/api/referral/apply", apiLimiter, async (req, res) => {
-  const { wallet, refCode } = req.body;
-  if (!wallet || !refCode) return res.status(400).json({ error: "wallet and refCode required" });
-  if (!userStore) return res.status(503).json({ error: "Service not ready" });
-  const result = await userStore.applyReferral(wallet, refCode);
-  res.json(result);
-});
-
-// Get referral info
-app.get("/api/referral/:wallet", apiLimiter, async (req, res) => {
-  if (!userStore) return res.json({ referralCode: "", referralCount: 0, referralEarnings: 0 });
-  const user = await userStore.get(req.params.wallet);
-  if (!user) return res.json({ referralCode: "", referralCount: 0, referralEarnings: 0 });
-  res.json({ referralCode: user.referralCode, referralCount: user.referralCount, referralEarnings: user.referralEarnings });
-});
-
-// Get user profile/stats
-app.get("/api/user/:wallet", apiLimiter, async (req, res) => {
-  if (!userStore) return res.json({ wallet: req.params.wallet, tier: "free" });
-  const user = await userStore.getOrCreate(req.params.wallet);
-  const walletInfo = await getWalletTier(req.params.wallet);
-  res.json({
-    wallet: user.wallet,
-    tier: walletInfo.tier,
-    firstSeen: user.firstSeen,
-    totalLaunches: user.totalLaunches,
-    totalDeploys: user.totalDeploys,
-    totalSolIn: user.totalSolIn,
-    totalSolOut: user.totalSolOut,
-    totalProfit: user.totalProfit,
-    totalPlatformCut: user.totalPlatformCut,
-    referralCode: user.referralCode,
-    referralCount: user.referralCount,
-    referralEarnings: user.referralEarnings,
-    lastActive: user.lastActive,
-  });
-});
-
-// ═══════════════════════════════════════
-// ROUTES — Health
-// ═══════════════════════════════════════
-app.get("/api/health", (req, res) => {
-  res.json({ ok: true, uptime: process.uptime(), env: IS_PROD ? "production" : "development", sessionManager: !!sessionManager });
-});
-
-// Transaction status check (for frontend Phantom signAndSendTransaction confirmation)
-app.get("/api/tx-status/:sig", apiLimiter, async (req, res) => {
+// Redis (optional — in-memory fallback)
+let redis = null;
+if (REDIS_URL) {
   try {
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const status = await connection.getSignatureStatus(req.params.sig);
-    const confirmed = status?.value?.confirmationStatus === "confirmed" || status?.value?.confirmationStatus === "finalized";
-    res.json({ ok: true, confirmed, status: status?.value?.confirmationStatus || "unknown" });
+    redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3, lazyConnect: true });
+    await redis.connect();
+    console.log("[REDIS] Connected");
   } catch (e) {
-    res.json({ ok: true, confirmed: false, error: e.message });
+    console.warn("[REDIS] Failed to connect:", e.message, "— using in-memory");
+    redis = null;
   }
-});
-
-// Send a pre-signed transaction (fallback for Phantom signing flow)
-app.post("/api/send-signed-tx", apiLimiter, async (req, res) => {
-  try {
-    const { signedTx } = req.body;
-    if (!signedTx) return res.status(400).json({ error: "signedTx required" });
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const raw = atob(signedTx);
-    const txBytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) txBytes[i] = raw.charCodeAt(i);
-    const signature = await connection.sendRawTransaction(txBytes, { skipPreflight: true, maxRetries: 3 });
-    console.log(`[SEND-TX] Sent signed tx: ${signature.slice(0, 12)}`);
-    res.json({ ok: true, signature });
-  } catch (e) {
-    console.error("[SEND-TX]", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ═══════════════════════════════════════
-// POSITIONS — live portfolio with P&L for trading wallet
-// ═══════════════════════════════════════
-// Track pending buys so positions show immediately after purchase
-const pendingBuys = new Map(); // wallet -> [{ca, sol, time, sig}]
-
-function addPendingBuy(wallet, ca, sol, sig) {
-  if (!pendingBuys.has(wallet)) pendingBuys.set(wallet, []);
-  const buys = pendingBuys.get(wallet);
-  // Remove dupes for same CA
-  const existing = buys.findIndex(b => b.ca === ca);
-  if (existing >= 0) buys.splice(existing, 1);
-  buys.push({ ca, sol, time: Date.now(), sig });
-  // Prune old entries (>60s — on-chain scan should have caught them by then)
-  const now = Date.now();
-  pendingBuys.set(wallet, buys.filter(b => now - b.time < 60000));
 }
 
-function getPendingBuys(wallet) {
-  const buys = pendingBuys.get(wallet) || [];
-  const now = Date.now();
-  return buys.filter(b => now - b.time < 60000);
-}
+// Core services
+const sessionManager = new SessionManager(redis);
+const fleetTrader = new FleetTrader();
 
-app.get("/api/positions/:wallet", apiLimiter, async (req, res) => {
+// Register owner wallet
+if (process.env.OWNER_WALLET) registerOwner(process.env.OWNER_WALLET);
+
+// ═══════════════════════════════════════
+// SOL PRICE (server-to-server, no CORS)
+// FIX: Replaces hardcoded * 170
+// ═══════════════════════════════════════
+let solUsdPrice = 135;
+async function pollSolPrice() {
   try {
-    const wallet = req.params.wallet;
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-
-    // Collect ONLY wallets that Bondli controls (NOT the Phantom login wallet)
-    const walletsToScan = new Set();
-
-    // 1. PumpPortal trading wallet
-    if (userStore) {
-      const user = await userStore.get(wallet);
-      if (user?.ppWallet) walletsToScan.add(user.ppWallet);
-    }
-
-    // 2. Session master/dev wallets + fleet wallets
+    const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
+      { signal: AbortSignal.timeout(5000) });
+    if (r.ok) { const d = await r.json(); if (d?.solana?.usd > 0) solUsdPrice = d.solana.usd; }
+  } catch {
+    // Fallback: try Jupiter
     try {
-      const sessions = await sessionManager?.getByWallet?.(wallet) || [];
-      for (const s of (Array.isArray(sessions) ? sessions : [])) {
-        if (s.devWallet) walletsToScan.add(s.devWallet);
-        if (s.fleetWallets) {
-          for (const fw of s.fleetWallets) {
-            if (fw.pubkey) walletsToScan.add(fw.pubkey);
-          }
-        }
-        try {
-          const devKp = await sessionManager.getDevKeypair(s.id);
-          if (devKp) walletsToScan.add(devKp.publicKey.toBase58());
-        } catch {}
-      }
+      const r2 = await fetch("https://price.jup.ag/v6/price?ids=SOL", { signal: AbortSignal.timeout(5000) });
+      if (r2.ok) { const d2 = await r2.json(); if (d2?.data?.SOL?.price > 0) solUsdPrice = d2.data.SOL.price; }
     } catch {}
-
-    // Do NOT add the Phantom wallet — that's the user's personal wallet, not the trading wallet
-
-    if (walletsToScan.size === 0) return res.json({ ok: true, positions: [], balance: 0, noWallet: true });
-
-    console.log(`[POSITIONS] Scanning ${walletsToScan.size} wallets for ${wallet.slice(0, 8)}`);
-
-    const allPositions = new Map(); // mint -> position
-    let totalSolBalance = 0;
-
-    for (const w of walletsToScan) {
-      try {
-        const pubkey = new PublicKey(w);
-        const solBal = await connection.getBalance(pubkey);
-        totalSolBalance += solBal;
-
-        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
-        for (const { account } of tokenAccounts.value) {
-          const parsed = account.data.parsed?.info;
-          if (!parsed || parsed.tokenAmount?.uiAmount === 0) continue;
-          const mint = parsed.mint;
-          const amount = parsed.tokenAmount?.uiAmount || 0;
-
-          if (allPositions.has(mint)) {
-            allPositions.get(mint).amount += amount;
-            allPositions.get(mint).wallets.push(w.slice(0, 8));
-          } else {
-            allPositions.set(mint, { mint, amount, decimals: parsed.tokenAmount?.decimals || 6, wallets: [w.slice(0, 8)], holdingWallet: w });
-          }
-        }
-      } catch (e) {
-        console.error(`[POSITIONS] Error scanning ${w.slice(0, 8)}:`, e.message);
-      }
-    }
-
-    const positions = [...allPositions.values()];
-
-    // Enrich with prices from DexScreener (batch of 10)
-    if (positions.length > 0) {
-      const mints = positions.map(p => p.mint);
-      const batches = [];
-      for (let i = 0; i < mints.length; i += 10) batches.push(mints.slice(i, i + 10));
-
-      for (const batch of batches.slice(0, 3)) { // max 30 tokens
-        try {
-          const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + batch.join(","), { signal: AbortSignal.timeout(6000) });
-          if (r.ok) {
-            const data = await r.json();
-            for (const pair of (data.pairs || [])) {
-              const pos = positions.find(p => p.mint === pair.baseToken?.address);
-              if (pos && pair.chainId === "solana") {
-                pos.name = pair.baseToken?.name || "?";
-                pos.ticker = pair.baseToken?.symbol || "?";
-                pos.priceUsd = parseFloat(pair.priceUsd || 0);
-                pos.priceNative = parseFloat(pair.priceNative || 0);
-                pos.mcap = pair.marketCap || pair.fdv || 0;
-                pos.valueUsd = pos.amount * pos.priceUsd;
-                pos.valueSol = pos.amount * pos.priceNative;
-                pos.h1Change = pair.priceChange?.h1 || 0;
-                pos.h24Change = pair.priceChange?.h24 || 0;
-                pos.image = pair.info?.imageUrl || "";
-                pos.dexUrl = pair.url || "";
-                pos.pumpUrl = "https://pump.fun/coin/" + pos.mint;
-              }
-            }
-          }
-        } catch {}
-      }
-    }
-
-    // Filter out dust positions (< $0.01)
-    const filtered = positions.filter(p => (p.valueUsd || 0) >= 0.01 || !p.priceUsd);
-
-    // Sort by value descending
-    filtered.sort((a, b) => (b.valueUsd || 0) - (a.valueUsd || 0));
-
-    // Merge pending buys not yet confirmed on-chain
-    const pending = getPendingBuys(wallet);
-    const pendingPositions = pending
-      .filter(b => !filtered.some(p => p.mint === b.ca))
-      .map(b => ({
-        mint: b.ca, amount: 0, decimals: 6, wallets: ["pending"],
-        holdingWallet: "pending", pending: true,
-        name: b.ca.slice(0, 8) + "...", ticker: "...",
-        valueSol: b.sol, valueUsd: b.sol * 170,
-        costBasis: b.sol, sig: b.sig,
-      }));
-
-    const allPositions_final = [...filtered, ...pendingPositions];
-
-    const totalValueUsd = allPositions_final.reduce((s, p) => s + (p.valueUsd || 0), 0);
-    const totalValueSol = allPositions_final.reduce((s, p) => s + (p.valueSol || 0), 0);
-
-    res.json({
-      ok: true,
-      tradingWallet: [...walletsToScan][0] || wallet,
-      solBalance: totalSolBalance / LAMPORTS_PER_SOL,
-      positions: allPositions_final,
-      totalPositions: allPositions_final.length,
-      totalValueUsd: Math.round(totalValueUsd * 100) / 100,
-      totalValueSol: Math.round(totalValueSol * 1000) / 1000,
-      walletsScanned: walletsToScan.size,
-    });
-  } catch (e) {
-    console.error("[POSITIONS]", e.message);
-    res.status(500).json({ error: e.message });
   }
-});
-
-// ═══════════════════════════════════════
-// TOKEN SEARCH — search across ALL pump.fun tokens via DexScreener
-// ═══════════════════════════════════════
-app.get("/api/search", apiLimiter, async (req, res) => {
-  try {
-    const q = (req.query.q || "").trim();
-    if (q.length < 2) return res.json({ ok: true, results: [] });
-
-    // If it looks like a CA (32+ chars, base58), search by token address
-    if (q.length >= 32 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(q)) {
-      try {
-        const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + q, { signal: AbortSignal.timeout(6000) });
-        if (r.ok) {
-          const data = await r.json();
-          const results = (data.pairs || []).filter(p => p.chainId === "solana").slice(0, 5).map(p => ({
-            ca: p.baseToken?.address, name: p.baseToken?.name, ticker: p.baseToken?.symbol,
-            mcap: p.marketCap || p.fdv || 0, priceUsd: p.priceUsd, h1Change: p.priceChange?.h1 || 0,
-            image: p.info?.imageUrl || "", dexUrl: p.url || "", volume24: p.volume?.h24 || 0,
-          }));
-          return res.json({ ok: true, results, source: "dexscreener-token" });
-        }
-      } catch {}
-    }
-
-    // Text search via DexScreener
-    try {
-      const r = await fetch("https://api.dexscreener.com/latest/dex/search?q=" + encodeURIComponent(q), { signal: AbortSignal.timeout(6000) });
-      if (r.ok) {
-        const data = await r.json();
-        const results = (data.pairs || []).filter(p => p.chainId === "solana").slice(0, 20).map(p => ({
-          ca: p.baseToken?.address, name: p.baseToken?.name, ticker: p.baseToken?.symbol,
-          mcap: p.marketCap || p.fdv || 0, priceUsd: p.priceUsd, h1Change: p.priceChange?.h1 || 0,
-          image: p.info?.imageUrl || "", dexUrl: p.url || "", volume24: p.volume?.h24 || 0,
-          buys24: p.txns?.h24?.buys || 0, sells24: p.txns?.h24?.sells || 0,
-        }));
-        return res.json({ ok: true, results, source: "dexscreener-search" });
-      }
-    } catch {}
-
-    // Fallback: check radar pool
-    const radarResults = [];
-    for (const [ca, t] of radar.pool) {
-      if ((t.name || "").toLowerCase().includes(q.toLowerCase()) || (t.ticker || "").toLowerCase().includes(q.toLowerCase())) {
-        radarResults.push({ ca, name: t.name, ticker: t.ticker, mcap: Math.round((t.mcapSol || 0) * 170), image: t.image || "", buys: t.buys, sells: t.sells });
-      }
-    }
-
-    res.json({ ok: true, results: radarResults.slice(0, 20), source: "radar" });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Sell all positions — close everything
-// Sell-all: delegates to quick-sell endpoint for each position
-app.post("/api/sell-all", apiLimiter, requireVerifiedWallet, async (req, res) => {
-  try {
-    const { wallet } = req.body;
-    if (!wallet) return res.status(400).json({ error: "wallet required" });
-    // Inline: find all token mints held
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const walletsToScan = new Set();
-    if (userStore) { const u = await userStore.get(wallet); if (u?.ppWallet) walletsToScan.add(u.ppWallet); }
-    try { const ss = await sessionManager?.getByWallet?.(wallet) || []; for (const s of (Array.isArray(ss) ? ss : [])) { if (s.devWallet) walletsToScan.add(s.devWallet); } } catch {}
-    const mints = new Set();
-    for (const w of walletsToScan) { try { const accts = await connection.getParsedTokenAccountsByOwner(new PublicKey(w), { programId: TOKEN_PROGRAM_ID }); for (const { account } of accts.value) { if ((account.data.parsed?.info?.tokenAmount?.uiAmount || 0) > 0) mints.add(account.data.parsed.info.mint); } } catch {} }
-    if (mints.size === 0) return res.json({ ok: true, sold: 0, message: "No positions" });
-
-    // ── ATOMIC: build all sell txs, send as Jito bundle (same block) ──
-    const user = userStore ? await userStore.get(wallet) : null;
-    const apiKey = user?.ppApiKey && user.ppApiKey !== "" ? user.ppApiKey : null;
-    const privateKey = user?.ppPrivateKey && user.ppPrivateKey !== "" ? user.ppPrivateKey : null;
-
-    // Try PumpPortal Lightning batch first (each sell is independent but fires simultaneously)
-    if (apiKey) {
-      const results = [];
-      const sellPromises = [...mints].map(async (mint) => {
-        try {
-          const r = await fetch("https://pumpportal.fun/api/trade?api-key=" + apiKey, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "sell", mint, amount: "100%", denominatedInSol: "false", slippage: 50, priorityFee: 0.002, pool: "auto" }),
-          });
-          const d = await r.json();
-          if (d.signature) return { mint, ok: true, sig: d.signature };
-          return { mint, ok: false, error: d.errors || "failed" };
-        } catch (e) { return { mint, ok: false, error: e.message }; }
-      });
-
-      // Fire ALL sells simultaneously — PumpPortal processes them in parallel
-      const allResults = await Promise.allSettled(sellPromises);
-      for (const r of allResults) {
-        results.push(r.status === "fulfilled" ? r.value : { ok: false, error: "rejected" });
-      }
-
-      const sold = results.filter(r => r.ok).length;
-      console.log("[SELL-ALL] ATOMIC via PumpPortal:", wallet.slice(0, 8), sold + "/" + mints.size);
-      return res.json({ ok: true, sold, total: mints.size, results, atomic: true });
-    }
-
-    // Fallback: sequential sells (no API key)
-    const results = [];
-    for (const mint of mints) {
-      try {
-        results.push({ mint, ok: false, error: "no API key for atomic sell" });
-      } catch (e) { results.push({ mint, ok: false, error: e.message }); }
-    }
-    const sold = results.filter(r => r.ok).length;
-    console.log("[SELL-ALL]", wallet.slice(0, 8), sold + "/" + mints.size);
-    res.json({ ok: true, sold, total: mints.size, results });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Build deposit tx — Phantom signs a normal SOL transfer (never flagged)
-app.post("/api/build-deposit", apiLimiter, async (req, res) => {
-  try {
-    const { from, to, amount } = req.body;
-    if (!from || !to || !amount) return res.status(400).json({ error: "from, to, amount required" });
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: new PublicKey(from), toPubkey: new PublicKey(to), lamports: Math.floor(amount * LAMPORTS_PER_SOL) }));
-    const { blockhash } = await connection.getLatestBlockhash("confirmed");
-    tx.recentBlockhash = blockhash;
-    tx.feePayer = new PublicKey(from);
-    const serialized = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
-    res.json({ ok: true, tx: serialized.toString("base64") });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ═══════════════════════════════════════
-// USERNAME CUSTOMIZATION
-// ═══════════════════════════════════════
-app.get("/api/username/:wallet", apiLimiter, async (req, res) => {
-  try {
-    if (!userStore) return res.json({ ok: true, username: null });
-    const user = await userStore.get(req.params.wallet);
-    res.json({ ok: true, username: user?.username || null, wallet: req.params.wallet });
-  } catch { res.json({ ok: true, username: null }); }
-});
-
-app.post("/api/username", apiLimiter, requireVerifiedWallet, async (req, res) => {
-  try {
-    const { wallet, username } = req.body;
-    if (!wallet) return res.status(400).json({ error: "wallet required" });
-    if (!userStore) return res.status(500).json({ error: "User store not available" });
-    const clean = (username || "").trim().slice(0, 24).replace(/[^a-zA-Z0-9_\-.\u3000-\u9FFF\uFF00-\uFFEF]/g, "");
-    if (clean.length < 1) return res.status(400).json({ error: "Username must be 1-24 characters" });
-    
-    await userStore.update(wallet, { username: clean, usernameSetAt: Date.now() });
-    
-    console.log(`[USERNAME] ${wallet.slice(0, 8)} -> "${clean}"`);
-    res.json({ ok: true, username: clean });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ═══════════════════════════════════════
-// ROUTES — Access / Tiers
-// ═══════════════════════════════════════
-
-// Check wallet tier + access status
-app.get("/api/access/check", apiLimiter, async (req, res) => {
-  const wallet = req.query.wallet;
-  if (!wallet) return res.status(400).json({ error: "wallet required" });
-  const info = await getWalletTier(wallet);
-  const price = getProPrice();
-  const nextPrice = getProPriceAfter();
-  res.json({ ...info, proPrice: price, proNextPrice: nextPrice, proLicenses: proLicenseCount });
-});
-
-// Activate free tier — no payment needed, 25% profit share
-app.post("/api/access/activate-free", apiLimiter, async (req, res) => {
-  const { wallet } = req.body || {};
-  if (!wallet) return res.status(400).json({ error: "wallet required" });
-
-  const existing = await getWalletTier(wallet);
-  if (existing.tier === "pro" || existing.whitelisted) {
-    return res.json({ ok: true, tier: "pro", message: "Already pro/VIP" });
-  }
-
-  await setWalletTier(wallet, "free");
-  console.log(`[ACCESS] Free tier activated: ${wallet}`);
-  res.json({ ok: true, tier: "free", profitCut: FREE_PROFIT_CUT });
-});
-
-// Activate pro tier — bonding curve pricing
-app.post("/api/access/activate-pro", apiLimiter, async (req, res) => {
-  const { wallet, txSig } = req.body || {};
-  if (!wallet || !txSig) return res.status(400).json({ error: "wallet and txSig required" });
-
-  const currentPrice = getProPrice();
-
-  // Verify the transaction on-chain
-  try {
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const tx = await connection.getTransaction(txSig, {
-      maxSupportedTransactionVersion: 0,
-      commitment: "confirmed",
-    });
-
-    if (!tx) return res.status(400).json({ error: "Transaction not found. Wait for confirmation and retry." });
-    if (tx.meta?.err) return res.status(400).json({ error: "Transaction failed on-chain" });
-
-    // Verify amount: at least currentPrice sent to platform wallet
-    let verified = false;
-    const requiredLamports = currentPrice * LAMPORTS_PER_SOL;
-
-    const accountKeys = tx.transaction.message.staticAccountKeys
-      ? tx.transaction.message.staticAccountKeys.map(k => k.toString())
-      : tx.transaction.message.accountKeys.map(k => k.toString());
-
-    const platformIdx = accountKeys.indexOf(PLATFORM_WALLET);
-    if (platformIdx >= 0 && tx.meta) {
-      const pre = tx.meta.preBalances[platformIdx] || 0;
-      const post = tx.meta.postBalances[platformIdx] || 0;
-      const received = post - pre;
-      if (received >= requiredLamports * 0.98) { // 2% tolerance
-        verified = true;
-      }
-    }
-
-    // Fallback: paymentVerifier
-    if (!verified && paymentVerifier) {
-      try {
-        const pvResult = await paymentVerifier.verify(txSig, wallet, currentPrice);
-        if (pvResult?.verified) verified = true;
-      } catch {}
-    }
-
-    if (!verified) {
-      return res.status(400).json({
-        error: `Payment not verified. Current price: ${currentPrice} SOL. Send to ${PLATFORM_WALLET}`,
-      });
-    }
-
-    await setWalletTier(wallet, "pro");
-    const licenseNum = await incrementProCount();
-    const newPrice = getProPrice();
-
-    // Store license metadata
-    const redis = getRedis();
-    if (redis) {
-      try {
-        await redis.set("pro_license:" + wallet, JSON.stringify({
-          number: licenseNum, price: currentPrice, tx: txSig, date: new Date().toISOString()
-        }));
-      } catch {}
-    }
-
-    console.log(`[ACCESS] Pro license #${licenseNum} activated: ${wallet} | paid: ${currentPrice} SOL | next price: ${newPrice} SOL | tx: ${txSig}`);
-    res.json({ ok: true, tier: "pro", profitCut: 0, licenseNumber: licenseNum, pricePaid: currentPrice, nextPrice: newPrice, totalLicenses: licenseNum });
-
-  } catch (e) {
-    console.error("[ACCESS] Pro verification error:", e.message);
-    res.status(500).json({ error: "Verification failed. Try again." });
-  }
-});
-
-// Admin: manually grant access
-app.post("/api/access/grant", async (req, res) => {
-  const secret = req.headers["x-api-secret"];
-  if (secret !== CONFIG.API_SECRET) return res.status(403).json({ error: "forbidden" });
-  const { wallet, tier } = req.body || {};
-  if (!wallet) return res.status(400).json({ error: "wallet required" });
-  await setWalletTier(wallet, tier || "pro");
-  console.log(`[ACCESS] Admin granted ${tier || "pro"} to: ${wallet}`);
-  res.json({ ok: true, wallet, tier: tier || "pro" });
-});
-
-// Admin: view whitelist + stats
-// Public pricing endpoint — bonding curve
-app.get("/api/pricing", (req, res) => {
-  const price = getProPrice();
-  const nextPrice = getProPriceAfter();
-  // Generate curve preview: price at every 10th license up to 300
-  const curve = [];
-  for (let i = 0; i <= 300; i += 10) {
-    curve.push({ n: i, price: getProPrice(i) });
-  }
-  res.json({
-    ok: true,
-    currentPrice: price,
-    nextPrice,
-    licensesSold: proLicenseCount,
-    nextLicense: proLicenseCount + 1,
-    curve,
-    freeCut: FREE_PROFIT_CUT,
-  });
-});
-
-app.get("/api/access/whitelist", async (req, res) => {
-  const secret = req.headers["x-api-secret"];
-  if (secret !== CONFIG.API_SECRET) return res.status(403).json({ error: "forbidden" });
-  const whitelist = getWhitelist();
-  res.json({ wallets: [...whitelist], count: whitelist.size, proFee: PRO_FEE_SOL, profitCut: FREE_PROFIT_CUT });
-});
-
-// Admin: view wallet profit history
-app.get("/api/access/profits", async (req, res) => {
-  const secret = req.headers["x-api-secret"];
-  if (secret !== CONFIG.API_SECRET) return res.status(403).json({ error: "forbidden" });
-  const redis = getRedis();
-  if (!redis) return res.json({ wallets: [] });
-  try {
-    const keys = await redis.keys("profit:*");
-    const results = [];
-    for (const key of keys) {
-      const data = JSON.parse(await redis.get(key) || "{}");
-      results.push({ wallet: key.replace("profit:", ""), ...data });
-    }
-    results.sort((a, b) => (b.totalSkimmed || 0) - (a.totalSkimmed || 0));
-    res.json({ wallets: results, totalSkimmed: results.reduce((s, r) => s + (r.totalSkimmed || 0), 0) });
-  } catch (e) {
-    res.status(500).json({ error: IS_PROD ? "Server error. Check logs." : e.message });
-  }
-});
-
-// ═══════════════════════════════════════
-// ROUTES — Public
-// ═══════════════════════════════════════
-app.get("/api/status", apiLimiter, optionalAuth, (req, res) => {
-  const status = orch.status();
-  const activeSession = orch.getSessionStatus();
-  const sessionInfo = activeSession ? {
-    phase: activeSession.phase,
-    tradeCount: activeSession.tradeCount,
-    solSpent: activeSession.solSpent,
-    solRecovered: activeSession.solRecovered,
-    activeWallets: activeSession.activeWallets || 1,
-    running: activeSession.running,
-    ca: activeSession.ca,
-  } : {};
-  if (!req.user) return res.json({ ok: true, activeSessions: status.activeSessions, ...sessionInfo });
-  res.json({ ok: true, ...status, ...sessionInfo });
-});
-
-// Full fleet details with trade history
-// ── Price history for live charting ──
-const priceHistory = new Map(); // ca -> [{time, price, mcap}]
-const PRICE_HISTORY_MAX = 300; // 5 min at 1s intervals
-
-async function pollPrice(ca) {
-  try {
-    const resp = await fetch("https://frontend-api-v2.pump.fun/coins/" + ca, { signal: AbortSignal.timeout(4000) });
-    if (!resp.ok) return null;
-    const coin = await resp.json();
-    const price = coin.usd_market_cap && coin.total_supply ? (coin.usd_market_cap / (coin.total_supply / 1e6)) : 0;
-    const mcap = coin.usd_market_cap || 0;
-    const virtualSolReserves = coin.virtual_sol_reserves ? coin.virtual_sol_reserves / 1e9 : 0;
-    const virtualTokenReserves = coin.virtual_token_reserves ? coin.virtual_token_reserves / 1e6 : 0;
-    const bondingProgress = coin.bonding_curve_progress || (coin.complete ? 100 : 0);
-    return { time: Date.now(), price, mcap, virtualSolReserves, virtualTokenReserves, bondingProgress, complete: coin.complete };
-  } catch { return null; }
 }
-
-// Start price polling when fleet launches — also subscribe to radar WS for chart data
-function startPricePolling(ca) {
-  if (!priceHistory.has(ca)) priceHistory.set(ca, []);
-  
-  // Subscribe this CA to PumpPortal WS for real-time trade data (chart)
-  if (radar.wsRef?.readyState === 1 && !radar.subbed.has(ca)) {
-    radar.wsRef.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [ca] }));
-    radar.subbed.add(ca);
-    // Initialize pool entry if not exists
-    if (!radar.pool.has(ca)) {
-      radar.pool.set(ca, {
-        name: "?", ticker: "?", dev: "", devShort: "",
-        created: Date.now(), buys: 0, sells: 0, solVol: 0,
-        mcapSol: 0, lastTrade: Date.now(), uri: "", image: "",
-        description: "", bp: 0, vSol: 0, earlyTrades: [],
-        bundleScore: 0, bundleFlags: [],
-      });
-    }
-    console.log(`[RADAR] Subscribed launched token ${ca.slice(0, 8)} for chart data`);
-  }
-
-  const iv = setInterval(async () => {
-    // Try pump.fun first
-    const point = await pollPrice(ca);
-    if (point) {
-      const hist = priceHistory.get(ca) || [];
-      hist.push(point);
-      if (hist.length > PRICE_HISTORY_MAX) hist.shift();
-      priceHistory.set(ca, hist);
-    } else {
-      // Fallback: try DexScreener for graduated tokens
-      try {
-        const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca, { signal: AbortSignal.timeout(4000) });
-        if (r.ok) {
-          const d = await r.json();
-          const pair = (d.pairs || []).find(p => p.chainId === "solana");
-          if (pair) {
-            const hist = priceHistory.get(ca) || [];
-            hist.push({ time: Date.now(), mcap: pair.marketCap || 0, price: parseFloat(pair.priceUsd || 0), bondingProgress: 100, complete: true });
-            if (hist.length > PRICE_HISTORY_MAX) hist.shift();
-            priceHistory.set(ca, hist);
-          }
-        }
-      } catch {}
-    }
-    if (!orch.sessions?.has(ca)) { clearInterval(iv); }
-  }, 3000);
-  // Initial fetch
-  pollPrice(ca).then(p => { if (p) { const h = priceHistory.get(ca) || []; h.push(p); priceHistory.set(ca, h); } });
-}
-
-app.get("/api/fleet", apiLimiter, (req, res) => {
-  const fullStatus = orch.status();
-  const sessions = fullStatus.sessions || {};
-  const first = Object.values(sessions)[0];
-  if (!first) return res.json({ ok: true, wallets: [], trades: [], phase: "idle", priceHistory: [] });
-
-  const allTrades = [];
-  const wallets = (first.walletDetails || []).map(w => {
-    return { role: w.role, pubkey: w.pubkey, allocation: w.allocation, spent: w.spent, recovered: w.recovered, tradeCount: w.trades };
-  });
-
-  const ca = Object.keys(sessions)[0];
-  const session = orch.sessions?.get(ca);
-  if (session) {
-    for (const w of session.fleetWallets) {
-      for (const t of (w.trades || [])) {
-        allTrades.push({
-          role: w.role,
-          wallet: w.pubkey?.slice(0, 8) || "?",
-          side: t.side,
-          sol: t.sol || t.solOut || 0,
-          sig: t.sig || "",
-          time: t.time || 0,
-        });
-      }
-    }
-  }
-
-  allTrades.sort((a, b) => b.time - a.time);
-
-  // Start price polling if not already
-  if (ca && !priceHistory.has(ca)) startPricePolling(ca);
-
-  // GameState snapshot for UI
-  let gameStateData = null;
-  if (session?.gameState?.alive) {
-    gameStateData = session.gameState.snapshot();
-  }
-
-  // WS-derived chart from radar (if this CA is being tracked by radar too)
-  const radarToken = radar.pool.get(ca);
-  const wsChart = radarToken?.priceHistory || [];
-
-  res.json({
-    ok: true,
-    phase: first.phase,
-    running: first.running,
-    tradeCount: first.tradeCount,
-    solSpent: first.solSpent,
-    solRecovered: first.solRecovered,
-    elapsed: first.elapsed,
-    activeWallets: first.activeWallets,
-    wallets,
-    trades: allTrades.slice(0, 50),
-    priceHistory: (priceHistory.get(ca) || []).slice(-120),
-    wsChart: wsChart.slice(-200), // WS-derived price points with buy/sell markers
-    gameState: gameStateData,
-    ca,
-  });
-});
-
-// Wallet breakdown — shows all wallets in the deployed token with balances
-app.get("/api/fleet/wallets/:ca", apiLimiter, async (req, res) => {
-  try {
-    const ca = req.params.ca;
-    const session = orch.sessions?.get(ca);
-    if (!session) return res.status(404).json({ error: "No active session for this CA" });
-
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const mint = new PublicKey(ca);
-    const wallets = [];
-    let totalTokens = 0;
-
-    // Dev/master wallet
-    const devBal = await connection.getBalance(session.masterKp.publicKey);
-    let devTokens = 0;
-    try {
-      const devAta = getAssociatedTokenAddressSync(mint, session.masterKp.publicKey, true);
-      const devAcct = await getAccount(connection, devAta);
-      devTokens = Number(devAcct.amount);
-    } catch {}
-    totalTokens += devTokens;
-    wallets.push({ role: "dev", pubkey: session.masterKp.publicKey.toBase58(), sol: devBal / LAMPORTS_PER_SOL, tokens: devTokens, isOurs: true });
-
-    // Fleet wallets
-    for (const fw of session.fleetWallets) {
-      const bal = await connection.getBalance(fw.keypair.publicKey);
-      let tokens = 0;
-      try {
-        const ata = getAssociatedTokenAddressSync(mint, fw.keypair.publicKey, true);
-        const acct = await getAccount(connection, ata);
-        tokens = Number(acct.amount);
-      } catch {}
-      totalTokens += tokens;
-      wallets.push({ role: fw.role, pubkey: fw.keypair.publicKey.toBase58(), sol: bal / LAMPORTS_PER_SOL, tokens, spent: fw.solSpent, recovered: fw.solRecovered, isOurs: true });
-    }
-
-    // Calculate percentages
-    const supply = 1_000_000_000 * 1e6; // pump.fun default: 1B tokens, 6 decimals
-    for (const w of wallets) {
-      w.pctSupply = totalTokens > 0 ? ((w.tokens / supply) * 100) : 0;
-      w.pctHeld = totalTokens > 0 ? ((w.tokens / totalTokens) * 100) : 0;
-    }
-
-    res.json({ ok: true, ca, wallets, totalTokens, ourTotal: totalTokens, ourPctSupply: (totalTokens / supply * 100) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// Candlestick data from WS trades — aggregated into time buckets
-app.get("/api/chart/:ca", apiLimiter, (req, res) => {
-  const ca = req.params.ca;
-  const interval = parseInt(req.query.interval) || 5; // seconds per candle
-  const token = radar.pool.get(ca);
-  const trades = token?.priceHistory || [];
-
-  if (trades.length < 2) return res.json({ ok: true, candles: [], trades: trades.slice(-100) });
-
-  // Build candles from trade data
-  const candles = [];
-  let bucketStart = trades[0]?.time || Date.now();
-  let o = trades[0]?.mcap || 0, h = o, l = o, c = o, vol = 0, buyVol = 0, sellVol = 0;
-
-  for (const t of trades) {
-    const time = t.time || 0;
-    const price = t.mcap || 0;
-    if (!price) continue;
-
-    if (time >= bucketStart + interval * 1000) {
-      candles.push({ time: bucketStart, o, h, l, c, vol, buyVol, sellVol });
-      bucketStart = Math.floor(time / (interval * 1000)) * interval * 1000;
-      o = price; h = price; l = price; c = price; vol = 0; buyVol = 0; sellVol = 0;
-    }
-
-    h = Math.max(h, price);
-    l = Math.min(l, price);
-    c = price;
-    vol += t.sol || 0;
-    if (t.side === "buy") buyVol += t.sol || 0;
-    else sellVol += t.sol || 0;
-  }
-  // Final candle
-  if (vol > 0 || candles.length === 0) candles.push({ time: bucketStart, o, h, l, c, vol, buyVol, sellVol });
-
-  res.json({ ok: true, candles: candles.slice(-200), interval, totalTrades: trades.length });
-});
-
-// Price proxy for client-side chart (avoids CORS)
-app.get("/api/price/:ca", apiLimiter, async (req, res) => {
-  try {
-    const r = await fetch("https://frontend-api-v2.pump.fun/coins/" + req.params.ca, { signal: AbortSignal.timeout(5000) });
-    if (!r.ok) return res.json({ mcap: 0 });
-    const coin = await r.json();
-    res.json({ mcap: coin.usd_market_cap || 0, bp: coin.bonding_curve_progress || 0, price: coin.market_cap ? coin.market_cap / 1e9 : 0, complete: coin.complete || false });
-  } catch { res.json({ mcap: 0 }); }
-});
+pollSolPrice();
+setInterval(pollSolPrice, 30000);
 
 // ═══════════════════════════════════════
-// RADAR — Multi-Tab Mover Detection via PumpPortal WebSocket
-// Tabs: NEW (fresh tokens with early traction), HOT (volume spikes), GRADUATING (near bonding completion)
+// PUMPPORTAL WEBSOCKET — RADAR FEED
 // ═══════════════════════════════════════
 const radar = {
-  pool: new Map(),   // ca -> { name, ticker, dev, created, buys, sells, solVol, lastTrade, mcapSol, uri, image, bp, vSol, ... }
-  movers: { new: [], hot: [], graduating: [] },
-  wsAlive: false,
-  wsRef: null,
-  updated: 0,
-  enabled: true,
-  MAX_TRACKED: 120,
-  subbed: new Set(),
-  momentumCache: new Map(), // ca -> full token data from DexScreener (for detail endpoint)
+  tokens: new Map(),    // ca → token data
+  tabs: { new: [], hot: [], graduating: [], momentum: [] },
+  poolSize: 0,
+  online: 0,
+  ws: null,
+  reconnects: 0,
 };
 
-function computeMovers() {
+function connectPumpPortal() {
+  try {
+    radar.ws = new WebSocket(PUMPPORTAL_WS_URL);
+
+    radar.ws.on("open", () => {
+      console.log("[RADAR] PumpPortal WS connected");
+      radar.reconnects = 0;
+      // Subscribe to new token events + trades
+      radar.ws.send(JSON.stringify({ method: "subscribeNewToken" }));
+      radar.ws.send(JSON.stringify({ method: "subscribeTokenTrade" }));
+    });
+
+    radar.ws.on("message", (raw) => {
+      try {
+        const data = JSON.parse(raw);
+        processRadarMessage(data);
+      } catch {}
+    });
+
+    radar.ws.on("close", () => {
+      console.log("[RADAR] WS disconnected — reconnecting in 5s");
+      setTimeout(connectPumpPortal, 5000);
+      radar.reconnects++;
+    });
+
+    radar.ws.on("error", (e) => {
+      console.error("[RADAR] WS error:", e.message);
+    });
+  } catch (e) {
+    console.error("[RADAR] WS connect failed:", e.message);
+    setTimeout(connectPumpPortal, 10000);
+  }
+}
+
+function processRadarMessage(data) {
+  if (!data) return;
   const now = Date.now();
-  const allScored = [];
 
-  for (const [ca, t] of radar.pool) {
-    const age = (now - t.created) / 60000; // minutes
-    if (t.buys < 1 && t.solVol < 0.01) continue;
-
-    const lastTradeAge = (now - (t.lastTrade || t.created)) / 1000;
-    const pressure = t.buys > 0 ? t.buys / (t.buys + t.sells) : 0;
-
-    // ── Social signals (applied to all tabs) ──
-    const socialBonus = (t.socialCount || 0) * 5;           // +5 per social link (max +15)
-    const twitterBonus = t.twitterValid ? 5 : 0;             // valid twitter format +5
-    const websiteBonus = t.websiteLive ? 5 : (t.websiteValid ? 2 : 0); // live site +5, valid URL +2
-    const imageDupePenalty = t.imageDupe ? -20 : 0;           // reused image = likely scam
-    const bundlePenalty = (t.bundleScore || 0) >= 60 ? -30 : (t.bundleScore || 0) >= 40 ? -18 : (t.bundleScore || 0) >= 20 ? -8 : 0;
-    const socialTotal = socialBonus + twitterBonus + websiteBonus + imageDupePenalty + bundlePenalty;
-
-    // ── NEW score: fresh tokens with early traction ──
-    let newScore = 0;
-    if (age < 5) {
-      newScore += Math.min(25, t.buys * 5);         // early buys are strong signal
-      newScore += Math.min(20, t.solVol * 4);        // volume conviction
-      newScore += pressure * 15;                      // buy pressure
-      if (age < 1) newScore += 20;                    // ultra-fresh bonus
-      else if (age < 2) newScore += 15;
-      else if (age < 3) newScore += 10;
-      else newScore += 5;
-      if (lastTradeAge < 10) newScore += 15;          // actively trading right now
-      else if (lastTradeAge < 30) newScore += 8;
-      if (t.mcapSol > 5) newScore += 5;              // some traction
-      newScore += socialTotal;                            // social signals
-    }
-
-    // ── HOT score: volume spikes regardless of age ──
-    let hotScore = 0;
-    if (age < 20) {
-      // Volume is king for HOT
-      hotScore += Math.min(35, t.solVol * 3.5);       // 10 SOL = max
-      hotScore += Math.min(20, t.buys * 2);            // lots of transactions
-      // Velocity: trades in last 60s
-      if (lastTradeAge < 10) hotScore += 15;
-      else if (lastTradeAge < 30) hotScore += 10;
-      else if (lastTradeAge < 60) hotScore += 5;
-      // MCap sweet spot: $2K-$30K
-      const mcapUsd = (t.mcapSol || 0) * 170;
-      if (mcapUsd >= 2000 && mcapUsd < 10000) hotScore += 15;
-      else if (mcapUsd >= 10000 && mcapUsd < 30000) hotScore += 12;
-      else if (mcapUsd >= 30000) hotScore += 8;
-      else if (mcapUsd > 500) hotScore += 5;
-      // Buy pressure bonus
-      if (pressure > 0.6) hotScore += 10;
-      else if (pressure > 0.5) hotScore += 5;
-      hotScore += socialTotal;                             // social signals
-    }
-
-    // ── GRADUATING score: tokens near bonding curve completion ──
-    let gradScore = 0;
-    if (t.bp > 30) {
-      gradScore += Math.min(40, t.bp * 0.5);          // closer to 100% = higher score
-      if (t.bp >= 70) gradScore += 20;                 // very close to graduation
-      else if (t.bp >= 50) gradScore += 10;
-      gradScore += Math.min(15, t.solVol * 1.5);      // volume confirms it's real
-      if (lastTradeAge < 30) gradScore += 10;          // still actively trading
-      if (t.buys > 20) gradScore += 10;                // many participants
-      else if (t.buys > 10) gradScore += 5;
-      if (pressure > 0.55) gradScore += 5;             // still buying = momentum
-      gradScore += socialTotal;                            // social signals
-    }
-
-    const scores = { new: Math.min(100, Math.round(newScore)), hot: Math.min(100, Math.round(hotScore)), graduating: Math.min(100, Math.round(gradScore)) };
-    const bestScore = Math.max(scores.new, scores.hot, scores.graduating);
-    if (bestScore < 12) continue;
-
-    const base = {
-      ca, name: t.name, ticker: t.ticker, image: t.image || "",
-      buys: t.buys, sells: t.sells,
-      solVol: Math.round(t.solVol * 100) / 100,
-      mcapSol: Math.round(t.mcapSol * 100) / 100,
-      mcapUsd: Math.round((t.mcapSol || 0) * 170),
-      bp: Math.round((t.bp || 0) * 10) / 10,
-      dev: t.devShort || t.dev, created: t.created,
-      description: t.description || "", source: "ws",
-      // Social intel
-      twitter: t.twitter || "", twitterHandle: t.twitterHandle || null, twitterValid: !!t.twitterValid,
-      website: t.website || "", websiteValid: !!t.websiteValid, websiteLive: !!t.websiteLive,
-      telegram: t.telegram || "",
-      socialCount: t.socialCount || 0,
-      imageDupe: !!t.imageDupe,
-      imageOriginal: t.imageOriginal || null,
-      // Bundle detection
-      bundleScore: t.bundleScore || 0,
-      bundleFlags: t.bundleFlags || [],
-      bundled: (t.bundleScore || 0) >= 40, // boolean shortcut
-      // Sparkline: last 30 mcap values for inline chart
-      spark: (t.priceHistory || []).slice(-30).map(p => p.mcap || 0),
+  // New token creation
+  if (data.txType === "create" || data.mint) {
+    const ca = data.mint || data.ca;
+    if (!ca) return;
+    const token = radar.tokens.get(ca) || {
+      ca,
+      name: data.name || "",
+      ticker: data.symbol || data.ticker || "",
+      description: data.description || "",
+      image: data.uri || data.image || data.imageUri || "",
+      twitter: data.twitter || "",
+      website: data.website || "",
+      telegram: data.telegram || "",
+      createdAt: now,
+      trades: [],
+      buys: 0, sells: 0,
+      volumeSol: 0,
+      mcapSol: 0,
+      mcapUsd: 0,
+      uniqueBuyers: new Set(),
+      spark: [],
+      h1Change: 0,
+      devWallet: data.traderPublicKey || "",
+      graduated: false,
+      bundled: false,
     };
+    // Update with creation data
+    if (data.name) token.name = data.name;
+    if (data.symbol) token.ticker = data.symbol;
+    if (data.description) token.description = data.description;
+    if (data.uri) token.image = data.uri;
+    if (data.twitter) token.twitter = data.twitter;
+    if (data.website) token.website = data.website;
+    if (data.telegram) token.telegram = data.telegram;
 
-    allScored.push({ ...base, scores });
+    radar.tokens.set(ca, token);
   }
 
-  // Sort each tab by its own score, take top entries
-  // DEDUP: Within each tab, if multiple tokens share the same name (copycats),
-  // keep only the one with highest mcap (first mover advantage).
-  // Different CAs with same name = copycat. Keep the original.
-  function dedupByName(tokens) {
-    const byName = new Map(); // normalized name -> best token
-    for (const t of tokens) {
-      const key = (t.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (!key || key.length < 2) { // too short to dedup, keep it
-        if (!byName.has(t.ca)) byName.set(t.ca, t);
-        continue;
-      }
-      const existing = byName.get(key);
-      if (!existing) {
-        byName.set(key, t);
-      } else {
-        // Keep the one with higher mcap (first mover / more established)
-        // If mcap is similar (within 3x), keep higher score
-        const mcapRatio = (t.mcapSol || 0) / Math.max(existing.mcapSol || 0.001, 0.001);
-        if (mcapRatio > 3) {
-          byName.set(key, t); // new one has way higher mcap = it's the real one
-        } else if (mcapRatio > 0.33 && t.score > existing.score) {
-          byName.set(key, t); // similar mcap but better score
-        }
-        // else keep existing (first mover wins)
-      }
-    }
-    return [...byName.values()];
-  }
-
-  radar.movers.new = dedupByName(allScored
-    .filter(t => t.scores.new >= 8)
-    .map(t => ({ ...t, score: t.scores.new, verdict: t.scores.new >= 50 ? "APE" : t.scores.new >= 15 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score)).slice(0, 40);
-
-  radar.movers.hot = dedupByName(allScored
-    .filter(t => t.scores.hot >= 8)
-    .map(t => ({ ...t, score: t.scores.hot, verdict: t.scores.hot >= 45 ? "APE" : t.scores.hot >= 15 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score)).slice(0, 40);
-
-  radar.movers.graduating = dedupByName(allScored
-    .filter(t => t.scores.graduating >= 10)
-    .map(t => ({ ...t, score: t.scores.graduating, verdict: t.scores.graduating >= 45 ? "APE" : t.scores.graduating >= 15 ? "WATCH" : "SKIP" }))
-    .sort((a, b) => b.score - a.score)).slice(0, 40);
-
-  radar.updated = now;
-}
-
-// ═══════════════════════════════════════
-// MOMENTUM TAB — DexScreener API for older tokens with volume spikes
-// Fetches boosted tokens + trending profiles, filters Solana pump.fun
-// Finds tokens 12h+ old where momentum is shifting
-// ═══════════════════════════════════════
-async function fetchDexScreenerMomentum() {
-  try {
-    const results = [];
-    const seen = new Set();
-
-    // 1. Top boosted tokens (most active paid promotions)
-    try {
-      const r = await fetch("https://api.dexscreener.com/token-boosts/top/v1", { signal: AbortSignal.timeout(6000) });
-      if (r.ok) {
-        const data = await r.json();
-        for (const t of (Array.isArray(data) ? data : [])) {
-          if (t.chainId === "solana" && t.tokenAddress && !seen.has(t.tokenAddress)) {
-            seen.add(t.tokenAddress);
-            results.push({ ca: t.tokenAddress, source: "boosted", boosts: t.totalAmount || t.amount || 0, icon: t.icon || "", description: t.description || "" });
-          }
-        }
-      } else {
-        console.error(`[RADAR] DexScreener boosts/top failed: ${r.status}`);
-      }
-    } catch (e) { console.error("[RADAR] DexScreener boosts/top error:", e.message); }
-
-    // 2. Latest boosted (freshly paid = about to pump)
-    try {
-      const r = await fetch("https://api.dexscreener.com/token-boosts/latest/v1", { signal: AbortSignal.timeout(6000) });
-      if (r.ok) {
-        const data = await r.json();
-        for (const t of (Array.isArray(data) ? data : [])) {
-          if (t.chainId === "solana" && t.tokenAddress && !seen.has(t.tokenAddress)) {
-            seen.add(t.tokenAddress);
-            results.push({ ca: t.tokenAddress, source: "fresh-boost", boosts: t.totalAmount || t.amount || 0, icon: t.icon || "", description: t.description || "" });
-          }
-        }
-      }
-    } catch {}
-
-    // 3. Latest token profiles (claimed = serious)
-    try {
-      const r = await fetch("https://api.dexscreener.com/token-profiles/latest/v1", { signal: AbortSignal.timeout(6000) });
-      if (r.ok) {
-        const data = await r.json();
-        for (const t of (Array.isArray(data) ? data : [])) {
-          if (t.chainId === "solana" && t.tokenAddress && !seen.has(t.tokenAddress)) {
-            seen.add(t.tokenAddress);
-            results.push({ ca: t.tokenAddress, source: "profile", icon: t.icon || "", description: t.description || "" });
-          }
-        }
-      }
-    } catch {}
-
-    if (results.length === 0) return;
-
-    // 4. Fetch full pair data in batches of 10
-    const batches = [];
-    for (let i = 0; i < results.length; i += 10) batches.push(results.slice(i, i + 10));
-
-    const momentum = [];
-    for (const batch of batches.slice(0, 5)) { // 5 batches = up to 50 tokens
-      try {
-        const cas = batch.map(t => t.ca).join(",");
-        const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + cas, { signal: AbortSignal.timeout(8000) });
-        if (r.ok) {
-          const data = await r.json();
-          for (const pair of (data.pairs || [])) {
-            if (pair.chainId !== "solana") continue;
-            const ca = pair.baseToken?.address;
-            if (!ca) continue;
-
-            const age = pair.pairCreatedAt ? (Date.now() - pair.pairCreatedAt) / 3600000 : 0;
-            const h1 = pair.priceChange?.h1 || 0;
-            const h6 = pair.priceChange?.h6 || 0;
-            const h24 = pair.priceChange?.h24 || 0;
-            const vol24 = pair.volume?.h24 || 0;
-            const mcap = pair.marketCap || pair.fdv || 0;
-            const buys24 = pair.txns?.h24?.buys || 0;
-            const sells24 = pair.txns?.h24?.sells || 0;
-            const liq = pair.liquidity?.usd || 0;
-
-            let score = 0;
-            // Age bonus: older tokens with momentum = real recovery plays
-            if (age >= 168) score += 8;       // 7d+
-            else if (age >= 24) score += 12;  // 1d+
-            else if (age >= 12) score += 15;  // 12h+ sweet spot
-            else if (age >= 1) score += 5;
-
-            // 1h price change: the momentum signal
-            if (h1 > 20) score += 25;
-            else if (h1 > 10) score += 20;
-            else if (h1 > 5) score += 15;
-            else if (h1 > 0) score += 8;
-
-            // Volume: serious activity
-            if (vol24 > 100000) score += 20;
-            else if (vol24 > 50000) score += 18;
-            else if (vol24 > 10000) score += 12;
-            else if (vol24 > 1000) score += 6;
-
-            // MCap sweet spot
-            if (mcap > 10000 && mcap < 500000) score += 10;
-            else if (mcap >= 500000 && mcap < 5000000) score += 6;
-            else if (mcap >= 5000000) score += 3;
-
-            // Buy pressure
-            if (buys24 > sells24 * 1.3) score += 10;
-            else if (buys24 > sells24) score += 5;
-
-            // Liquidity
-            if (liq > 10000) score += 5;
-            else if (liq > 5000) score += 3;
-
-            // Boost bonus
-            const boostData = batch.find(b => b.ca === ca);
-            if (boostData?.source === "fresh-boost") score += 12; // JUST paid = about to pump
-            else if (boostData?.source === "boosted") score += 8;
-            else if (boostData?.source === "profile") score += 4;
-
-            // Socials
-            const socials = pair.info?.socials || [];
-            const websites = pair.info?.websites || [];
-            score += Math.min(8, socials.length * 2 + websites.length * 2);
-
-            if (score < 10) continue;
-
-            // Store in momentum pool for detail lookups
-            const tokenData = {
-              ca,
-              name: pair.baseToken?.name || "?",
-              ticker: pair.baseToken?.symbol || "?",
-              image: pair.info?.imageUrl || boostData?.icon || "",
-              description: boostData?.description || "",
-              score: Math.min(100, score),
-              verdict: score >= 50 ? "APE" : score >= 20 ? "WATCH" : "SKIP",
-              mcapUsd: Math.round(mcap),
-              mcapSol: Math.round(mcap / 170),
-              solVol: Math.round((vol24 || 0) / 170),
-              buys: buys24, sells: sells24,
-              bp: 100,
-              priceChange: { h1, h6, h24 },
-              vol24: Math.round(vol24),
-              liq: Math.round(liq),
-              age: Math.round(age),
-              created: pair.pairCreatedAt || 0,
-              dev: "",
-              source: "dexscreener",
-              dexUrl: pair.url || "",
-              boosted: boostData?.source === "boosted" || boostData?.source === "fresh-boost",
-              freshBoost: boostData?.source === "fresh-boost",
-              twitter: socials.find(s => s.platform === "twitter")?.handle || "",
-              website: websites[0]?.url || "",
-              socialCount: socials.length + websites.length,
-              bundleScore: 0, bundleFlags: [], bundled: false,
-              imageDupe: false, imageOriginal: null, telegram: "",
-              twitterHandle: socials.find(s => s.platform === "twitter")?.handle || null,
-              twitterValid: !!socials.find(s => s.platform === "twitter"),
-              websiteValid: websites.length > 0, websiteLive: websites.length > 0,
-            };
-            momentum.push(tokenData);
-            // Cache in momentum pool for detail endpoint
-            radar.momentumCache.set(ca, tokenData);
-          }
-        }
-      } catch {}
-      await new Promise(r => setTimeout(r, 250));
-    }
-
-    // Deduplicate by CA (keep highest score)
-    const deduped = new Map();
-    for (const t of momentum) {
-      if (!deduped.has(t.ca) || deduped.get(t.ca).score < t.score) deduped.set(t.ca, t);
-    }
-
-    // Also deduplicate by name (copycats) — keep highest mcap per name
-    const byName = new Map();
-    for (const t of deduped.values()) {
-      const key = (t.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-      if (!key || key.length < 2) { byName.set(t.ca, t); continue; }
-      const existing = byName.get(key);
-      if (!existing || (t.mcapUsd || 0) > (existing.mcapUsd || 0)) byName.set(key, t);
-    }
-
-    radar.movers.momentum = [...byName.values()]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 40)
-      .map(t => {
-        // Generate synthetic sparkline from h1/h6/h24 price changes
-        // Creates a believable 10-point curve from DexScreener change data
-        const h1 = t.priceChange?.h1 || 0;
-        const h6 = t.priceChange?.h6 || 0;
-        const h24 = t.priceChange?.h24 || 0;
-        const mcap = t.mcapUsd || 1000;
-        const spark = [];
-        for (let i = 0; i < 10; i++) {
-          const pct = i / 9;
-          // Interpolate: start from h24 change, through h6, to h1 (most recent)
-          const change = pct < 0.3 ? h24 * (1 - pct / 0.3) + h6 * (pct / 0.3)
-            : pct < 0.7 ? h6 * (1 - (pct - 0.3) / 0.4) + h1 * ((pct - 0.3) / 0.4)
-            : h1;
-          spark.push(Math.max(1, mcap * (1 + change / 100 * (pct - 0.5))));
-        }
-        return { ...t, h1Change: h1, spark };
-      });
-
-    console.log(`[RADAR] DexScreener momentum: ${radar.movers.momentum.length} tokens (from ${results.length} candidates)`);
-  } catch (e) {
-    console.error("[RADAR] DexScreener fetch error:", e.message);
-  }
-}
-
-// Initialize momentum tab
-radar.movers.momentum = [];
-// Fetch DexScreener data every 30s (rate limit: 60/min)
-fetchDexScreenerMomentum();
-setInterval(fetchDexScreenerMomentum, 30000);
-
-// ═══════════════════════════════════════
-// BUNDLE DETECTION — analyzes early trades for coordinated buying patterns
-// Runs on every new trade for the first 30 trades per token
-// ═══════════════════════════════════════
-function analyzeBundle(t) {
-  const trades = t.earlyTrades;
-  const flags = [];
-  let score = 0;
-
-  const buys = trades.filter(tr => tr.type === "buy");
-  const sells = trades.filter(tr => tr.type === "sell");
-  if (buys.length === 0) { t.bundleScore = 0; t.bundleFlags = []; return; }
-
-  const createdAt = t.created;
-
-  // ── 1. Rapid buys after creation (within 2s) ──
-  const instantBuys = buys.filter(b => b.time - createdAt < 2000);
-  if (instantBuys.length >= 3) {
-    score += 30;
-    flags.push(`${instantBuys.length} buys in <2s`);
-  } else if (instantBuys.length >= 2) {
-    score += 15;
-    flags.push(`${instantBuys.length} buys in <2s`);
-  }
-
-  // ── 2. Same-second buys (likely same block/bundle) ──
-  const timeGroups = {};
-  for (const b of buys) {
-    const sec = Math.floor(b.time / 1000);
-    timeGroups[sec] = (timeGroups[sec] || 0) + 1;
-  }
-  const maxSameSecond = Math.max(0, ...Object.values(timeGroups));
-  if (maxSameSecond >= 3) {
-    score += 25;
-    flags.push(`${maxSameSecond} buys same second`);
-  } else if (maxSameSecond >= 2) {
-    score += 10;
-  }
-
-  // ── 3. Identical buy amounts (coordinated sizing) ──
-  const amounts = buys.map(b => Math.round(b.sol * 10000)); // round to 4 decimals
-  const amountCounts = {};
-  for (const a of amounts) amountCounts[a] = (amountCounts[a] || 0) + 1;
-  const maxSameAmount = Math.max(0, ...Object.values(amountCounts));
-  if (maxSameAmount >= 3 && buys.length >= 4) {
-    score += 20;
-    flags.push(`${maxSameAmount}× identical amount`);
-  } else if (maxSameAmount >= 2 && buys.length >= 3) {
-    score += 8;
-  }
-
-  // ── 4. All buys no sells in first 10 trades ──
-  const first10 = trades.slice(0, 10);
-  const first10Buys = first10.filter(tr => tr.type === "buy").length;
-  const first10Sells = first10.filter(tr => tr.type === "sell").length;
-  if (first10.length >= 6 && first10Sells === 0) {
-    score += 15;
-    flags.push("0 sells in first " + first10.length);
-  }
-
-  // ── 5. Dev wallet buying again (after create) ──
-  const devBuys = buys.filter(b => b.wallet === t.dev);
-  if (devBuys.length >= 2) {
-    score += 10;
-    flags.push("dev multi-buy");
-  }
-
-  // ── 6. Low unique wallet ratio ──
-  const uniqueWallets = new Set(buys.map(b => b.wallet)).size;
-  const walletRatio = uniqueWallets / buys.length;
-  if (buys.length >= 5 && walletRatio < 0.4) {
-    score += 15;
-    flags.push(`${uniqueWallets}/${buys.length} unique wallets`);
-  } else if (buys.length >= 5 && walletRatio < 0.6) {
-    score += 8;
-    flags.push(`low diversity: ${uniqueWallets}/${buys.length}`);
-  }
-
-  // ── 7. Tiny buy amounts from many wallets (dust buys to inflate buyer count) ──
-  const dustBuys = buys.filter(b => b.sol < 0.01);
-  if (dustBuys.length >= 3 && dustBuys.length / buys.length > 0.5) {
-    score += 12;
-    flags.push(`${dustBuys.length} dust buys (<0.01 SOL)`);
-  }
-
-  // ── 8. Wallet reuse (same wallet buying multiple times quickly) ──
-  const walletBuyCounts = {};
-  for (const b of buys) walletBuyCounts[b.wallet] = (walletBuyCounts[b.wallet] || 0) + 1;
-  const maxWalletBuys = Math.max(0, ...Object.values(walletBuyCounts));
-  if (maxWalletBuys >= 3) {
-    score += 10;
-    flags.push(`1 wallet bought ${maxWalletBuys}×`);
-  }
-
-  t.bundleScore = Math.min(100, score);
-  t.bundleFlags = flags;
-}
-
-// ═══════════════════════════════════════
-// SNIPE MODE — watch wallets, auto-buy on create
-// ═══════════════════════════════════════
-const snipeTargets = new Map(); // targetWallet -> { userWallet, solAmount, maxBuys, buyCount, active }
-
-function connectPumpPortalWS() {
-  if (!radar.enabled) return;
-  console.log("[RADAR] Connecting to PumpPortal WebSocket...");
-  let ws;
-  try {
-    ws = new WebSocket("wss://pumpportal.fun/api/data");
-  } catch (e) {
-    console.error("[RADAR] WS error:", e.message);
-    setTimeout(connectPumpPortalWS, 10000);
-    return;
-  }
-  radar.wsRef = ws;
-
-  ws.on("open", () => {
-    radar.wsAlive = true;
-    radar.subbed.clear();
-    console.log("[RADAR] \u2713 PumpPortal connected — streaming new tokens + trades");
-    ws.send(JSON.stringify({ method: "subscribeNewToken" }));
-    // Re-subscribe to any existing tracked tokens
-    const activeCAs = [...radar.pool.keys()].slice(0, radar.MAX_TRACKED);
-    if (activeCAs.length > 0) {
-      ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: activeCAs }));
-      activeCAs.forEach(ca => radar.subbed.add(ca));
-      console.log(`[RADAR] Re-subscribed to ${activeCAs.length} token trades`);
-    }
-    // Subscribe to snipe target wallets
-    const snipeWallets = [...snipeTargets.keys()].filter(w => snipeTargets.get(w).active);
-    if (snipeWallets.length > 0) {
-      ws.send(JSON.stringify({ method: "subscribeAccountTrade", keys: snipeWallets }));
-      console.log(`[SNIPE] Subscribed to ${snipeWallets.length} wallet(s)`);
-    }
-  });
-
-  ws.on("message", (raw) => {
-    try {
-      const msg = JSON.parse(raw.toString());
-
-      // Debug: log first trade event to see actual fields
-      if ((msg.txType === "buy" || msg.txType === "sell") && !radar._debuggedTrade) {
-        radar._debuggedTrade = true;
-        console.log("[RADAR] Sample trade event fields:", JSON.stringify(msg).slice(0, 500));
-      }
-
-      // New token created
-      if (msg.txType === "create" && msg.mint) {
-        const ca = msg.mint;
-        const creator = msg.traderPublicKey || "";
-
-        // ═══ SNIPE CHECK: if creator is a watched wallet, auto-buy ═══
-        if (creator && snipeTargets.has(creator)) {
-          const target = snipeTargets.get(creator);
-          if (target.active && target.buyCount < target.maxBuys) {
-            target.buyCount++;
-            console.log(`[SNIPE] 🎯 Target ${creator.slice(0, 8)} created ${ca.slice(0, 8)} — auto-buying ${target.solAmount} SOL!`);
-            // Fire quick-ape in background (don't block WS)
-            (async () => {
-              try {
-                const user = userStore ? await userStore.get(target.userWallet) : null;
-                const apiKey = user?.ppApiKey && user.ppApiKey !== "" ? user.ppApiKey : null;
-                if (apiKey) {
-                  const ppRes = await fetch("https://pumpportal.fun/api/trade?api-key=" + apiKey, {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ action: "buy", mint: ca, amount: target.solAmount, denominatedInSol: "true", slippage: 40, priorityFee: 0.002, pool: "pump" }),
-                  });
-                  const result = await ppRes.json();
-                  if (result.signature) {
-                    addPendingBuy(target.userWallet, ca, target.solAmount, result.signature);
-                    console.log(`[SNIPE] ✓ Auto-bought ${target.solAmount} SOL of ${ca.slice(0, 8)} | sig: ${result.signature.toString().slice(0, 16)}`);
-                  } else { console.warn(`[SNIPE] Buy failed:`, result.errors || result.error); }
-                } else { console.warn(`[SNIPE] No API key for ${target.userWallet.slice(0, 8)}`); }
-              } catch (e) { console.error(`[SNIPE] Auto-buy error:`, e.message); }
-            })();
-          }
-        }
-        if (!radar.pool.has(ca)) {
-          radar.pool.set(ca, {
-            name: msg.name || "?", ticker: msg.symbol || "?",
-            dev: msg.traderPublicKey || "",
-            devShort: (msg.traderPublicKey || "").slice(0, 8),
-            created: Date.now(), buys: 0, sells: 0, solVol: 0,
-            mcapSol: msg.marketCapSol || 0, lastTrade: Date.now(),
-            uri: msg.uri || "", image: "", description: "",
-            bp: msg.vSolInBondingCurve ? Math.max(0, ((msg.vSolInBondingCurve - 30) / 55) * 100) : 0,
-            vSol: msg.vSolInBondingCurve || 0,
-            // Bundle detection — track early trades
-            earlyTrades: [],      // first 30 trades with wallet + amount + time
-            bundleScore: 0,       // 0-100: higher = more likely bundled
-            bundleFlags: [],      // human-readable flags
-          });
-          // Subscribe to this token's trades
-          if (radar.subbed.size < radar.MAX_TRACKED) {
-            ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [ca] }));
-            radar.subbed.add(ca);
-          }
-          // If at limit, unsub oldest low-score token
-          if (radar.subbed.size >= radar.MAX_TRACKED) {
-            pruneSubscriptions(ws);
-          }
-          // Try to fetch metadata for image (fire-and-forget, best effort)
-          if (msg.uri) fetchMetadata(ca, msg.uri);
-        }
-      }
-
-      // Trade on a tracked token
-      if ((msg.txType === "buy" || msg.txType === "sell") && msg.mint) {
-        const t = radar.pool.get(msg.mint);
-        if (t) {
-          if (msg.txType === "buy") t.buys++;
-          else t.sells++;
-          // PumpPortal sends solAmount already in SOL (not lamports!)
-          const tradeSol = Math.abs(msg.solAmount || 0);
-          t.solVol += tradeSol;
-          t.mcapSol = msg.marketCapSol || t.mcapSol;
-          t.lastTrade = Date.now();
-
-          // Record early trades for bundle detection (first 30)
-          if (t.earlyTrades.length < 30) {
-            t.earlyTrades.push({
-              time: Date.now(),
-              type: msg.txType,
-              wallet: msg.traderPublicKey || "",
-              walletShort: (msg.traderPublicKey || "").slice(0, 8),
-              sol: tradeSol,
-              sig: (msg.signature || "").slice(0, 12),
-            });
-            // Re-analyze bundle score after each early trade
-            if (t.earlyTrades.length >= 3) {
-              analyzeBundle(t);
-            }
-          }
-          // Price history for charting (keep last 200 points)
-          if (!t.priceHistory) t.priceHistory = [];
-          t.priceHistory.push({
-            t: Date.now(),
-            mcap: Math.round((msg.marketCapSol || t.mcapSol) * 170),
-            mcapSol: msg.marketCapSol || t.mcapSol,
-            type: msg.txType,
-            sol: Math.abs(msg.solAmount || 0),
-            bp: msg.vSolInBondingCurve ? Math.max(0, ((msg.vSolInBondingCurve - 30) / 55) * 100) : t.bp,
-            wallet: (msg.traderPublicKey || "").slice(0, 8),
-          });
-          if (t.priceHistory.length > 200) t.priceHistory = t.priceHistory.slice(-200);
-          // Bonding curve progress from vSolInBondingCurve
-          // Curve starts at ~30 SOL virtual, graduates at ~85 SOL
-          if (msg.vSolInBondingCurve) {
-            t.vSol = msg.vSolInBondingCurve;
-            t.bp = Math.max(0, Math.min(100, ((msg.vSolInBondingCurve - 30) / 55) * 100));
-          }
-          // Token amount for volume tracking
-          if (msg.tokenAmount) t.lastTokenAmount = msg.tokenAmount;
-          // Name might come through on trades
-          if (msg.name && t.name === "?") t.name = msg.name;
-          if (msg.symbol && t.ticker === "?") t.ticker = msg.symbol;
-        }
-      }
-    } catch {}
-  });
-
-  ws.on("close", () => {
-    radar.wsAlive = false;
-    console.log("[RADAR] Disconnected — reconnecting 5s...");
-    if (radar.enabled) setTimeout(connectPumpPortalWS, 5000);
-  });
-
-  ws.on("error", (err) => {
-    console.error("[RADAR] WS error:", err.message);
-    radar.wsAlive = false;
-  });
-}
-
-function pruneSubscriptions(ws) {
-  // Remove oldest tokens with lowest activity from subscriptions
-  const entries = [...radar.pool.entries()]
-    .filter(([ca]) => radar.subbed.has(ca))
-    .sort((a, b) => (a[1].buys + a[1].solVol) - (b[1].buys + b[1].solVol));
-  const toUnsub = entries.slice(0, 10).map(([ca]) => ca);
-  if (toUnsub.length > 0 && ws.readyState === 1) {
-    ws.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: toUnsub }));
-    toUnsub.forEach(ca => radar.subbed.delete(ca));
-  }
-}
-
-// Image fingerprint cache — detect reused images across tokens
-const imageFingerprints = new Map(); // imageUrl -> { firstCa, firstTicker, count, firstSeen }
-
-// Fetch token metadata from URI — extracts socials, image, description
-async function fetchMetadata(ca, uri) {
-  try {
-    let url = uri;
-    if (url.startsWith("ipfs://")) url = "https://cf-ipfs.com/ipfs/" + url.slice(7);
-    const r = await fetch(url, { signal: AbortSignal.timeout(4000) });
-    if (r.ok) {
-      const meta = await r.json();
-      const t = radar.pool.get(ca);
-      if (t) {
-        // Image
-        let img = meta.image || "";
-        if (img.startsWith("ipfs://")) img = "https://cf-ipfs.com/ipfs/" + img.slice(7);
-        t.image = img;
-
-        // Image dupe detection — normalize URL and check cache
-        if (img) {
-          const imgKey = img.replace(/^https?:\/\//, "").replace(/\?.*$/, ""); // strip protocol + query
-          if (imageFingerprints.has(imgKey)) {
-            const prev = imageFingerprints.get(imgKey);
-            prev.count++;
-            t.imageDupe = true;
-            t.imageOriginal = { ca: prev.firstCa, ticker: prev.firstTicker, seen: prev.count };
-          } else {
-            imageFingerprints.set(imgKey, { firstCa: ca, firstTicker: t.ticker, count: 1, firstSeen: Date.now() });
-            t.imageDupe = false;
-          }
-        }
-
-        // Text fields
-        if (meta.description) t.description = meta.description.slice(0, 200);
-        if (meta.name && t.name === "?") t.name = meta.name;
-        if (meta.symbol && t.ticker === "?") t.ticker = meta.symbol;
-
-        // Socials — pump.fun metadata includes these when creator fills them in
-        t.twitter = meta.twitter || "";
-        t.telegram = meta.telegram || "";
-        t.website = meta.website || "";
-
-        // Social score (0-3): how many social links present
-        t.socialCount = (t.twitter ? 1 : 0) + (t.telegram ? 1 : 0) + (t.website ? 1 : 0);
-
-        // Validate Twitter URL (basic format check)
-        if (t.twitter) {
-          const twMatch = t.twitter.match(/(?:twitter\.com|x\.com)\/([A-Za-z0-9_]+)/);
-          t.twitterHandle = twMatch ? twMatch[1] : null;
-          t.twitterValid = !!twMatch;
-        }
-
-        // Validate website (basic — is it a real URL?)
-        if (t.website) {
-          t.websiteValid = /^https?:\/\/.+\..+/.test(t.website);
-        }
-
-        // Quick website reachability check (HEAD, non-blocking)
-        if (t.website && t.websiteValid) {
-          fetch(t.website, { method: "HEAD", signal: AbortSignal.timeout(3000) })
-            .then(r => { t.websiteLive = r.ok; })
-            .catch(() => { t.websiteLive = false; });
-        }
-      }
-    }
-  } catch {} // silent — metadata is best-effort
-}
-
-// Prune old image fingerprints every 10 min
-setInterval(() => {
-  const cutoff = Date.now() - 30 * 60 * 1000;
-  for (const [key, val] of imageFingerprints) {
-    if (val.firstSeen < cutoff) imageFingerprints.delete(key);
-  }
-}, 600000);
-
-// Start + intervals
-connectPumpPortalWS();
-setInterval(() => { if (radar.enabled) computeMovers(); }, 4000);
-
-// ── Periodic creator fee claim (every 5 minutes) ──
-// Claims pump.fun creator rewards from all active sessions for Free/VIP users
-// Sweeps claimed SOL to platform wallet
-setInterval(async () => {
-  try {
-    if (!sessionManager) return;
-    const allSessions = sessionManager.getAllActive?.() || [];
-    for (const s of allSessions) {
-      if (!s.userWallet || !s.id) continue;
-      try {
-        const walletInfo = await getWalletTier(s.userWallet);
-        if (walletInfo.tier === "pro") continue; // Pro keeps their fees
-        const devKp = await sessionManager.getDevKeypair(s.id);
-        if (!devKp) continue;
-        await autoClaimCreatorFees(devKp, s.userWallet, walletInfo.tier);
-      } catch {}
-      await new Promise(r => setTimeout(r, 1000)); // rate limit
-    }
-  } catch (e) {
-    console.error("[CREATOR-FEE] Periodic claim error:", e.message);
-  }
-}, 5 * 60 * 1000); // every 5 minutes
-// Prune dead tokens every 2 min
-setInterval(() => {
-  const cutoff = Date.now() - 20 * 60 * 1000; // 20 min max age
-  for (const [ca, t] of radar.pool) {
-    if (t.created < cutoff) {
-      radar.pool.delete(ca);
-      radar.subbed.delete(ca);
-    }
-  }
-  // Enforce pool size
-  if (radar.pool.size > 200) {
-    const sorted = [...radar.pool.entries()].sort((a, b) => a[1].created - b[1].created);
-    const excess = sorted.slice(0, radar.pool.size - 200);
-    for (const [ca] of excess) { radar.pool.delete(ca); radar.subbed.delete(ca); }
-  }
-}, 120000);
-
-app.get("/api/radar", apiLimiter, (req, res) => {
-  const tab = req.query.tab || "all";
-  const online = wss.clients.size; // live connected users
-  if (tab !== "all" && radar.movers[tab]) {
-    return res.json({ ok: true, tokens: radar.movers[tab], tab, wsAlive: radar.wsAlive, poolSize: radar.pool.size, subbedCount: radar.subbed.size, updated: radar.updated, enabled: radar.enabled, online });
-  }
-  res.json({
-    ok: true,
-    tabs: {
-      hot: radar.movers.hot || [],
-      new: radar.movers.new || [],
-      graduating: radar.movers.graduating || [],
-      momentum: radar.movers.momentum || [],
-    },
-    tokens: radar.movers.hot || [],
-    wsAlive: radar.wsAlive,
-    poolSize: radar.pool.size,
-    subbedCount: radar.subbed.size,
-    updated: radar.updated,
-    enabled: radar.enabled,
-    online,
-  });
-});
-
-// Chart data — returns WS-derived price history for any tracked token
-app.get("/api/chart/:ca", apiLimiter, (req, res) => {
-  const ca = req.params.ca;
-  const t = radar.pool.get(ca);
-  if (!t || !t.priceHistory || t.priceHistory.length === 0) {
-    return res.json({ ok: true, ca, points: [], source: "none" });
-  }
-  res.json({
-    ok: true, ca,
-    points: t.priceHistory,
-    name: t.name, ticker: t.ticker,
-    mcapSol: t.mcapSol, bp: t.bp,
-    buys: t.buys, sells: t.sells,
-    source: "ws",
-  });
-});
-
-// Single token detail (uses pump.fun HTTP as best-effort, falls back to WS data)
-app.get("/api/radar/token/:ca", apiLimiter, async (req, res) => {
-  const ca = req.params.ca;
-  const wsData = radar.pool.get(ca);
-  // Try pump.fun HTTP for rich data
-  try {
-    const r = await fetch("https://frontend-api-v2.pump.fun/coins/" + ca, {
-      headers: { "User-Agent": "Mozilla/5.0", "Accept": "application/json" },
-      signal: AbortSignal.timeout(4000),
-    });
-    if (r.ok) {
-      const c = await r.json();
-      return res.json({
-        ok: true, ca, name: c.name || wsData?.name, ticker: c.symbol || wsData?.ticker,
-        image: c.image_uri || wsData?.image || "", description: (c.description || "").slice(0, 300),
-        mcap: c.usd_market_cap || Math.round((wsData?.mcapSol || 0) * 170),
-        bp: c.bonding_curve_progress || wsData?.bp || 0,
-        replies: c.reply_count || 0, complete: c.complete || false,
-        creator: c.creator || wsData?.dev || "",
-        buys: wsData?.buys || 0, sells: wsData?.sells || 0,
-        solVol: Math.round((wsData?.solVol || 0) * 100) / 100,
-        mcapSol: wsData?.mcapSol || 0,
-        // Bundle detection
-        bundleScore: wsData?.bundleScore || 0,
-        bundleFlags: wsData?.bundleFlags || [],
-        bundled: (wsData?.bundleScore || 0) >= 40,
-        // Socials
-        twitter: wsData?.twitter || "", twitterHandle: wsData?.twitterHandle || null, twitterValid: !!wsData?.twitterValid,
-        website: wsData?.website || "", websiteValid: !!wsData?.websiteValid, websiteLive: !!wsData?.websiteLive,
-        telegram: wsData?.telegram || "",
-        socialCount: wsData?.socialCount || 0,
-        imageDupe: !!wsData?.imageDupe, imageOriginal: wsData?.imageOriginal || null,
-      });
-    }
-  } catch {}
-  // Fallback to WS data only
-  if (wsData) {
-    return res.json({
-      ok: true, ca, name: wsData.name, ticker: wsData.ticker,
-      image: wsData.image, description: wsData.description,
-      mcap: Math.round((wsData.mcapSol || 0) * 170),
-      bp: Math.round((wsData.bp || 0) * 10) / 10,
-      replies: 0, complete: false,
-      creator: wsData.devShort || wsData.dev,
-      buys: wsData.buys, sells: wsData.sells,
-      solVol: Math.round((wsData.solVol || 0) * 100) / 100,
-      mcapSol: Math.round((wsData.mcapSol || 0) * 100) / 100,
-      // Bundle detection
-      bundleScore: wsData.bundleScore || 0,
-      bundleFlags: wsData.bundleFlags || [],
-      bundled: (wsData.bundleScore || 0) >= 40,
-      // Socials
-      twitter: wsData.twitter || "", twitterHandle: wsData.twitterHandle || null, twitterValid: !!wsData.twitterValid,
-      website: wsData.website || "", websiteValid: !!wsData.websiteValid, websiteLive: !!wsData.websiteLive,
-      telegram: wsData.telegram || "",
-      socialCount: wsData.socialCount || 0,
-      imageDupe: !!wsData.imageDupe, imageOriginal: wsData.imageOriginal || null,
-    });
-  }
-  // Check momentum cache (DexScreener tokens)
-  const momData = radar.momentumCache.get(ca);
-  if (momData) {
-    return res.json({ ok: true, ca, ...momData });
-  }
-  // Try DexScreener directly as last resort
-  try {
-    console.log(`[RADAR] Detail fallback: fetching ${ca.slice(0, 8)} from DexScreener...`);
-    const r = await fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca, { signal: AbortSignal.timeout(5000) });
-    if (r.ok) {
-      const data = await r.json();
-      const pair = (data.pairs || []).find(p => p.chainId === "solana");
-      if (pair) {
-        return res.json({
-          ok: true, ca, name: pair.baseToken?.name || "?", ticker: pair.baseToken?.symbol || "?",
-          image: pair.info?.imageUrl || "", description: "",
-          mcap: pair.marketCap || pair.fdv || 0, bp: 100,
-          replies: 0, complete: true,
-          creator: "", buys: pair.txns?.h24?.buys || 0, sells: pair.txns?.h24?.sells || 0,
-          solVol: Math.round((pair.volume?.h24 || 0) / 170),
-          mcapSol: Math.round((pair.marketCap || 0) / 170),
-          priceChange: pair.priceChange || {},
-          vol24: Math.round(pair.volume?.h24 || 0),
-          liq: Math.round(pair.liquidity?.usd || 0),
-          bundleScore: 0, bundleFlags: [], bundled: false,
-          twitter: (pair.info?.socials?.find(s => s.platform === "twitter"))?.handle || "",
-          twitterHandle: (pair.info?.socials?.find(s => s.platform === "twitter"))?.handle || null,
-          twitterValid: !!(pair.info?.socials?.find(s => s.platform === "twitter")),
-          website: pair.info?.websites?.[0]?.url || "", websiteValid: (pair.info?.websites?.length || 0) > 0, websiteLive: (pair.info?.websites?.length || 0) > 0,
-          telegram: "", socialCount: (pair.info?.socials?.length || 0) + (pair.info?.websites?.length || 0),
-          imageDupe: false, imageOriginal: null,
-        });
-      }
-    }
-  } catch {}
-  res.json({ ok: false, error: "Token not found", ca });
-});
-
-// ═══════════════════════════════════════
-// PUMPPORTAL LIGHTNING WALLET — auto-created per user
-// All trades go through PumpPortal API, zero signing needed
-// ═══════════════════════════════════════
-app.post("/api/trading-wallet/create", apiLimiter, requireVerifiedWallet, async (req, res) => {
-  try {
-    const { wallet } = req.body;
-    if (!wallet) return res.status(400).json({ error: "wallet required" });
-
-    // Check if user already has a trading wallet
-    if (userStore) {
-      const user = await userStore.getOrCreate(wallet);
-      if (user.ppWallet && user.ppApiKey) {
-        return res.json({ ok: true, existing: true, tradingWallet: user.ppWallet, apiKey: user.ppApiKey.slice(0, 8) + "...", privateKey: user.ppPrivateKey || null });
-      }
-    }
-
-    // Create new PumpPortal Lightning wallet
-    let tradingWallet, apiKey, privateKey;
-
-    try {
-      const ppRes = await fetch("https://pumpportal.fun/api/create-wallet", {
-        method: "GET",
-        headers: { "Accept": "application/json" },
-        signal: AbortSignal.timeout(10000),
-      });
-
-      const rawText = await ppRes.text();
-      console.log("[TRADING-WALLET] PumpPortal status:", ppRes.status, "| raw:", rawText.slice(0, 500));
-
-      if (ppRes.ok && rawText.trim().startsWith("{")) {
-        const ppData = JSON.parse(rawText);
-        console.log("[TRADING-WALLET] PumpPortal keys:", Object.keys(ppData));
-
-        // Try every known field name variation
-        tradingWallet = ppData.walletPublicKey || ppData.wallet_public_key || ppData.publicKey || ppData.public_key || ppData.wallet || ppData.address;
-        apiKey = ppData.apiKey || ppData.api_key || ppData.APIkey || ppData.key;
-        privateKey = ppData.walletPrivateKey || ppData.wallet_private_key || ppData.privateKey || ppData.private_key || ppData.secretKey || ppData.secret_key;
-
-        // If fields are nested (e.g. ppData.wallet.publicKey)
-        if (!tradingWallet && ppData.wallet && typeof ppData.wallet === "object") {
-          tradingWallet = ppData.wallet.publicKey || ppData.wallet.address;
-          privateKey = ppData.wallet.privateKey || ppData.wallet.secretKey;
-        }
-
-        if (tradingWallet) {
-          console.log(`[TRADING-WALLET] PumpPortal success: wallet=${tradingWallet.slice(0, 12)}... apiKey=${apiKey ? "yes" : "no"} privateKey=${privateKey ? "yes" : "no"}`);
-        } else {
-          console.error("[TRADING-WALLET] Could not extract wallet from PumpPortal response. Full data:", JSON.stringify(ppData));
-        }
-      } else {
-        console.error("[TRADING-WALLET] PumpPortal non-JSON or error response:", ppRes.status);
-      }
-    } catch (e) {
-      console.error("[TRADING-WALLET] PumpPortal fetch error:", e.message);
-    }
-
-    // Fallback: generate our own Solana keypair if PumpPortal failed
-    if (!tradingWallet) {
-      console.log("[TRADING-WALLET] Generating local Solana keypair (PumpPortal unavailable)");
-      const kp = Keypair.generate();
-      tradingWallet = kp.publicKey.toBase58();
-      privateKey = bs58.encode(kp.secretKey);
-      apiKey = null; // no Lightning API — will use trade-local
-    }
-
-    if (!tradingWallet) {
-      return res.status(500).json({ error: "Failed to create trading wallet" });
-    }
-
-    // Store in user record
-    if (userStore) {
-      await userStore.update(wallet, {
-        ppWallet: tradingWallet,
-        ppApiKey: apiKey || "",
-        ppPrivateKey: privateKey || "",
-        ppCreated: Date.now(),
-        ppMode: apiKey ? "lightning" : "local",
-      });
-    }
-
-    console.log(`[TRADING-WALLET] Created for ${wallet.slice(0, 8)}: ${tradingWallet.slice(0, 8)}... | mode: ${apiKey ? "lightning" : "local"}`);
-    res.json({ ok: true, tradingWallet, apiKey: apiKey || null, privateKey, hasLightning: !!apiKey });
-  } catch (e) {
-    console.error("[TRADING-WALLET]", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Get trading wallet info
-app.get("/api/trading-wallet/:wallet", apiLimiter, async (req, res) => {
-  try {
-    if (!userStore) return res.json({ ok: true, tradingWallet: null });
-    const user = await userStore.get(req.params.wallet);
-    if (!user?.ppWallet) return res.json({ ok: true, tradingWallet: null });
-
-    // Get balance
-    let balance = 0;
-    try {
-      const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-      balance = await connection.getBalance(new PublicKey(user.ppWallet));
-    } catch {}
-
-    res.json({
-      ok: true,
-      tradingWallet: user.ppWallet,
-      balance: balance / LAMPORTS_PER_SOL,
-      apiKey: user.ppApiKey ? user.ppApiKey.slice(0, 8) + "..." : null,
-      hasKey: !!user.ppApiKey,
-    });
-  } catch { res.json({ ok: true, tradingWallet: null }); }
-});
-
-// Export trading wallet keys (Pro/VIP only, or the wallet owner)
-app.post("/api/trading-wallet/export", apiLimiter, requireVerifiedWallet, async (req, res) => {
-  try {
-    const { wallet } = req.body;
-    if (!userStore) return res.status(500).json({ error: "Not available" });
-    const user = await userStore.get(wallet);
-    if (!user?.ppWallet) return res.status(404).json({ error: "No trading wallet" });
-    res.json({ ok: true, tradingWallet: user.ppWallet, apiKey: user.ppApiKey, privateKey: user.ppPrivateKey });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ═══════════════════════════════════════
-// SOL INCINERATOR — Close empty token accounts to reclaim rent
-// Each empty account holds ~0.00203928 SOL in rent
-// Ref: https://sol-incinerator.com/?ref=o1m5aipb
-// ═══════════════════════════════════════
-
-// Scan: find all closeable token accounts in trading wallet + session wallets
-app.post("/api/incinerator/scan", apiLimiter, async (req, res) => {
-  try {
-    const { wallet } = req.body;
-    if (!wallet) return res.status(400).json({ error: "wallet required" });
-
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const walletsToScan = new Set();
-
-    // Add trading wallet
-    if (userStore) {
-      const user = await userStore.get(wallet);
-      if (user?.ppWallet) walletsToScan.add(user.ppWallet);
-    }
-
-    // Add session wallets (dev + fleet)
-    try {
-      const sessions = await sessionManager?.getByWallet?.(wallet) || [];
-      for (const s of (Array.isArray(sessions) ? sessions : [])) {
-        if (s.devWallet) walletsToScan.add(s.devWallet);
-        if (s.fleetWallets) {
-          for (const fw of s.fleetWallets) {
-            if (fw.pubkey) walletsToScan.add(fw.pubkey);
-          }
-        }
-      }
-    } catch {}
-
-    if (walletsToScan.size === 0) return res.json({ ok: true, accounts: [], totalReclaimable: 0 });
-
-    const allAccounts = [];
-    let totalReclaimable = 0;
-
-    for (const w of walletsToScan) {
-      try {
-        const pubkey = new PublicKey(w);
-        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(pubkey, { programId: TOKEN_PROGRAM_ID });
-
-        for (const { pubkey: ata, account } of tokenAccounts.value) {
-          const parsed = account.data.parsed?.info;
-          if (!parsed) continue;
-
-          const balance = parsed.tokenAmount?.uiAmount || 0;
-          const rentLamports = account.lamports || 0;
-          const rentSol = rentLamports / LAMPORTS_PER_SOL;
-          const mint = parsed.mint;
-
-          // Closeable: zero balance (empty account, safe to close)
-          if (balance === 0 && rentLamports > 0) {
-            allAccounts.push({
-              tokenAccount: ata.toBase58(),
-              wallet: w.slice(0, 8),
-              walletFull: w,
-              mint,
-              balance: 0,
-              rentLamports,
-              rentSol: +rentSol.toFixed(6),
-              closeable: true,
-              type: "empty",
-            });
-            totalReclaimable += rentSol;
-          }
-        }
-      } catch (e) {
-        console.error(`[INCINERATOR] Scan error for ${w.slice(0, 8)}:`, e.message);
-      }
-    }
-
-    // Sort by rent descending
-    allAccounts.sort((a, b) => b.rentLamports - a.rentLamports);
-
-    console.log(`[INCINERATOR] Scanned ${walletsToScan.size} wallets | Found ${allAccounts.length} closeable accounts | ${totalReclaimable.toFixed(6)} SOL reclaimable`);
-
-    res.json({
-      ok: true,
-      accounts: allAccounts,
-      totalAccounts: allAccounts.length,
-      totalReclaimable: +totalReclaimable.toFixed(6),
-      walletsScanned: walletsToScan.size,
-      incineratorUrl: "https://sol-incinerator.com/?ref=o1m5aipb",
-    });
-  } catch (e) {
-    console.error("[INCINERATOR] Scan error:", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Close: actually close empty accounts and reclaim rent to the user's wallet
-app.post("/api/incinerator/close", apiLimiter, requireVerifiedWallet, async (req, res) => {
-  try {
-    const { wallet, accounts } = req.body;
-    if (!wallet) return res.status(400).json({ error: "wallet required" });
-
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const destination = new PublicKey(wallet);
-
-    // Get signing keys for all wallets we control
-    const signerMap = new Map(); // walletPubkey -> Keypair
-
-    // Trading wallet key
-    if (userStore) {
-      const user = await userStore.get(wallet);
-      if (user?.ppPrivateKey && user.ppPrivateKey !== "") {
-        try {
-          const kp = Keypair.fromSecretKey(bs58.decode(user.ppPrivateKey));
-          signerMap.set(kp.publicKey.toBase58(), kp);
-        } catch {}
-      }
-    }
-
-    // Session wallet keys
-    try {
-      const sessions = await sessionManager?.getByWallet?.(wallet) || [];
-      for (const s of (Array.isArray(sessions) ? sessions : [])) {
-        // Dev keypair
-        try {
-          const devKp = await sessionManager.getDevKeypair(s.id);
-          if (devKp) signerMap.set(devKp.publicKey.toBase58(), devKp);
-        } catch {}
-        // Fleet wallets
-        if (s.fleetWallets) {
-          for (const fw of s.fleetWallets) {
-            if (fw.secret) {
-              try {
-                const kp = Keypair.fromSecretKey(bs58.decode(fw.secret));
-                signerMap.set(kp.publicKey.toBase58(), kp);
-              } catch {}
-            }
-          }
-        }
-      }
-    } catch {}
-
-    if (signerMap.size === 0) return res.status(400).json({ error: "No signing keys available" });
-
-    // If specific accounts provided, use those; otherwise scan for all empty
-    let toClose = accounts || [];
-
-    if (toClose.length === 0) {
-      // Auto-scan all wallets
-      for (const [pubStr, kp] of signerMap) {
-        try {
-          const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: TOKEN_PROGRAM_ID });
-          for (const { pubkey: ata, account } of tokenAccounts.value) {
-            const balance = account.data.parsed?.info?.tokenAmount?.uiAmount || 0;
-            if (balance === 0 && account.lamports > 0) {
-              toClose.push({ tokenAccount: ata.toBase58(), walletFull: pubStr, rentLamports: account.lamports });
-            }
-          }
-        } catch {}
-      }
-    }
-
-    if (toClose.length === 0) return res.json({ ok: true, closed: 0, reclaimed: 0, message: "No empty accounts to close" });
-
-    // Close accounts in batches of 10 (fits in one tx)
-    const BATCH = 10;
-    const results = [];
-    let totalReclaimed = 0;
-
-    for (let i = 0; i < toClose.length; i += BATCH) {
-      const batch = toClose.slice(i, i + BATCH);
-      const tx = new Transaction();
-      const signers = new Set();
-      let batchRent = 0;
-
-      tx.add(
-        ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }),
-        ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50_000 })
-      );
-
-      for (const acct of batch) {
-        const ownerPubkey = new PublicKey(acct.walletFull);
-        const signer = signerMap.get(acct.walletFull);
-        if (!signer) continue;
-
-        // createCloseAccountInstruction(account, destination, owner)
-        // Closes the token account and sends rent to destination
-        // createCloseAccountInstruction: closes token account, sends rent to destination
-        tx.add(createCloseAccountInstruction(
-          new PublicKey(acct.tokenAccount), // account to close
-          destination,                       // rent goes here (user's wallet)
-          ownerPubkey,                       // owner of the token account
-          [],                                // multisig (none)
-          TOKEN_PROGRAM_ID
-        ));
-        signers.add(signer);
-        batchRent += (acct.rentLamports || 2039280) / LAMPORTS_PER_SOL;
-      }
-
-      if (tx.instructions.length <= 2) continue; // only compute budget, no close instructions
-
-      try {
-        const uniqueSigners = [...signers];
-        const sig = await sendAndConfirmTransaction(connection, tx, uniqueSigners, {
-          skipPreflight: true, commitment: "confirmed", maxRetries: 3
-        });
-        totalReclaimed += batchRent;
-        results.push({ batch: Math.floor(i / BATCH) + 1, closed: batch.length, reclaimed: +batchRent.toFixed(6), sig });
-        console.log(`[INCINERATOR] Batch ${Math.floor(i / BATCH) + 1}: closed ${batch.length} accounts, reclaimed ${batchRent.toFixed(6)} SOL | sig: ${sig.slice(0, 16)}`);
-      } catch (e) {
-        results.push({ batch: Math.floor(i / BATCH) + 1, error: e.message });
-        console.error(`[INCINERATOR] Batch ${Math.floor(i / BATCH) + 1} failed:`, e.message);
-      }
-
-      if (i + BATCH < toClose.length) await new Promise(r => setTimeout(r, 500));
-    }
-
-    console.log(`[INCINERATOR] Done: ${toClose.length} accounts, ${totalReclaimed.toFixed(6)} SOL reclaimed for ${wallet.slice(0, 8)}`);
-
-    res.json({
-      ok: true,
-      closed: results.reduce((s, r) => s + (r.closed || 0), 0),
-      totalReclaimed: +totalReclaimed.toFixed(6),
-      batches: results,
-      destination: wallet,
-    });
-  } catch (e) {
-    console.error("[INCINERATOR] Close error:", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-app.post("/api/quick-ape", apiLimiter, requireVerifiedWallet, async (req, res) => {
-  try {
-    const { wallet, ca, solAmount } = req.body;
-    if (!wallet || !ca || !solAmount) return res.status(400).json({ error: "wallet, ca, and solAmount required" });
-    if (solAmount < 0.005 || solAmount > 100) return res.status(400).json({ error: "solAmount must be 0.005-100 SOL" });
-
-    // Get user's PumpPortal API key (or private key for local trades)
-    let apiKey, ppPrivateKey;
-    if (userStore) {
-      const user = await userStore.get(wallet);
-      apiKey = user?.ppApiKey || null; if (apiKey === "") apiKey = null;
-      ppPrivateKey = user?.ppPrivateKey || null; if (ppPrivateKey === "") ppPrivateKey = null;
-    }
-    if (!apiKey && !ppPrivateKey) return res.status(400).json({ error: "No trading wallet. Create one first." });
-
-    let signature;
-
-    if (apiKey) {
-      // Lightning API — zero signing, instant
-      const ppRes = await fetch("https://pumpportal.fun/api/trade?api-key=" + apiKey, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "buy",
-          mint: ca,
-          amount: solAmount,
-          denominatedInSol: "true",
-          slippage: 25,
-          priorityFee: 0.0005,
-          pool: "auto",
-        }),
-      });
-
-      const result = await ppRes.json();
-      if (result.errors || result.error) {
-        const err = result.errors?.[0] || result.error || "Trade failed";
-        console.error(`[QUICK-APE] Lightning error:`, err);
-        return res.status(500).json({ error: typeof err === "string" ? err : JSON.stringify(err) });
-      }
-      signature = result.signature || result.tx || result;
+  // Trade event
+  if (data.txType === "buy" || data.txType === "sell") {
+    const ca = data.mint || data.ca;
+    if (!ca) return;
+    const token = radar.tokens.get(ca);
+    if (!token) return;
+
+    const sol = (data.solAmount || data.sol || 0) / (data.solAmount > 100 ? LAMPORTS_PER_SOL : 1);
+    const isBuy = data.txType === "buy";
+
+    if (isBuy) {
+      token.buys++;
+      token.volumeSol += sol;
+      if (data.traderPublicKey) token.uniqueBuyers.add(data.traderPublicKey);
     } else {
-      // Local API fallback — build tx, sign with private key, send via RPC
-      const tradingKp = Keypair.fromSecretKey(bs58.decode(ppPrivateKey));
-      const tradingPubkey = tradingKp.publicKey.toBase58();
-
-      const ppRes = await fetch("https://pumpportal.fun/api/trade-local", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          publicKey: tradingPubkey,
-          action: "buy",
-          mint: ca,
-          amount: solAmount,
-          denominatedInSol: "true",
-          slippage: 25,
-          priorityFee: 0.0005,
-          pool: "auto",
-        }),
-      });
-
-      if (!ppRes.ok) {
-        const errText = await ppRes.text();
-        return res.status(500).json({ error: "Trade failed: " + errText.slice(0, 100) });
-      }
-
-      const txBuf = Buffer.from(await ppRes.arrayBuffer());
-      const vtx = VersionedTransaction.deserialize(txBuf);
-      vtx.sign([tradingKp]);
-      const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-      signature = await connection.sendRawTransaction(vtx.serialize(), { skipPreflight: true, maxRetries: 3 });
+      token.sells++;
     }
 
-    console.log(`[QUICK-APE] ${wallet.slice(0, 8)} bought ${solAmount} SOL of ${ca.slice(0, 8)} | sig: ${String(signature).slice(0, 16)} | via: ${apiKey ? "lightning" : "local"}`);
-    addPendingBuy(wallet, ca, solAmount, String(signature));
-    res.json({ ok: true, signature: String(signature), ca, solAmount, via: apiKey ? "pumpportal-lightning" : "pumpportal-local" });
-  } catch (e) {
-    console.error("[QUICK-APE] Error:", e.message);
-    res.status(500).json({ error: e.message });
+    // Update mcap — FIX: use solUsdPrice instead of 170
+    if (data.marketCapSol) {
+      token.mcapSol = data.marketCapSol;
+      token.mcapUsd = Math.round(data.marketCapSol * solUsdPrice);
+    } else if (data.vSolInBondingCurve) {
+      token.mcapSol = data.vSolInBondingCurve * 2;
+      token.mcapUsd = Math.round(token.mcapSol * solUsdPrice);
+    }
+
+    // Sparkline data (mcap snapshots)
+    if (token.mcapUsd > 0) {
+      token.spark.push(token.mcapUsd);
+      if (token.spark.length > 60) token.spark = token.spark.slice(-60);
+    }
+
+    // Track recent trades for bundle detection
+    token.trades.push({
+      side: data.txType,
+      sol,
+      wallet: data.traderPublicKey || "",
+      time: now,
+    });
+    if (token.trades.length > 100) token.trades = token.trades.slice(-100);
+
+    // 1h change approximation
+    const firstSpark = token.spark.length > 1 ? token.spark[0] : token.mcapUsd;
+    token.h1Change = firstSpark > 0 ? ((token.mcapUsd - firstSpark) / firstSpark) * 100 : 0;
+
+    // Broadcast trade to WebSocket clients
+    broadcastWS({ event: "trade", data: { ca, side: data.txType, sol, mcap: token.mcapUsd, wallet: (data.traderPublicKey || "").slice(0, 8) } });
   }
+}
+
+// Rebuild radar tabs every 5 seconds
+setInterval(() => {
+  const now = Date.now();
+  const all = [...radar.tokens.values()].filter(t => now - t.createdAt < 3600000); // last hour
+
+  // Clean old tokens
+  for (const [ca, t] of radar.tokens) {
+    if (now - t.createdAt > 7200000) radar.tokens.delete(ca); // 2h TTL
+  }
+
+  // Serialize tokens (convert Sets for JSON)
+  const serialize = (t) => ({
+    ca: t.ca, name: t.name, ticker: t.ticker, description: t.description,
+    image: t.image, twitter: t.twitter, website: t.website, telegram: t.telegram,
+    mcapSol: t.mcapSol, mcapUsd: t.mcapUsd, buys: t.buys, sells: t.sells,
+    volumeSol: +t.volumeSol.toFixed(4),
+    uniqueBuyers: t.uniqueBuyers?.size || 0,
+    spark: t.spark, h1Change: +t.h1Change.toFixed(1),
+    age: Math.round((now - t.createdAt) / 1000),
+    devWallet: t.devWallet, graduated: t.graduated, bundled: t.bundled,
+    marketCapSol: t.mcapSol,
+  });
+
+  radar.tabs.new = all.sort((a, b) => b.createdAt - a.createdAt).slice(0, 50).map(serialize);
+  radar.tabs.hot = all.sort((a, b) => b.volumeSol - a.volumeSol).slice(0, 50).map(serialize);
+  radar.tabs.graduating = all.filter(t => t.mcapUsd >= 30000).sort((a, b) => b.mcapUsd - a.mcapUsd).slice(0, 50).map(serialize);
+  radar.tabs.momentum = all
+    .filter(t => t.buys > 2 && t.mcapUsd > 1000)
+    .sort((a, b) => {
+      const velA = a.buys / Math.max(1, (now - a.createdAt) / 60000);
+      const velB = b.buys / Math.max(1, (now - b.createdAt) / 60000);
+      return velB - velA;
+    }).slice(0, 50).map(serialize);
+
+  radar.poolSize = radar.tokens.size;
+}, 5000);
+
+connectPumpPortal();
+
+// ═══════════════════════════════════════
+// WEBSOCKET BROADCAST
+// ═══════════════════════════════════════
+function broadcastWS(msg) {
+  const str = JSON.stringify(msg);
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      try { client.send(str); } catch {}
+    }
+  }
+}
+
+wss.on("connection", (ws) => {
+  radar.online++;
+  ws.on("close", () => { radar.online--; });
+  // Send initial state
+  ws.send(JSON.stringify({ event: "connected", data: { poolSize: radar.poolSize } }));
 });
 
-// Quick Sell — PumpPortal Lightning API
-app.post("/api/quick-sell", apiLimiter, requireVerifiedWallet, async (req, res) => {
-  try {
-    const { wallet, ca, percent } = req.body;
-    if (!wallet || !ca) return res.status(400).json({ error: "wallet and ca required" });
-    const sellPct = Math.min(100, Math.max(1, percent || 100));
-    const mint = new PublicKey(ca);
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
+// ═══════════════════════════════════════
+// TRADING WALLET STORE (in-memory + Redis)
+// ═══════════════════════════════════════
+const tradingWallets = new Map(); // userPubkey → { pubkey, secret, createdAt }
 
-    // Find ALL wallets that might hold this token
-    const walletsWithKeys = []; // { pubkey, keypair?, apiKey? }
-
-    // 1. PumpPortal trading wallet
-    if (userStore) {
-      const user = await userStore.get(wallet);
-      const apiKey = user?.ppApiKey && user.ppApiKey !== "" ? user.ppApiKey : null;
-      const pk = user?.ppPrivateKey && user.ppPrivateKey !== "" ? user.ppPrivateKey : null;
-      if (user?.ppWallet) walletsWithKeys.push({ pubkey: user.ppWallet, apiKey, privateKey: pk });
-    }
-
-    // 2. Session wallets (master + fleet)
+async function getTradingWallet(userPubkey) {
+  let tw = tradingWallets.get(userPubkey);
+  if (!tw && redis) {
     try {
-      const sessions = await sessionManager?.getByWallet?.(wallet) || [];
-      for (const s of (Array.isArray(sessions) ? sessions : [])) {
-        try {
-          const devKp = await sessionManager.getDevKeypair(s.id);
-          if (devKp) walletsWithKeys.push({ pubkey: devKp.publicKey.toBase58(), keypair: devKp });
-        } catch {}
-        if (s.fleetWallets) {
-          for (const fw of s.fleetWallets) {
-            if (fw.secret) {
-              try {
-                const kp = Keypair.fromSecretKey(bs58.decode(fw.secret));
-                walletsWithKeys.push({ pubkey: kp.publicKey.toBase58(), keypair: kp });
-              } catch {}
-            }
-          }
-        }
-      }
+      const raw = await redis.get("tw:" + userPubkey);
+      if (raw) { tw = JSON.parse(raw); tradingWallets.set(userPubkey, tw); }
     } catch {}
-
-    // Find which wallet actually holds this token
-    let sellerWallet = null;
-    for (const w of walletsWithKeys) {
-      try {
-        const ata = await connection.getParsedTokenAccountsByOwner(new PublicKey(w.pubkey), { mint });
-        const balance = ata.value?.[0]?.account?.data?.parsed?.info?.tokenAmount?.uiAmount || 0;
-        if (balance > 0) { sellerWallet = w; break; }
-      } catch {}
-    }
-
-    if (!sellerWallet) return res.status(400).json({ error: "No wallet holds this token" });
-
-    let signature;
-
-    // Try Lightning API first (if PumpPortal wallet with API key)
-    if (sellerWallet.apiKey) {
-      const ppRes = await fetch("https://pumpportal.fun/api/trade?api-key=" + sellerWallet.apiKey, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "sell", mint: ca, amount: sellPct + "%", denominatedInSol: "false", slippage: 25, priorityFee: 0.0005, pool: "auto" }),
-      });
-      const result = await ppRes.json();
-      if (!result.errors && !result.error) { signature = result.signature || result; }
-      else console.error("[QUICK-SELL] Lightning error:", result.errors || result.error);
-    }
-
-    // Fallback: trade-local with private key
-    if (!signature) {
-      let kp = sellerWallet.keypair;
-      if (!kp && sellerWallet.privateKey) kp = Keypair.fromSecretKey(bs58.decode(sellerWallet.privateKey));
-      if (!kp) return res.status(400).json({ error: "No signing key for wallet holding this token" });
-
-      const ppRes = await fetch("https://pumpportal.fun/api/trade-local", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ publicKey: kp.publicKey.toBase58(), action: "sell", mint: ca, amount: sellPct + "%", denominatedInSol: "false", slippage: 25, priorityFee: 0.0005, pool: "auto" }),
-      });
-      if (!ppRes.ok) { const t = await ppRes.text(); return res.status(500).json({ error: "Sell failed: " + t.slice(0, 100) }); }
-      const txBuf = Buffer.from(await ppRes.arrayBuffer());
-      const vtx = VersionedTransaction.deserialize(txBuf);
-      vtx.sign([kp]);
-      signature = await connection.sendRawTransaction(vtx.serialize(), { skipPreflight: true, maxRetries: 3 });
-    }
-
-    console.log(`[QUICK-SELL] ✓ ${sellerWallet.pubkey.slice(0, 8)} sold ${sellPct}% of ${ca.slice(0, 8)} | sig: ${String(signature).slice(0, 16)}`);
-    res.json({ ok: true, signature: String(signature), percent: sellPct, ca, sellerWallet: sellerWallet.pubkey.slice(0, 8) });
-  } catch (e) {
-    console.error("[QUICK-SELL] Error:", e.message);
-    res.status(500).json({ error: e.message });
   }
+  return tw;
+}
+
+async function saveTradingWallet(userPubkey, tw) {
+  tradingWallets.set(userPubkey, tw);
+  if (redis) {
+    try { await redis.set("tw:" + userPubkey, JSON.stringify(tw), "EX", 2592000); } catch {} // 30d
+  }
+}
+
+// ═══════════════════════════════════════
+// USER STORE (in-memory + Redis)
+// ═══════════════════════════════════════
+const users = new Map(); // wallet → { tier, whitelisted, username, ... }
+
+async function getUser(wallet) {
+  let u = users.get(wallet);
+  if (!u && redis) {
+    try {
+      const raw = await redis.get("user:" + wallet);
+      if (raw) { u = JSON.parse(raw); users.set(wallet, u); }
+    } catch {}
+  }
+  return u || { tier: "free", whitelisted: false };
+}
+
+async function saveUser(wallet, data) {
+  const existing = await getUser(wallet);
+  const merged = { ...existing, ...data, lastSeen: new Date().toISOString() };
+  users.set(wallet, merged);
+  if (redis) {
+    try { await redis.set("user:" + wallet, JSON.stringify(merged), "EX", 2592000); } catch {}
+  }
+}
+
+// ═══════════════════════════════════════
+// MIDDLEWARE
+// ═══════════════════════════════════════
+function requireWallet(req, res, next) {
+  const wallet = req.headers["x-wallet"] || req.headers["x-wallet"] || req.body?.wallet || req.query?.wallet;
+  if (!wallet) return res.status(400).json({ error: "Wallet required" });
+  req.wallet = wallet;
+  next();
+}
+
+function requireAdmin(req, res, next) {
+  const secret = req.headers["x-admin-secret"] || req.query?.secret;
+  if (secret !== ADMIN_SECRET) return res.status(403).json({ error: "Forbidden" });
+  next();
+}
+
+// ═══════════════════════════════════════
+// ROUTES: SOL PRICE
+// ═══════════════════════════════════════
+app.get("/api/sol-price", (req, res) => {
+  res.json({ price: solUsdPrice, updated: Date.now() });
 });
 
-// ═══ SNIPE MODE ENDPOINTS ═══
-app.post("/api/snipe/add", apiLimiter, async (req, res) => {
-  const { wallet, target, solAmount, maxBuys } = req.body;
-  if (!wallet || !target) return res.status(400).json({ error: "wallet and target required" });
-  if (snipeTargets.size >= 10) return res.status(400).json({ error: "Max 10 snipe targets" });
-
-  const sol = Math.min(Math.max(parseFloat(solAmount) || 0.1, 0.01), 10);
-  const max = Math.min(Math.max(parseInt(maxBuys) || 5, 1), 50);
-
-  snipeTargets.set(target, { userWallet: wallet, solAmount: sol, maxBuys: max, buyCount: 0, active: true, addedAt: Date.now() });
-
-  // Subscribe on WS
-  if (radar.wsRef?.readyState === 1) {
-    radar.wsRef.send(JSON.stringify({ method: "subscribeAccountTrade", keys: [target] }));
-  }
-
-  console.log(`[SNIPE] Added target: ${target.slice(0, 8)} | ${sol} SOL | max ${max} buys | by ${wallet.slice(0, 8)}`);
-  res.json({ ok: true, target, solAmount: sol, maxBuys: max, totalTargets: snipeTargets.size });
-});
-
-app.post("/api/snipe/remove", apiLimiter, (req, res) => {
-  const { target } = req.body;
-  if (!target) return res.status(400).json({ error: "target required" });
-  snipeTargets.delete(target);
-  if (radar.wsRef?.readyState === 1) {
-    radar.wsRef.send(JSON.stringify({ method: "unsubscribeAccountTrade", keys: [target] }));
-  }
-  res.json({ ok: true, removed: target, totalTargets: snipeTargets.size });
-});
-
-app.get("/api/snipe/list", apiLimiter, (req, res) => {
+// ═══════════════════════════════════════
+// ROUTES: ACCESS / TIER
+// ═══════════════════════════════════════
+app.get("/api/access/check", async (req, res) => {
   const wallet = req.query.wallet;
-  const targets = [...snipeTargets.entries()]
-    .filter(([_, v]) => !wallet || v.userWallet === wallet)
-    .map(([k, v]) => ({ target: k, ...v }));
-  res.json({ ok: true, targets, count: targets.length });
+  if (!wallet) return res.status(400).json({ error: "wallet required" });
+  const user = await getUser(wallet);
+  const tierInfo = resolveTier(wallet, user);
+  await saveUser(wallet, { tier: tierInfo.tier, whitelisted: tierInfo.whitelisted });
+  res.json({ tier: tierInfo.tier, whitelisted: tierInfo.whitelisted, paid: user.paid || false });
 });
 
-app.post("/api/radar/toggle", apiLimiter, (req, res) => {
-  radar.enabled = !radar.enabled;
-  if (!radar.enabled && radar.wsRef) {
-    try { radar.wsRef.close(); } catch {}
-    radar.wsAlive = false;
-  } else if (radar.enabled && !radar.wsAlive) {
-    connectPumpPortalWS();
-  }
-  console.log("[RADAR]", radar.enabled ? "ENABLED" : "DISABLED");
-  res.json({ ok: true, enabled: radar.enabled });
+app.post("/api/access/activate-free", async (req, res) => {
+  const { wallet } = req.body;
+  if (!wallet) return res.status(400).json({ error: "wallet required" });
+  await saveUser(wallet, { tier: "free", activatedAt: new Date().toISOString() });
+  res.json({ ok: true, tier: "free" });
 });
 
-app.get("/api/config", apiLimiter, (req, res) => {
+app.post("/api/access/activate-pro", async (req, res) => {
+  const { wallet, txSig } = req.body;
+  if (!wallet || !txSig) return res.status(400).json({ error: "wallet and txSig required" });
+  // TODO: verify on-chain payment to PLATFORM_WALLET
+  await saveUser(wallet, { tier: "pro", paid: true, proTx: txSig });
+  res.json({ ok: true, tier: "pro" });
+});
+
+app.get("/api/pricing", (req, res) => {
   res.json({
-    dryRun: CONFIG.DRY_RUN,
-    totalSol: CONFIG.TOTAL_SOL,
-    slippageBps: CONFIG.SLIPPAGE_BPS,
-    purgePercent: CONFIG.PURGE_PERCENT,
+    free: { fee: "25% of profit", label: "Free — 25% profit share" },
+    pro: { fee: "0%", price: "10 SOL one-time", label: "Pro — 0% fee" },
+    vip: { fee: "0%", label: "VIP — Whitelisted" },
     platformWallet: PLATFORM_WALLET,
-    proFee: PRO_FEE_SOL,
-    freeProfitCut: FREE_PROFIT_CUT,
   });
 });
 
-app.get("/api/fees", apiLimiter, (req, res) => {
-  const wallet = req.query.wallet || "";
-  const owner = wallet ? isOwnerWallet(wallet) : false;
-  const tier = owner ? "vip" : (req.query.tier || "free");
-  const info = getFeeTier(tier);
-  res.json({ ...info, isOwner: owner });
+// ═══════════════════════════════════════
+// ROUTES: TRADING WALLET
+// ═══════════════════════════════════════
+app.get("/api/trading-wallet/:wallet", async (req, res) => {
+  const tw = await getTradingWallet(req.params.wallet);
+  if (!tw) return res.json({ ok: false, tradingWallet: null });
+  // Check balance
+  let balance = 0;
+  try { balance = await connection.getBalance(new PublicKey(tw.pubkey)) / LAMPORTS_PER_SOL; } catch {}
+  res.json({ ok: true, tradingWallet: tw.pubkey, balance });
+});
+
+app.post("/api/trading-wallet/create", async (req, res) => {
+  const { wallet } = req.body;
+  if (!wallet) return res.status(400).json({ error: "wallet required" });
+  const existing = await getTradingWallet(wallet);
+  if (existing) return res.json({ ok: true, tradingWallet: existing.pubkey, already: true });
+  const kp = Keypair.generate();
+  const tw = { pubkey: kp.publicKey.toBase58(), secret: bs58.encode(kp.secretKey), createdAt: new Date().toISOString() };
+  await saveTradingWallet(wallet, tw);
+  await saveUser(wallet, { tradingWallet: tw.pubkey });
+  res.json({ ok: true, tradingWallet: tw.pubkey, privateKey: tw.secret });
+});
+
+app.post("/api/trading-wallet/export", async (req, res) => {
+  const { wallet } = req.body;
+  if (!wallet) return res.status(400).json({ error: "wallet required" });
+  const tw = await getTradingWallet(wallet);
+  if (!tw) return res.status(404).json({ error: "No trading wallet" });
+  res.json({ ok: true, privateKey: tw.secret, pubkey: tw.pubkey });
 });
 
 // ═══════════════════════════════════════
-// ROUTES — Launch Sessions (dev wallet flow)
+// ROUTES: SESSION LIFECYCLE
 // ═══════════════════════════════════════
-
-// Preview dev buy calculation (no auth needed)
-app.get("/api/session/preview", apiLimiter, (req, res) => {
-  const totalSol = Math.min(100, Math.max(0.1, parseFloat(req.query.sol || "1")));
-  const info = calculateDevBuy(totalSol);
-  res.json(info);
-});
-
-// Create session: generate dev wallet, return address for funding
-// ── CA Analysis proxy (avoids CORS) ──
-app.get("/api/analyze/:ca", async (req, res) => {
+app.post("/api/session/create", async (req, res) => {
   try {
-    const ca = req.params.ca;
-    if (!ca || ca.length < 32) return res.status(400).json({ error: "Invalid CA" });
-
-    let pumpData = null, dexData = null;
-
-    // Fetch pump.fun + DexScreener in parallel
-    const [pumpRes, dexRes] = await Promise.allSettled([
-      fetch("https://frontend-api-v2.pump.fun/coins/" + ca, { signal: AbortSignal.timeout(6000) }).then(r => r.ok ? r.json() : null),
-      fetch("https://api.dexscreener.com/latest/dex/tokens/" + ca, { signal: AbortSignal.timeout(6000) }).then(r => r.ok ? r.json() : null),
-    ]);
-
-    pumpData = pumpRes.status === "fulfilled" ? pumpRes.value : null;
-    const dexPairs = dexRes.status === "fulfilled" ? dexRes.value : null;
-    dexData = dexPairs?.pairs?.[0] || null;
-
-    if (!pumpData && !dexData) return res.status(404).json({ error: "Token not found" });
-
-    // Build unified analysis
-    const name = pumpData?.name || dexData?.baseToken?.name || "?";
-    const symbol = pumpData?.symbol || dexData?.baseToken?.symbol || "?";
-    const mcap = dexData?.marketCap || dexData?.fdv || pumpData?.usd_market_cap || 0;
-    const created = pumpData?.created_timestamp || dexData?.pairCreatedAt || Date.now();
-    const age = (Date.now() - new Date(created).getTime()) / 60000; // minutes
-    const replies = pumpData?.reply_count || 0;
-    const complete = pumpData?.complete || (dexData?.dexId && dexData.dexId !== "pumpfun");
-    const imageUri = pumpData?.image_uri || dexData?.info?.imageUrl || null;
-    const description = pumpData?.description || "";
-    // Bonding progress: pump.fun data > estimate from mcap (graduation ~$67k)
-    const bp = pumpData?.bonding_curve_progress || (complete ? 100 : Math.min(99, Math.max(0, (mcap / 67000) * 100)));
-
-    // DexScreener real trading data
-    const vol24h = dexData?.volume?.h24 || 0;
-    const vol1h = dexData?.volume?.h1 || 0;
-    const txns24h = dexData?.txns?.h24 || { buys: 0, sells: 0 };
-    const txns1h = dexData?.txns?.h1 || { buys: 0, sells: 0 };
-    const priceChange5m = dexData?.priceChange?.m5 || 0;
-    const priceChange1h = dexData?.priceChange?.h1 || 0;
-    const priceChange24h = dexData?.priceChange?.h24 || 0;
-    const liquidity = dexData?.liquidity?.usd || 0;
-    const priceUsd = parseFloat(dexData?.priceUsd || 0);
-
-    // ── SCORING ENGINE ──
-    // 6 factors, each 0-20 pts, total 0-120 normalized to 0-100
-    let factors = [];
-
-    // 1. Momentum (price action) — is it moving?
-    let momentumScore = 10; // neutral
-    if (priceChange1h > 50) momentumScore = 20;
-    else if (priceChange1h > 20) momentumScore = 17;
-    else if (priceChange1h > 5) momentumScore = 14;
-    else if (priceChange1h > 0) momentumScore = 12;
-    else if (priceChange1h > -10) momentumScore = 8;
-    else if (priceChange1h > -30) momentumScore = 5;
-    else momentumScore = 2;
-    factors.push({ name: "Momentum", score: momentumScore, detail: (priceChange1h > 0 ? "+" : "") + priceChange1h.toFixed(1) + "% 1h" });
-
-    // 2. Volume — is there activity?
-    let volumeScore = 5;
-    if (vol1h > 50000) volumeScore = 20;
-    else if (vol1h > 10000) volumeScore = 16;
-    else if (vol1h > 2000) volumeScore = 12;
-    else if (vol1h > 500) volumeScore = 8;
-    factors.push({ name: "Volume", score: volumeScore, detail: "$" + (vol1h > 1000 ? (vol1h / 1000).toFixed(1) + "k" : Math.round(vol1h)) + " 1h" });
-
-    // 3. Buy pressure — buys vs sells ratio
-    const totalTxns1h = (txns1h.buys || 0) + (txns1h.sells || 0);
-    const buyRatio = totalTxns1h > 0 ? (txns1h.buys / totalTxns1h) : 0.5;
-    let pressureScore = Math.round(buyRatio * 20);
-    factors.push({ name: "Buy Pressure", score: pressureScore, detail: txns1h.buys + "B/" + txns1h.sells + "S 1h" });
-
-    // 4. Bonding Progress — how far along the curve? Sweet spot is 5-50%
-    let bondScore = 5;
-    if (complete) bondScore = 4; // graduated — already on raydium
-    else if (bp >= 5 && bp < 20) bondScore = 18; // early traction, most upside
-    else if (bp >= 20 && bp < 50) bondScore = 16; // confirmed momentum
-    else if (bp >= 50 && bp < 80) bondScore = 12; // getting expensive
-    else if (bp >= 80) bondScore = 8; // near graduation, risky entry
-    else if (bp > 0) bondScore = 10; // just started
-    factors.push({ name: "Bonded", score: bondScore, detail: complete ? "graduated" : bp.toFixed(1) + "%" });
-
-    // 5. Market cap — sweet spot for pump potential
-    let mcapScore = 10;
-    if (mcap >= 5000 && mcap < 50000) mcapScore = 18; // early, room to grow
-    else if (mcap >= 50000 && mcap < 200000) mcapScore = 15; // confirmed interest
-    else if (mcap >= 200000 && mcap < 1000000) mcapScore = 12; // mid, ok
-    else if (mcap >= 1000000) mcapScore = 6; // high cap, less upside
-    else if (mcap < 5000) mcapScore = 8; // too early, risky
-    factors.push({ name: "MCap", score: mcapScore, detail: "$" + (mcap > 1000 ? (mcap / 1000).toFixed(1) + "k" : Math.round(mcap)) });
-
-    // 6. Freshness — newer = more potential
-    let freshScore = 10;
-    if (age < 5) freshScore = 20; // brand new
-    else if (age < 30) freshScore = 17;
-    else if (age < 120) freshScore = 14;
-    else if (age < 720) freshScore = 10;
-    else if (age < 1440) freshScore = 6;
-    else freshScore = 3; // old
-    factors.push({ name: "Freshness", score: freshScore, detail: age < 60 ? Math.round(age) + "m" : Math.round(age / 60) + "h old" });
-
-    const rawTotal = factors.reduce((a, f) => a + f.score, 0);
-    const maxPossible = 120;
-    const score = Math.round((rawTotal / maxPossible) * 100);
-    const verdict = score >= 70 ? "APE" : score >= 45 ? "RISKY" : "AVOID";
-
-    res.json({
-      name, symbol, usd_market_cap: mcap, created_timestamp: created,
-      reply_count: replies, complete, image_uri: imageUri, description,
-      bp, source: pumpData ? "pumpfun" : "dexscreener",
-      // Trading data
-      vol24h, vol1h, txns24h, txns1h,
-      priceChange5m, priceChange1h, priceChange24h,
-      priceUsd,
-      // Analysis
-      score, verdict, factors,
-    });
-  } catch (e) {
-    console.error("[ANALYZE]", e.message);
-    res.status(500).json({ error: "Analysis failed: " + e.message });
-  }
-});
-
-app.post("/api/session/create", apiLimiter, async (req, res) => {
-  try {
-    if (!sessionManager) return res.status(503).json({ error: "Server still starting up. Try again in a few seconds." });
     const { totalSol, tokenConfig, wallet, fleetConfig, masterSeed } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
-
-    // Deploy-only allows totalSol = 0
-    const isDeployOnly = fleetConfig?.deployOnly;
-    if (!isDeployOnly && (!totalSol || totalSol < 0.1 || totalSol > 100)) {
-      return res.status(400).json({ error: "totalSol must be between 0.1 and 100" });
-    }
-    if (!tokenConfig) return res.status(400).json({ error: "tokenConfig required" });
-    if (!tokenConfig.existingCA && (!tokenConfig.name || !tokenConfig.ticker)) {
-      return res.status(400).json({ error: "Need token name+ticker or existingCA" });
-    }
-
-    const walletInfo = await getWalletTier(wallet);
-
-    // (4) Rate limiting per tier
-    if (userStore) {
-      const limits = { free: 5, pro: 50, vip: 200 };
-      const maxPerHour = limits[walletInfo.tier] || limits.free;
-      const rl = await userStore.checkRateLimit(wallet, "launch", maxPerHour);
-      if (!rl.allowed) return res.status(429).json({ error: `Rate limit: ${maxPerHour} launches/hour. Try again in ${rl.resetIn}s.` });
-    }
-
-    // (1)(5) Free tier branding enforcement — server-side, can't bypass
-    if (walletInfo.tier === "free" && !walletInfo.whitelisted && !tokenConfig.existingCA) {
-      // Force "deployed with bondli.fun" in description
-      const desc = (tokenConfig.description || "").trim();
-      const brandTag = "deployed with bondli.fun";
-      if (!desc.toLowerCase().includes("bondli")) {
-        tokenConfig.description = desc ? `${desc} | ${brandTag}` : brandTag;
-      }
-    }
-
-    // (2) Track user
-    if (userStore) await userStore.getOrCreate(wallet);
+    const user = await getUser(wallet);
+    const tierInfo = resolveTier(wallet, user);
 
     const session = await sessionManager.create({
       userWallet: wallet,
-      totalSol: isDeployOnly ? 0 : Math.min(100, totalSol),
-      tokenConfig,
-      tier: walletInfo.tier,
+      totalSol: totalSol || 0.5,
+      tokenConfig: tokenConfig || {},
+      tier: tierInfo.tier,
       fleetConfig: fleetConfig || {},
-      masterSeed: masterSeed || "",
+      masterSeed: masterSeed || null,
     });
 
     res.json(session);
   } catch (e) {
-    console.error("[SESSION] Create error:", e.message, e.stack);
-    res.status(500).json({ error: "Failed to create session. Try again." });
+    console.error("[SESSION] Create error:", e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
-// Confirm deposit: user sends tx sig after Phantom transfer
-app.post("/api/session/fund", apiLimiter, async (req, res) => {
-  try {
-    const { sessionId, txSig, wallet } = req.body;
-    if (!sessionId || !txSig) return res.status(400).json({ error: "sessionId and txSig required" });
-    if (!wallet) return res.status(400).json({ error: "wallet required" });
-
-    const session = await sessionManager.getPublic(sessionId);
-    if (!session) return res.status(404).json({ error: "Session not found" });
-    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
-
-    const result = await sessionManager.verifyDeposit(sessionId, txSig);
-    if (!result.ok) return res.status(400).json(result);
-
-    res.json({ ok: true, ...result, status: "funded" });
-  } catch (e) {
-    console.error("[SESSION] Fund error:", e.message);
-    res.status(500).json({ error: "Deposit verification failed" });
-  }
-});
-
-// Launch: create token on pump.fun + start orchestrator
-app.post("/api/session/launch", apiLimiter, async (req, res) => {
-  try {
-    const { sessionId, wallet } = req.body;
-    if (!sessionId) return res.status(400).json({ error: "sessionId required" });
-    if (!wallet) return res.status(400).json({ error: "wallet required" });
-
-    const session = await sessionManager.get(sessionId);
-    if (!session) return res.status(404).json({ error: "Session not found" });
-    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
-    if (!session.funded) return res.status(400).json({ error: "Session not funded yet" });
-    if (session.status === "live") return res.status(400).json({ error: "Session already running" });
-
-    const devKeypair = await sessionManager.getDevKeypair(sessionId);
-    if (!devKeypair) return res.status(500).json({ error: "Dev wallet key not found" });
-
-    await sessionManager.update(sessionId, { status: "creating", launchedAt: new Date().toISOString() });
-
-    const existingCA = session.tokenConfig?.existingCA || null;
-    let tokenCA = existingCA;
-    let createResult = null;
-
-    // ── Step 1: Create token on pump.fun (if no existing CA) ──
-    if (!existingCA) {
-      console.log(`[LAUNCH] Creating token: ${session.tokenConfig.name} ($${session.tokenConfig.ticker})`);
-      console.log(`[LAUNCH] Dev wallet: ${devKeypair.publicKey.toBase58()}`);
-      console.log(`[LAUNCH] Budget: ${session.devBuy} SOL dev buy + ${session.fleetBudget} SOL fleet`);
-      
-      const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-      
-      createResult = await createToken(connection, devKeypair, session.tokenConfig, {
-        devBuySol: session.devBuy,
-        jitoTip: session.fleetConfig?.jitoTip || 0.001,
-        slippageBps: parseInt(CONFIG.SLIPPAGE_BPS || "2500"),
-        priorityFee: parseInt(CONFIG.PRIORITY_FEE || "100000"),
-        sendUrl: CONFIG.HELIUS_SEND_TX_URL || null,
-      });
-
-      tokenCA = createResult.mint;
-      console.log(`[LAUNCH] ✅ Token created: ${tokenCA}`);
-      console.log(`[LAUNCH] 🔗 https://pump.fun/coin/${tokenCA}`);
-    }
-
-    // ── Step 2: Update session with CA ──
-    await sessionManager.update(sessionId, {
-      status: "live",
-      tokenCA,
-      createTx: createResult?.txSig || null,
-      pumpUrl: `https://pump.fun/coin/${tokenCA}`,
-      bondingCurve: createResult?.bondingCurve || null,
-      metadataUri: createResult?.metadataUri || null,
-    });
-
-    // ── Step 3: Start fleet trading on this CA (skip for deploy-only) ──
-    let orchResult = { ok: true };
-    const isDeployOnly = session.fleetConfig?.deployOnly || session.fleetBudget <= 0;
-    if (!isDeployOnly) {
-      try {
-        CONFIG.TOKEN_CA = tokenCA;
-
-        console.log(`[LAUNCH] Starting fleet with ${session.fleetBudget} SOL on ${tokenCA}`);
-        
-        // Look up radar/analysis score for conviction-based wallet sizing
-        let radarScore = 50; // default medium conviction
-        if (existingCA) {
-          const radarToken = radar.pool.get(tokenCA);
-          if (radarToken) {
-            // Use the best score from any radar tab
-            const allScored = radar.movers.hot?.find(t => t.ca === tokenCA) || radar.movers.new?.find(t => t.ca === tokenCA) || radar.movers.graduating?.find(t => t.ca === tokenCA);
-            if (allScored) radarScore = allScored.score;
-          }
-          console.log(`[LAUNCH] APE conviction: ${radarScore}/100`);
-        }
-
-        orchResult = await orch.launch(tokenCA, {
-          totalSol: session.fleetBudget,
-          devKeypair,
-          sessionId: session.id,
-          force: true,
-          fleetConfig: { ...(session.fleetConfig || {}), existingCA: !!existingCA, radarScore },
-          profitConfig: (session.tier === "free") ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET } : null,
-        });
-        console.log(`[LAUNCH] Fleet started:`, JSON.stringify(orchResult).slice(0, 300));
-        
-        // Start live price tracking
-        startPricePolling(tokenCA);
-
-        // CRITICAL: Save fleet wallet keys for recovery
-        if (orchResult.walletKeys) {
-          await sessionManager.update(session.id, {
-            fleetWallets: orchResult.walletKeys,
-            profitConfig: (session.tier === "free") ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET } : null,
-            status: "live",
-            launchedAt: new Date().toISOString(),
-          });
-          console.log(`[LAUNCH] Saved ${orchResult.walletKeys.length} fleet wallet keys to session`);
-        }
-    } catch (orchErr) {
-      console.warn("[LAUNCH] Fleet start failed:", orchErr.message);
-      console.warn("[LAUNCH] Stack:", orchErr.stack?.split("\n").slice(0, 3).join("\n"));
-      orchResult = { ok: true, fleetError: orchErr.message };
-    }
-    } else {
-      console.log(`[LAUNCH] Deploy-only mode — no fleet, no dev buy`);
-      await sessionManager.update(session.id, { status: "deployed", launchedAt: new Date().toISOString() });
-    }
-
-    if (sessionStore) {
-      await sessionStore.recordLaunch(session.userWallet, tokenCA, session.totalSol);
-    }
-    if (userStore) {
-      if (isDeployOnly) await userStore.recordDeploy(session.userWallet, tokenCA);
-      else await userStore.recordLaunch(session.userWallet, tokenCA, session.totalSol);
-    }
-
-    console.log(`[LAUNCH] ${sessionId} complete | CA: ${tokenCA} | devBuy: ${session.devBuy} SOL | fleet: ${session.fleetBudget} SOL`);
-
-    res.json({
-      ok: true,
-      sessionId,
-      tokenCA,
-      pumpUrl: `https://pump.fun/coin/${tokenCA}`,
-      devBuy: session.devBuy,
-      fleetBudget: session.fleetBudget,
-      createTx: createResult?.txSig || null,
-      walletKeys: orchResult.walletKeys || [],
-      devSecret: bs58.encode(devKeypair.secretKey),
-      ...orchResult,
-    });
-  } catch (e) {
-    console.error("[LAUNCH] Error:", e.stack || e.message);
-    res.status(500).json({ error: e.message || "Launch failed" });
-  }
-});
-
-// Check session balance (for auto-detect polling)
-app.get("/api/session/balance", apiLimiter, async (req, res) => {
+app.get("/api/session/balance", async (req, res) => {
   const { sessionId, wallet } = req.query;
-  if (!sessionId) return res.status(400).json({ error: "sessionId required" });
-
   const session = await sessionManager.get(sessionId);
   if (!session) return res.status(404).json({ error: "Session not found" });
+  if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
   if (session.funded) return res.json({ funded: true, balance: session.actualDeposit || session.totalSol });
-
+  // Check on-chain
   try {
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
     const balance = await connection.getBalance(new PublicKey(session.devWallet));
     const balanceSol = balance / LAMPORTS_PER_SOL;
-    const expectedMin = session.totalSol * 0.95;
-
+    const expectedMin = session.totalSol * 0.90;
     if (balanceSol >= expectedMin) {
-      // Auto-mark funded
-      await sessionManager.update(sessionId, {
-        funded: true,
-        fundedAt: new Date().toISOString(),
-        status: "funded",
-        actualDeposit: balanceSol,
-      });
-      console.log(`[SESSION] ${sessionId} auto-funded | ${balanceSol.toFixed(4)} SOL detected`);
+      await sessionManager.update(sessionId, { funded: true, status: "funded", actualDeposit: balanceSol, fundedAt: new Date().toISOString() });
       return res.json({ funded: true, balance: balanceSol });
     }
-
-    res.json({ funded: false, balance: balanceSol, expected: session.totalSol });
+    return res.json({ funded: false, balance: balanceSol, needed: session.totalSol });
   } catch (e) {
-    res.json({ funded: false, balance: 0, error: e.message });
+    return res.json({ funded: false, error: e.message });
   }
 });
 
-// Get session status
-app.get("/api/session/:id", apiLimiter, async (req, res) => {
-  const wallet = req.query.wallet;
-  const session = await sessionManager.getPublic(req.params.id);
-  if (!session) return res.status(404).json({ error: "Session not found" });
-  if (wallet && session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
-  res.json(session);
+app.post("/api/session/fund", async (req, res) => {
+  const { sessionId, txSig, wallet } = req.body;
+  const result = await sessionManager.verifyDeposit(sessionId, txSig);
+  res.json(result);
 });
 
-// List user's sessions
-app.get("/api/sessions", apiLimiter, async (req, res) => {
-  const wallet = req.query.wallet;
-  if (!wallet) return res.status(400).json({ error: "wallet required" });
-  const sessions = await sessionManager.listForUser(wallet);
-  res.json({ sessions, count: sessions.length });
-});
-
-// Delete a single session (clears from Redis + memory)
-app.post("/api/session/delete", apiLimiter, async (req, res) => {
+app.post("/api/session/launch", async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
-    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
     const session = await sessionManager.get(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
     if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
-    // Stop fleet if running
-    if (session.tokenCA) { try { orch.stop(session.tokenCA); } catch {} }
-    await sessionManager.delete(sessionId);
-    console.log(`[SESSION] Deleted ${sessionId} for ${wallet.slice(0, 8)}`);
-    res.json({ ok: true, deleted: sessionId });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+    if (!session.funded) return res.status(400).json({ error: "Not funded" });
 
-// Clear ALL sessions for a user
-app.post("/api/sessions/clear", apiLimiter, async (req, res) => {
-  try {
-    const { wallet } = req.body;
-    if (!wallet) return res.status(400).json({ error: "wallet required" });
-    // Stop all running fleets first
-    try { await orch.closeAll(); } catch {}
-    const count = await sessionManager.deleteAllForUser(wallet);
-    console.log(`[SESSION] Cleared ${count} sessions for ${wallet.slice(0, 8)}`);
-    res.json({ ok: true, cleared: count });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+    const devKp = await sessionManager.getDevKeypair(sessionId);
+    if (!devKp) return res.status(500).json({ error: "Dev keypair not found" });
 
-// Resume/view a previously launched session — shows wallet balances and recovery options
-app.post("/api/session/resume", apiLimiter, async (req, res) => {
-  try {
-    const { sessionId, wallet } = req.body;
-    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
+    const user = await getUser(wallet);
+    const tierInfo = resolveTier(wallet, user);
+    const profitConfig = buildProfitConfig(tierInfo.tier, tierInfo.whitelisted);
 
-    const session = await sessionManager.get(sessionId);
-    if (!session) return res.status(404).json({ error: "Session not found" });
-    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
-    if (!session.tokenCA) return res.status(400).json({ error: "No token CA — session was never launched" });
+    let tokenCA = session.tokenConfig.existingCA;
 
-    // Check if fleet is currently running
-    const orchStatus = orch.getSessionStatus(session.tokenCA);
-    if (orchStatus && orchStatus.running) {
-      return res.json({ ok: true, status: "running", tokenCA: session.tokenCA, ...orchStatus });
-    }
-
-    // Gather wallet balances (don't start trading!)
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const walletInfo = [];
-    let totalBalance = 0;
-
-    // Dev/master wallet
-    const devKeypair = await sessionManager.getDevKeypair(sessionId);
-    if (devKeypair) {
+    // Create token if not aping existing
+    if (!tokenCA) {
+      await sessionManager.update(sessionId, { status: "creating" });
       try {
-        const bal = await connection.getBalance(devKeypair.publicKey);
-        const solBal = bal / LAMPORTS_PER_SOL;
-        totalBalance += solBal;
-        walletInfo.push({ role: "master", pubkey: devKeypair.publicKey.toBase58().slice(0, 8), balance: solBal });
-      } catch {}
-    }
-
-    // Fleet wallets (if saved)
-    if (session.fleetWallets && session.fleetWallets.length > 0) {
-      for (const fw of session.fleetWallets) {
-        try {
-          const kp = Keypair.fromSecretKey(bs58.decode(fw.secret));
-          const bal = await connection.getBalance(kp.publicKey);
-          const solBal = bal / LAMPORTS_PER_SOL;
-          totalBalance += solBal;
-          walletInfo.push({ role: fw.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: solBal });
-        } catch {}
-      }
-    }
-
-    res.json({
-      ok: true,
-      status: "stopped",
-      tokenCA: session.tokenCA,
-      totalBalance,
-      wallets: walletInfo,
-      hasFleetKeys: !!(session.fleetWallets && session.fleetWallets.length > 0),
-      canRecover: totalBalance > 0.001,
-      session: {
-        id: session.id,
-        totalSol: session.totalSol,
-        devBuy: session.devBuy,
-        fleetBudget: session.fleetBudget,
-        createdAt: session.createdAt,
-        ticker: session.tokenConfig?.ticker,
-        name: session.tokenConfig?.name,
-      },
-    });
-  } catch (e) {
-    console.error("[RESUME] Error:", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Emergency recover: sweep all SOL from fleet wallets back to master/user wallet
-app.post("/api/session/recover", apiLimiter, requireVerifiedWallet, async (req, res) => {
-  try {
-    const { sessionId, wallet } = req.body;
-    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
-
-    const session = await sessionManager.get(sessionId);
-    if (!session) return res.status(404).json({ error: "Session not found" });
-    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
-
-    // Stop any running fleet first
-    if (session.tokenCA) {
-      try { await orch.close(session.tokenCA); } catch {}
-    }
-
-    // Collect all wallet secrets
-    const secrets = [];
-    const devKeypair = await sessionManager.getDevKeypair(sessionId);
-
-    // Dev/master wallet — ALWAYS include
-    if (devKeypair) {
-      secrets.push({ role: "master", secret: bs58.encode(devKeypair.secretKey), pubkey: devKeypair.publicKey.toBase58() });
-    }
-
-    // Fleet wallets (momentum, whale, sniper, etc.)
-    if (session.fleetWallets) {
-      for (const fw of session.fleetWallets) {
-        if (fw.secret) secrets.push({ role: fw.role || "fleet", secret: fw.secret, pubkey: fw.pubkey || "?" });
-      }
-    }
-
-    // Also try Redis-stored fleet keys (backup)
-    const redis = getRedis();
-    if (redis) {
-      try {
-        const storedKeys = await redis.get("fleetkeys:" + sessionId);
-        if (storedKeys) {
-          const parsed = JSON.parse(storedKeys);
-          const existingPubs = new Set(secrets.map(s => s.pubkey));
-          for (const fk of parsed) {
-            if (fk.secret && !existingPubs.has(fk.pubkey)) secrets.push(fk);
-          }
-        }
-      } catch {}
-    }
-
-    // Sweep everything to user's connected wallet
-    const destination = new PublicKey(wallet);
-
-    if (secrets.length === 0) {
-      return res.json({ ok: true, message: "No fleet wallets found to recover", totalRecovered: 0, wallets: [] });
-    }
-
-    console.log(`[RECOVER] ${sessionId} | Found ${secrets.length} wallets to sweep -> ${wallet.slice(0, 8)}`);
-
-    // Determine profit config
-    const walletInfo = await getWalletTier(wallet);
-    const profitConfig = (walletInfo.tier === "free" && !walletInfo.whitelisted)
-      ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET }
-      : null;
-
-    // Direct sweep — don't rely on orch, do it ourselves
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const results = [];
-    let totalRecovered = 0;
-
-    for (const w of secrets) {
-      try {
-        const kp = Keypair.fromSecretKey(bs58.decode(w.secret));
-        const balance = await connection.getBalance(kp.publicKey);
-        const balSol = balance / LAMPORTS_PER_SOL;
-
-        if (balance <= 5000) {
-          results.push({ role: w.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: 0, status: "empty" });
-          continue;
-        }
-
-        if (kp.publicKey.equals(destination)) {
-          results.push({ role: w.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: 0, status: "is_destination" });
-          continue;
-        }
-
-        // Atomic sweep with enforced profit skim (free tier)
-        const sweepResult = await skimSweep(connection, kp, destination, profitConfig, w.allocation || 0);
-        totalRecovered += sweepResult.swept;
-        results.push({ role: w.role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: sweepResult.swept, skimmed: sweepResult.skimmed, sig: sweepResult.sig, status: "ok" });
-        console.log(`[RECOVER] [${w.role}] ${kp.publicKey.toBase58().slice(0, 8)}... -> ${sweepResult.swept.toFixed(4)} SOL${sweepResult.skimmed > 0 ? ` (skimmed ${sweepResult.skimmed.toFixed(4)})` : ""}`);
+        const createResult = await createToken(devKp, session.tokenConfig, connection);
+        tokenCA = createResult.mint?.toBase58?.() || createResult.mint || createResult.ca;
+        await sessionManager.update(sessionId, { tokenCA, status: "created" });
+        console.log(`[LAUNCH] Token created: ${tokenCA}`);
       } catch (e) {
-        results.push({ role: w.role || "?", pubkey: w.pubkey?.slice(0, 8) || "?", error: e.message, status: "failed" });
-        console.error(`[RECOVER] [${w.role}] Failed: ${e.message}`);
-      }
-      await new Promise(r => setTimeout(r, 400));
-    }
-
-    await sessionManager.update(sessionId, { status: "recovered", recoveredAt: new Date().toISOString() });
-    console.log(`[RECOVER] ${sessionId} | Total recovered: ${totalRecovered.toFixed(4)} SOL from ${results.filter(r => r.status === "ok").length}/${secrets.length} wallets`);
-
-    res.json({ ok: true, totalRecovered, walletCount: secrets.length, swept: results.filter(r => r.status === "ok").length, wallets: results, destination: wallet });
-  } catch (e) {
-    console.error("[RECOVER] Error:", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// EMERGENCY: Force sweep all wallets in a session directly to user
-// This is a standalone sweep that doesn't depend on orch
-// ═══════════════════════════════════════
-// EMERGENCY RECOVERY — find and sweep ALL wallets from ALL sessions
-// ═══════════════════════════════════════
-app.post("/api/emergency-recover", apiLimiter, async (req, res) => {
-  try {
-    const { wallet } = req.body;
-    if (!wallet) return res.status(400).json({ error: "wallet required" });
-
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const destination = new PublicKey(wallet);
-    const redis = getRedis();
-
-    // Find ALL sessions for this wallet
-    const sessions = await sessionManager?.getByWallet?.(wallet) || [];
-    const allKeypairs = []; // { role, kp, sessionId, pubkey }
-    const allKeys = []; // { role, pubkey, secret, sessionId } for export
-
-    // Trading wallet
-    if (userStore) {
-      const user = await userStore.get(wallet);
-      if (user?.ppPrivateKey && user.ppPrivateKey !== "") {
-        try {
-          const kp = Keypair.fromSecretKey(bs58.decode(user.ppPrivateKey));
-          allKeypairs.push({ role: "trading", kp, sessionId: "trading", pubkey: kp.publicKey.toBase58() });
-          allKeys.push({ role: "trading", pubkey: kp.publicKey.toBase58(), secret: user.ppPrivateKey, sessionId: "trading" });
-        } catch {}
+        await sessionManager.update(sessionId, { status: "create_failed" });
+        return res.status(500).json({ error: "Token creation failed: " + e.message });
       }
     }
 
-    for (const s of (Array.isArray(sessions) ? sessions : [])) {
-      // Dev keypair
-      try {
-        const devKp = await sessionManager.getDevKeypair(s.id);
-        if (devKp) {
-          const pub = devKp.publicKey.toBase58();
-          if (!allKeypairs.some(k => k.pubkey === pub)) {
-            allKeypairs.push({ role: "dev", kp: devKp, sessionId: s.id, pubkey: pub });
-            allKeys.push({ role: "dev", pubkey: pub, secret: bs58.encode(devKp.secretKey), sessionId: s.id });
-          }
-        }
-      } catch {}
+    if (!tokenCA) return res.status(500).json({ error: "No token CA" });
 
-      // Fleet wallets from Redis backup
+    // Launch fleet
+    await sessionManager.update(sessionId, { status: "launching", tokenCA, launchedAt: new Date().toISOString() });
+
+    const launchResult = await fleetTrader.launch(tokenCA, {
+      totalSol: session.totalSol,
+      devKeypair: devKp,
+      sessionId,
+      fleetConfig: session.fleetConfig,
+      profitConfig,
+    });
+
+    // Store fleet wallet keys
+    if (launchResult.walletKeys) {
       if (redis) {
-        try {
-          const keysRaw = await redis.get("walletkeys:" + s.id);
-          if (keysRaw) {
-            const savedKeys = JSON.parse(keysRaw);
-            for (const wk of savedKeys) {
-              if (wk.secret && !allKeypairs.some(k => k.pubkey === wk.pubkey)) {
-                try {
-                  const kp = Keypair.fromSecretKey(bs58.decode(wk.secret));
-                  allKeypairs.push({ role: wk.role, kp, sessionId: s.id, pubkey: wk.pubkey });
-                  allKeys.push({ role: wk.role, pubkey: wk.pubkey, secret: wk.secret, sessionId: s.id });
-                } catch {}
-              }
-            }
-          }
-        } catch {}
+        try { await redis.set("fleetkeys:" + sessionId, JSON.stringify(launchResult.walletKeys), "EX", 172800); } catch {}
       }
+    }
 
-      // Fleet wallets from runtime session
-      if (s.fleetWallets) {
-        for (const fw of s.fleetWallets) {
-          if (fw.secret && !allKeypairs.some(k => k.pubkey === fw.pubkey)) {
-            try {
-              const kp = Keypair.fromSecretKey(bs58.decode(fw.secret));
-              allKeypairs.push({ role: fw.role, kp, sessionId: s.id, pubkey: fw.pubkey });
-              allKeys.push({ role: fw.role, pubkey: fw.pubkey, secret: fw.secret, sessionId: s.id });
-            } catch {}
-          }
+    await sessionManager.update(sessionId, { status: "live", tokenCA });
+
+    res.json({ ok: true, tokenCA, wallets: launchResult.wallets, phase: launchResult.phase });
+  } catch (e) {
+    console.error("[LAUNCH] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/session/resume", async (req, res) => {
+  res.json({ ok: false, error: "Resume not yet implemented" });
+});
+
+// ── SELL-SWEEP (Close session) ──
+// FIX: Updates session status + sweeps master → trading wallet + NO skim on recovery
+app.post("/api/session/sell-sweep", async (req, res) => {
+  try {
+    const { sessionId, wallet } = req.body;
+    const session = await sessionManager.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
+
+    let closeResult = {};
+    if (session.tokenCA && fleetTrader.sessions.has(session.tokenCA)) {
+      closeResult = await fleetTrader.close(session.tokenCA);
+    }
+
+    // FIX: Update session status in Redis
+    await sessionManager.update(sessionId, { status: "closed", closedAt: new Date().toISOString() });
+
+    // FIX: Sweep master wallet → user's trading wallet
+    let masterSwept = 0;
+    try {
+      const tw = await getTradingWallet(wallet);
+      if (session.devSecret && tw?.pubkey) {
+        const masterKp = Keypair.fromSecretKey(bs58.decode(session.devSecret));
+        const masterBal = await connection.getBalance(masterKp.publicKey);
+        if (masterBal > 6000) {
+          const tx = new Transaction().add(
+            ComputeBudgetProgram.setComputeUnitLimit({ units: 50000 }),
+            ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50000 }),
+            SystemProgram.transfer({
+              fromPubkey: masterKp.publicKey,
+              toPubkey: new PublicKey(tw.pubkey),
+              lamports: masterBal - 5000,
+            })
+          );
+          await sendAndConfirmTransaction(connection, tx, [masterKp], { skipPreflight: true, commitment: "confirmed" });
+          masterSwept = (masterBal - 5000) / LAMPORTS_PER_SOL;
+          console.log(`[SWEEP] Master → Trading: ${masterSwept.toFixed(4)} SOL`);
         }
       }
+    } catch (e) {
+      console.error(`[SWEEP] Master→Trading failed:`, e.message);
     }
 
-    console.log(`[EMERGENCY] Found ${allKeypairs.length} wallets for ${wallet.slice(0, 8)}`);
-
-    // Scan all wallets for balances
-    const walletInfo = [];
-    let totalSol = 0;
-    let totalTokenAccounts = 0;
-
-    for (const { role, kp, sessionId, pubkey } of allKeypairs) {
-      try {
-        const bal = await connection.getBalance(kp.publicKey);
-        const balSol = bal / LAMPORTS_PER_SOL;
-        const tokenAccts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: TOKEN_PROGRAM_ID });
-        const tokens = tokenAccts.value.filter(a => (a.account.data.parsed?.info?.tokenAmount?.uiAmount || 0) > 0).length;
-
-        walletInfo.push({ role, pubkey: pubkey.slice(0, 12) + "...", sessionId, balSol: +balSol.toFixed(6), tokenAccounts: tokens, hasSOL: balSol > 0.001, hasTokens: tokens > 0 });
-        totalSol += balSol;
-        totalTokenAccounts += tokens;
-      } catch (e) {
-        walletInfo.push({ role, pubkey: pubkey.slice(0, 12) + "...", sessionId, error: e.message });
+    // Get fleet keys for response
+    let keys = [];
+    try {
+      if (session.devSecret) {
+        keys.push({ role: "dev", pubkey: session.devWallet, secret: session.devSecret });
       }
-    }
+      if (redis) {
+        const fkRaw = await redis.get("fleetkeys:" + sessionId);
+        if (fkRaw) keys = keys.concat(JSON.parse(fkRaw));
+      }
+    } catch {}
 
     res.json({
       ok: true,
-      totalWallets: allKeypairs.length,
-      totalSol: +totalSol.toFixed(6),
-      totalTokenAccounts,
-      wallets: walletInfo,
-      // Include full keys so user can import into Phantom
-      keys: allKeys.map(k => ({ role: k.role, pubkey: k.pubkey, secret: k.secret, sessionId: k.sessionId })),
-      sessions: sessions.length,
-      note: "Use 'keys' to import wallets into Phantom. Use /api/session/force-recover to sweep SOL back.",
+      ...closeResult,
+      totalSwept: (closeResult.solRecovered || 0) + masterSwept,
+      masterSwept,
+      keys,
     });
-  } catch (e) {
-    console.error("[EMERGENCY]", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Export ALL wallet keys for a session (including fleet)
-app.post("/api/session/export-keys", apiLimiter, async (req, res) => {
-  try {
-    const { sessionId, wallet } = req.body;
-    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
-
-    const session = await sessionManager.get(sessionId);
-    if (!session) return res.status(404).json({ error: "Session not found" });
-    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
-
-    const keys = [];
-
-    // Dev key
-    if (session.devSecret) {
-      keys.push({ role: "dev", pubkey: session.devWallet, secret: session.devSecret });
-    }
-
-    // Fleet keys from Redis backup
-    const redis = getRedis();
-    if (redis) {
-      try {
-        const keysRaw = await redis.get("walletkeys:" + sessionId);
-        if (keysRaw) {
-          const savedKeys = JSON.parse(keysRaw);
-          for (const wk of savedKeys) { keys.push(wk); }
-        }
-      } catch {}
-    }
-
-    // Fleet keys from runtime
-    if (session._walletKeys) {
-      for (const wk of session._walletKeys) {
-        if (!keys.some(k => k.pubkey === wk.pubkey)) keys.push(wk);
-      }
-    }
-
-    console.log(`[EXPORT-KEYS] ${sessionId} | ${keys.length} keys exported for ${wallet.slice(0, 8)}`);
-    res.json({ ok: true, sessionId, keys, count: keys.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post("/api/session/force-recover", apiLimiter, async (req, res) => {
-  try {
-    const { sessionId, wallet } = req.body;
-    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
-
-    const session = await sessionManager.get(sessionId);
-    if (!session) return res.status(404).json({ error: "Session not found" });
-    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
-
-    // Determine profit config (enforced even on emergency recovery)
-    const walletInfo = await getWalletTier(wallet);
-    const profitConfig = (walletInfo.tier === "free" && !walletInfo.whitelisted)
-      ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET }
-      : null;
-
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const destination = new PublicKey(wallet);
-    const results = [];
-    let totalRecovered = 0;
-    let totalSkimmed = 0;
-
-    // Collect ALL possible keypairs
-    const keypairs = [];
-
-    // Dev/master
-    const devKeypair = await sessionManager.getDevKeypair(sessionId);
-    if (devKeypair) keypairs.push({ role: "master", kp: devKeypair, allocation: session.devBuy || 0 });
-
-    // Fleet wallets from session
-    if (session.fleetWallets) {
-      for (const fw of session.fleetWallets) {
-        if (fw.secret) {
-          try {
-            keypairs.push({ role: fw.role || "fleet", kp: Keypair.fromSecretKey(bs58.decode(fw.secret)), allocation: fw.allocation || 0 });
-          } catch (e) { console.error(`[FORCE-RECOVER] Bad secret for ${fw.role}: ${e.message}`); }
-        }
-      }
-    }
-
-    // Fleet wallets from Redis persistence (critical backup)
-    const redis = getRedis();
-    if (redis && keypairs.length <= 1) {
-      try {
-        const keysRaw = await redis.get("walletkeys:" + sessionId);
-        if (keysRaw) {
-          const savedKeys = JSON.parse(keysRaw);
-          for (const wk of savedKeys) {
-            if (wk.secret && !keypairs.some(k => k.kp.publicKey.toBase58() === wk.pubkey)) {
-              try {
-                keypairs.push({ role: wk.role || "fleet", kp: Keypair.fromSecretKey(bs58.decode(wk.secret)), allocation: wk.allocation || 0 });
-              } catch {}
-            }
-          }
-          console.log(`[FORCE-RECOVER] Loaded ${savedKeys.length} wallet keys from Redis backup`);
-        }
-      } catch {}
-    }
-
-    console.log(`[FORCE-RECOVER] ${sessionId} | Found ${keypairs.length} keypairs | Destination: ${wallet.slice(0, 8)} | Tier: ${walletInfo.tier}`);
-
-    for (const { role, kp, allocation } of keypairs) {
-      try {
-        if (kp.publicKey.equals(destination)) {
-          results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), status: "is_destination", swept: 0 });
-          continue;
-        }
-
-        const balance = await connection.getBalance(kp.publicKey);
-        const balSol = balance / LAMPORTS_PER_SOL;
-
-        if (balance <= 5000) {
-          results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, status: "dust", swept: 0 });
-          continue;
-        }
-
-        // Atomic sweep with enforced profit skim
-        const sweepResult = await skimSweep(connection, kp, destination, profitConfig, allocation);
-        totalRecovered += sweepResult.swept;
-        totalSkimmed += sweepResult.skimmed;
-        results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), balance: balSol, swept: sweepResult.swept, skimmed: sweepResult.skimmed, sig: sweepResult.sig, status: "ok" });
-        console.log(`[FORCE-RECOVER] [${role}] ${kp.publicKey.toBase58().slice(0, 8)} -> ${sweepResult.swept.toFixed(4)} SOL${sweepResult.skimmed > 0 ? ` (skimmed ${sweepResult.skimmed.toFixed(4)})` : ""} ✓`);
-      } catch (e) {
-        results.push({ role, pubkey: kp.publicKey.toBase58().slice(0, 8), status: "failed", error: e.message });
-        console.error(`[FORCE-RECOVER] [${role}] FAILED: ${e.message}`);
-      }
-      await new Promise(r => setTimeout(r, 500));
-    }
-
-    // Record profit if skimmed
-    if (totalSkimmed > 0) {
-      try { await recordProfit(wallet, totalRecovered, totalSkimmed); } catch {}
-    }
-
-    console.log(`[FORCE-RECOVER] Done: ${totalRecovered.toFixed(4)} SOL recovered, ${totalSkimmed.toFixed(4)} SOL skimmed from ${results.filter(r => r.status === "ok").length}/${keypairs.length} wallets`);
-    res.json({ ok: true, totalRecovered, totalSkimmed, wallets: results, destination: wallet });
-  } catch (e) {
-    console.error("[FORCE-RECOVER] Error:", e.message, e.stack);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Batch deploy — create multiple tokens rapidly (VIP only)
-app.post("/api/batch-deploy", apiLimiter, requireVerifiedWallet, async (req, res) => {
-  try {
-    const { wallet, count, tokenConfig, masterSeed, jitoTip, delayMs } = req.body;
-    if (!wallet) return res.status(400).json({ error: "wallet required" });
-    if (!count || count < 1 || count > 20) return res.status(400).json({ error: "count must be 1-20" });
-    if (!tokenConfig?.name || !tokenConfig?.ticker) return res.status(400).json({ error: "name and ticker required" });
-
-    const walletInfo = await getWalletTier(wallet);
-    if (walletInfo.tier !== "pro" && !walletInfo.whitelisted) {
-      return res.status(403).json({ error: "Batch deploy is VIP/Pro only" });
-    }
-
-    // Free tier branding (shouldn't reach here since batch is pro/vip only, but safety)
-    if (walletInfo.tier === "free") {
-      const desc = (tokenConfig.description || "").trim();
-      if (!desc.toLowerCase().includes("bondli")) {
-        tokenConfig.description = desc ? `${desc} | deployed with bondli.fun` : "deployed with bondli.fun";
-      }
-    }
-
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const delay = Math.max(2000, delayMs || 5000); // min 2s between deploys
-
-    // Resolve master keypair (funding source)
-    let masterKp;
-    if (masterSeed) {
-      try { masterKp = Keypair.fromSecretKey(bs58.decode(masterSeed)); } catch {}
-    }
-    if (!masterKp) return res.status(400).json({ error: "Master wallet private key required for batch deploy" });
-
-    // Upload metadata ONCE (reuse for all)
-    console.log(`[BATCH] Starting ${count} deploys for ${tokenConfig.name} ($${tokenConfig.ticker})`);
-    console.log(`[BATCH] Key rotation: each token gets a fresh creator wallet`);
-
-    // SSE-style: send results as they come via JSON array
-    const results = [];
-
-    for (let i = 0; i < count; i++) {
-      try {
-        // Generate fresh creator keypair for each deploy (key rotation)
-        const creatorKp = Keypair.generate();
-        const creatorPubkey = creatorKp.publicKey.toBase58();
-
-        // Fund the fresh creator from master (creation fee + optional dev buy)
-        const fundAmount = Math.floor(0.05 * LAMPORTS_PER_SOL); // 0.05 SOL for creation + fees
-        const fundTx = new Transaction().add(
-          SystemProgram.transfer({ fromPubkey: masterKp.publicKey, toPubkey: creatorKp.publicKey, lamports: fundAmount })
-        );
-        await sendAndConfirmTransaction(connection, fundTx, [masterKp], { skipPreflight: true, commitment: "confirmed" });
-        console.log(`[BATCH] [${i + 1}] Funded creator ${creatorPubkey.slice(0, 8)}... with 0.05 SOL`);
-
-        const result = await createToken(connection, creatorKp, {
-          ...tokenConfig,
-          name: count > 1 ? `${tokenConfig.name} ${String.fromCharCode(65 + (i % 26))}` : tokenConfig.name,
-        }, {
-          devBuySol: 0,
-          jitoTip: jitoTip || 0.003,
-        });
-
-        results.push({
-          index: i + 1,
-          ok: true,
-          ca: result.tokenCA || result.mintAddress || result.mint,
-          creator: creatorPubkey,
-          creatorSecret: bs58.encode(creatorKp.secretKey),
-          txSig: result.txSig,
-          pumpUrl: "https://pump.fun/coin/" + (result.tokenCA || result.mintAddress || result.mint),
-        });
-        console.log(`[BATCH] ${i + 1}/${count} deployed: ${results[results.length - 1].ca?.slice(0, 8)}... (creator: ${creatorPubkey.slice(0, 8)})`);
-      } catch (e) {
-        results.push({ index: i + 1, ok: false, error: e.message });
-        console.error(`[BATCH] ${i + 1}/${count} failed: ${e.message}`);
-      }
-
-      // Delay between deploys (avoid rate limit + looks more natural)
-      if (i < count - 1) await new Promise(r => setTimeout(r, delay + Math.random() * 2000));
-    }
-
-    console.log(`[BATCH] Complete: ${results.filter(r => r.ok).length}/${count} succeeded | ${count} unique creators`);
-    res.json({ ok: true, total: count, succeeded: results.filter(r => r.ok).length, results, rotatedKeys: true });
-  } catch (e) {
-    console.error("[BATCH] Error:", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ═══════════════════════════════════════
-// CREATOR FEE CLAIM — collect pump.fun creator rewards
-// 50% to platform (anal.sol) for VIP pool, 50% kept by user
-// Uses PumpPortal Lightning API: action "collectCreatorFee"
-// ═══════════════════════════════════════
-app.post("/api/claim-creator-fees", apiLimiter, requireVerifiedWallet, async (req, res) => {
-  try {
-    const { wallet, sessionId } = req.body;
-    if (!wallet) return res.status(400).json({ error: "wallet required" });
-
-    // Get the dev keypair (creator wallet) from the session
-    let devKp;
-    if (sessionId) {
-      devKp = await sessionManager.getDevKeypair(sessionId);
-    }
-    // Fallback: check user's trading wallet
-    let apiKey, privateKey;
-    if (userStore) {
-      const user = await userStore.get(wallet);
-      apiKey = user?.ppApiKey && user.ppApiKey !== "" ? user.ppApiKey : null;
-      privateKey = user?.ppPrivateKey && user.ppPrivateKey !== "" ? user.ppPrivateKey : null;
-    }
-
-    let signature;
-
-    // Method 1: PumpPortal Lightning API (if user has API key)
-    if (apiKey) {
-      const ppRes = await fetch("https://pumpportal.fun/api/trade?api-key=" + apiKey, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "collectCreatorFee", priorityFee: 0.000005, pool: "pump" }),
-      });
-      const result = await ppRes.json();
-      if (result.signature) signature = result.signature;
-      else if (result.errors) return res.status(400).json({ error: "Claim failed: " + JSON.stringify(result.errors) });
-    }
-
-    // Method 2: PumpPortal trade-local (sign with dev keypair)
-    if (!signature && (devKp || privateKey)) {
-      const kp = devKp || Keypair.fromSecretKey(bs58.decode(privateKey));
-      const ppRes = await fetch("https://pumpportal.fun/api/trade-local", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ publicKey: kp.publicKey.toBase58(), action: "collectCreatorFee", priorityFee: 0.000005, pool: "pump" }),
-      });
-      if (ppRes.ok) {
-        const txBuf = Buffer.from(await ppRes.arrayBuffer());
-        const vtx = VersionedTransaction.deserialize(txBuf);
-        vtx.sign([kp]);
-        const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-        signature = await connection.sendRawTransaction(vtx.serialize(), { skipPreflight: true, maxRetries: 3 });
-      }
-    }
-
-    if (!signature) return res.status(400).json({ error: "No signing key available. Need dev wallet or trading wallet." });
-
-    // Platform cut: 50% of claimed fees go to platform wallet
-    // This happens naturally via fee sharing config on-chain, or we skim post-claim
-    console.log(`[CLAIM] Creator fees claimed for ${wallet.slice(0, 8)} | sig: ${String(signature).slice(0, 16)}`);
-    res.json({ ok: true, signature: String(signature), note: "Creator fees claimed. 50% goes to VIP pool." });
-  } catch (e) {
-    console.error("[CLAIM]", e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ═══════════════════════════════════════
-// DRY RUN MODE — simulate a full launch with fake data
-// Shows what will happen without spending any SOL
-// ═══════════════════════════════════════
-app.post("/api/dry-run", apiLimiter, async (req, res) => {
-  try {
-    const { totalSol = 1, tokenConfig = {}, wallet } = req.body;
-    const sol = Math.min(100, Math.max(0.1, totalSol));
-
-    // Calculate what would happen
-    const devBuyInfo = calculateDevBuy(sol);
-    const fleetBudget = devBuyInfo.fleetBudget;
-
-    // Simulate wallet generation
-    const walletCount = sol < 0.15 ? 1 : sol < 0.6 ? 3 : sol < 1.5 ? 5 : sol < 5 ? 6 : 7;
-    const fakeCA = "DRY" + Array.from({ length: 40 }, () => "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"[Math.floor(Math.random() * 58)]).join("");
-
-    // Simulate phases with timing
-    const phases = [];
-    let elapsed = 0;
-    let totalBought = 0, totalSold = 0;
-
-    // Phase 1: Dev buy
-    phases.push({ phase: "CREATE", time: elapsed, action: `Token created: ${tokenConfig.name || "TestToken"} (${tokenConfig.ticker || "TEST"})`, sol: -0.02 });
-    elapsed += 2;
-    phases.push({ phase: "DEV_BUY", time: elapsed, action: `Dev bought ${devBuyInfo.devBuy.toFixed(4)} SOL`, sol: -devBuyInfo.devBuy });
-    totalBought += devBuyInfo.devBuy;
-    elapsed += 3;
-
-    // Phase 2: Fleet buys (staggered)
-    const walletBudgets = [];
-    let remaining = fleetBudget;
-    for (let i = 0; i < walletCount; i++) {
-      const share = remaining / (walletCount - i) * (0.7 + Math.random() * 0.6);
-      const alloc = Math.min(share, remaining * 0.4);
-      walletBudgets.push(alloc);
-      remaining -= alloc;
-    }
-    if (remaining > 0.001) walletBudgets[0] += remaining;
-
-    for (let i = 0; i < walletCount; i++) {
-      const buyAmt = walletBudgets[i] * 0.88;
-      elapsed += 3 + Math.random() * 12;
-      phases.push({ phase: "FLEET_BUY", time: Math.round(elapsed), action: `Wallet ${i + 1} bought ${buyAmt.toFixed(4)} SOL`, sol: -buyAmt, wallet: i + 1 });
-      totalBought += buyAmt;
-    }
-
-    // Phase 3: Volume (simulated wash trades)
-    const volCycles = 8 + Math.floor(Math.random() * 8);
-    for (let i = 0; i < volCycles; i++) {
-      elapsed += 3 + Math.random() * 5;
-      const isBuy = Math.random() < (i < volCycles * 0.3 ? 0.8 : i < volCycles * 0.7 ? 0.55 : 0.3);
-      const amt = 0.005 + Math.random() * 0.03;
-      if (isBuy) {
-        phases.push({ phase: "VOLUME", time: Math.round(elapsed), action: `Vol buy ${amt.toFixed(4)} SOL`, sol: -amt });
-        totalBought += amt;
-      } else {
-        phases.push({ phase: "VOLUME", time: Math.round(elapsed), action: `Vol sell ${amt.toFixed(4)} SOL`, sol: amt });
-        totalSold += amt;
-      }
-    }
-
-    // Dev sells during volume (mimicry)
-    const devSells = 2 + Math.floor(Math.random() * 3);
-    for (let i = 0; i < devSells; i++) {
-      elapsed += 5 + Math.random() * 15;
-      const devSellAmt = devBuyInfo.devBuy * (0.01 + Math.random() * 0.04);
-      phases.push({ phase: "DEV_SELL", time: Math.round(elapsed), action: `Dev sold ${(devSellAmt * 100 / devBuyInfo.devBuy).toFixed(1)}% (${devSellAmt.toFixed(4)} SOL)`, sol: devSellAmt });
-      totalSold += devSellAmt;
-    }
-
-    // Phase 4: Sell into demand
-    for (let i = 0; i < walletCount; i++) {
-      elapsed += 10 + Math.random() * 20;
-      const sellReturn = walletBudgets[i] * (0.6 + Math.random() * 0.8); // 60-140% return
-      phases.push({ phase: "SELL", time: Math.round(elapsed), action: `Wallet ${i + 1} sold for ${sellReturn.toFixed(4)} SOL`, sol: sellReturn, wallet: i + 1 });
-      totalSold += sellReturn;
-    }
-
-    // Summary
-    const netProfit = totalSold - totalBought;
-    const profitPct = ((totalSold / totalBought) - 1) * 100;
-    const platformCut = netProfit > 0 ? netProfit * 0.25 : 0;
-    const userNet = netProfit - platformCut;
-
-    const summary = {
-      tokenCA: fakeCA,
-      tokenName: tokenConfig.name || "TestToken",
-      tokenTicker: tokenConfig.ticker || "TEST",
-      totalSol: sol,
-      devBuy: devBuyInfo.devBuy,
-      fleetBudget,
-      walletCount,
-      totalBought: +totalBought.toFixed(4),
-      totalSold: +totalSold.toFixed(4),
-      netProfit: +netProfit.toFixed(4),
-      profitPct: +profitPct.toFixed(1),
-      platformCut: +platformCut.toFixed(4),
-      userNet: +userNet.toFixed(4),
-      duration: Math.round(elapsed) + "s",
-      tradeCount: phases.length,
-      dryRun: true,
-    };
-
-    phases.sort((a, b) => a.time - b.time);
-
-    res.json({ ok: true, summary, phases, dryRun: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Sell all tokens in fleet wallets and sweep SOL back to master
-app.post("/api/session/sell-sweep", apiLimiter, requireVerifiedWallet, async (req, res) => {
-  try {
-    const { sessionId, wallet } = req.body;
-    if (!sessionId || !wallet) return res.status(400).json({ error: "sessionId and wallet required" });
-
-    const session = await sessionManager.get(sessionId);
-    if (!session) return res.status(404).json({ error: "Session not found" });
-    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
-    if (!session.tokenCA) return res.status(400).json({ error: "No token CA" });
-
-    const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-    const results = [];
-    let totalSold = 0, totalSwept = 0, totalSkimmed = 0;
-
-    // Determine profit config for this user
-    const walletInfo = await getWalletTier(wallet);
-    const profitConfig = (walletInfo.tier === "free" && !walletInfo.whitelisted)
-      ? { cutPercent: FREE_PROFIT_CUT, platformWallet: PLATFORM_WALLET }
-      : session.profitConfig || null; // fallback to persisted config
-
-    // Get master wallet
-    const devKeypair = await sessionManager.getDevKeypair(sessionId);
-    const masterPubkey = devKeypair ? devKeypair.publicKey : new PublicKey(wallet);
-
-    // Get all fleet wallet keys
-    const fleetWallets = session.fleetWallets || [];
-    
-    // Also check Redis backup for fleet keys
-    const redis = getRedis();
-    if (redis) {
-      try {
-        const storedKeys = await redis.get("fleetkeys:" + sessionId);
-        if (storedKeys) {
-          const parsed = JSON.parse(storedKeys);
-          const existingPubkeys = new Set(fleetWallets.map(w => w.pubkey));
-          for (const fk of parsed) {
-            if (fk.secret && !existingPubkeys.has(fk.pubkey)) fleetWallets.push(fk);
-          }
-        }
-      } catch {}
-    }
-
-    // Always include dev wallet for sell
-    if (devKeypair) {
-      const devPub = devKeypair.publicKey.toBase58();
-      if (!fleetWallets.find(w => w.pubkey === devPub)) {
-        fleetWallets.push({ role: "dev", secret: bs58.encode(devKeypair.secretKey), pubkey: devPub });
-      }
-    }
-
-    // Fetch pump globals once
-    let global, feeConfig;
-    try { global = await orch.onlineSdk.fetchGlobal(); feeConfig = await orch.onlineSdk.fetchFeeConfig(); } catch (e) {
-      return res.status(500).json({ error: "Cannot fetch pump.fun state: " + e.message });
-    }
-
-    const mint = new PublicKey(session.tokenCA);
-
-    for (const fw of fleetWallets) {
-      const walletResult = { role: fw.role, pubkey: (fw.pubkey || "?").slice(0, 8), sold: 0, swept: 0, errors: [] };
-      try {
-        const kp = Keypair.fromSecretKey(bs58.decode(fw.secret));
-
-        // Step 1: Sell all tokens
-        try {
-          const ata = getAssociatedTokenAddressSync(mint, kp.publicKey, true);
-          const account = await getAccount(connection, ata);
-          const tokenBalance = new BN(account.amount.toString());
-
-          if (!tokenBalance.isZero() && global && feeConfig) {
-            const sellState = await orch.onlineSdk.fetchSellState(mint, kp.publicKey);
-            const { bondingCurveAccountInfo, bondingCurve } = sellState;
-            const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
-            const solOut = getSellSolAmountFromTokenAmount({ global, feeConfig, mintSupply, bondingCurve, amount: tokenBalance });
-
-            const sellIx = await orch.sdk.sellInstructions({
-              global, bondingCurveAccountInfo, bondingCurve,
-              mint, user: kp.publicKey, amount: tokenBalance, solAmount: solOut, slippage: 50,
-            });
-
-            const tx = new Transaction();
-            tx.add(
-              ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
-              ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 200_000 }),
-              ...sellIx,
-            );
-            await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
-            const soldSol = parseFloat(solOut.toString()) / 1e9;
-            walletResult.sold = soldSol;
-            totalSold += soldSol;
-            console.log(`[SELL-SWEEP] [${fw.role}] Sold tokens -> ${soldSol.toFixed(4)} SOL`);
-          }
-        } catch (e) { walletResult.errors.push("sell: " + e.message); }
-
-        await new Promise(r => setTimeout(r, 500));
-
-        // Step 2: Sweep SOL to master (with enforced profit skim)
-        if (!kp.publicKey.equals(masterPubkey)) {
-          try {
-            const sweepResult = await skimSweep(connection, kp, masterPubkey, profitConfig, fw.allocation || 0);
-            walletResult.swept = sweepResult.swept;
-            walletResult.skimmed = sweepResult.skimmed;
-            totalSwept += sweepResult.swept;
-            totalSkimmed += sweepResult.skimmed;
-            if (sweepResult.swept > 0) console.log(`[SELL-SWEEP] [${fw.role}] Swept ${sweepResult.swept.toFixed(4)} SOL -> master${sweepResult.skimmed > 0 ? ` (skimmed ${sweepResult.skimmed.toFixed(4)})` : ""}`);
-          } catch (e) { walletResult.errors.push("sweep: " + e.message); }
-        }
-      } catch (e) { walletResult.errors.push("keypair: " + e.message); }
-
-      results.push(walletResult);
-      await new Promise(r => setTimeout(r, 300));
-    }
-
-    // Check master balance
-    let masterBalance = 0;
-    try { masterBalance = await connection.getBalance(masterPubkey) / LAMPORTS_PER_SOL; } catch {}
-
-    // Final sweep: master wallet -> user's connected wallet (with profit skim)
-    if (devKeypair && !devKeypair.publicKey.equals(new PublicKey(wallet))) {
-      try {
-        const sweepResult = await skimSweep(connection, devKeypair, new PublicKey(wallet), profitConfig, session.devBuy || 0);
-        if (sweepResult.swept > 0) {
-          totalSwept += sweepResult.swept;
-          totalSkimmed += sweepResult.skimmed;
-          results.push({ role: "master->user", pubkey: devKeypair.publicKey.toBase58().slice(0, 8), swept: sweepResult.swept, skimmed: sweepResult.skimmed, sold: 0, errors: [] });
-          console.log(`[SELL-SWEEP] Master -> User: ${sweepResult.swept.toFixed(4)} SOL${sweepResult.skimmed > 0 ? ` (skimmed ${sweepResult.skimmed.toFixed(4)})` : ""}`);
-          masterBalance = 0;
-        }
-      } catch (e) {
-        console.error("[SELL-SWEEP] Master->User sweep failed:", e.message);
-      }
-    }
-
-    await sessionManager.update(sessionId, { status: "swept", sweptAt: new Date().toISOString() });
-    console.log(`[SELL-SWEEP] ${sessionId} complete | Sold: ${totalSold.toFixed(4)} SOL | Swept: ${totalSwept.toFixed(4)} SOL | Skimmed: ${totalSkimmed.toFixed(4)} SOL | Master: ${masterBalance.toFixed(4)} SOL`);
-
-    // Auto-claim creator fees for Free + VIP (not Pro)
-    let creatorFeeClaimed = 0;
-    if (walletInfo.tier !== "pro") {
-      try {
-        const devKp = await sessionManager.getDevKeypair(sessionId);
-        if (devKp) {
-          const feeResult = await autoClaimCreatorFees(devKp, wallet, walletInfo.tier);
-          if (feeResult.claimed) creatorFeeClaimed = feeResult.amount || 0;
-        }
-      } catch {}
-    }
-
-    res.json({ ok: true, totalSold, totalSwept, totalSkimmed, masterBalance, creatorFeeClaimed, wallets: results, destination: masterPubkey.toBase58() });
   } catch (e) {
     console.error("[SELL-SWEEP] Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-// Get fleet wallet private keys for manual recovery (VIP only)
-app.get("/api/session/:id/keys", apiLimiter, requireVerifiedWallet, async (req, res) => {
+// ── FORCE-RECOVER ──
+// FIX: Pass null as profitConfig — recovery should NEVER skim
+app.post("/api/session/force-recover", async (req, res) => {
   try {
-    const wallet = req.headers["x-wallet"];
-    if (!wallet) return res.status(401).json({ error: "wallet required" });
-
-    const walletInfo = await getWalletTier(wallet);
-    if (walletInfo.tier !== "pro" && !walletInfo.whitelisted) {
-      return res.status(403).json({ error: "VIP/Pro only — for safety" });
-    }
-
-    const session = await sessionManager.get(req.params.id);
+    const { sessionId, wallet } = req.body;
+    const session = await sessionManager.get(sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
     if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
 
-    const keys = [];
-    
-    // Dev wallet
+    const tw = await getTradingWallet(wallet);
+    const destPubkey = tw?.pubkey || wallet;
+
+    // Get fleet wallet secrets
+    let secrets = [];
+    if (session.devSecret) secrets.push(session.devSecret);
+    if (redis) {
+      try {
+        const fkRaw = await redis.get("fleetkeys:" + sessionId);
+        if (fkRaw) {
+          const fk = JSON.parse(fkRaw);
+          secrets = secrets.concat(fk.map(k => k.secret));
+        }
+      } catch {}
+    }
+
+    // FIX: null profitConfig — recovery never skims
+    const result = await fleetTrader.recover(secrets, destPubkey, null);
+
+    // FIX: Update session status
+    await sessionManager.update(sessionId, { status: "recovered", recoveredAt: new Date().toISOString() });
+
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error("[FORCE-RECOVER] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── EXPORT KEYS ──
+app.post("/api/session/export-keys", async (req, res) => {
+  try {
+    const { sessionId, wallet } = req.body;
+    const session = await sessionManager.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
+
+    let keys = [];
     if (session.devSecret) {
-      keys.push({ role: "dev/master", pubkey: session.devWallet, secret: session.devSecret });
+      keys.push({ role: "dev", pubkey: session.devWallet, secret: session.devSecret });
+    }
+    if (redis) {
+      try {
+        const fkRaw = await redis.get("fleetkeys:" + sessionId);
+        if (fkRaw) keys = keys.concat(JSON.parse(fkRaw));
+      } catch {}
     }
 
-    // Fleet wallets
-    if (session.fleetWallets) {
-      for (const fw of session.fleetWallets) {
-        keys.push({ role: fw.role, pubkey: fw.pubkey, secret: fw.secret });
-      }
+    res.json({ ok: keys.length > 0, keys });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── DELETE SESSION ──
+app.post("/api/session/delete", async (req, res) => {
+  const { sessionId, wallet } = req.body;
+  const session = await sessionManager.get(sessionId);
+  if (!session) return res.json({ ok: true }); // already gone
+  if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
+  await sessionManager.delete(sessionId);
+  res.json({ ok: true });
+});
+
+// ── LIST SESSIONS ──
+app.get("/api/sessions", async (req, res) => {
+  const wallet = req.query.wallet;
+  if (!wallet) return res.status(400).json({ error: "wallet required" });
+  const sessions = await sessionManager.listForUser(wallet);
+  // Filter out closed/recovered
+  const active = sessions.filter(s => !["closed", "swept", "recovered"].includes(s.status));
+  res.json({ sessions: active });
+});
+
+// ── CLEAR ALL SESSIONS ──
+app.post("/api/sessions/clear", async (req, res) => {
+  const { wallet } = req.body;
+  if (!wallet) return res.status(400).json({ error: "wallet required" });
+  const count = await sessionManager.deleteAllForUser(wallet);
+  res.json({ ok: true, deleted: count });
+});
+
+// ═══════════════════════════════════════
+// ROUTES: QUICK APE / SELL (PumpPortal Lightning)
+// ═══════════════════════════════════════
+app.post("/api/quick-ape", async (req, res) => {
+  try {
+    const { wallet, ca, solAmount } = req.body;
+    if (!wallet || !ca || !solAmount) return res.status(400).json({ error: "wallet, ca, solAmount required" });
+
+    const tw = await getTradingWallet(wallet);
+    if (!tw) return res.status(400).json({ error: "No trading wallet" });
+
+    // PumpPortal Lightning buy
+    const response = await fetch("https://pumpportal.fun/api/trade-local", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        publicKey: tw.pubkey,
+        action: "buy",
+        mint: ca,
+        amount: solAmount * LAMPORTS_PER_SOL,
+        denominatedInSol: "true",
+        slippage: 25,
+        priorityFee: 0.0005,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      return res.status(400).json({ error: "PumpPortal error: " + err });
     }
 
-    res.json({ ok: true, keys, tokenCA: session.tokenCA, warning: "NEVER share these keys. Import into Phantom to manually recover funds." });
+    const txBytes = await response.arrayBuffer();
+    const tx = Transaction.from(Buffer.from(txBytes));
+    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+    tx.sign(kp);
+    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+
+    res.json({ ok: true, signature: sig, ca });
+  } catch (e) {
+    console.error("[QUICK-APE] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/quick-sell", async (req, res) => {
+  try {
+    const { wallet, ca, percent } = req.body;
+    if (!wallet || !ca) return res.status(400).json({ error: "wallet, ca required" });
+
+    const tw = await getTradingWallet(wallet);
+    if (!tw) return res.status(400).json({ error: "No trading wallet" });
+
+    // Get token balance
+    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+    const mintStr = ca;
+    const tokenAccount = tokenAccounts.value.find(a => a.account.data.parsed.info.mint === mintStr);
+    if (!tokenAccount) return res.status(400).json({ error: "No token balance" });
+
+    const balance = tokenAccount.account.data.parsed.info.tokenAmount.amount;
+    const sellAmount = Math.floor((parseInt(balance) * (percent || 100)) / 100);
+    if (sellAmount <= 0) return res.json({ ok: true, signature: null, message: "Nothing to sell" });
+
+    const response = await fetch("https://pumpportal.fun/api/trade-local", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        publicKey: tw.pubkey,
+        action: "sell",
+        mint: ca,
+        amount: sellAmount.toString(),
+        denominatedInSol: "false",
+        slippage: 25,
+        priorityFee: 0.0005,
+      }),
+    });
+
+    if (!response.ok) {
+      const err = await response.text();
+      return res.status(400).json({ error: "PumpPortal sell error: " + err });
+    }
+
+    const txBytes = await response.arrayBuffer();
+    const tx = Transaction.from(Buffer.from(txBytes));
+    tx.sign(kp);
+    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+
+    res.json({ ok: true, signature: sig, percent });
+  } catch (e) {
+    console.error("[QUICK-SELL] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/sell-all", async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+    const tw = await getTradingWallet(wallet);
+    if (!tw) return res.status(400).json({ error: "No trading wallet" });
+
+    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+
+    let sold = 0;
+    for (const ta of tokenAccounts.value) {
+      const info = ta.account.data.parsed.info;
+      const balance = parseInt(info.tokenAmount.amount);
+      if (balance <= 0) continue;
+      try {
+        const response = await fetch("https://pumpportal.fun/api/trade-local", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            publicKey: tw.pubkey, action: "sell", mint: info.mint,
+            amount: balance.toString(), denominatedInSol: "false",
+            slippage: 30, priorityFee: 0.0005,
+          }),
+        });
+        if (response.ok) {
+          const txBytes = await response.arrayBuffer();
+          const tx = Transaction.from(Buffer.from(txBytes));
+          tx.sign(kp);
+          await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+          sold++;
+        }
+      } catch {}
+      await new Promise(r => setTimeout(r, 500));
+    }
+    res.json({ ok: true, sold });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
 // ═══════════════════════════════════════
-// ROUTES — Protected (legacy launch, still works)
+// ROUTES: POSITIONS / PORTFOLIO
 // ═══════════════════════════════════════
-app.get("/api/wallets", apiLimiter, walletAuth, (req, res) => {
-  const status = orch.status();
-  const wallets = [];
-  for (const [ca, s] of Object.entries(status.sessions || {})) {
-    wallets.push({ ca, ...s });
-  }
-  res.json({ wallets });
-});
-
-app.get("/api/curve/:ca", apiLimiter, walletAuth, async (req, res) => {
+app.get("/api/positions/:wallet", async (req, res) => {
   try {
-    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(req.params.ca)) return res.status(400).json({ error: "Invalid contract address" });
-    // Use SDK to fetch bonding curve
-    const mint = new PublicKey(req.params.ca);
-    const onlineSdk = new (await import("@pump-fun/pump-sdk")).OnlinePumpSdk(new Connection(CONFIG.RPC_URL, "confirmed"));
-    const bc = await onlineSdk.fetchBondingCurve(mint);
-    res.json({ exists: true, ...bc });
-  } catch (e) { res.status(500).json({ error: "Failed to fetch curve info", detail: e.message }); }
-});
+    const tw = await getTradingWallet(req.params.wallet);
+    if (!tw) return res.json({ positions: [] });
+    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
 
-app.post("/api/launch", launchLimiter, walletAuth, launchSchema, async (req, res) => {
-  try {
-    const { ca, totalSol, force } = req.body;
-    const sol = Math.min(totalSol || CONFIG.TOTAL_SOL, 100);
-    if (sessionStore) await sessionStore.recordLaunch(req.user.wallet, ca, sol);
-    const result = await orch.launch(ca, { totalSol: sol, force });
-    res.json(result);
-  } catch (e) { res.status(500).json({ error: IS_PROD ? "Server error. Check logs." : e.message }); }
-});
-
-// ═══════════════════════════════════════
-// CLOSE — with free tier profit skim
-// ═══════════════════════════════════════
-app.post("/api/close", apiLimiter, walletAuth, closeSchema, async (req, res) => {
-  try {
-    const { ca } = req.body;
-    const wallet = req.user.wallet;
-
-    // Get wallet tier
-    const walletInfo = await getWalletTier(wallet);
-
-    // Execute close (skim already enforced atomically in fleet-trader)
-    const result = await orch.close(ca);
-
-    // Record the already-enforced skim
-    const platformCut = result.platformCut || 0;
-    const netProfit = result.netProfit || 0;
-    if (walletInfo.tier === "free" && !walletInfo.whitelisted) {
-      await recordProfit(wallet, netProfit, platformCut);
-      if (userStore) await userStore.recordClose(wallet, result.solRecovered || 0, platformCut, netProfit);
-      result.fee = { tier: "free", netProfit, platformCut, userKeeps: netProfit - platformCut, cutPercent: platformCut > 0 ? FREE_PROFIT_CUT : 0 };
-      if (platformCut > 0) console.log(`[FEE] Recorded: ${wallet} | profit: ${netProfit.toFixed(4)} SOL | skimmed: ${platformCut.toFixed(4)} SOL (${FREE_PROFIT_CUT}%)`);
-    } else {
-      result.fee = { tier: walletInfo.tier, netProfit, platformCut: 0, userKeeps: netProfit, cutPercent: 0 };
+    const positions = [];
+    for (const ta of tokenAccounts.value) {
+      const info = ta.account.data.parsed.info;
+      const amount = parseFloat(info.tokenAmount.uiAmountString || "0");
+      if (amount <= 0) continue;
+      const mint = info.mint;
+      // Try to get token info from radar
+      const radarToken = radar.tokens.get(mint);
+      positions.push({
+        mint,
+        ticker: radarToken?.ticker || "",
+        name: radarToken?.name || mint.slice(0, 8),
+        image: radarToken?.image || "",
+        amount,
+        mcapSol: radarToken?.mcapSol || 0,
+        mcapUsd: radarToken?.mcapUsd || 0,
+        marketCapSol: radarToken?.mcapSol || 0,
+        valueSol: 0, // Would need DEX quote for accurate value
+        valueUsd: 0,
+        pnlSol: 0,
+        pnlPct: 0,
+      });
     }
-
-    // Auto-claim creator fees for Free + VIP (not Pro — Pro keeps their fees)
-    if (walletInfo.tier !== "pro") {
-      try {
-        const sessions = await sessionManager?.getByWallet?.(wallet) || [];
-        for (const s of (Array.isArray(sessions) ? sessions : [])) {
-          try {
-            const devKp = await sessionManager.getDevKeypair(s.id);
-            if (devKp) {
-              const feeResult = await autoClaimCreatorFees(devKp, wallet, walletInfo.tier);
-              if (feeResult.claimed) result.creatorFeeClaimed = feeResult.amount || 0;
-            }
-          } catch {}
-        }
-      } catch {}
-    }
-
-    res.json(result);
-  } catch (e) { res.status(500).json({ error: IS_PROD ? "Server error. Check logs." : e.message }); }
+    res.json({ positions });
+  } catch (e) {
+    res.json({ positions: [], error: e.message });
+  }
 });
 
-app.post("/api/close-all", apiLimiter, walletAuth, async (req, res) => {
+// ═══════════════════════════════════════
+// ROUTES: RADAR
+// ═══════════════════════════════════════
+app.get("/api/radar", (req, res) => {
+  res.json({ tabs: radar.tabs, poolSize: radar.poolSize, online: radar.online, solPrice: solUsdPrice });
+});
+
+app.get("/api/radar/token/:ca", (req, res) => {
+  const token = radar.tokens.get(req.params.ca);
+  if (!token) return res.status(404).json({ error: "Token not in radar" });
+  const { uniqueBuyers, ...rest } = token;
+  res.json({ ...rest, uniqueBuyers: uniqueBuyers?.size || 0 });
+});
+
+app.get("/api/search", (req, res) => {
+  const q = (req.query.q || "").toLowerCase();
+  if (!q) return res.json({ results: [] });
+  const results = [...radar.tokens.values()]
+    .filter(t => t.name.toLowerCase().includes(q) || t.ticker.toLowerCase().includes(q) || t.ca === q)
+    .slice(0, 20)
+    .map(t => ({ ca: t.ca, name: t.name, ticker: t.ticker, image: t.image, mcapUsd: t.mcapUsd }));
+  res.json({ results });
+});
+
+app.get("/api/analyze/:ca", (req, res) => {
+  const token = radar.tokens.get(req.params.ca);
+  if (!token) return res.json({ score: 0, flags: [] });
+  const flags = [];
+  if (token.buys < 3) flags.push("low_activity");
+  if (token.sells > token.buys * 2) flags.push("high_sell_pressure");
+  if ((token.uniqueBuyers?.size || 0) < 2) flags.push("few_unique_buyers");
+  if (!token.twitter && !token.website) flags.push("no_socials");
+  const score = Math.max(0, 100 - flags.length * 15);
+  res.json({ ca: req.params.ca, score, flags, buys: token.buys, sells: token.sells, uniqueBuyers: token.uniqueBuyers?.size || 0, volumeSol: token.volumeSol });
+});
+
+app.get("/api/price/:ca", (req, res) => {
+  const token = radar.tokens.get(req.params.ca);
+  if (!token) return res.json({ price: 0, mcap: 0 });
+  res.json({ price: token.mcapSol > 0 ? token.mcapSol / 1e9 : 0, mcapSol: token.mcapSol, mcapUsd: token.mcapUsd, solPrice: solUsdPrice });
+});
+
+app.get("/api/chart/:ca", (req, res) => {
+  const token = radar.tokens.get(req.params.ca);
+  if (!token || !token.spark?.length) return res.json({ candles: [] });
+  // Generate OHLC from spark data
+  const candles = [];
+  const chunkSize = Math.max(1, Math.floor(token.spark.length / 30));
+  for (let i = 0; i < token.spark.length; i += chunkSize) {
+    const chunk = token.spark.slice(i, i + chunkSize);
+    if (chunk.length === 0) continue;
+    candles.push({
+      time: token.createdAt + i * 10000,
+      open: chunk[0],
+      high: Math.max(...chunk),
+      low: Math.min(...chunk),
+      close: chunk[chunk.length - 1],
+      volume: chunk.length,
+    });
+  }
+  res.json({ candles });
+});
+
+// ═══════════════════════════════════════
+// ROUTES: FLEET STATUS
+// ═══════════════════════════════════════
+app.get("/api/fleet", (req, res) => {
+  const status = fleetTrader.status();
+  res.json(status);
+});
+
+app.get("/api/fleet/wallets/:ca", (req, res) => {
+  const status = fleetTrader.status();
+  const session = status.sessions?.[req.params.ca];
+  if (!session) return res.json({ wallets: [] });
+  res.json({ wallets: session.walletDetails || [] });
+});
+
+app.post("/api/close", async (req, res) => {
   try {
-    const wallet = req.user.wallet;
-    const walletInfo = await getWalletTier(wallet);
-    const result = await orch.closeAll();
-
-    // Apply profit skim to aggregate (already enforced in fleet-trader)
-    if (walletInfo.tier === "free" && !walletInfo.whitelisted) {
-      const netProfit = result.totalNetProfit || 0;
-      const platformCut = result.totalPlatformCut || 0;
-      result.fee = { tier: "free", netProfit, platformCut, userKeeps: +(netProfit - platformCut).toFixed(6), cutPercent: platformCut > 0 ? FREE_PROFIT_CUT : 0 };
-      if (platformCut > 0) await recordProfit(wallet, netProfit, platformCut);
-    } else {
-      result.fee = { tier: walletInfo.tier, platformCut: 0, cutPercent: 0 };
-    }
-
-    res.json(result);
-  } catch (e) { res.status(500).json({ error: IS_PROD ? "Server error. Check logs." : e.message }); }
-});
-
-app.post("/api/fees/calculate", apiLimiter, walletAuth, (req, res) => {
-  const { solIn, solReturn, wallet } = req.body;
-  if (typeof solIn !== "number" || typeof solReturn !== "number") return res.status(400).json({ error: "solIn and solReturn must be numbers" });
-  const fee = calculateFee(solIn, solReturn, wallet || "");
-  res.json(fee);
+    const { ca, wallet } = req.body;
+    if (!ca) return res.status(400).json({ error: "ca required" });
+    const result = await fleetTrader.close(ca);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ═══════════════════════════════════════
-// ROUTES — Admin
+// ROUTES: EMERGENCY RECOVER
 // ═══════════════════════════════════════
-app.post("/api/register-owner", (req, res) => {
-  const { secret, pubkey } = req.body;
-  if (secret !== CONFIG.API_SECRET) return res.status(403).json({ error: "Forbidden" });
-  if (!pubkey) return res.status(400).json({ error: "pubkey required" });
-  registerOwner(pubkey);
-  res.json({ ok: true });
-});
+app.post("/api/emergency-recover", async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+    const tw = await getTradingWallet(wallet);
+    const dest = tw?.pubkey || wallet;
 
-app.get("/api/admin/sessions", async (req, res) => {
-  if (req.headers["x-admin-secret"] !== CONFIG.API_SECRET) return res.status(403).json({ error: "Forbidden" });
-  if (!sessionStore) return res.json({ sessions: [] });
-  const sessions = await sessionStore.allSessions();
-  res.json({ count: sessions.length, sessions });
-});
-
-app.get("/api/admin/users", async (req, res) => {
-  if (req.headers["x-admin-secret"] !== CONFIG.API_SECRET) return res.status(403).json({ error: "Forbidden" });
-  if (!userStore) return res.json({ users: [] });
-  const users = await userStore.allUsers(500);
-  res.json({ count: users.length, users });
-});
-
-app.get("/api/admin/stats", async (req, res) => {
-  if (req.headers["x-admin-secret"] !== CONFIG.API_SECRET) return res.status(403).json({ error: "Forbidden" });
-  if (!userStore) return res.json({});
-  const stats = await userStore.platformStats();
-  res.json(stats);
-});
-
-// Admin: set wallet tier (persists in Redis)
-app.post("/api/admin/set-tier", async (req, res) => {
-  if (req.headers["x-admin-secret"] !== CONFIG.API_SECRET) return res.status(403).json({ error: "Forbidden" });
-  const { wallet, tier } = req.body;
-  if (!wallet || !tier) return res.status(400).json({ error: "wallet and tier required" });
-  if (!["free", "pro", "vip"].includes(tier)) return res.status(400).json({ error: "tier must be free, pro, or vip" });
-  const redis = getRedis();
-  if (!redis) return res.status(503).json({ error: "Redis not connected" });
-  await redis.set("tier:" + wallet, tier);
-  if (userStore) await userStore.setTier(wallet, tier);
-  console.log(`[ADMIN] Set tier: ${wallet.slice(0, 8)}... -> ${tier}`);
-  res.json({ ok: true, wallet, tier });
-});
-
-// ═══ ADMIN: RECOVER ALL SOL from all sessions to platform wallet ═══
-app.post("/api/admin/recover-all", async (req, res) => {
-  // Platform wallet owner only
-  const adminSecret = req.headers["x-admin-secret"];
-  const callerWallet = req.body?.wallet || req.headers["x-wallet"];
-  if (adminSecret !== CONFIG.API_SECRET && callerWallet !== PLATFORM_WALLET) {
-    return res.status(403).json({ error: "Admin or platform wallet required" });
-  }
-
-  const connection = new Connection(CONFIG.RPC_URL, "confirmed");
-  const destination = new PublicKey(PLATFORM_WALLET);
-  const redis = getRedis();
-  const results = [];
-  let totalRecovered = 0;
-  let totalWallets = 0;
-
-  console.log(`[ADMIN-RECOVER] Starting full platform sweep to ${PLATFORM_WALLET.slice(0, 8)}...`);
-
-  // 1. Scan all sessions from Redis
-  const sessionKeys = [];
-  if (redis) {
-    try {
-      const keys = await redis.keys("session:*");
-      sessionKeys.push(...keys);
-    } catch {}
-  }
-
-  // 2. Also check in-memory sessions from orch
-  const memSessions = orch.sessions ? [...orch.sessions.values()] : [];
-
-  // 3. Collect all keypairs from all sources
-  const allKeypairs = new Map(); // pubkey -> keypair (dedup)
-
-  for (const key of sessionKeys) {
-    try {
-      const raw = await redis.get(key);
-      if (!raw) continue;
-      const session = JSON.parse(raw);
-
-      // Dev keypair
-      if (session.devSecret) {
+    // Gather ALL wallet secrets from ALL sessions for this user
+    const sessions = await sessionManager.listForUser(wallet);
+    const allSecrets = new Set();
+    for (const s of sessions) {
+      const full = await sessionManager.get(s.id);
+      if (full?.devSecret) allSecrets.add(full.devSecret);
+      if (redis) {
         try {
-          const kp = Keypair.fromSecretKey(bs58.decode(session.devSecret));
-          allKeypairs.set(kp.publicKey.toBase58(), kp);
+          const fkRaw = await redis.get("fleetkeys:" + s.id);
+          if (fkRaw) JSON.parse(fkRaw).forEach(k => allSecrets.add(k.secret));
         } catch {}
       }
-
-      // Fleet wallet keys from Redis backup
-      const sessionId = session.id || key.replace("session:", "");
-      try {
-        const wkRaw = await redis.get("walletkeys:" + sessionId);
-        if (wkRaw) {
-          const wks = JSON.parse(wkRaw);
-          for (const wk of wks) {
-            if (wk.secret) {
-              try {
-                const kp = Keypair.fromSecretKey(bs58.decode(wk.secret));
-                allKeypairs.set(kp.publicKey.toBase58(), kp);
-              } catch {}
-            }
-          }
-        }
-      } catch {}
-    } catch {}
-  }
-
-  // In-memory sessions
-  for (const session of memSessions) {
-    if (session.masterKp) allKeypairs.set(session.masterKp.publicKey.toBase58(), session.masterKp);
-    for (const fw of (session.fleetWallets || [])) {
-      if (fw.keypair) allKeypairs.set(fw.keypair.publicKey.toBase58(), fw.keypair);
     }
+
+    if (allSecrets.size === 0) return res.json({ totalWallets: 0, totalSol: 0 });
+
+    // FIX: null profitConfig — emergency recovery NEVER skims
+    const result = await fleetTrader.recover([...allSecrets], dest, null);
+    res.json({ ok: true, totalWallets: result.wallets?.length || 0, totalSol: result.totalRecovered || 0, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
-
-  // 4. Also sweep all user trading wallets
-  if (userStore) {
-    try {
-      const allUsers = await userStore.list?.() || [];
-      for (const u of allUsers) {
-        if (u.ppPrivateKey && u.ppPrivateKey !== "") {
-          try {
-            const kp = Keypair.fromSecretKey(bs58.decode(u.ppPrivateKey));
-            // Don't sweep trading wallets — those belong to users
-            // Only sweep session wallets (dev + fleet)
-          } catch {}
-        }
-      }
-    } catch {}
-  }
-
-  totalWallets = allKeypairs.size;
-  console.log(`[ADMIN-RECOVER] Found ${totalWallets} wallets to sweep`);
-
-  // 5. Sweep each wallet
-  for (const [pubkey, kp] of allKeypairs) {
-    if (kp.publicKey.equals(destination)) continue; // don't sweep to self
-
-    try {
-      // First: close any token accounts (reclaim rent)
-      try {
-        const tokenAccts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: TOKEN_PROGRAM_ID });
-        for (const acct of tokenAccts.value) {
-          try {
-            const closeIx = createCloseAccountInstruction(acct.pubkey, kp.publicKey, kp.publicKey);
-            const tx = new Transaction().add(closeIx);
-            const { blockhash } = await connection.getLatestBlockhash("confirmed");
-            tx.recentBlockhash = blockhash;
-            tx.feePayer = kp.publicKey;
-            await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
-          } catch {}
-        }
-      } catch {}
-
-      // Now sweep SOL
-      const balance = await connection.getBalance(kp.publicKey);
-      const sweepAmount = balance - 5000; // leave 5000 lamports for rent
-      if (sweepAmount <= 0) {
-        results.push({ pubkey: pubkey.slice(0, 12), balance: balance / LAMPORTS_PER_SOL, status: "dust" });
-        continue;
-      }
-
-      const tx = new Transaction().add(
-        SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: destination, lamports: sweepAmount })
-      );
-      const { blockhash } = await connection.getLatestBlockhash("confirmed");
-      tx.recentBlockhash = blockhash;
-      tx.feePayer = kp.publicKey;
-      const sig = await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
-
-      const swept = sweepAmount / LAMPORTS_PER_SOL;
-      totalRecovered += swept;
-      results.push({ pubkey: pubkey.slice(0, 12), swept, sig: sig.toString().slice(0, 16), status: "swept" });
-      console.log(`[ADMIN-RECOVER] Swept ${swept.toFixed(4)} SOL from ${pubkey.slice(0, 8)}`);
-    } catch (e) {
-      results.push({ pubkey: pubkey.slice(0, 12), status: "error", error: e.message });
-    }
-  }
-
-  console.log(`[ADMIN-RECOVER] DONE: ${totalRecovered.toFixed(4)} SOL recovered from ${results.filter(r => r.status === "swept").length}/${totalWallets} wallets`);
-  res.json({ ok: true, totalRecovered, totalWallets, swept: results.filter(r => r.status === "swept").length, results });
 });
 
 // ═══════════════════════════════════════
-// 404 + Error
+// ROUTES: USERNAME
 // ═══════════════════════════════════════
-app.use((req, res) => { res.status(404).json({ error: "Not found" }); });
-app.use((err, req, res, next) => {
-  console.error(`[ERROR] ${req.id?.slice(0,8)} ${err.stack || err.message}`);
-  res.status(500).json({ error: IS_PROD ? "Internal server error" : err.message });
+app.get("/api/username/:wallet", async (req, res) => {
+  const user = await getUser(req.params.wallet);
+  res.json({ username: user.username || null });
+});
+
+app.post("/api/username", async (req, res) => {
+  const { wallet, username } = req.body;
+  if (!wallet || !username) return res.status(400).json({ error: "wallet and username required" });
+  if (username.length > 20) return res.status(400).json({ error: "Max 20 characters" });
+  await saveUser(wallet, { username });
+  res.json({ ok: true, username });
 });
 
 // ═══════════════════════════════════════
-// WEBSOCKET
+// ROUTES: REFERRAL
 // ═══════════════════════════════════════
-const server = createServer(app);
-const wss = new WebSocketServer({ server, path: "/ws" });
+const referrals = new Map(); // refCode → { wallet, referredBy?, commission }
 
-wss.on("connection", (ws, req) => {
-  const ip = req.headers["x-real-ip"] || req.socket.remoteAddress;
-  console.log(`[WS] Connected: ${ip}`);
-  let connFromIP = 0;
-  wss.clients.forEach(c => { if (c._bondliIP === ip) connFromIP++; });
-  if (connFromIP >= 3) { ws.close(4029, "Too many connections"); return; }
-  ws._bondliIP = ip;
-  ws.send(JSON.stringify({ event: "connected", data: { dryRun: CONFIG.DRY_RUN } }));
-  const sendWs = (msg) => { if (ws.readyState === 1) { try { ws.send(msg); } catch {} } };
-  const onTrade = (data) => sendWs(JSON.stringify({ event: "trade", data }));
-  const onPhase = (data) => sendWs(JSON.stringify({ event: "phase", data }));
-  orch.on("trade", onTrade);
-  orch.on("phase", onPhase);
-  ws.isAlive = true;
-  ws.on("pong", () => { ws.isAlive = true; });
-  ws.on("close", () => { orch.off("trade", onTrade); orch.off("phase", onPhase); });
-  ws.on("message", (data) => { const now = Date.now(); if (!ws._lastMsg) ws._lastMsg = 0; if (now - ws._lastMsg < 100) return; ws._lastMsg = now; try { const msg = JSON.parse(data.toString()); if (msg.type === "ping") ws.send(JSON.stringify({ type: "pong" })); } catch {} });
+app.get("/api/referral/:wallet", async (req, res) => {
+  const user = await getUser(req.params.wallet);
+  const code = user.refCode || req.params.wallet.slice(0, 8);
+  const referred = [...referrals.values()].filter(r => r.referredBy === req.params.wallet);
+  res.json({ code, referred: referred.length, commission: referred.reduce((s, r) => s + (r.commission || 0), 0) });
 });
-const heartbeat = setInterval(() => { wss.clients.forEach(ws => { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; ws.ping(); }); }, 30000);
-wss.on("close", () => clearInterval(heartbeat));
+
+app.post("/api/referral/apply", async (req, res) => {
+  const { wallet, refCode } = req.body;
+  if (!wallet || !refCode) return res.status(400).json({ error: "wallet and refCode required" });
+  // Find who owns this ref code
+  const owner = [...users.entries()].find(([, u]) => u.refCode === refCode || refCode.length >= 6);
+  await saveUser(wallet, { referredBy: refCode });
+  res.json({ ok: true, applied: refCode });
+});
+
+// ═══════════════════════════════════════
+// ROUTES: MISC
+// ═══════════════════════════════════════
+app.post("/api/batch-deploy", async (req, res) => {
+  res.json({ ok: false, error: "Batch deploy not yet implemented" });
+});
+
+app.post("/api/dry-run", async (req, res) => {
+  res.json({ ok: true, simulated: true, message: "Dry run — no real trades" });
+});
+
+app.post("/api/incinerator/scan", async (req, res) => {
+  res.json({ ok: true, dustAccounts: 0 });
+});
+
+app.post("/api/incinerator/close", async (req, res) => {
+  res.json({ ok: true, closed: 0 });
+});
+
+// ═══════════════════════════════════════
+// ROUTES: ADMIN (owner only)
+// ═══════════════════════════════════════
+app.get("/api/admin/stats", requireAdmin, async (req, res) => {
+  const allUsers = [...users.values()];
+  const sessions = await sessionManager.listForUser("*").catch(() => []);
+  res.json({
+    ok: true,
+    totalUsers: allUsers.length,
+    activeUsers: allUsers.filter(u => u.lastSeen && Date.now() - new Date(u.lastSeen).getTime() < 86400000).length,
+    tiers: {
+      free: allUsers.filter(u => u.tier === "free").length,
+      pro: allUsers.filter(u => u.tier === "pro").length,
+      vip: allUsers.filter(u => u.whitelisted).length,
+    },
+    activeSessions: fleetTrader.sessions?.size || 0,
+    radarTokens: radar.tokens.size,
+    radarOnline: radar.online,
+    solPrice: solUsdPrice,
+    uptime: Math.round(process.uptime()),
+  });
+});
+
+app.get("/api/admin/users", requireAdmin, async (req, res) => {
+  const allUsers = [...users.entries()].map(([wallet, data]) => ({
+    wallet: wallet.slice(0, 8) + "...",
+    tier: data.tier,
+    whitelisted: data.whitelisted,
+    username: data.username,
+    lastSeen: data.lastSeen,
+  }));
+  res.json({ users: allUsers });
+});
+
+// ═══════════════════════════════════════
+// ROUTES: INTEL (meme analytics)
+// ═══════════════════════════════════════
+app.get("/api/intel/stats", (req, res) => {
+  // Will connect to MemeIntelligence engine when initialized
+  res.json({
+    uptime: Math.round(process.uptime()) + "s",
+    scorer: { trainCount: 0, accuracy: "calibrating", topFeatures: [] },
+    memory: { total: radar.tokens.size, labeled: 0, graduated: 0, graduationRate: "N/A" },
+    monitor: { tracking: 0 },
+    recentEvents: [],
+  });
+});
+
+// ═══════════════════════════════════════
+// HEALTH
+// ═══════════════════════════════════════
+app.get("/", (req, res) => {
+  res.json({
+    name: "Bondli API v4",
+    status: "running",
+    radar: { tokens: radar.tokens.size, online: radar.online },
+    solPrice: solUsdPrice,
+    uptime: Math.round(process.uptime()),
+  });
+});
+
+app.get("/health", (req, res) => res.json({ ok: true }));
 
 // ═══════════════════════════════════════
 // START
 // ═══════════════════════════════════════
-const PORT = CONFIG.API_PORT;
-
-async function start() {
-  try {
-    await initServices();
-    await loadProCount();
-    app.use(createPaymentRoutes(paymentVerifier));
-    server.listen(PORT, () => {
-      const wl = getWhitelist();
-      const curPrice = getProPrice();
-      console.log("");
-      console.log("  \x1b[35m=========================================\x1b[0m");
-      console.log("  \x1b[35m  BONDLI v3.0 — PRODUCTION SERVER\x1b[0m");
-      console.log("  \x1b[35m=========================================\x1b[0m");
-      console.log(`  HTTP:      http://localhost:${PORT}`);
-      console.log(`  WS:        ws://localhost:${PORT}/ws`);
-      console.log(`  Mode:      ${CONFIG.DRY_RUN ? "\x1b[33mDRY RUN\x1b[0m" : "\x1b[31mLIVE\x1b[0m"}`);
-      console.log(`  Env:       ${IS_PROD ? "production" : "development"}`);
-      console.log(`  Pro price: \x1b[32m${curPrice} SOL\x1b[0m (license #${proLicenseCount + 1})`);
-      console.log(`  Licenses:  ${proLicenseCount} sold`);
-      console.log(`  Free cut:  ${FREE_PROFIT_CUT}%`);
-      console.log(`  VIPs:      ${wl.size > 0 ? [...wl].join(", ") : "none"}`);
-      console.log("");
-    });
-  } catch (e) { console.error("[FATAL]", e); process.exit(1); }
-}
-
-function shutdown(signal) {
-  console.log(`\n[${signal}] Shutting down...`);
-  server.close(() => { wss.close(() => { process.exit(0); }); });
-  setTimeout(() => { process.exit(1); }, 10000);
-}
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
-
-start();
-export default app;
+server.listen(PORT, () => {
+  console.log(`\n═══════════════════════════════════════`);
+  console.log(`  BONDLI v4 API — port ${PORT}`);
+  console.log(`  RPC: ${RPC_URL.slice(0, 40)}...`);
+  console.log(`  Redis: ${redis ? "connected" : "in-memory"}`);
+  console.log(`  SOL: $${solUsdPrice}`);
+  console.log(`  Radar: PumpPortal WS connecting...`);
+  console.log(`═══════════════════════════════════════\n`);
+});
