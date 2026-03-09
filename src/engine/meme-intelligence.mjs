@@ -62,6 +62,16 @@ const FEATURE_KEYS = [
   "so_hasEmoji",        // name/desc contains emoji
   "so_descLength",      // description length normalized
 
+  // Rug Detection (on-chain patterns)
+  "rg_devSellSpeed",    // how fast dev sells after launch (0=held, 1=instant dump)
+  "rg_holderConcentration", // top 5 wallets % over time (high = rug risk)
+  "rg_coordDumpScore",  // coordinated sell pattern detection (0-1)
+  "rg_liqRemovalSpeed", // liquidity drain velocity (0=stable, 1=rapid drain)
+  "rg_walletAgeScore",  // avg buyer wallet age (0=fresh wallets, 1=aged)
+  "rg_sellWaveDetect",  // detection of sell waves (multiple sells in rapid succession)
+  "rg_mcapDropRate",    // mcap drop rate from peak (0=stable, 1=crashed)
+  "rg_buyerRetention",  // % of early buyers still holding (0=all dumped, 1=all held)
+
   // Meta
   "mt_hourOfDay",       // 0-23 normalized to 0-1
   "mt_dayOfWeek",       // 0-6 normalized to 0-1
@@ -149,6 +159,77 @@ function extractFeatures(token) {
   f.so_hasEmoji = /[\u{1F600}-\u{1F9FF}]/u.test(t.name || "") ? 1 : 0;
   f.so_descLength = Math.min(1, (t.description || "").length / 200);
 
+  // ─── Rug Detection (on-chain patterns) ───
+  const ageMs = Date.now() - (t.createdAt || Date.now());
+  const ageMin = Math.max(1, ageMs / 60000);
+
+  // Dev sell speed: did the dev wallet sell quickly?
+  const devWallet = t.devWallet || "";
+  const devSells = sells.filter(s => (s.wallet || "").startsWith(devWallet.slice(0, 8)));
+  if (devSells.length > 0 && ageMin > 0) {
+    const firstDevSellAge = devSells[0]?.time ? (devSells[0].time - (t.createdAt || Date.now())) / 60000 : ageMin;
+    f.rg_devSellSpeed = Math.min(1, Math.max(0, 1 - firstDevSellAge / 30)); // sold within 30min = high risk
+  } else {
+    f.rg_devSellSpeed = 0; // no dev sell = good
+  }
+
+  // Holder concentration: top wallets holding too much
+  const walletBuys = {};
+  buys.forEach(b => {
+    const w = b.wallet || "unknown";
+    walletBuys[w] = (walletBuys[w] || 0) + (b.solAmount || b.sol || 0);
+  });
+  const sortedHolders = Object.values(walletBuys).sort((a, b) => b - a);
+  const totalBought = sum(sortedHolders);
+  const top5Pct = totalBought > 0 ? sum(sortedHolders.slice(0, 5)) / totalBought : 0;
+  f.rg_holderConcentration = Math.min(1, top5Pct);
+
+  // Coordinated dump: multiple sells within a narrow time window
+  const sellTimes = sells.map(s => s.time || 0).filter(t => t > 0).sort((a, b) => a - b);
+  let coordDumps = 0;
+  for (let i = 1; i < sellTimes.length; i++) {
+    if (sellTimes[i] - sellTimes[i - 1] < 3000) coordDumps++; // sells within 3 seconds
+  }
+  f.rg_coordDumpScore = sells.length > 2 ? Math.min(1, coordDumps / Math.max(1, sells.length - 1)) : 0;
+
+  // Liquidity removal speed: volume of sells vs buys in recent window
+  const recentSells = sells.slice(-10);
+  const recentBuysSol = sum(buys.slice(-10).map(b => b.solAmount || b.sol || 0));
+  const recentSellsSol = sum(recentSells.map(s => s.solAmount || s.sol || 0));
+  f.rg_liqRemovalSpeed = recentBuysSol > 0 ? Math.min(1, recentSellsSol / Math.max(0.01, recentBuysSol)) : 0;
+
+  // Wallet age score: fresh wallets = higher rug risk (uses uniqueBuyers count as proxy)
+  const uniqueWallets = new Set(buys.map(b => b.wallet)).size;
+  const buyCount = buys.length;
+  const walletReuse = buyCount > 0 ? 1 - (uniqueWallets / Math.max(1, buyCount)) : 0;
+  f.rg_walletAgeScore = Math.min(1, walletReuse); // high reuse = suspicious
+
+  // Sell wave detection: bursts of sells
+  let maxSellBurst = 0;
+  for (let i = 0; i < sellTimes.length; i++) {
+    let burst = 1;
+    for (let j = i + 1; j < sellTimes.length && sellTimes[j] - sellTimes[i] < 10000; j++) {
+      burst++;
+    }
+    maxSellBurst = Math.max(maxSellBurst, burst);
+  }
+  f.rg_sellWaveDetect = Math.min(1, maxSellBurst / 8); // 8+ sells in 10s = max risk
+
+  // Mcap drop rate from peak
+  const spark = t.spark || [];
+  if (spark.length > 2) {
+    const peakMcap = Math.max(...spark);
+    const currentMcap = spark[spark.length - 1] || 0;
+    f.rg_mcapDropRate = peakMcap > 0 ? Math.min(1, Math.max(0, 1 - currentMcap / peakMcap)) : 0;
+  } else {
+    f.rg_mcapDropRate = 0;
+  }
+
+  // Buyer retention: are early buyers still around (proxy: sell count vs buy count for early wallets)
+  const earlyBuyers = new Set(buys.slice(0, 20).map(b => b.wallet));
+  const earlyBuyerSells = sells.filter(s => earlyBuyers.has(s.wallet)).length;
+  f.rg_buyerRetention = earlyBuyers.size > 0 ? Math.max(0, 1 - earlyBuyerSells / earlyBuyers.size) : 0.5;
+
   // ─── Meta ───
   const now = new Date();
   f.mt_hourOfDay = now.getUTCHours() / 23;
@@ -172,6 +253,7 @@ class ScoringEngine {
       tp: 1.5,  // Tipping Point gets 1.5x
       k: 1.2,   // Kahneman gets 1.2x
       oc: 1.3,  // On-chain velocity important
+      rg: 1.6,  // Rug detection — highest weight (safety first)
       so: 0.8,  // Social is a signal but noisy
       mt: 0.5,  // Time-of-day is minor
     };
@@ -199,31 +281,49 @@ class ScoringEngine {
 
     // Compute sub-scores for each framework
     const subScores = {};
-    for (const group of ["tp", "k", "oc", "so", "mt"]) {
+    for (const group of ["tp", "k", "oc", "rg", "so", "mt"]) {
       const keys = FEATURE_KEYS.filter(k => k.startsWith(group + "_"));
       const vals = keys.map(k => (features[k] || 0) * (this.weights[k] || 1));
       subScores[group] = vals.length > 0 ? avg(vals) : 0;
     }
 
+    // Rug risk composite (0 = safe, 1 = high rug risk)
+    const rugRisk = subScores.rg;
+    const rugPenalty = Math.round(rugRisk * 30); // max -30 points for rug risk
+
     // Tipping Point composite
     const tippingScore = (subScores.tp * 0.4 + subScores.k * 0.3 + subScores.oc * 0.2 + subScores.so * 0.1);
 
-    // Bonding probability: based on velocity + tipping score
+    // Bonding probability: based on velocity + tipping score, penalized by rug risk
     const bondProb = Math.min(99, Math.max(1, Math.round(
       tippingScore * 40 +
       (features.oc_buyVelocity5m || 0) * 25 +
       (features.oc_uniqueBuyers5m || 0) * 20 +
-      (features.k_herdSignal || 0) * 15
+      (features.k_herdSignal || 0) * 15 -
+      rugPenalty * 0.5
     )));
 
+    // Rug flags for UI display
+    const rugFlags = [];
+    if ((features.rg_devSellSpeed || 0) > 0.6) rugFlags.push("dev_dumping");
+    if ((features.rg_holderConcentration || 0) > 0.8) rugFlags.push("whale_concentrated");
+    if ((features.rg_coordDumpScore || 0) > 0.5) rugFlags.push("coordinated_sells");
+    if ((features.rg_liqRemovalSpeed || 0) > 0.7) rugFlags.push("liquidity_drain");
+    if ((features.rg_sellWaveDetect || 0) > 0.5) rugFlags.push("sell_wave");
+    if ((features.rg_mcapDropRate || 0) > 0.6) rugFlags.push("mcap_crashing");
+    if ((features.rg_buyerRetention || 0) < 0.3) rugFlags.push("early_buyers_fled");
+
     return {
-      score: Math.round(rawScore * 100),
+      score: Math.max(0, Math.min(99, Math.round(rawScore * 100) - rugPenalty)),
       tippingScore: Math.round(tippingScore * 100),
       bondProb,
+      rugScore: Math.round(rugRisk * 100),
+      rugFlags,
       subScores: {
         tippingPoint: Math.round(subScores.tp * 100),
         kahneman: Math.round(subScores.k * 100),
         onChain: Math.round(subScores.oc * 100),
+        rugDetection: Math.round(subScores.rg * 100),
         social: Math.round(subScores.so * 100),
         timing: Math.round(subScores.mt * 100),
       },
@@ -609,7 +709,11 @@ function outcomeToLabel(outcome) {
   if (outcome.peakMcx > 5) score += 0.15;
   if (outcome.peakMcx > 10) score += 0.1;
   if (outcome.alive) score += 0.05;
-  return Math.min(1, score);
+  // Rug pull penalties: if token died fast, penalize heavily
+  if (outcome.rugged) score -= 0.5;
+  if (outcome.mcapDropPct > 80) score -= 0.3;
+  if (outcome.devDumped) score -= 0.4;
+  return Math.max(0, Math.min(1, score));
 }
 
 // ═══ EXPRESS ROUTE HELPERS ═══

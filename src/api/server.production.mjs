@@ -37,6 +37,8 @@ import { FleetTrader, skimSweep } from "../engine/fleet-trader.mjs";
 import { createToken } from "../engine/token-creator.mjs";
 import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, PLATFORM_WALLET } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
+import { MemeIntelligence } from "../engine/meme-intelligence.mjs";
+import { XSocialIntel } from "../engine/x-social-intel.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -85,6 +87,8 @@ if (REDIS_URL) {
 // Core services
 const sessionManager = new SessionManager(redis);
 const fleetTrader = new FleetTrader();
+const memeIntel = new MemeIntelligence(redis);
+const xSocial = new XSocialIntel();
 
 // Register owner wallet
 if (process.env.OWNER_WALLET) registerOwner(process.env.OWNER_WALLET);
@@ -1119,38 +1123,116 @@ app.post("/api/quick-ape", async (req, res) => {
   try {
     const { wallet, ca, solAmount } = req.body;
     if (!wallet || !ca || !solAmount) return res.status(400).json({ error: "wallet, ca, solAmount required" });
+    if (solAmount <= 0 || solAmount > 100) return res.status(400).json({ error: "Invalid SOL amount (0-100)" });
 
     const tw = await getTradingWallet(wallet);
-    if (!tw) return res.status(400).json({ error: "No trading wallet" });
+    if (!tw) return res.status(400).json({ error: "No trading wallet — create one first" });
 
-    // PumpPortal Lightning buy
-    const response = await fetch("https://pumpportal.fun/api/trade-local", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        publicKey: tw.pubkey,
-        action: "buy",
-        mint: ca,
-        amount: solAmount,
-        denominatedInSol: "true",
-        slippage: 25,
-        priorityFee: 0.005,
-        pool: "auto",
-      }),
-    });
+    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
 
-    if (!response.ok) {
-      const err = await response.text();
-      return res.status(400).json({ error: "PumpPortal error: " + err });
+    // Pre-flight: check balance
+    let balance = 0;
+    try { balance = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL; } catch {}
+    if (balance < solAmount + 0.01) {
+      return res.status(400).json({ error: `Insufficient balance: ${balance.toFixed(4)} SOL (need ${(solAmount + 0.01).toFixed(4)})` });
     }
 
-    const txBytes = await response.arrayBuffer();
-    const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
-    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
-    tx.sign([kp]);
-    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+    // Check if token is graduated (Raydium) or still on bonding curve
+    const radarToken = radar.tokens.get(ca);
+    const isGraduated = radarToken?.graduated || radarToken?.raydiumPool;
 
-    res.json({ ok: true, signature: sig, ca });
+    let sig = null;
+    let method = "pumpportal";
+
+    // Strategy 1: PumpPortal Lightning (works for bonding curve + auto-routes graduated)
+    const pools = isGraduated ? ["auto", "raydium"] : ["pump", "auto"];
+    for (const pool of pools) {
+      try {
+        const response = await fetch("https://pumpportal.fun/api/trade-local", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            publicKey: tw.pubkey,
+            action: "buy",
+            mint: ca,
+            amount: solAmount,
+            denominatedInSol: "true",
+            slippage: 25,
+            priorityFee: 0.005,
+            pool,
+          }),
+        });
+
+        if (!response.ok) {
+          console.log(`[BUY] PumpPortal pool=${pool} failed: ${response.status}`);
+          continue;
+        }
+
+        const txBytes = await response.arrayBuffer();
+        if (txBytes.byteLength < 100) continue;
+
+        const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+        tx.sign([kp]);
+
+        sig = await connection.sendRawTransaction(tx.serialize(), {
+          skipPreflight: true,
+          maxRetries: 3,
+        });
+        method = `pumpportal:${pool}`;
+        console.log(`[BUY] Success pool=${pool}: ${sig}`);
+        break;
+      } catch (e) {
+        console.log(`[BUY] pool=${pool} error: ${e.message}`);
+        continue;
+      }
+    }
+
+    // Strategy 2: Jupiter fallback for graduated tokens
+    if (!sig && isGraduated) {
+      try {
+        const quoteResp = await fetch(
+          `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${ca}&amount=${Math.round(solAmount * LAMPORTS_PER_SOL)}&slippageBps=2500`,
+          { signal: AbortSignal.timeout(10000) }
+        );
+        if (quoteResp.ok) {
+          const quote = await quoteResp.json();
+          const swapResp = await fetch("https://quote-api.jup.ag/v6/swap", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              quoteResponse: quote,
+              userPublicKey: tw.pubkey,
+              wrapAndUnwrapSol: true,
+              dynamicComputeUnitLimit: true,
+              prioritizationFeeLamports: 5000,
+            }),
+            signal: AbortSignal.timeout(10000),
+          });
+          if (swapResp.ok) {
+            const { swapTransaction } = await swapResp.json();
+            const swapBuf = Buffer.from(swapTransaction, "base64");
+            const tx = VersionedTransaction.deserialize(swapBuf);
+            tx.sign([kp]);
+            sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+            method = "jupiter";
+            console.log(`[BUY] Jupiter success: ${sig}`);
+          }
+        }
+      } catch (e) {
+        console.log(`[BUY] Jupiter fallback error: ${e.message}`);
+      }
+    }
+
+    if (!sig) {
+      return res.status(400).json({ error: "Buy failed on all routes. Token may be inactive or liquidity too low." });
+    }
+
+    // Wait for confirmation (non-blocking for response but log result)
+    connection.confirmTransaction(sig, "confirmed").then(() => {
+      console.log(`[BUY] Confirmed: ${sig}`);
+    }).catch(() => {});
+
+    res.json({ ok: true, signature: sig, ca, method, balance: +(balance - solAmount).toFixed(4) });
   } catch (e) {
     console.error("[QUICK-APE] Error:", e.message);
     res.status(500).json({ error: e.message });
@@ -1165,12 +1247,31 @@ app.post("/api/quick-sell", async (req, res) => {
     const tw = await getTradingWallet(wallet);
     if (!tw) return res.status(400).json({ error: "No trading wallet" });
     const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
-    const pct = percent || 100;
+    const pct = Math.min(100, Math.max(1, percent || 100));
 
-    // Try selling with different pool options
-    const pools = ["pump", "auto", "raydium"];
+    // Pre-flight: check token balance
+    let tokenBalance = 0;
+    try {
+      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+      const account = tokenAccounts.value.find(ta => ta.account.data.parsed.info.mint === ca);
+      if (account) {
+        tokenBalance = parseFloat(account.account.data.parsed.info.tokenAmount.uiAmountString || "0");
+      }
+    } catch {}
+
+    if (tokenBalance <= 0) {
+      return res.status(400).json({ error: "No token balance found for this mint. You may not hold this token." });
+    }
+
+    const radarToken = radar.tokens.get(ca);
+    const isGraduated = radarToken?.graduated || radarToken?.raydiumPool;
+
+    let sig = null;
+    let method = "";
     let lastErr = "";
-    
+
+    // Strategy 1: PumpPortal (try multiple pools)
+    const pools = isGraduated ? ["auto", "raydium", "pump"] : ["pump", "auto", "raydium"];
     for (const pool of pools) {
       const reqBody = {
         publicKey: tw.pubkey,
@@ -1182,20 +1283,19 @@ app.post("/api/quick-sell", async (req, res) => {
         priorityFee: 0.005,
         pool,
       };
-      
-      console.log(`[SELL] Trying pool=${pool}: ${JSON.stringify(reqBody).slice(0, 200)}`);
-      
+
       try {
         const response = await fetch("https://pumpportal.fun/api/trade-local", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(reqBody),
+          signal: AbortSignal.timeout(10000),
         });
 
         if (!response.ok) {
           lastErr = await response.text();
           console.log(`[SELL] pool=${pool} failed ${response.status}: ${lastErr.slice(0, 150)}`);
-          continue; // try next pool
+          continue;
         }
 
         const txBytes = await response.arrayBuffer();
@@ -1203,21 +1303,68 @@ app.post("/api/quick-sell", async (req, res) => {
           lastErr = "Empty response from PumpPortal";
           continue;
         }
-        
+
         const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
         tx.sign([kp]);
-        const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-        
+        sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+        method = `pumpportal:${pool}`;
         console.log(`[SELL] Success pool=${pool}: ${sig}`);
-        return res.json({ ok: true, signature: sig, percent: pct, pool });
+        break;
       } catch (e) {
         lastErr = e.message;
         console.log(`[SELL] pool=${pool} error: ${e.message}`);
         continue;
       }
     }
-    
-    res.status(400).json({ error: "Sell failed on all pools: " + lastErr.slice(0, 100) });
+
+    // Strategy 2: Jupiter fallback for graduated tokens
+    if (!sig && isGraduated) {
+      try {
+        const sellAmount = Math.round(tokenBalance * (pct / 100) * 1e6); // assumes 6 decimals
+        const quoteResp = await fetch(
+          `https://quote-api.jup.ag/v6/quote?inputMint=${ca}&outputMint=So11111111111111111111111111111111111111112&amount=${sellAmount}&slippageBps=3000`,
+          { signal: AbortSignal.timeout(10000) }
+        );
+        if (quoteResp.ok) {
+          const quote = await quoteResp.json();
+          const swapResp = await fetch("https://quote-api.jup.ag/v6/swap", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              quoteResponse: quote,
+              userPublicKey: tw.pubkey,
+              wrapAndUnwrapSol: true,
+              dynamicComputeUnitLimit: true,
+              prioritizationFeeLamports: 5000,
+            }),
+            signal: AbortSignal.timeout(10000),
+          });
+          if (swapResp.ok) {
+            const { swapTransaction } = await swapResp.json();
+            const swapBuf = Buffer.from(swapTransaction, "base64");
+            const tx = VersionedTransaction.deserialize(swapBuf);
+            tx.sign([kp]);
+            sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+            method = "jupiter";
+            console.log(`[SELL] Jupiter success: ${sig}`);
+          }
+        }
+      } catch (e) {
+        lastErr = e.message;
+        console.log(`[SELL] Jupiter fallback error: ${e.message}`);
+      }
+    }
+
+    if (!sig) {
+      return res.status(400).json({ error: "Sell failed on all routes: " + lastErr.slice(0, 150) });
+    }
+
+    // Background confirmation
+    connection.confirmTransaction(sig, "confirmed").then(() => {
+      console.log(`[SELL] Confirmed: ${sig}`);
+    }).catch(() => {});
+
+    res.json({ ok: true, signature: sig, percent: pct, method, tokenBalance: +tokenBalance.toFixed(2) });
   } catch (e) {
     console.error("[QUICK-SELL] Error:", e.message);
     res.status(500).json({ error: e.message });
@@ -1618,25 +1765,65 @@ app.get("/api/intel/stats", (req, res) => {
     const vol = t.volumeSol || 0;
     const mc = t.mcapUsd || 0;
     const sells = t.sells || 0;
-    
+    const trades = t.trades || [];
+
     // Very strict — need REAL activity for high scores
-    // Max total: 15+12+10+15+4+5 = 61 minus sell penalty
-    const buyScore = Math.min(15, Math.log2(buys + 1) * 2.5);     // 1=0, 3=5, 10=8.6, 50=14, 100=15
-    const ubScore = Math.min(12, Math.log2(ub + 1) * 2);           // 1=0, 3=4, 10=7, 50=11
-    const volScore = Math.min(10, Math.log10(vol * 100 + 1) * 3);  // 0.1=3, 1=6, 10=9, 100=10
+    const buyScore = Math.min(15, Math.log2(buys + 1) * 2.5);
+    const ubScore = Math.min(12, Math.log2(ub + 1) * 2);
+    const volScore = Math.min(10, Math.log10(vol * 100 + 1) * 3);
     const mcScore = mc >= 69000 ? 15 : mc >= 40000 ? 10 : mc >= 20000 ? 7 : mc >= 10000 ? 4 : mc >= 5000 ? 2 : 0;
-    const socialScore = (t.twitter ? 2 : 0) + (t.website ? 1 : 0) + (t.telegram ? 1 : 0); // max 4
+    const socialScore = (t.twitter ? 2 : 0) + (t.website ? 1 : 0) + (t.telegram ? 1 : 0);
     const pressureScore = buys > 3 ? Math.min(5, (buys / Math.max(1, buys + sells)) * 5) : 0;
     const sellPenalty = sells > buys * 0.7 ? Math.min(15, (sells - buys * 0.5) * 2) : 0;
-    
-    const raw = buyScore + ubScore + volScore + mcScore + socialScore + pressureScore - sellPenalty;
+
+    // ── Rug detection scoring ──
+    const rugFlags = [];
+    let rugScore = 0;
+
+    // Dev sell detection
+    const devW = (t.devWallet || "").slice(0, 8);
+    const devSells = trades.filter(tr => tr.side === "sell" && (tr.wallet || "").startsWith(devW));
+    if (devSells.length > 0 && buys < 20) { rugFlags.push("dev_dumping"); rugScore += 25; }
+
+    // Holder concentration
+    const walletBuys = {};
+    trades.filter(tr => tr.side === "buy").forEach(tr => {
+      walletBuys[tr.wallet || "?"] = (walletBuys[tr.wallet || "?"] || 0) + (tr.sol || 0);
+    });
+    const sortedH = Object.values(walletBuys).sort((a, b) => b - a);
+    const totalH = sortedH.reduce((s, v) => s + v, 0);
+    if (totalH > 0 && sortedH.length > 0 && sortedH[0] / totalH > 0.6) { rugFlags.push("whale_concentrated"); rugScore += 20; }
+
+    // Coordinated sells (3+ sells within 5 seconds)
+    const sellTimes = trades.filter(tr => tr.side === "sell").map(tr => tr.time || 0).sort((a, b) => a - b);
+    for (let si = 0; si < sellTimes.length - 2; si++) {
+      if (sellTimes[si + 2] - sellTimes[si] < 5000) { rugFlags.push("coordinated_sells"); rugScore += 20; break; }
+    }
+
+    // Mcap crash detection
+    const spark = t.spark || [];
+    if (spark.length > 3) {
+      const peak = Math.max(...spark);
+      const current = spark[spark.length - 1] || 0;
+      if (peak > 0 && current / peak < 0.3) { rugFlags.push("mcap_crashing"); rugScore += 15; }
+    }
+
+    // High sell ratio
+    if (sells > buys * 1.5 && sells > 5) { rugFlags.push("sell_wave"); rugScore += 15; }
+
+    rugScore = Math.min(100, rugScore);
+    const rugPenalty = Math.round(rugScore * 0.2); // max -20 from rug risk
+
+    const raw = buyScore + ubScore + volScore + mcScore + socialScore + pressureScore - sellPenalty - rugPenalty;
     const score = Math.max(0, Math.min(99, Math.round(raw)));
-    
+
     return {
       ca: t.ca,
       name: t.name || t.ticker || "",
       score,
       bondProb: Math.min(99, Math.round((mc / 69000) * 100)),
+      rugScore,
+      rugFlags,
       mcapUsd: mc,
       buys, ub, vol,
       time: t.createdAt,
@@ -1667,11 +1854,54 @@ app.get("/api/intel/stats", (req, res) => {
     monitor: { tracking: hot.length },
     recentEvents: unique.slice(0, 10).map(t => ({
       type: "score",
-      data: { ca: t.ca, score: t.score, bondProb: t.bondProb, name: t.name, mcap: t.mcapUsd },
+      data: { ca: t.ca, score: t.score, bondProb: t.bondProb, rugScore: t.rugScore || 0, rugFlags: t.rugFlags || [], name: t.name, mcap: t.mcapUsd },
       time: t.time,
     })),
     solPrice: solUsdPrice,
   });
+});
+
+// ═══════════════════════════════════════
+// ROUTES: X SOCIAL INTEL
+// ═══════════════════════════════════════
+app.get("/api/intel/x-stats", (req, res) => {
+  res.json(xSocial.getStats());
+});
+
+app.get("/api/intel/x-analyze/:ca", async (req, res) => {
+  const token = radar.tokens.get(req.params.ca);
+  if (!token) return res.status(404).json({ error: "Token not in radar" });
+  if (!token.twitter) return res.json({ score: 0, flags: ["no_twitter"], profile: null });
+  const result = await xSocial.analyze(token.twitter);
+  res.json(result);
+});
+
+// Meme Intelligence deep score for a specific token
+app.get("/api/intel/score/:ca", async (req, res) => {
+  const token = radar.tokens.get(req.params.ca);
+  if (!token) return res.status(404).json({ error: "Token not in radar" });
+  const tokenData = {
+    ca: token.ca, name: token.name, ticker: token.ticker,
+    description: token.description || "", twitter: token.twitter,
+    website: token.website, telegram: token.telegram,
+    recentTrades: token.trades || [], devWallet: token.devWallet,
+    mcapSol: token.mcapSol, mcapUsd: token.mcapUsd,
+    uniqueBuyers: token.uniqueBuyers?.size || 0,
+    volumeSol5m: token.volumeSol, spark: token.spark || [],
+    createdAt: token.createdAt,
+  };
+  const result = await memeIntel.score(tokenData);
+
+  // Enrich with X social data if available
+  if (token.twitter && xSocial.enabled) {
+    const xResult = await xSocial.analyze(token.twitter);
+    result.xSocial = xResult;
+    if (xResult.score > 0) {
+      result.score = Math.min(99, result.score + Math.round(xResult.score * 0.1));
+    }
+  }
+
+  res.json(result);
 });
 
 // ═══════════════════════════════════════

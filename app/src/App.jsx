@@ -466,24 +466,60 @@ return<div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
 </div>})()}
 </div>
 
-{/* Live Radar Pulse — activity visualization */}
-<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:8,maxHeight:240,overflowY:"auto"}}>
-<div style={{fontSize:11,fontWeight:700,color:T.dm,marginBottom:6}}>Radar Pulse</div>
-<div style={{display:"flex",flexDirection:"column",gap:3}}>
-{(intelData?.recentEvents||[]).slice(0,12).map((e,i)=>{const score=e.data?.score||0;const bp=e.data?.bondProb||0;const name=e.data?.name||e.data?.ca?.slice(0,6)||"?";const sc=score>=50?T.gn:score>=25?T.yl:T.pu;return<div key={i} style={{display:"flex",alignItems:"center",height:18}}>
-<div style={{width:120,flexShrink:0,paddingRight:10,textAlign:"right"}}><span style={{fontSize:10,color:T.tx,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"block"}}>{name.slice(0,16)}</span></div>
-<div style={{flex:1,height:12,borderRadius:3,background:T.sf,overflow:"hidden",position:"relative",marginRight:4}}>
-<div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,score)+"%",borderRadius:3,background:sc+"40",transition:"width 0.5s"}}/>
-<div style={{position:"absolute",left:0,top:2,height:4,width:Math.min(100,bp)+"%",borderRadius:2,background:"rgba(255,255,255,0.7)",transition:"width 0.5s"}}/>
-<div style={{position:"absolute",left:0,top:7,height:3,width:Math.min(100,score)+"%",borderRadius:2,background:sc,transition:"width 0.5s",opacity:.6}}/>
+{/* Live Radar Pulse — enhanced activity visualization */}
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,maxHeight:340,overflowY:"auto"}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}>
+<span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>
+<span style={{fontSize:11,fontWeight:800,color:T.tx}}>Live Radar Pulse</span>
 </div>
-<span style={{fontSize:10,color:sc,fontWeight:800,width:24,textAlign:"right",flexShrink:0}}>{score}</span>
+<div style={{display:"flex",gap:8,fontSize:7,color:T.ft}}>
+<span><span style={{display:"inline-block",width:6,height:6,borderRadius:1,background:T.gn,marginRight:3,verticalAlign:"middle"}}/>APE</span>
+<span><span style={{display:"inline-block",width:6,height:6,borderRadius:1,background:T.yl,marginRight:3,verticalAlign:"middle"}}/>WATCH</span>
+<span><span style={{display:"inline-block",width:6,height:6,borderRadius:1,background:"#ff1744",marginRight:3,verticalAlign:"middle"}}/>RUG RISK</span>
+</div>
+</div>
+<div style={{display:"flex",flexDirection:"column",gap:2}}>
+{(intelData?.recentEvents||[]).slice(0,12).map((e,i)=>{
+const score=e.data?.score||0;const bp=e.data?.bondProb||0;const name=e.data?.name||e.data?.ca?.slice(0,6)||"?";
+const rugScore=e.data?.rugScore||0;const rugFlags=e.data?.rugFlags||[];
+const isRug=rugScore>50||rugFlags.length>=2;
+const sc=isRug?"#ff1744":score>=50?T.gn:score>=25?T.yl:T.pu;
+const mcap=e.data?.mcap||0;const mcapStr=mcap>=1000?(mcap/1000).toFixed(1)+"K":mcap>0?mcap.toString():"—";
+return<div key={i} style={{display:"flex",alignItems:"center",padding:"3px 0",borderBottom:i<11?"1px solid "+T.bd+"44":"none"}}>
+{/* Rank */}
+<span style={{fontSize:8,color:T.ft,width:14,textAlign:"center",flexShrink:0}}>{i+1}</span>
+{/* Name */}
+<div style={{width:100,flexShrink:0,paddingLeft:4,paddingRight:6}}>
+<span style={{fontSize:10,color:T.tx,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"block"}}>{name.slice(0,14)}</span>
+</div>
+{/* Score bar with gradient */}
+<div style={{flex:1,height:16,borderRadius:4,background:T.sf,overflow:"hidden",position:"relative",marginRight:6}}>
+{/* Main score bar */}
+<div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,score)+"%",borderRadius:4,background:`linear-gradient(90deg,${sc}66,${sc})`,transition:"width 0.6s ease"}}/>
+{/* Bond probability overlay (thin white line) */}
+<div style={{position:"absolute",left:Math.min(98,bp)+"%",top:2,width:2,height:12,borderRadius:1,background:"rgba(255,255,255,0.5)",transition:"left 0.6s ease"}}/>
+{/* Rug warning stripe */}
+{isRug&&<div style={{position:"absolute",right:0,top:0,height:"100%",width:"30%",background:"repeating-linear-gradient(45deg,transparent,transparent 2px,#ff174422 2px,#ff174422 4px)"}}/>}
+</div>
+{/* Score + Bond prob + MC */}
+<div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0,width:90}}>
+<span style={{fontSize:12,color:sc,fontWeight:900,width:22,textAlign:"right"}}>{score}</span>
+<div style={{display:"flex",flexDirection:"column",alignItems:"flex-end"}}>
+<span style={{fontSize:7,color:T.yl,fontWeight:700}}>{bp}% bond</span>
+<span style={{fontSize:7,color:T.ft}}>${mcapStr}</span>
+</div>
+</div>
+{/* Rug indicator */}
+{isRug&&<span style={{fontSize:7,color:"#ff1744",fontWeight:800,padding:"1px 4px",borderRadius:3,background:"#ff174415",flexShrink:0,marginLeft:2}} title={rugFlags.join(", ")}>RUG</span>}
 </div>})}
 </div>
-{intelData&&<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:3,marginTop:8,paddingTop:6,borderTop:"1px solid "+T.bd}}>
+{/* Stats footer */}
+{intelData&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3,marginTop:8,paddingTop:6,borderTop:"1px solid "+T.bd}}>
 <div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.pu}}>{intelData.memory?.total||0}</div><div style={{fontSize:7,color:T.ft}}>TRACKED</div></div>
 <div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.gn}}>{intelData.monitor?.tracking||0}</div><div style={{fontSize:7,color:T.ft}}>ACTIVE</div></div>
 <div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.yl}}>{intelData.memory?.graduated||0}</div><div style={{fontSize:7,color:T.ft}}>GRADS</div></div>
+<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:"#ff1744"}}>{(intelData?.recentEvents||[]).filter(e=>(e.data?.rugScore||0)>50||(e.data?.rugFlags||[]).length>=2).length}</div><div style={{fontSize:7,color:T.ft}}>RUG RISK</div></div>
 </div>}
 </div>
 
