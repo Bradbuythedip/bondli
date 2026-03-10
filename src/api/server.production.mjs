@@ -1312,8 +1312,8 @@ app.post("/api/quick-ape", async (req, res) => {
       console.log(`[BUY] Confirmed: ${sig}`);
     }).catch(() => {});
 
-    const radarToken = radar.tokens.get(ca);
-    res.json({ ok: true, signature: sig, ca, method, balance: +(balance - solAmount).toFixed(4), position: { mint: ca, name: radarToken?.name || "", ticker: radarToken?.ticker || "", image: radarToken?.image || "", mcapUsd: radarToken?.mcapUsd || 0, mcapSol: radarToken?.mcapSol || 0, solSpent: solAmount } });
+    const boughtToken = radar.tokens.get(ca);
+    res.json({ ok: true, signature: sig, ca, method, balance: +(balance - solAmount).toFixed(4), position: { mint: ca, name: boughtToken?.name || "", ticker: boughtToken?.ticker || "", image: boughtToken?.image || "", mcapUsd: boughtToken?.mcapUsd || 0, mcapSol: boughtToken?.mcapSol || 0, solSpent: solAmount } });
   } catch (e) {
     console.error("[QUICK-APE] Error:", e.message);
     res.status(500).json({ error: e.message });
