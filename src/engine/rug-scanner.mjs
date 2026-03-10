@@ -81,7 +81,24 @@ export class RugScanner {
       if (!res.ok) return { rugCount: 0, tokenCount: 0 };
       const txs = await res.json();
       const tokenCreations = txs.filter(t => t.type === "CREATE" || t.description?.includes("create"));
-      return { rugCount: 0, tokenCount: tokenCreations.length, txCount: txs.length };
+
+      // Detect rug pattern: creator made tokens then sold quickly
+      // Look for rapid sell-after-create patterns
+      let rugCount = 0;
+      const creates = txs.filter(t => t.type === "CREATE" || t.type === "TOKEN_MINT" || t.description?.includes("create"));
+      const sells = txs.filter(t => t.type === "SWAP" || t.type === "TRANSFER" || t.description?.includes("sell"));
+
+      // If creator has many token creations + many sells within short windows, likely serial rugger
+      if (creates.length >= 3 && sells.length > creates.length * 2) {
+        rugCount = Math.min(creates.length, Math.floor(sells.length / 3));
+      }
+
+      // Also flag if >5 token creations in 100 txs — serial deployer
+      if (creates.length >= 5) {
+        rugCount = Math.max(rugCount, Math.floor(creates.length * 0.6));
+      }
+
+      return { rugCount, tokenCount: tokenCreations.length, txCount: txs.length, serialDeployer: creates.length >= 5 };
     } catch {
       return { rugCount: 0, tokenCount: 0 };
     }

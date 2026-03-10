@@ -338,7 +338,7 @@ function processRadarMessage(data) {
       createdAt: now,
       trades: [],
       buys: 0, sells: 0,
-      volumeSol: 0,
+      volumeSol: 0, sellVolumeSol: 0,
       mcapSol: mcSol,
       mcapUsd: mcUsd,
       prevVSol: vSol,
@@ -438,6 +438,7 @@ function processRadarMessage(data) {
       if (trader) token.uniqueBuyers.add(trader);
     } else {
       token.sells++;
+      token.sellVolumeSol = (token.sellVolumeSol || 0) + sol;
     }
 
     // Update mcap from PumpPortal data
@@ -473,10 +474,100 @@ function processRadarMessage(data) {
     const token = radar.tokens.get(mint);
     if (token) {
       token.graduated = true;
+      token.graduatedAt = Date.now();
       console.log(`[RADAR] Token graduated: ${token.name || mint.slice(0, 8)} — MC: $${token.mcapUsd}`);
+      // Fetch live MC from DexScreener since PumpPortal stops sending data after graduation
+      refreshGraduatedMcap(mint).catch(() => {});
     }
     broadcastWS({ event: "graduation", data: { ca: mint } });
   }
+}
+
+// ═══ GRADUATED MC REFRESH — DexScreener fallback ═══
+async function refreshGraduatedMcap(mint) {
+  try {
+    const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return;
+    const d = await r.json();
+    const pair = d?.pairs?.[0];
+    if (!pair) return;
+    const token = radar.tokens.get(mint);
+    if (!token) return;
+    const newMcap = pair.fdv || pair.marketCap || 0;
+    if (newMcap > 0) {
+      token.mcapUsd = Math.round(newMcap);
+      token.mcapSol = solUsdPrice > 0 ? Math.round(newMcap / solUsdPrice) : token.mcapSol;
+      token.spark.push(token.mcapUsd);
+      if (token.spark.length > 60) token.spark = token.spark.slice(-60);
+      token.raydiumPool = pair.pairAddress || true;
+    }
+  } catch {}
+}
+
+// Periodically refresh MC for all graduated tokens (every 30s)
+setInterval(async () => {
+  const graduated = [...radar.tokens.entries()].filter(([, t]) => t.graduated);
+  for (const [ca] of graduated.slice(0, 10)) { // max 10 per cycle to avoid rate limits
+    await refreshGraduatedMcap(ca);
+    await new Promise(r => setTimeout(r, 500)); // rate limit spacing
+  }
+}, 30000);
+
+// ═══ QUICK FEATURE EXTRACTION — for memeIntel learning ═══
+function extractQuickFeatures(t) {
+  if (!t || !t.ca) return null;
+  const ageMin = Math.max(0.5, (Date.now() - t.createdAt) / 60000);
+  const ub = t.uniqueBuyers?.size || 0;
+  const buys = t.buys || 0;
+  const sells = t.sells || 0;
+  const vol = t.volumeSol || 0;
+  const sellVol = t.sellVolumeSol || 0;
+
+  // Check if dev sold
+  const devSells = t.trades?.filter(tr => tr.wallet === t.devWallet?.slice(0, 8) && tr.side === "sell") || [];
+  const devSellSpeed = devSells.length > 0 ? Math.min(1, 30 / Math.max(1, (devSells[0]?.time - t.createdAt) / 60000)) : 0;
+
+  // Coordinated dump: multiple sells within 3s windows
+  const sellTimes = (t.trades || []).filter(tr => tr.side === "sell").map(tr => tr.time);
+  let coordDumps = 0;
+  for (let i = 1; i < sellTimes.length; i++) {
+    if (sellTimes[i] - sellTimes[i - 1] < 3000) coordDumps++;
+  }
+
+  // Sell wave: bursts of sells in 10s windows
+  let maxSellBurst = 0;
+  for (let i = 0; i < sellTimes.length; i++) {
+    let burst = 1;
+    for (let j = i + 1; j < sellTimes.length && sellTimes[j] - sellTimes[i] < 10000; j++) burst++;
+    maxSellBurst = Math.max(maxSellBurst, burst);
+  }
+
+  // Mcap drop from peak
+  const peakMc = t.spark?.length > 0 ? Math.max(...t.spark) : t.mcapUsd;
+  const mcapDropRate = peakMc > 0 ? Math.max(0, (peakMc - (t.mcapUsd || 0)) / peakMc) : 0;
+
+  return {
+    // On-chain
+    oc_buyVelocity5m: Math.min(1, (buys / Math.max(1, Math.min(5, ageMin))) / 20),
+    oc_uniqueBuyers5m: Math.min(1, ub / 30),
+    oc_avgBuySol: vol > 0 && buys > 0 ? Math.min(1, (vol / buys) / 5) : 0,
+    oc_sellRatio5m: Math.min(1, sells / Math.max(1, buys + sells)),
+    oc_mcapSol: Math.min(1, (t.mcapSol || 0) / 500),
+    oc_volumeSol5m: Math.min(1, vol / 50),
+    // Social
+    so_hasTwitter: t.twitter ? 1 : 0,
+    so_hasTelegram: t.telegram ? 1 : 0,
+    so_hasWebsite: t.website ? 1 : 0,
+    // Rug detection
+    rg_devSellSpeed: devSellSpeed,
+    rg_holderConcentration: 0, // would need on-chain data
+    rg_coordDumpScore: Math.min(1, coordDumps / 5),
+    rg_liqRemovalSpeed: vol > 0 ? Math.min(1, sellVol / Math.max(0.1, vol)) : 0,
+    rg_walletAgeScore: 0.5, // default — no wallet age data
+    rg_sellWaveDetect: Math.min(1, maxSellBurst / 8),
+    rg_mcapDropRate: mcapDropRate,
+    rg_buyerRetention: buys > 0 ? Math.min(1, ub / buys) : 0,
+  };
 }
 
 // ═══ TAB BUILDER — runs every 5 seconds ═══
@@ -484,9 +575,31 @@ setInterval(() => {
   const now = Date.now();
 
   // Clean old tokens — graduated/high MC get 4h, rest get 2h
+  // Before eviction: label outcome and feed to meme intelligence for learning
   for (const [ca, t] of radar.tokens) {
     const ttl = (t.graduated || t.mcapUsd >= 10000) ? 14400000 : 7200000;
-    if (now - t.createdAt > ttl) radar.tokens.delete(ca);
+    if (now - t.createdAt > ttl) {
+      // Auto-label outcome before eviction — this is how the model learns from rugs
+      try {
+        const peakMc = t.spark?.length > 0 ? Math.max(...t.spark) : t.mcapUsd;
+        const currentMc = t.mcapUsd || 0;
+        const mcapDropPct = peakMc > 0 ? ((peakMc - currentMc) / peakMc) * 100 : 0;
+        const devDumped = t.trades?.some(tr => tr.wallet === t.devWallet?.slice(0, 8) && tr.side === "sell") || false;
+        const sellRatio = t.sells / Math.max(1, t.buys + t.sells);
+        const rugged = (mcapDropPct > 80 && sellRatio > 0.6) || devDumped;
+        const outcome = {
+          graduated: !!t.graduated,
+          peakMcx: peakMc > 0 && t.spark?.[0] > 0 ? peakMc / t.spark[0] : 1,
+          rugged,
+          mcapDropPct,
+          devDumped,
+          alive: currentMc > 3000,
+        };
+        const features = extractQuickFeatures(t);
+        if (features) memeIntel.learn(features, outcome);
+      } catch {}
+      radar.tokens.delete(ca);
+    }
   }
 
   // Active tokens: 1h for normal, 2h for graduating/graduated tokens
@@ -496,22 +609,26 @@ setInterval(() => {
     return age < 3600000; // 1h for normal
   });
 
-  // Dedup by normalized name + ticker
+  // Dedup by normalized name + ticker — keeps the strongest version of each token
   function dedup(tokens) {
     const best = new Map();
     for (const t of tokens) {
       const nameKey = (t.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
       const tickerKey = (t.ticker || "").toLowerCase().replace(/[^a-z0-9]/g, "");
       const keys = [];
-      if (nameKey && nameKey.length >= 3) keys.push("n:" + nameKey);
-      if (tickerKey && tickerKey.length >= 2) keys.push("t:" + tickerKey);
+      // Only dedup by name if it's specific enough (4+ chars), too many 3-char dupes
+      if (nameKey && nameKey.length >= 4) keys.push("n:" + nameKey);
+      // Only dedup by ticker if 3+ chars — 2-char tickers like "AI" cause false merges
+      if (tickerKey && tickerKey.length >= 3) keys.push("t:" + tickerKey);
       if (keys.length === 0) { best.set("ca:" + t.ca, t); continue; }
       let dominated = false;
       for (const k of keys) {
         const existing = best.get(k);
         if (existing && existing.ca !== t.ca) {
-          const sOld = (existing.buys||0)*3 + (existing.volumeSol||0)*4 + (existing.twitter?6:0) + (existing.website?4:0) + (existing.image?3:0);
-          const sNew = (t.buys||0)*3 + (t.volumeSol||0)*4 + (t.twitter?6:0) + (t.website?4:0) + (t.image?3:0);
+          // Stronger scoring: volume weight up, add unique buyers + mcap
+          const ub = (s) => s.uniqueBuyers?.size || 0;
+          const sOld = (existing.buys||0)*3 + (existing.volumeSol||0)*5 + ub(existing)*8 + (existing.mcapUsd>5000?10:0) + (existing.twitter?6:0) + (existing.website?4:0);
+          const sNew = (t.buys||0)*3 + (t.volumeSol||0)*5 + ub(t)*8 + (t.mcapUsd>5000?10:0) + (t.twitter?6:0) + (t.website?4:0);
           if (sNew <= sOld) { dominated = true; break; }
           for (const [mk, mv] of best) { if (mv.ca === existing.ca) best.delete(mk); }
         }
@@ -1588,18 +1705,58 @@ function startAutoTrader(wallet, settings) {
         if (state.positions.has(t.ca)) return false;
         const buys = t.buys || 0; const ub = t.uniqueBuyers?.size || 0; const vol = t.volumeSol || 0;
         const mc = t.mcapUsd || 0; const sells = t.sells || 0;
+        const ageMin = Math.max(0.5, (Date.now() - t.createdAt) / 60000);
+
+        // Buy activity (log-scaled to avoid spam bias)
         const buyScore = Math.min(15, Math.log2(buys + 1) * 2.5);
         const ubScore = Math.min(12, Math.log2(ub + 1) * 2);
         const volScore = Math.min(10, Math.log10(vol * 100 + 1) * 3);
-        const mcScore = mc >= gradMcUsd() ? 15 : mc >= 20000 ? 7 : mc >= 10000 ? 4 : mc >= 5000 ? 2 : 0;
-        const pressureScore = buys > 3 ? Math.min(5, (buys / Math.max(1, buys + sells)) * 5) : 0;
+
+        // MC scoring: FAVOR LOW MC (that's where the money is)
+        // Sweet spot: $5K-$30K — already has traction but huge upside
+        const mcScore = mc >= gradMcUsd() ? 3 :     // graduated = low upside
+                        mc >= 30000 ? 5 :            // near grad
+                        mc >= 15000 ? 10 :           // sweet spot high
+                        mc >= 8000  ? 12 :           // sweet spot
+                        mc >= 5000  ? 10 :           // early traction
+                        mc >= 3000  ? 6 : 0;         // very early
+
+        // GREEN detection: is MC growing? (sparkline trend)
+        const spark = t.spark || [];
+        let greenScore = 0;
+        if (spark.length >= 3) {
+          const recent = spark.slice(-3);
+          const earlier = spark.slice(-6, -3);
+          if (earlier.length > 0) {
+            const avgRecent = recent.reduce((a, b) => a + b, 0) / recent.length;
+            const avgEarlier = earlier.reduce((a, b) => a + b, 0) / earlier.length;
+            const growth = avgEarlier > 0 ? (avgRecent - avgEarlier) / avgEarlier : 0;
+            if (growth > 0) greenScore = Math.min(15, growth * 50); // Up to 15 pts for green candles
+          }
+        }
+
+        // Buy pressure: more buys than sells = bullish
+        const pressureScore = buys > 3 ? Math.min(8, (buys / Math.max(1, buys + sells)) * 8) : 0;
+
+        // Buy velocity: fast buys = hype
+        const velocityScore = Math.min(8, (buys / ageMin) * 2);
+
+        // Penalties
         const sellPenalty = sells > buys * 0.7 ? Math.min(15, (sells - buys * 0.5) * 2) : 0;
+        // Rug penalty: check for dev dumping or massive sell waves
+        const sellVol = t.sellVolumeSol || 0;
+        const rugPenalty = (sellVol > vol * 0.8 && sells > 5) ? 20 :    // sell vol > buy vol
+                          (sells > buys * 1.5) ? 15 : 0;                // way more sells than buys
+
         const dexBoost = radar.dexBoosted.get(t.ca);
         const boostScore = dexBoost ? Math.min(8, 3 + Math.log2(dexBoost.amount + 1)) : 0;
         if (state.settings.requireBoosted && !dexBoost) return false;
-        const score = Math.max(0, Math.min(99, Math.round(buyScore + ubScore + volScore + mcScore + pressureScore + boostScore - sellPenalty)));
-        return score >= state.settings.minScore;
-      }).sort((a, b) => (b.buys || 0) - (a.buys || 0));
+
+        t._apeScore = Math.max(0, Math.min(99, Math.round(
+          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore - sellPenalty - rugPenalty
+        )));
+        return t._apeScore >= state.settings.minScore;
+      }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
 
       for (const t of hot.slice(0, 3)) {
         if (state.positions.size >= state.settings.maxPositions) break;
