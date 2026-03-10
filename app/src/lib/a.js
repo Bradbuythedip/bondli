@@ -48,5 +48,7 @@ atp(w){return this.f("/api/auto-trade/stop",{method:"POST",body:{wallet:w}})}
 atc(w){return this.f("/api/auto-trade/close",{method:"POST",body:{wallet:w}})}
 atu(w,s){return this.f("/api/auto-trade/update",{method:"POST",body:{wallet:w,settings:s}})}
 atst(w){return this.f(`/api/auto-trade/status?wallet=${w}`)}
+gcp(){return this.f("/api/chart-patterns")}
+gcpr(l){return this.f(`/api/chart-patterns/recent?limit=${l||20}`)}
 }
 export const a=new A();export default a;

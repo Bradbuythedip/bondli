@@ -625,6 +625,24 @@ function extractQuickFeatures(t) {
     }
   }
 
+  // ── Chart shape similarity to stored graduated patterns ──
+  let chartHealthScore = 0.5; // neutral default
+  if (spark.length >= 5) {
+    const start = spark[0] || 1;
+    const peak = Math.max(...spark);
+    const current = spark[spark.length - 1] || 0;
+    const peakIdx = spark.indexOf(peak);
+    const peakPct = peakIdx / spark.length;
+    const multiple = peak / start;
+    const endRatio = current / (peak || 1);
+    // Healthy: steady growth, peak late, holding value
+    if (multiple > 2 && peakPct > 0.5 && endRatio > 0.4) chartHealthScore = Math.min(1, 0.6 + multiple * 0.05);
+    // Bad: early peak, crashed
+    else if (peakPct < 0.3 && endRatio < 0.2) chartHealthScore = Math.max(0, 0.2 - pumpDumpScore * 0.2);
+    // Slow grind: still growing
+    else if (current > start && multiple < 3) chartHealthScore = 0.6;
+  }
+
   return {
     // On-chain
     oc_buyVelocity5m: Math.min(1, (buys / Math.max(1, Math.min(5, ageMin))) / 20),
@@ -646,12 +664,104 @@ function extractQuickFeatures(t) {
     rg_sellWaveDetect: Math.min(1, maxSellBurst / 8),
     rg_mcapDropRate: mcapDropRate,
     rg_buyerRetention: buys > 0 ? Math.min(1, ub / buys) : 0,
+    // Chart shape analysis
+    ch_healthScore: chartHealthScore,
+    ch_pumpDump: pumpDumpScore,
     // Extra rug signals (used in buy gate, not in FEATURE_KEYS)
     _rg_devSelfSnipe: devSelfSnipe,
     _rg_earlyDump: earlyDumpScore,
     _rg_quickFlipRate: quickFlipRate,
     _rg_pumpDump: pumpDumpScore,
     _rg_sybilScore: sybilScore,
+  };
+}
+
+// ═══ CHART PATTERN STORAGE — persist graduated token charts for learning ═══
+const chartSnapshotCache = []; // in-memory fallback
+const MAX_CHART_SNAPSHOTS = 500;
+
+async function storeChartSnapshot(ca, token, outcome) {
+  const snapshot = {
+    ca,
+    name: token.name || "",
+    ticker: token.ticker || "",
+    graduated: true,
+    spark: token.spark || [],
+    peakMcx: outcome.peakMcx || 1,
+    rugged: outcome.rugged || false,
+    devDumped: outcome.devDumped || false,
+    mcapStart: token.spark?.[0] || 0,
+    mcapPeak: token.spark?.length > 0 ? Math.max(...token.spark) : 0,
+    mcapEnd: token.mcapUsd || 0,
+    buys: token.buys || 0,
+    sells: token.sells || 0,
+    uniqueBuyers: token.uniqueBuyers || 0,
+    age: Math.round((Date.now() - token.createdAt) / 60000),
+    ts: Date.now(),
+    pattern: classifyChartPattern(token.spark || [], outcome),
+  };
+  if (redis) {
+    try {
+      await redis.lPush("chart:snapshots", JSON.stringify(snapshot));
+      await redis.lTrim("chart:snapshots", 0, MAX_CHART_SNAPSHOTS - 1);
+    } catch {}
+  }
+  chartSnapshotCache.unshift(snapshot);
+  if (chartSnapshotCache.length > MAX_CHART_SNAPSHOTS) chartSnapshotCache.length = MAX_CHART_SNAPSHOTS;
+}
+
+function classifyChartPattern(spark, outcome) {
+  if (!spark || spark.length < 5) return "unknown";
+  const start = spark[0] || 1;
+  const peak = Math.max(...spark);
+  const end = spark[spark.length - 1] || 0;
+  const peakIdx = spark.indexOf(peak);
+  const peakPct = peakIdx / spark.length;
+  const multiple = peak / start;
+  const endRatio = end / peak;
+  if (outcome.rugged || outcome.devDumped) return "rug";
+  if (multiple > 8 && peakPct < 0.3) return "sniper_spike";
+  if (multiple > 3 && peakPct > 0.6 && endRatio > 0.4) return "healthy_pump";
+  if (multiple < 3 && spark.length > 30 && outcome.graduated) return "slow_grind";
+  if (endRatio < 0.2 && multiple > 5) return "pump_dump";
+  if (outcome.graduated) return "healthy_pump";
+  return "unknown";
+}
+
+async function getChartSnapshots(limit = 50) {
+  if (redis) {
+    try {
+      const raw = await redis.lRange("chart:snapshots", 0, limit - 1);
+      if (raw?.length > 0) return raw.map(r => JSON.parse(r));
+    } catch {}
+  }
+  return chartSnapshotCache.slice(0, limit);
+}
+
+async function getChartPatternStats() {
+  const snaps = await getChartSnapshots(200);
+  const patterns = {};
+  for (const s of snaps) {
+    const p = s.pattern || "unknown";
+    if (!patterns[p]) patterns[p] = { count: 0, avgPeakMcx: 0, avgAge: 0, graduated: 0, rugged: 0 };
+    patterns[p].count++;
+    patterns[p].avgPeakMcx += s.peakMcx || 1;
+    patterns[p].avgAge += s.age || 0;
+    if (s.graduated) patterns[p].graduated++;
+    if (s.rugged) patterns[p].rugged++;
+  }
+  for (const k of Object.keys(patterns)) {
+    const p = patterns[k];
+    p.avgPeakMcx = +(p.avgPeakMcx / p.count).toFixed(1);
+    p.avgAge = Math.round(p.avgAge / p.count);
+  }
+  return {
+    total: snaps.length,
+    patterns,
+    recentCharts: snaps.slice(0, 20).map(s => ({
+      ca: s.ca, name: s.name, ticker: s.ticker, pattern: s.pattern,
+      spark: s.spark, peakMcx: s.peakMcx, rugged: s.rugged, age: s.age, ts: s.ts,
+    })),
   };
 }
 
@@ -682,6 +792,10 @@ setInterval(() => {
         };
         const features = extractQuickFeatures(t);
         if (features) memeIntel.learn(features, outcome);
+        // Store graduated chart snapshots for pattern learning
+        if (t.graduated && t.spark?.length >= 10) {
+          storeChartSnapshot(ca, t, outcome).catch(() => {});
+        }
       } catch {}
       radar.tokens.delete(ca);
     }
@@ -2541,6 +2655,22 @@ app.get("/api/movers/token/:ca", async (req, res) => {
     const data = await historicalMovers.getTokenDetail(req.params.ca);
     if (!data) return res.status(404).json({ error: "Token not found" });
     res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══ CHART PATTERNS API ═══
+app.get("/api/chart-patterns", async (req, res) => {
+  try {
+    const data = await getChartPatternStats();
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/chart-patterns/recent", async (req, res) => {
+  try {
+    const limit = Math.min(50, parseInt(req.query.limit) || 20);
+    const snaps = await getChartSnapshots(limit);
+    res.json({ charts: snaps });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
