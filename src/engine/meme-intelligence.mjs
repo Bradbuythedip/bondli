@@ -253,7 +253,7 @@ class ScoringEngine {
       tp: 1.5,  // Tipping Point gets 1.5x
       k: 1.2,   // Kahneman gets 1.2x
       oc: 1.3,  // On-chain velocity important
-      rg: 1.6,  // Rug detection — highest weight (safety first)
+      rg: 2.0,  // Rug detection — highest weight (safety first)
       so: 0.8,  // Social is a signal but noisy
       mt: 0.5,  // Time-of-day is minor
     };
@@ -289,7 +289,15 @@ class ScoringEngine {
 
     // Rug risk composite (0 = safe, 1 = high rug risk)
     const rugRisk = subScores.rg;
-    const rugPenalty = Math.round(rugRisk * 30); // max -30 points for rug risk
+    // Non-linear penalty: light rugs get mild penalty, heavy rugs get crushed
+    // rugRisk 0.0-0.3 → 0-12 penalty (mild, could be noise)
+    // rugRisk 0.3-0.6 → 12-35 penalty (moderate concern)
+    // rugRisk 0.6-1.0 → 35-60 penalty (likely rug, score destroyed)
+    const rugPenalty = rugRisk < 0.3
+      ? Math.round(rugRisk * 40)
+      : rugRisk < 0.6
+        ? Math.round(12 + (rugRisk - 0.3) * 77)
+        : Math.round(35 + (rugRisk - 0.6) * 62.5);
 
     // Tipping Point composite
     const tippingScore = (subScores.tp * 0.4 + subScores.k * 0.3 + subScores.oc * 0.2 + subScores.so * 0.1);
@@ -300,18 +308,18 @@ class ScoringEngine {
       (features.oc_buyVelocity5m || 0) * 25 +
       (features.oc_uniqueBuyers5m || 0) * 20 +
       (features.k_herdSignal || 0) * 15 -
-      rugPenalty * 0.5
+      rugPenalty * 0.8 // rug penalty hits bond probability harder
     )));
 
-    // Rug flags for UI display
+    // Rug flags for UI display (lowered thresholds to catch earlier)
     const rugFlags = [];
-    if ((features.rg_devSellSpeed || 0) > 0.6) rugFlags.push("dev_dumping");
-    if ((features.rg_holderConcentration || 0) > 0.8) rugFlags.push("whale_concentrated");
-    if ((features.rg_coordDumpScore || 0) > 0.5) rugFlags.push("coordinated_sells");
-    if ((features.rg_liqRemovalSpeed || 0) > 0.7) rugFlags.push("liquidity_drain");
-    if ((features.rg_sellWaveDetect || 0) > 0.5) rugFlags.push("sell_wave");
-    if ((features.rg_mcapDropRate || 0) > 0.6) rugFlags.push("mcap_crashing");
-    if ((features.rg_buyerRetention || 0) < 0.3) rugFlags.push("early_buyers_fled");
+    if ((features.rg_devSellSpeed || 0) > 0.4) rugFlags.push("dev_dumping");
+    if ((features.rg_holderConcentration || 0) > 0.6) rugFlags.push("whale_concentrated");
+    if ((features.rg_coordDumpScore || 0) > 0.35) rugFlags.push("coordinated_sells");
+    if ((features.rg_liqRemovalSpeed || 0) > 0.5) rugFlags.push("liquidity_drain");
+    if ((features.rg_sellWaveDetect || 0) > 0.4) rugFlags.push("sell_wave");
+    if ((features.rg_mcapDropRate || 0) > 0.4) rugFlags.push("mcap_crashing");
+    if ((features.rg_buyerRetention || 0) < 0.4) rugFlags.push("early_buyers_fled");
 
     return {
       score: Math.max(0, Math.min(99, Math.round(rawScore * 100) - rugPenalty)),

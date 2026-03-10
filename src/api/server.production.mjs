@@ -522,19 +522,29 @@ function extractQuickFeatures(t) {
   const sells = t.sells || 0;
   const vol = t.volumeSol || 0;
   const sellVol = t.sellVolumeSol || 0;
+  const trades = t.trades || [];
 
-  // Check if dev sold
-  const devSells = t.trades?.filter(tr => tr.wallet === t.devWallet?.slice(0, 8) && tr.side === "sell") || [];
-  const devSellSpeed = devSells.length > 0 ? Math.min(1, 30 / Math.max(1, (devSells[0]?.time - t.createdAt) / 60000)) : 0;
+  // ── Dev sell detection (improved: match full wallet when available) ──
+  const devW = (t.devWallet || "").slice(0, 8);
+  const devTrades = devW ? trades.filter(tr => (tr.wallet || "").startsWith(devW)) : [];
+  const devSells = devTrades.filter(tr => tr.side === "sell");
+  const devBuySol = devTrades.filter(tr => tr.side === "buy").reduce((s, tr) => s + (tr.sol || 0), 0);
+  const devSellSol = devSells.reduce((s, tr) => s + (tr.sol || 0), 0);
+  // How fast did dev dump? 0 = held, 1 = instant dump
+  const devSellSpeed = devSells.length > 0
+    ? Math.min(1, 30 / Math.max(1, (devSells[0]?.time - t.createdAt) / 60000))
+    : 0;
+  // Did dev sell MORE than they bought? (sniped own token)
+  const devSelfSnipe = devBuySol > 0 && devSellSol > devBuySol * 0.8 ? 1 : 0;
 
-  // Coordinated dump: multiple sells within 3s windows
-  const sellTimes = (t.trades || []).filter(tr => tr.side === "sell").map(tr => tr.time);
+  // ── Coordinated dump: multiple sells within 3s windows ──
+  const sellTimes = trades.filter(tr => tr.side === "sell").map(tr => tr.time).sort((a, b) => a - b);
   let coordDumps = 0;
   for (let i = 1; i < sellTimes.length; i++) {
     if (sellTimes[i] - sellTimes[i - 1] < 3000) coordDumps++;
   }
 
-  // Sell wave: bursts of sells in 10s windows
+  // ── Sell wave: bursts of sells in 10s windows ──
   let maxSellBurst = 0;
   for (let i = 0; i < sellTimes.length; i++) {
     let burst = 1;
@@ -542,9 +552,77 @@ function extractQuickFeatures(t) {
     maxSellBurst = Math.max(maxSellBurst, burst);
   }
 
-  // Mcap drop from peak
+  // ── Mcap drop from peak ──
   const peakMc = t.spark?.length > 0 ? Math.max(...t.spark) : t.mcapUsd;
   const mcapDropRate = peakMc > 0 ? Math.max(0, (peakMc - (t.mcapUsd || 0)) / peakMc) : 0;
+
+  // ── Holder concentration from trade data ──
+  // Approximate top-wallet concentration from buy amounts
+  const walletBuys = new Map();
+  for (const tr of trades) {
+    if (tr.side === "buy" && tr.wallet) {
+      walletBuys.set(tr.wallet, (walletBuys.get(tr.wallet) || 0) + (tr.sol || 0));
+    }
+  }
+  const sortedHolders = [...walletBuys.values()].sort((a, b) => b - a);
+  const totalBought = sortedHolders.reduce((s, v) => s + v, 0);
+  const top3Bought = sortedHolders.slice(0, 3).reduce((s, v) => s + v, 0);
+  const holderConcentration = totalBought > 0 ? Math.min(1, top3Bought / totalBought) : 0;
+
+  // ── Sybil / wash-trade detection ──
+  // Multiple tiny buys from many wallets in tight time windows = likely bot swarm
+  const buyTrades = trades.filter(tr => tr.side === "buy");
+  let tinyBuyCount = 0;       // buys < 0.02 SOL (dust buys to inflate buyer count)
+  let sameSizeBuys = 0;       // buys with identical SOL amounts (bot pattern)
+  const buySolAmounts = new Map();
+  for (const tr of buyTrades) {
+    const sol = tr.sol || 0;
+    if (sol > 0 && sol < 0.02) tinyBuyCount++;
+    const rounded = (sol * 100 | 0); // round to 0.01
+    buySolAmounts.set(rounded, (buySolAmounts.get(rounded) || 0) + 1);
+  }
+  for (const [, count] of buySolAmounts) {
+    if (count >= 3) sameSizeBuys += count; // 3+ buys at exact same size = suspicious
+  }
+  const sybilScore = Math.min(1,
+    (buys > 5 ? tinyBuyCount / buys : 0) * 0.5 +        // dust buy ratio
+    (buys > 5 ? sameSizeBuys / buys : 0) * 0.5           // identical-size buy ratio
+  );
+
+  // ── Volume manipulation: sell volume vs buy volume ratio ──
+  const sellBuyRatio = vol > 0 ? Math.min(1, sellVol / vol) : 0;
+
+  // ── Early dump: sells happening within first 2 minutes ──
+  const earlyWindow = t.createdAt + 120000; // 2 minutes
+  const earlySells = trades.filter(tr => tr.side === "sell" && tr.time < earlyWindow);
+  const earlyDumpScore = Math.min(1, earlySells.length / Math.max(1, buys) * 3);
+
+  // ── Buy-then-sell same wallet: quick flip detection ──
+  let quickFlips = 0;
+  const walletFirstBuy = new Map();
+  for (const tr of trades) {
+    if (tr.side === "buy" && tr.wallet && !walletFirstBuy.has(tr.wallet)) {
+      walletFirstBuy.set(tr.wallet, tr.time);
+    }
+    if (tr.side === "sell" && tr.wallet) {
+      const firstBuy = walletFirstBuy.get(tr.wallet);
+      if (firstBuy && (tr.time - firstBuy) < 60000) quickFlips++; // sold within 60s of buying
+    }
+  }
+  const quickFlipRate = buys > 3 ? Math.min(1, quickFlips / Math.max(1, ub) * 2) : 0;
+
+  // ── Sparkline crash pattern: sharp spike then dump ──
+  const spark = t.spark || [];
+  let pumpDumpScore = 0;
+  if (spark.length >= 4) {
+    const peak = Math.max(...spark);
+    const peakIdx = spark.indexOf(peak);
+    const current = spark[spark.length - 1] || 0;
+    // Pump-and-dump: peaked early, crashed since
+    if (peakIdx < spark.length * 0.5 && peak > 0 && current < peak * 0.3) {
+      pumpDumpScore = Math.min(1, (peak - current) / peak);
+    }
+  }
 
   return {
     // On-chain
@@ -558,15 +636,21 @@ function extractQuickFeatures(t) {
     so_hasTwitter: t.twitter ? 1 : 0,
     so_hasTelegram: t.telegram ? 1 : 0,
     so_hasWebsite: t.website ? 1 : 0,
-    // Rug detection
+    // Rug detection (enhanced)
     rg_devSellSpeed: devSellSpeed,
-    rg_holderConcentration: 0, // would need on-chain data
+    rg_holderConcentration: holderConcentration,
     rg_coordDumpScore: Math.min(1, coordDumps / 5),
-    rg_liqRemovalSpeed: vol > 0 ? Math.min(1, sellVol / Math.max(0.1, vol)) : 0,
-    rg_walletAgeScore: 0.5, // default — no wallet age data
+    rg_liqRemovalSpeed: sellBuyRatio,
+    rg_walletAgeScore: 1 - sybilScore, // 0 = all sybils (bad), 1 = organic (good)
     rg_sellWaveDetect: Math.min(1, maxSellBurst / 8),
     rg_mcapDropRate: mcapDropRate,
     rg_buyerRetention: buys > 0 ? Math.min(1, ub / buys) : 0,
+    // Extra rug signals (used in buy gate, not in FEATURE_KEYS)
+    _rg_devSelfSnipe: devSelfSnipe,
+    _rg_earlyDump: earlyDumpScore,
+    _rg_quickFlipRate: quickFlipRate,
+    _rg_pumpDump: pumpDumpScore,
+    _rg_sybilScore: sybilScore,
   };
 }
 
@@ -1720,49 +1804,48 @@ function startAutoTrader(wallet, settings) {
         // Re-score the token using live radar data and compare to entry score.
         // If momentum is fading (score dropping), tighten stops to protect capital.
         if (s.momentumExit && token && !pos.isMoonbag) {
-          const features = extractQuickFeatures(token);
-          if (features) {
-            const liveScore = memeIntel.scorer.score(features);
-            const currentScore = liveScore?.score || 0;
-            // Store entry score on first check
-            if (!pos.entryScore) pos.entryScore = currentScore;
-            pos.liveScore = currentScore;
-            const scoreDrop = pos.entryScore - currentScore;
+          try {
+            const features = extractQuickFeatures(token);
+            if (features) {
+              const liveScore = memeIntel.scorer.score(features);
+              const currentScore = liveScore?.score || 0;
+              // Store entry score on first check
+              if (!pos.entryScore) pos.entryScore = currentScore;
+              pos.liveScore = currentScore;
+              const scoreDrop = pos.entryScore - currentScore;
 
-            if (scoreDrop >= 30) {
-              // Severe momentum loss — immediate full exit
-              log(`MOMENTUM EXIT ${ca.slice(0,6)}: score ${pos.entryScore}→${currentScore} (−${scoreDrop}) — FULL SELL`);
-              const sig = await execSell(ca, 100, kp, "momentum-exit");
-              if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOMENTUM", reason: "score-crash" } });
-              state.positions.delete(ca);
-              trackSell(wallet, ca);
-              continue;
-            } else if (scoreDrop >= 20) {
-              // Moderate momentum loss — tighten SL triggers by 50%
-              s.sl1 = Math.round(s.sl1 * 0.5);
-              s.sl2 = Math.round(s.sl2 * 0.5);
-              // Also lower trailing stop threshold
-              if (scoreDrop >= 25 && changePct > 5 && pos.tpHit === 0) {
-                // Take early partial profit if we're green but fading
-                log(`MOMENTUM TRIM ${ca.slice(0,6)}: score −${scoreDrop}, +${changePct.toFixed(0)}% — selling ${s.tp1Sell}% early`);
-                const sig = await execSell(ca, s.tp1Sell, kp, "momentum-trim");
-                if (sig) {
-                  broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOM-TRIM", sellPct: s.tp1Sell } });
-                  pos.tpHit = 1;
+              if (scoreDrop >= 30) {
+                // Severe momentum loss — immediate full exit
+                log(`MOMENTUM EXIT ${ca.slice(0,6)}: score ${pos.entryScore}→${currentScore} (−${scoreDrop}) — FULL SELL`);
+                const sig = await execSell(ca, 100, kp, "momentum-exit");
+                if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOMENTUM", reason: "score-crash" } });
+                state.positions.delete(ca);
+                trackSell(wallet, ca);
+                continue;
+              } else if (scoreDrop >= 20) {
+                // Moderate momentum loss — tighten SL triggers by 50%
+                s.sl1 = Math.round(s.sl1 * 0.5);
+                s.sl2 = Math.round(s.sl2 * 0.5);
+                if (scoreDrop >= 25 && changePct > 5 && pos.tpHit === 0) {
+                  log(`MOMENTUM TRIM ${ca.slice(0,6)}: score −${scoreDrop}, +${changePct.toFixed(0)}% — selling ${s.tp1Sell}% early`);
+                  const sig = await execSell(ca, s.tp1Sell, kp, "momentum-trim");
+                  if (sig) {
+                    broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOM-TRIM", sellPct: s.tp1Sell } });
+                    pos.tpHit = 1;
+                  }
                 }
+              } else if (scoreDrop >= 10) {
+                s.sl1 = Math.round(s.sl1 * 0.75);
+                s.sl2 = Math.round(s.sl2 * 0.75);
               }
-            } else if (scoreDrop >= 10) {
-              // Mild fade — tighten SL by 25%
-              s.sl1 = Math.round(s.sl1 * 0.75);
-              s.sl2 = Math.round(s.sl2 * 0.75);
+              // Score INCREASING = strong momentum — widen TP targets to let it run
+              if (currentScore > pos.entryScore + 10) {
+                s.tp1 = Math.round(state.settings.tp1 * 1.25);
+                s.tp2 = Math.round(state.settings.tp2 * 1.25);
+                s.tp3 = Math.round(state.settings.tp3 * 1.25);
+              }
             }
-            // Score INCREASING = strong momentum — widen TP targets to let it run
-            if (currentScore > pos.entryScore + 10) {
-              s.tp1 = Math.round(state.settings.tp1 * 1.25);
-              s.tp2 = Math.round(state.settings.tp2 * 1.25);
-              s.tp3 = Math.round(state.settings.tp3 * 1.25);
-            }
-          }
+          } catch (e) { log(`Momentum score error ${ca.slice(0,6)}: ${e.message}`); }
         }
 
         // ═══ TAKE PROFIT — 3 tiers ═══
@@ -1849,6 +1932,31 @@ function startAutoTrader(wallet, settings) {
         const buys = t.buys || 0; const ub = t.uniqueBuyers?.size || 0; const vol = t.volumeSol || 0;
         const mc = t.mcapUsd || 0; const sells = t.sells || 0;
         const ageMin = Math.max(0.5, (Date.now() - t.createdAt) / 60000);
+        const sellVol = t.sellVolumeSol || 0;
+
+        // ═══ HARD RUG GATE — reject obvious rugs before scoring ═══
+        const qf = extractQuickFeatures(t);
+        if (qf) {
+          // Dev dumped fast → instant reject
+          if (qf.rg_devSellSpeed > 0.7) return false;
+          if (qf._rg_devSelfSnipe > 0) return false;
+          // Mcap already crashed 60%+ from peak → dead token
+          if (qf.rg_mcapDropRate > 0.6) return false;
+          // Coordinated dump detected → cabal exit
+          if (qf.rg_coordDumpScore > 0.6) return false;
+          // Pump-and-dump sparkline pattern
+          if (qf._rg_pumpDump > 0.7) return false;
+          // Heavy sybil activity (fake buyers)
+          if (qf._rg_sybilScore > 0.6) return false;
+          // Early mass dump in first 2 min
+          if (qf._rg_earlyDump > 0.5 && ageMin < 5) return false;
+          // Quick-flip wallets dominating (buy & sell within 60s)
+          if (qf._rg_quickFlipRate > 0.4) return false;
+          // Top 3 wallets own 80%+ of supply → whale rug risk
+          if (qf.rg_holderConcentration > 0.8 && buys > 5) return false;
+          // Sell volume exceeding buy volume significantly
+          if (qf.rg_liqRemovalSpeed > 0.85) return false;
+        }
 
         // Buy activity (log-scaled to avoid spam bias)
         const buyScore = Math.min(15, Math.log2(buys + 1) * 2.5);
@@ -1856,13 +1964,12 @@ function startAutoTrader(wallet, settings) {
         const volScore = Math.min(10, Math.log10(vol * 100 + 1) * 3);
 
         // MC scoring: FAVOR LOW MC (that's where the money is)
-        // Sweet spot: $5K-$30K — already has traction but huge upside
-        const mcScore = mc >= gradMcUsd() ? 3 :     // graduated = low upside
-                        mc >= 30000 ? 5 :            // near grad
-                        mc >= 15000 ? 10 :           // sweet spot high
-                        mc >= 8000  ? 12 :           // sweet spot
-                        mc >= 5000  ? 10 :           // early traction
-                        mc >= 3000  ? 6 : 0;         // very early
+        const mcScore = mc >= gradMcUsd() ? 3 :
+                        mc >= 30000 ? 5 :
+                        mc >= 15000 ? 10 :
+                        mc >= 8000  ? 12 :
+                        mc >= 5000  ? 10 :
+                        mc >= 3000  ? 6 : 0;
 
         // GREEN detection: is MC growing? (sparkline trend)
         const spark = t.spark || [];
@@ -1874,7 +1981,7 @@ function startAutoTrader(wallet, settings) {
             const avgRecent = recent.reduce((a, b) => a + b, 0) / recent.length;
             const avgEarlier = earlier.reduce((a, b) => a + b, 0) / earlier.length;
             const growth = avgEarlier > 0 ? (avgRecent - avgEarlier) / avgEarlier : 0;
-            if (growth > 0) greenScore = Math.min(15, growth * 50); // Up to 15 pts for green candles
+            if (growth > 0) greenScore = Math.min(15, growth * 50);
           }
         }
 
@@ -1884,12 +1991,24 @@ function startAutoTrader(wallet, settings) {
         // Buy velocity: fast buys = hype
         const velocityScore = Math.min(8, (buys / ageMin) * 2);
 
-        // Penalties
+        // Penalties (strengthened)
         const sellPenalty = sells > buys * 0.7 ? Math.min(15, (sells - buys * 0.5) * 2) : 0;
-        // Rug penalty: check for dev dumping or massive sell waves
-        const sellVol = t.sellVolumeSol || 0;
-        const rugPenalty = (sellVol > vol * 0.8 && sells > 5) ? 20 :    // sell vol > buy vol
-                          (sells > buys * 1.5) ? 15 : 0;                // way more sells than buys
+        // Graduated rug penalty: scale with severity
+        let rugPenalty = 0;
+        if (qf) {
+          // Composite rug score from all signals
+          rugPenalty += qf.rg_devSellSpeed > 0.3 ? 12 : 0;          // dev selling (but not fast enough to hard-reject)
+          rugPenalty += qf.rg_coordDumpScore > 0.3 ? 10 : 0;        // some coordinated sells
+          rugPenalty += qf.rg_mcapDropRate > 0.3 ? 8 : 0;           // some mcap decline
+          rugPenalty += qf._rg_quickFlipRate > 0.2 ? 8 : 0;         // quick flippers present
+          rugPenalty += qf._rg_sybilScore > 0.3 ? 8 : 0;            // some sybil activity
+          rugPenalty += qf.rg_holderConcentration > 0.6 ? 6 : 0;    // whale-heavy
+          rugPenalty += qf._rg_earlyDump > 0.3 ? 6 : 0;             // early selling
+          rugPenalty += sellVol > vol * 0.5 ? 5 : 0;                 // sell pressure
+        } else {
+          rugPenalty = (sellVol > vol * 0.8 && sells > 5) ? 20 :
+                       (sells > buys * 1.5) ? 15 : 0;
+        }
 
         const dexBoost = radar.dexBoosted.get(t.ca);
         const boostScore = dexBoost ? Math.min(8, 3 + Math.log2(dexBoost.amount + 1)) : 0;
@@ -1898,6 +2017,13 @@ function startAutoTrader(wallet, settings) {
         t._apeScore = Math.max(0, Math.min(99, Math.round(
           buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore - sellPenalty - rugPenalty
         )));
+        t._rugFlags = qf ? [
+          qf.rg_devSellSpeed > 0.3 && "dev_selling",
+          qf.rg_coordDumpScore > 0.3 && "coord_sells",
+          qf._rg_sybilScore > 0.3 && "sybil_bots",
+          qf._rg_quickFlipRate > 0.2 && "quick_flips",
+          qf.rg_holderConcentration > 0.6 && "whale_heavy",
+        ].filter(Boolean) : [];
         return t._apeScore >= state.settings.minScore;
       }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
 
@@ -2513,23 +2639,31 @@ app.get("/api/intel/stats", (req, res) => {
     const pressureScore = buys > 3 ? Math.min(5, (buys / Math.max(1, buys + sells)) * 5) : 0;
     const sellPenalty = sells > buys * 0.7 ? Math.min(15, (sells - buys * 0.5) * 2) : 0;
 
-    // ── Rug detection scoring ──
+    // ── Rug detection scoring (enhanced) ──
     const rugFlags = [];
     let rugScore = 0;
 
     // Dev sell detection
     const devW = (t.devWallet || "").slice(0, 8);
-    const devSells = trades.filter(tr => tr.side === "sell" && (tr.wallet || "").startsWith(devW));
+    const devTrades = devW ? trades.filter(tr => (tr.wallet || "").startsWith(devW)) : [];
+    const devSells = devTrades.filter(tr => tr.side === "sell");
     if (devSells.length > 0 && buys < 20) { rugFlags.push("dev_dumping"); rugScore += 25; }
+    // Dev self-snipe: dev sold more than they bought
+    const devBuySol = devTrades.filter(tr => tr.side === "buy").reduce((s, tr) => s + (tr.sol || 0), 0);
+    const devSellSol = devSells.reduce((s, tr) => s + (tr.sol || 0), 0);
+    if (devBuySol > 0 && devSellSol > devBuySol * 0.8) { rugFlags.push("dev_self_snipe"); rugScore += 20; }
 
-    // Holder concentration
+    // Holder concentration (top wallet)
     const walletBuys = {};
     trades.filter(tr => tr.side === "buy").forEach(tr => {
       walletBuys[tr.wallet || "?"] = (walletBuys[tr.wallet || "?"] || 0) + (tr.sol || 0);
     });
     const sortedH = Object.values(walletBuys).sort((a, b) => b - a);
     const totalH = sortedH.reduce((s, v) => s + v, 0);
-    if (totalH > 0 && sortedH.length > 0 && sortedH[0] / totalH > 0.6) { rugFlags.push("whale_concentrated"); rugScore += 20; }
+    // Top 3 wallets concentration
+    const top3H = sortedH.slice(0, 3).reduce((s, v) => s + v, 0);
+    if (totalH > 0 && top3H / totalH > 0.7) { rugFlags.push("whale_concentrated"); rugScore += 20; }
+    else if (totalH > 0 && sortedH.length > 0 && sortedH[0] / totalH > 0.5) { rugFlags.push("whale_heavy"); rugScore += 12; }
 
     // Coordinated sells (3+ sells within 5 seconds)
     const sellTimes = trades.filter(tr => tr.side === "sell").map(tr => tr.time || 0).sort((a, b) => a - b);
@@ -2537,19 +2671,54 @@ app.get("/api/intel/stats", (req, res) => {
       if (sellTimes[si + 2] - sellTimes[si] < 5000) { rugFlags.push("coordinated_sells"); rugScore += 20; break; }
     }
 
-    // Mcap crash detection
+    // Mcap crash detection (more sensitive)
     const spark = t.spark || [];
     if (spark.length > 3) {
       const peak = Math.max(...spark);
       const current = spark[spark.length - 1] || 0;
-      if (peak > 0 && current / peak < 0.3) { rugFlags.push("mcap_crashing"); rugScore += 15; }
+      if (peak > 0 && current / peak < 0.3) { rugFlags.push("mcap_crashing"); rugScore += 20; }
+      else if (peak > 0 && current / peak < 0.5) { rugFlags.push("mcap_declining"); rugScore += 10; }
+      // Pump-and-dump pattern: peaked early, crashed since
+      const peakIdx = spark.indexOf(peak);
+      if (peakIdx < spark.length * 0.4 && peak > 0 && current < peak * 0.35) {
+        rugFlags.push("pump_dump"); rugScore += 15;
+      }
     }
 
     // High sell ratio
     if (sells > buys * 1.5 && sells > 5) { rugFlags.push("sell_wave"); rugScore += 15; }
 
+    // Sybil detection: many identical-size buys
+    const buySolMap = new Map();
+    for (const tr of trades.filter(t2 => t2.side === "buy")) {
+      const k = ((tr.sol || 0) * 100 | 0);
+      buySolMap.set(k, (buySolMap.get(k) || 0) + 1);
+    }
+    let sybilBuys = 0;
+    for (const [, c] of buySolMap) { if (c >= 4) sybilBuys += c; }
+    if (buys > 5 && sybilBuys / buys > 0.4) { rugFlags.push("sybil_bots"); rugScore += 15; }
+
+    // Quick-flip detection: wallets that buy and sell within 60s
+    const walletFirst = new Map();
+    let flipCount = 0;
+    for (const tr of trades) {
+      if (tr.side === "buy" && tr.wallet && !walletFirst.has(tr.wallet)) walletFirst.set(tr.wallet, tr.time);
+      if (tr.side === "sell" && tr.wallet) {
+        const fb = walletFirst.get(tr.wallet);
+        if (fb && (tr.time - fb) < 60000) flipCount++;
+      }
+    }
+    if (ub > 3 && flipCount / ub > 0.3) { rugFlags.push("quick_flips"); rugScore += 12; }
+
+    // Sell volume exceeding buy volume
+    const sellVol2 = t.sellVolumeSol || 0;
+    if (vol > 0 && sellVol2 / vol > 0.8) { rugFlags.push("liquidity_drain"); rugScore += 15; }
+
     rugScore = Math.min(100, rugScore);
-    const rugPenalty = Math.round(rugScore * 0.2); // max -20 from rug risk
+    // Non-linear penalty: mild rugs get small penalty, heavy rugs get crushed
+    const rugPenalty = rugScore < 30
+      ? Math.round(rugScore * 0.3)       // 0-9 points for mild signals
+      : Math.round(9 + (rugScore - 30) * 0.44); // 9-40 points for serious signals
 
     // DexScreener paid/boosted signal bonus
     const dexBoost = radar.dexBoosted.get(t.ca);
