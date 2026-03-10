@@ -4,6 +4,7 @@ async f(p,o={}){const h={"Content-Type":"application/json"};if(this.w){h["X-Wall
 chk(w){return this.f(`/api/access/check?wallet=${w}`)}
 afr(w){return this.f("/api/access/activate-free",{method:"POST",body:{wallet:w}})}
 apr(w,t){return this.f("/api/access/activate-pro",{method:"POST",body:{wallet:w,txSig:t}})}
+avp(w,t){return this.f("/api/access/activate-vip",{method:"POST",body:{wallet:w,txSig:t}})}
 pri(){return this.f("/api/pricing")}
 sc(d){return this.f("/api/session/create",{method:"POST",body:d})}
 sb(s,w){return this.f(`/api/session/balance?sessionId=${s}&wallet=${w}`)}

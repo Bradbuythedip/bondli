@@ -1,11 +1,12 @@
-// BONDLI v3.1 — Fee Engine
-// Tiers: Free (25% profit share), Pro (0%, 10 SOL one-time), VIP (0%, whitelisted)
+// BONDLI v3.2 — Fee Engine
+// Tiers: Free (25% profit share), Pro (0%, 1 SOL one-time), VIP (0%, 10 SOL one-time)
 import crypto from "crypto";
 
 // ── Platform config ──
 const PLATFORM_WALLET = process.env.PLATFORM_WALLET || "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
 const FREE_PROFIT_CUT = parseFloat(process.env.FREE_PROFIT_CUT || "25"); // %
-const PRO_FEE_SOL = parseFloat(process.env.PRO_FEE_SOL || "10");
+const PRO_FEE_SOL = parseFloat(process.env.PRO_FEE_SOL || "1");
+const VIP_FEE_SOL = parseFloat(process.env.VIP_FEE_SOL || "10");
 const MIN_PROFIT_THRESHOLD = 0.001; // SOL — don't skim dust
 
 // ── Whitelist from env (re-reads on each call so hot-reloadable) ──
@@ -96,5 +97,6 @@ export {
   PLATFORM_WALLET,
   FREE_PROFIT_CUT,
   PRO_FEE_SOL,
+  VIP_FEE_SOL,
   MIN_PROFIT_THRESHOLD,
 };

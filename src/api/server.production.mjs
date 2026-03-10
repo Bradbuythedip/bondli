@@ -1081,38 +1081,52 @@ app.post("/api/access/activate-free", async (req, res) => {
   res.json({ ok: true, tier: "free" });
 });
 
+// Shared payment verification helper
+async function verifyPayment(wallet, txSig, minSol) {
+  const tx = await connection.getTransaction(txSig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+  if (!tx) throw new Error("Transaction not found or not confirmed");
+  if (tx.meta?.err) throw new Error("Transaction failed on-chain");
+  const keys = tx.transaction.message.staticAccountKeys
+    ? tx.transaction.message.staticAccountKeys.map(k => k.toBase58())
+    : tx.transaction.message.accountKeys.map(k => k.toBase58());
+  const platformIdx = keys.indexOf(PLATFORM_WALLET);
+  const senderIdx = keys.indexOf(wallet);
+  if (platformIdx < 0) throw new Error("Payment not sent to platform wallet");
+  if (senderIdx < 0) throw new Error("Transaction sender doesn't match wallet");
+  const received = ((tx.meta.postBalances?.[platformIdx] || 0) - (tx.meta.preBalances?.[platformIdx] || 0)) / LAMPORTS_PER_SOL;
+  if (received < minSol - 0.01) throw new Error(`Insufficient payment: ${received.toFixed(4)} SOL (need ${minSol})`);
+  return received;
+}
+
 app.post("/api/access/activate-pro", async (req, res) => {
   const { wallet, txSig } = req.body;
   if (!wallet || !txSig) return res.status(400).json({ error: "wallet and txSig required" });
-  // Verify on-chain payment to PLATFORM_WALLET
   try {
-    const tx = await connection.getTransaction(txSig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
-    if (!tx) return res.status(400).json({ error: "Transaction not found or not confirmed" });
-    const meta = tx.meta;
-    if (meta?.err) return res.status(400).json({ error: "Transaction failed on-chain" });
-    const keys = tx.transaction.message.staticAccountKeys
-      ? tx.transaction.message.staticAccountKeys.map(k => k.toBase58())
-      : tx.transaction.message.accountKeys.map(k => k.toBase58());
-    const platformIdx = keys.indexOf(PLATFORM_WALLET);
-    const senderIdx = keys.indexOf(wallet);
-    if (platformIdx < 0) return res.status(400).json({ error: "Payment not sent to platform wallet" });
-    if (senderIdx < 0) return res.status(400).json({ error: "Transaction sender doesn't match wallet" });
-    const preBalance = (meta.preBalances?.[platformIdx] || 0);
-    const postBalance = (meta.postBalances?.[platformIdx] || 0);
-    const received = (postBalance - preBalance) / LAMPORTS_PER_SOL;
-    if (received < 9.99) return res.status(400).json({ error: `Insufficient payment: ${received.toFixed(4)} SOL (need 10)` });
+    await verifyPayment(wallet, txSig, 1); // Pro = 1 SOL
   } catch (err) {
-    return res.status(500).json({ error: "Failed to verify transaction: " + err.message });
+    return res.status(400).json({ error: err.message });
   }
   await saveUser(wallet, { tier: "pro", paid: true, proTx: txSig });
   res.json({ ok: true, tier: "pro" });
 });
 
+app.post("/api/access/activate-vip", async (req, res) => {
+  const { wallet, txSig } = req.body;
+  if (!wallet || !txSig) return res.status(400).json({ error: "wallet and txSig required" });
+  try {
+    await verifyPayment(wallet, txSig, 10); // VIP = 10 SOL
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+  await saveUser(wallet, { tier: "vip", paid: true, whitelisted: true, vipTx: txSig });
+  res.json({ ok: true, tier: "vip" });
+});
+
 app.get("/api/pricing", (req, res) => {
   res.json({
-    free: { fee: "25% of profit", label: "Free — 25% profit share" },
-    pro: { fee: "0%", price: "10 SOL one-time", label: "Pro — 0% fee" },
-    vip: { fee: "0%", label: "VIP — Whitelisted" },
+    free: { fee: "25% of profit", price: "0 SOL", label: "Free — 25% profit share" },
+    pro: { fee: "0%", price: "1 SOL", label: "Pro — 0% fee" },
+    vip: { fee: "0%", price: "10 SOL", label: "VIP — full sovereignty" },
     platformWallet: PLATFORM_WALLET,
   });
 });

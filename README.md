@@ -291,7 +291,7 @@ GET /api/chart-patterns/recent → { charts: [...snapshots] }
 
 ## Tier System
 
-| Feature | Free | Pro (10 SOL) | VIP (Whitelisted) |
+| Feature | Free | Pro (1 SOL) | VIP (10 SOL) |
 |---|---|---|---|
 | Radar + Auto-Ape | Yes | Yes | Yes |
 | Intel scoring | Yes | Yes | Yes |
