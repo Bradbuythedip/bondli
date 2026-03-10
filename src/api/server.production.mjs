@@ -39,6 +39,7 @@ import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, PLATFORM_
 import CONFIG from "../engine/config.mjs";
 import { MemeIntelligence } from "../engine/meme-intelligence.mjs";
 import { XSocialIntel } from "../engine/x-social-intel.mjs";
+import { HistoricalMovers } from "../engine/historical-movers.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -88,6 +89,7 @@ if (REDIS_URL) {
 const sessionManager = new SessionManager(redis);
 const fleetTrader = new FleetTrader();
 const memeIntel = new MemeIntelligence(redis);
+const historicalMovers = new HistoricalMovers(redis);
 const xSocial = new XSocialIntel();
 
 // Register owner wallet
@@ -1581,6 +1583,25 @@ app.get("/api/search", (req, res) => {
     .slice(0, 20)
     .map(t => ({ ca: t.ca, name: t.name, ticker: t.ticker, image: t.image, mcapUsd: t.mcapUsd }));
   res.json({ results });
+});
+
+// ═══════════════════════════════════════
+// ROUTES: HISTORICAL MOVERS (DexScreener + Birdeye)
+// ═══════════════════════════════════════
+app.get("/api/movers", async (req, res) => {
+  try {
+    const tf = req.query.timeframe || "24h";
+    const data = await historicalMovers.getMovers(tf);
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/movers/token/:ca", async (req, res) => {
+  try {
+    const data = await historicalMovers.getTokenDetail(req.params.ca);
+    if (!data) return res.status(404).json({ error: "Token not found" });
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get("/api/analyze/:ca", (req, res) => {
