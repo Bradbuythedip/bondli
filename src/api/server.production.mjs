@@ -1924,8 +1924,28 @@ function startAutoTrader(wallet, settings) {
         return null;
       }
 
-      // Helper: remove position and add to cooldown
-      function exitPosition(ca) {
+      // Helper: remove position and add to cooldown + recently closed
+      function exitPosition(ca, exitPct, exitReason) {
+        const pos = state.positions.get(ca);
+        if (pos) {
+          const token = radar.tokens.get(ca);
+          const currentMcap = token?.mcapUsd || 0;
+          const changePct = pos.entryMcap > 0 ? ((currentMcap - pos.entryMcap) / pos.entryMcap) * 100 : 0;
+          if (!state.recentlyClosed) state.recentlyClosed = [];
+          state.recentlyClosed.push({
+            ca, name: token?.name || ca.slice(0, 8),
+            entrySol: pos.entrySol, entryMcap: pos.entryMcap, exitMcap: currentMcap,
+            changePct: +changePct.toFixed(1),
+            pnlSol: +(pos.entrySol * (changePct / 100)).toFixed(4),
+            exitReason: exitReason || "unknown",
+            exitTime: Date.now(),
+            age: Math.round((Date.now() - pos.entryTime) / 60000),
+            entryScore: pos.entryScore || 0,
+            exitScore: pos.liveScore || pos.entryScore || 0,
+          });
+          // Keep only last 20 closed positions, remove entries older than 5 min
+          state.recentlyClosed = state.recentlyClosed.filter(p => Date.now() - p.exitTime < 300000).slice(-20);
+        }
         state.positions.delete(ca);
         const cd = soldCooldowns.get(wallet) || new Map();
         cd.set(ca, Date.now());
@@ -1997,7 +2017,7 @@ function startAutoTrader(wallet, settings) {
                 log(`CRASH EXIT ${ca.slice(0,6)}: score v=${dyn.velocity}/s a=${dyn.acceleration}/s² trend=CRASHING — FULL SELL`);
                 const sig = await execSell(ca, 100, kp, "crash-exit");
                 if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "CRASH", reason: "score-crashing", velocity: dyn.velocity } });
-                exitPosition(ca);
+                exitPosition(ca, 100, "crash-exit");
                 trackSell(wallet, ca);
                 continue;
               }
@@ -2017,7 +2037,7 @@ function startAutoTrader(wallet, settings) {
                 log(`MOMENTUM EXIT ${ca.slice(0,6)}: score ${pos.entryScore}→${currentScore} (−${scoreDrop}) — FULL SELL`);
                 const sig = await execSell(ca, 100, kp, "momentum-exit");
                 if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOMENTUM", reason: "score-crash" } });
-                exitPosition(ca);
+                exitPosition(ca, 100, "momentum-exit");
                 trackSell(wallet, ca);
                 continue;
               } else if (scoreDrop >= 20) {
@@ -2108,14 +2128,14 @@ function startAutoTrader(wallet, settings) {
             log(`Moonbag dead ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — full exit`);
             const sig = await execSell(ca, 100, kp, "moonbag-dead");
             if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "moonbag-dead" } });
-            exitPosition(ca);
+            exitPosition(ca, 100, "moonbag-dead");
             trackSell(wallet, ca);
           } else if (fromPeak > 60 && changePct > 30) {
             // Moonbag was running hard but pulled back significantly — take remaining profit
             log(`Moonbag trail ${ca.slice(0,6)}: +${changePct.toFixed(0)}% (−${fromPeak.toFixed(0)}% from peak) — exit moonbag`);
             const sig = await execSell(ca, 100, kp, "moonbag-trail");
             if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "moonbag-trail" } });
-            exitPosition(ca);
+            exitPosition(ca, 100, "moonbag-trail");
             trackSell(wallet, ca);
           }
         }
@@ -2124,7 +2144,7 @@ function startAutoTrader(wallet, settings) {
           log(`SL2 ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — full exit`);
           const sig = await execSell(ca, 100, kp, "SL2");
           if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "SL2", reason: "stop-loss" } });
-          exitPosition(ca);
+          exitPosition(ca, 100, "SL2");
           trackSell(wallet, ca);
         }
         // SL1: Reduce exposure — sell sl1Sell% to cut risk
@@ -2461,6 +2481,7 @@ app.get("/api/auto-trade/status", (req, res) => {
       };
     }),
     log: state.log.slice(-20),
+    recentlyClosed: (state.recentlyClosed || []).filter(p => Date.now() - p.exitTime < 300000),
   });
 });
 
