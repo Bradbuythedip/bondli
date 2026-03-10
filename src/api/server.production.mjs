@@ -1707,25 +1707,27 @@ app.post("/api/sell-all", async (req, res) => {
 // Monitors intel scores, auto-buys green tokens, auto-sells on profit/loss
 // ═══════════════════════════════════════
 const autoTraders = new Map(); // wallet → { settings, positions, interval, log }
+const soldCooldowns = new Map(); // wallet → Map(ca → timestamp) — prevent re-buying recently sold tokens
 
 function startAutoTrader(wallet, settings) {
   if (autoTraders.has(wallet)) stopAutoTrader(wallet);
+  if (!soldCooldowns.has(wallet)) soldCooldowns.set(wallet, new Map());
   const state = {
     settings: {
-      minScore: settings.minScore || 65,
+      minScore: settings.minScore || 70,
       solPerTrade: settings.solPerTrade || 0.05,
-      maxPositions: settings.maxPositions || 5,
+      maxPositions: settings.maxPositions || 3,
       // 3 Take Profit tiers: sell % of remaining at each level
-      tp1: settings.tp1 || 50,         // TP1 trigger: +50%
+      tp1: settings.tp1 || 35,         // TP1 trigger: +35% (take profit earlier)
       tp1Sell: settings.tp1Sell || 50,  // sell 50% at TP1
-      tp2: settings.tp2 || 100,        // TP2 trigger: +100%
+      tp2: settings.tp2 || 80,         // TP2 trigger: +80%
       tp2Sell: settings.tp2Sell || 30,  // sell 30% of remaining at TP2
-      tp3: settings.tp3 || 200,        // TP3 trigger: +200% (runner)
+      tp3: settings.tp3 || 150,        // TP3 trigger: +150% (runner)
       tp3Sell: settings.tp3Sell || 50,  // sell 50% of remaining, rest = moonbag
-      // 2 Stop Loss tiers
-      sl1: settings.sl1 || 25,         // SL1 trigger: -25%
-      sl1Sell: settings.sl1Sell || 50,  // sell 50% to reduce exposure
-      sl2: settings.sl2 || 50,         // SL2 trigger: -50% full exit
+      // 2 Stop Loss tiers — TIGHTER defaults to cut losses faster
+      sl1: settings.sl1 || 15,         // SL1 trigger: -15% (was -25%)
+      sl1Sell: settings.sl1Sell || 60,  // sell 60% to reduce exposure (was 50%)
+      sl2: settings.sl2 || 30,         // SL2 trigger: -30% full exit (was -50%)
       requireBoosted: settings.requireBoosted || false,
       momentumExit: settings.momentumExit !== false, // default ON — auto-tighten stops on score drop
       enabled: true,
@@ -1733,6 +1735,7 @@ function startAutoTrader(wallet, settings) {
     positions: new Map(), // ca → { entryMcap, entrySol, entryTime, peakMcap, tpHit, slHit }
     log: [],
     interval: null,
+    lastActivity: Date.now(), // track last user interaction for auto-stop
   };
 
   const log = (msg) => {
@@ -1766,6 +1769,14 @@ function startAutoTrader(wallet, settings) {
           }
         } catch (e) { log(`Sell error ${ca.slice(0,6)} (${reason}): ${e.message}`); }
         return null;
+      }
+
+      // Helper: remove position and add to cooldown
+      function exitPosition(ca) {
+        state.positions.delete(ca);
+        const cd = soldCooldowns.get(wallet) || new Map();
+        cd.set(ca, Date.now());
+        soldCooldowns.set(wallet, cd);
       }
 
       // ── Check existing positions for tiered TP/SL ──
@@ -1819,7 +1830,7 @@ function startAutoTrader(wallet, settings) {
                 log(`MOMENTUM EXIT ${ca.slice(0,6)}: score ${pos.entryScore}→${currentScore} (−${scoreDrop}) — FULL SELL`);
                 const sig = await execSell(ca, 100, kp, "momentum-exit");
                 if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOMENTUM", reason: "score-crash" } });
-                state.positions.delete(ca);
+                exitPosition(ca);
                 trackSell(wallet, ca);
                 continue;
               } else if (scoreDrop >= 20) {
@@ -1901,7 +1912,7 @@ function startAutoTrader(wallet, settings) {
           log(`Moonbag dead ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — full exit`);
           const sig = await execSell(ca, 100, kp, "moonbag-dead");
           if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "moonbag-dead" } });
-          state.positions.delete(ca);
+          exitPosition(ca);
           trackSell(wallet, ca);
         }
         // SL2: Full exit
@@ -1909,7 +1920,7 @@ function startAutoTrader(wallet, settings) {
           log(`SL2 ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — full exit`);
           const sig = await execSell(ca, 100, kp, "SL2");
           if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "SL2", reason: "stop-loss" } });
-          state.positions.delete(ca);
+          exitPosition(ca);
           trackSell(wallet, ca);
         }
         // SL1: Reduce exposure — sell sl1Sell% to cut risk
@@ -1926,9 +1937,24 @@ function startAutoTrader(wallet, settings) {
 
       // Look for new tokens to ape
       if (state.positions.size >= state.settings.maxPositions) return;
-      const tokens = [...radar.tokens.values()].filter(t => t.mcapUsd > 3000 && t.buys >= 2);
+
+      // Clean expired cooldowns (older than 30min)
+      const cd = soldCooldowns.get(wallet);
+      if (cd) for (const [c, t] of cd) { if (Date.now() - t > 1800000) cd.delete(c); }
+
+      const tokens = [...radar.tokens.values()].filter(t => {
+        const mc = t.mcapUsd || 0;
+        const buys = t.buys || 0;
+        const ub = t.uniqueBuyers?.size || 0;
+        const ageMin = (Date.now() - t.createdAt) / 60000;
+        const sells = t.sells || 0;
+        // Base filters: mcap > $5k, 5+ buys, 3+ unique buyers, token at least 2min old, sells < buys
+        return mc > 5000 && buys >= 5 && ub >= 3 && ageMin >= 2 && sells <= buys * 0.8;
+      });
       const hot = tokens.filter(t => {
         if (state.positions.has(t.ca)) return false;
+        // Don't re-buy tokens we recently sold (30min cooldown)
+        if (cd?.has(t.ca)) return false;
         const buys = t.buys || 0; const ub = t.uniqueBuyers?.size || 0; const vol = t.volumeSol || 0;
         const mc = t.mcapUsd || 0; const sells = t.sells || 0;
         const ageMin = Math.max(0.5, (Date.now() - t.createdAt) / 60000);
@@ -1937,39 +1963,48 @@ function startAutoTrader(wallet, settings) {
         // ═══ HARD RUG GATE — reject obvious rugs before scoring ═══
         const qf = extractQuickFeatures(t);
         if (qf) {
-          // Dev dumped fast → instant reject
-          if (qf.rg_devSellSpeed > 0.7) return false;
+          // Dev dumped at all → instant reject (lowered from 0.7)
+          if (qf.rg_devSellSpeed > 0.4) return false;
           if (qf._rg_devSelfSnipe > 0) return false;
-          // Mcap already crashed 60%+ from peak → dead token
-          if (qf.rg_mcapDropRate > 0.6) return false;
-          // Coordinated dump detected → cabal exit
-          if (qf.rg_coordDumpScore > 0.6) return false;
-          // Pump-and-dump sparkline pattern
-          if (qf._rg_pumpDump > 0.7) return false;
-          // Heavy sybil activity (fake buyers)
-          if (qf._rg_sybilScore > 0.6) return false;
-          // Early mass dump in first 2 min
-          if (qf._rg_earlyDump > 0.5 && ageMin < 5) return false;
-          // Quick-flip wallets dominating (buy & sell within 60s)
-          if (qf._rg_quickFlipRate > 0.4) return false;
-          // Top 3 wallets own 80%+ of supply → whale rug risk
-          if (qf.rg_holderConcentration > 0.8 && buys > 5) return false;
-          // Sell volume exceeding buy volume significantly
-          if (qf.rg_liqRemovalSpeed > 0.85) return false;
+          // Mcap already crashed 40%+ from peak → dying token (lowered from 60%)
+          if (qf.rg_mcapDropRate > 0.4) return false;
+          // Coordinated dump detected → cabal exit (lowered from 0.6)
+          if (qf.rg_coordDumpScore > 0.35) return false;
+          // Pump-and-dump sparkline pattern (lowered from 0.7)
+          if (qf._rg_pumpDump > 0.5) return false;
+          // Sybil activity (fake buyers) (lowered from 0.6)
+          if (qf._rg_sybilScore > 0.4) return false;
+          // Early dump in first 5 min (lowered from 0.5)
+          if (qf._rg_earlyDump > 0.3 && ageMin < 5) return false;
+          // Quick-flip wallets (lowered from 0.4)
+          if (qf._rg_quickFlipRate > 0.25) return false;
+          // Top 3 wallets own 70%+ of supply (lowered from 0.8)
+          if (qf.rg_holderConcentration > 0.7 && buys > 5) return false;
+          // Sell volume exceeding buy volume (lowered from 0.85)
+          if (qf.rg_liqRemovalSpeed > 0.65) return false;
+          // NEW: Composite rug risk — if multiple moderate signals fire, reject
+          const rugSignals = [
+            qf.rg_devSellSpeed > 0.25, qf.rg_coordDumpScore > 0.2,
+            qf._rg_sybilScore > 0.25, qf._rg_quickFlipRate > 0.15,
+            qf.rg_holderConcentration > 0.6, qf._rg_earlyDump > 0.2,
+            qf.rg_mcapDropRate > 0.25, qf._rg_pumpDump > 0.3,
+          ].filter(Boolean).length;
+          if (rugSignals >= 3) return false; // 3+ moderate rug signals = too risky
         }
 
-        // Buy activity (log-scaled to avoid spam bias)
-        const buyScore = Math.min(15, Math.log2(buys + 1) * 2.5);
+        // Buy activity (log-scaled to avoid spam bias) — require more conviction
+        const buyScore = Math.min(12, Math.log2(buys + 1) * 2);
         const ubScore = Math.min(12, Math.log2(ub + 1) * 2);
         const volScore = Math.min(10, Math.log10(vol * 100 + 1) * 3);
 
-        // MC scoring: FAVOR LOW MC (that's where the money is)
+        // MC scoring: Sweet spot is $15k-$50k (survived initial dump, still has room)
+        // Tokens under $10k are highest rug risk — most rugs die here
         const mcScore = mc >= gradMcUsd() ? 3 :
-                        mc >= 30000 ? 5 :
+                        mc >= 50000 ? 5 :
+                        mc >= 30000 ? 8 :
                         mc >= 15000 ? 10 :
-                        mc >= 8000  ? 12 :
-                        mc >= 5000  ? 10 :
-                        mc >= 3000  ? 6 : 0;
+                        mc >= 8000  ? 6 :
+                        mc >= 5000  ? 3 : 0;
 
         // GREEN detection: is MC growing? (sparkline trend)
         const spark = t.spark || [];
@@ -1991,23 +2026,23 @@ function startAutoTrader(wallet, settings) {
         // Buy velocity: fast buys = hype
         const velocityScore = Math.min(8, (buys / ageMin) * 2);
 
-        // Penalties (strengthened)
-        const sellPenalty = sells > buys * 0.7 ? Math.min(15, (sells - buys * 0.5) * 2) : 0;
-        // Graduated rug penalty: scale with severity
+        // Penalties (aggressive — better to miss a play than to get rugged)
+        const sellPenalty = sells > buys * 0.5 ? Math.min(20, (sells - buys * 0.3) * 3) : 0;
+        // Graduated rug penalty: scale with severity — all thresholds lowered
         let rugPenalty = 0;
         if (qf) {
-          // Composite rug score from all signals
-          rugPenalty += qf.rg_devSellSpeed > 0.3 ? 12 : 0;          // dev selling (but not fast enough to hard-reject)
-          rugPenalty += qf.rg_coordDumpScore > 0.3 ? 10 : 0;        // some coordinated sells
-          rugPenalty += qf.rg_mcapDropRate > 0.3 ? 8 : 0;           // some mcap decline
-          rugPenalty += qf._rg_quickFlipRate > 0.2 ? 8 : 0;         // quick flippers present
-          rugPenalty += qf._rg_sybilScore > 0.3 ? 8 : 0;            // some sybil activity
-          rugPenalty += qf.rg_holderConcentration > 0.6 ? 6 : 0;    // whale-heavy
-          rugPenalty += qf._rg_earlyDump > 0.3 ? 6 : 0;             // early selling
-          rugPenalty += sellVol > vol * 0.5 ? 5 : 0;                 // sell pressure
+          rugPenalty += qf.rg_devSellSpeed > 0.15 ? 15 : 0;          // any dev selling is bad
+          rugPenalty += qf.rg_coordDumpScore > 0.15 ? 12 : 0;        // coordinated sells
+          rugPenalty += qf.rg_mcapDropRate > 0.2 ? 10 : 0;           // mcap declining
+          rugPenalty += qf._rg_quickFlipRate > 0.1 ? 10 : 0;         // quick flippers
+          rugPenalty += qf._rg_sybilScore > 0.2 ? 10 : 0;            // sybil bots
+          rugPenalty += qf.rg_holderConcentration > 0.5 ? 8 : 0;     // whale-heavy
+          rugPenalty += qf._rg_earlyDump > 0.15 ? 8 : 0;             // early selling
+          rugPenalty += sellVol > vol * 0.3 ? 8 : 0;                  // sell pressure
+          rugPenalty += qf._rg_pumpDump > 0.2 ? 10 : 0;              // pump-dump pattern
         } else {
-          rugPenalty = (sellVol > vol * 0.8 && sells > 5) ? 20 :
-                       (sells > buys * 1.5) ? 15 : 0;
+          rugPenalty = (sellVol > vol * 0.5 && sells > 3) ? 25 :
+                       (sells > buys * 1.2) ? 20 : 0;
         }
 
         const dexBoost = radar.dexBoosted.get(t.ca);
@@ -2027,14 +2062,16 @@ function startAutoTrader(wallet, settings) {
         return t._apeScore >= state.settings.minScore;
       }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
 
-      for (const t of hot.slice(0, 3)) {
+      // Only ape into the single best candidate per cycle (was 3 — too aggressive)
+      for (const t of hot.slice(0, 1)) {
         if (state.positions.size >= state.settings.maxPositions) break;
         // Check balance
         let balance = 0;
         try { balance = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL; } catch { continue; }
         if (balance < state.settings.solPerTrade + 0.01) { log("Low balance: " + balance.toFixed(4)); break; }
 
-        log(`APE ${t.name||t.ca.slice(0,6)} | MC:$${t.mcapUsd} | ${state.settings.solPerTrade} SOL`);
+        const rugFlags = t._rugFlags?.length > 0 ? ` [WARN: ${t._rugFlags.join(",")}]` : "";
+        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${state.settings.solPerTrade} SOL${rugFlags}`);
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -2049,22 +2086,36 @@ function startAutoTrader(wallet, settings) {
               state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: state.settings.solPerTrade, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0 });
               trackBuy(wallet, t.ca, state.settings.solPerTrade); // instant bags visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
-              broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: state.settings.solPerTrade, mcap: t.mcapUsd, wallet } });
+              broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: state.settings.solPerTrade, mcap: t.mcapUsd, wallet, score: t._apeScore } });
             }
           }
         } catch (e) { log(`Buy error: ${e.message}`); }
+      }
+
+      // ═══ AUTO-STOP: if no user interaction for 2 hours, pause auto-trader ═══
+      if (Date.now() - state.lastActivity > 7200000) {
+        log("AUTO-PAUSED: no user activity for 2h — pausing to protect funds");
+        state.settings.enabled = false;
+        broadcastWS({ event: "auto-paused", data: { wallet, reason: "inactivity" } });
       }
     } catch (e) { log(`Loop error: ${e.message}`); }
   }, 15000); // check every 15s
 
   autoTraders.set(wallet, state);
-  log("Auto-ape started: minScore=" + state.settings.minScore + " sol=" + state.settings.solPerTrade + " TP=" + state.settings.takeProfitPct + "% SL=" + state.settings.stopLossPct + "%");
+  log("Auto-ape started: minScore=" + state.settings.minScore + " sol=" + state.settings.solPerTrade + " TP1=" + state.settings.tp1 + "% SL1=" + state.settings.sl1 + "% SL2=" + state.settings.sl2 + "% maxPos=" + state.settings.maxPositions);
   return state;
 }
 
 function stopAutoTrader(wallet) {
   const state = autoTraders.get(wallet);
-  if (state) { clearInterval(state.interval); state.settings.enabled = false; }
+  if (state) {
+    clearInterval(state.interval);
+    state.settings.enabled = false;
+    // Add all current positions to cooldown so they aren't re-bought if restarted
+    const cd = soldCooldowns.get(wallet) || new Map();
+    for (const ca of state.positions.keys()) cd.set(ca, Date.now());
+    soldCooldowns.set(wallet, cd);
+  }
   autoTraders.delete(wallet);
 }
 
@@ -2126,6 +2177,7 @@ app.post("/api/auto-trade/update", async (req, res) => {
   const { wallet, settings } = req.body;
   const state = autoTraders.get(wallet);
   if (!state) return res.status(404).json({ error: "No auto-trader running" });
+  state.lastActivity = Date.now();
   const prev = { ...state.settings };
   Object.assign(state.settings, settings);
   // Log what changed so it shows live in Intel log
@@ -2143,6 +2195,8 @@ app.get("/api/auto-trade/status", (req, res) => {
   const wallet = req.query.wallet;
   const state = autoTraders.get(wallet);
   if (!state) return res.json({ active: false });
+  // User is still polling — keep trader alive
+  state.lastActivity = Date.now();
   res.json({
     active: state.settings.enabled,
     settings: state.settings,

@@ -587,7 +587,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",padding:"3px 0",bo
 {user?.pubkey&&!user.demo&&trW&&(()=>{
 const aaOpen=autoTrade?.open||autoTrade?.active;
 const aaActive=autoTrade?.active;
-const S=autoTrade?.settings||{minScore:65,solPerTrade:0.05,maxPositions:5,tp1:50,tp1Sell:50,tp2:100,tp2Sell:30,tp3:200,tp3Sell:20,sl1:25,sl1Sell:50,sl2:50,momentumExit:true};
+const S=autoTrade?.settings||{minScore:70,solPerTrade:0.05,maxPositions:3,tp1:35,tp1Sell:50,tp2:80,tp2Sell:30,tp3:150,tp3Sell:50,sl1:15,sl1Sell:60,sl2:30,momentumExit:true};
 const adj=(k,step,mn,mx)=>{const cur=S[k]??0;const nv=Math.max(mn,Math.min(mx,+(cur+step).toFixed(4)));sAutoTrade(p=>({...p,settings:{...p.settings,[k]:nv}}))};
 /* Auto-balance TP sell %s to always total 100%.
    When one changes, the others shrink/grow proportionally.
