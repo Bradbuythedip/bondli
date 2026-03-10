@@ -36,6 +36,12 @@ stop:({s:z=12,c="#ff1744"})=><svg width={z} height={z} viewBox="0 0 24 24" fill=
 sim:({s:z=16,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
 sol:({s:z=12})=><svg width={z} height={z} viewBox="0 0 398 312" fill="none"><defs><linearGradient id="sl" x1="360" y1="14" x2="42" y2="298"><stop stopColor="#00FFA3"/><stop offset="1" stopColor="#DC1FFF"/></linearGradient></defs><path d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7z" fill="url(#sl)"/><path d="M64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8z" fill="url(#sl)"/><path d="M333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.7z" fill="url(#sl)"/></svg>,
 close:({s:z=14,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
+brain:({s:z=20,c="#b388ff"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><path d="M12 2a5 5 0 014.78 3.53A4.5 4.5 0 0121 9.5a4.5 4.5 0 01-2.5 4A5 5 0 0112 18"/><path d="M12 2a5 5 0 00-4.78 3.53A4.5 4.5 0 003 9.5a4.5 4.5 0 002.5 4A5 5 0 0012 18"/><path d="M12 18v4"/><path d="M8 14c1-1.5 3-2 4-2s3 .5 4 2"/></svg>,
+chart:({s:z=20,c="#00e676"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><line x1="16" y1="7" x2="22" y2="7"/><line x1="22" y1="7" x2="22" y2="13"/></svg>,
+scan:({s:z=20,c="#00bcd4"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><path d="M3 7V5a2 2 0 012-2h2"/><path d="M17 3h2a2 2 0 012 2v2"/><path d="M21 17v2a2 2 0 01-2 2h-2"/><path d="M7 21H5a2 2 0 01-2-2v-2"/><circle cx="12" cy="12" r="3"/><path d="M12 5v2M12 17v2M5 12h2M17 12h2"/></svg>,
+bolt:({s:z=20,c="#ffd600"})=><svg width={z} height={z} viewBox="0 0 24 24" fill={c} stroke="none"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>,
+fleet:({s:z=20,c="#ff1744"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><circle cx="8" cy="8" r="3"/><circle cx="16" cy="8" r="3"/><circle cx="12" cy="16" r="3"/><path d="M10.5 9.5l1 4.5M13.5 9.5l-1 4.5M5.5 9.5l4.5 5M18.5 9.5l-4.5 5"/></svg>,
+eye:({s:z=20,c="#ff9800"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><path d="M12 5v-.5M12 19v.5" strokeDasharray="2 2"/></svg>,
 };
 const Sp=({s:z=12,c})=><svg width={z} height={z} viewBox="0 0 24 24" style={{animation:"sp .7s linear infinite"}}><circle cx="12" cy="12" r="10" fill="none" stroke={c||"#00e676"} strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round"/></svg>;
 const Av=({pk,s:z=18})=>{const h=hW(pk||"x"),hu=h%360;return<svg width={z} height={z}><rect width={z} height={z} rx={z*.25} fill={`hsl(${hu},55%,42%)`}/></svg>};
@@ -222,66 +228,81 @@ const quickSell=async(ca,pct)=>{if(!user?.pubkey)return;const r=await a.qs(user.
 
 if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHeight:"100dvh",background:T.bg,fontFamily:M,overflow:"auto"}}>
 {/* ═══ HERO ═══ */}
-<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:mb?"60px 16px 40px":"80px 20px 50px",textAlign:"center"}}>
-<div style={{animation:"pf 3s ease infinite",marginBottom:20}}><Logo s={mb?44:56}/></div>
-<div style={{fontWeight:900,fontSize:mb?42:64,letterSpacing:"-.03em",lineHeight:1,marginBottom:8}}>BOND<span style={{color:T.rd}}>LI</span></div>
-<div style={{fontSize:mb?18:24,color:T.dm,marginBottom:6,maxWidth:500}}>AI-powered trading engine for pump.fun</div>
-<div style={{fontSize:mb?12:14,color:T.ft,marginBottom:32,maxWidth:440,lineHeight:1.5}}>Real-time intel scoring, auto-ape with momentum exits, chart pattern learning, and fleet coordination — all from one wallet connect.</div>
-<B onClick={connect} style={{padding:"16px 40px",fontSize:20,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)",animation:"gl 3s infinite"}}><IC.ph/> Connect Wallet</B>
-<button onClick={()=>sU({pubkey:"demo",tier:"demo",demo:true})} style={{marginTop:10,background:"none",border:"none",fontSize:14,color:T.ft,cursor:"pointer",textDecoration:"underline",textUnderlineOffset:3}}>try demo mode</button>
+<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:mb?"60px 16px 40px":"90px 20px 50px",textAlign:"center"}}>
+<div style={{animation:"pf 3s ease infinite",marginBottom:20}}><Logo s={mb?48:64}/></div>
+<div style={{fontWeight:900,fontSize:mb?44:72,letterSpacing:"-.04em",lineHeight:1,marginBottom:10}}>BOND<span style={{color:T.rd}}>LI</span></div>
+<div style={{fontSize:mb?16:20,color:T.dm,marginBottom:8,maxWidth:520,letterSpacing:".01em"}}>The network doesn't sleep. Neither does your edge.</div>
+<div style={{fontSize:mb?12:14,color:T.ft,marginBottom:36,maxWidth:460,lineHeight:1.6}}>A peer-to-peer intelligence engine that watches every trade, scores every token, learns from every outcome, and exits before the rug. No intermediaries. No trust required. Just math.</div>
+<B onClick={connect} style={{padding:"16px 44px",fontSize:20,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)",animation:"gl 3s infinite",letterSpacing:".02em"}}><IC.ph/> Enter</B>
+<button onClick={()=>sU({pubkey:"demo",tier:"demo",demo:true})} style={{marginTop:12,background:"none",border:"none",fontSize:13,color:T.ft,cursor:"pointer",textDecoration:"underline",textUnderlineOffset:3,letterSpacing:".02em"}}>verify for yourself — demo mode</button>
+</div>
+
+{/* ═══ THESIS ═══ */}
+<div style={{maxWidth:640,margin:"0 auto",padding:mb?"0 16px 32px":"0 20px 48px",textAlign:"center"}}>
+<div style={{fontSize:mb?13:15,color:T.dm,lineHeight:1.8,fontStyle:"italic"}}>"The root problem with conventional trading is all the trust that's required. You trust the caller. You trust the chart. You trust that the dev won't dump. What is needed is a system based not on trust, but on cryptographic proof and adversarial analysis."</div>
 </div>
 
 {/* ═══ FEATURE GRID ═══ */}
-<div style={{maxWidth:900,margin:"0 auto",padding:mb?"0 12px 40px":"0 20px 60px"}}>
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:12}}>
+<div style={{maxWidth:920,margin:"0 auto",padding:mb?"0 12px 40px":"0 20px 60px"}}>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:14}}>
 {[
-{icon:"\u{1F9E0}",title:"Meme Intelligence",desc:"40+ feature ML model scores every token in real-time. Learns from outcomes — gets smarter with every trade.",color:T.pu},
-{icon:"\u{1F4C8}",title:"Auto-Ape",desc:"Set min score, SOL per trade, TP/SL tiers — it finds and trades tokens automatically. Momentum exits protect profits.",color:T.gn},
-{icon:"\u{1F50D}",title:"Radar Scanner",desc:"4-tab live scanner: Momentum, Hot, New, Graduating. Scores on 15+ factors including bundle detection and social intel.",color:T.cy||"#00bcd4"},
-{icon:"\u{26A1}",title:"Chart Pattern Learning",desc:"Stores graduated token charts and classifies patterns. Recognizes healthy pumps vs rugs from price shape alone.",color:T.yl},
-{icon:"\u{1F3AF}",title:"Fleet Trading",desc:"Multi-wallet coordination with game theory. Nash equilibrium signals: HOLD, RIDE, SELL_NOW, ACCUMULATE.",color:T.rd},
-{icon:"\u{1F6E1}\uFE0F",title:"Rug Protection",desc:"Dev sell speed, coordinated dumps, sybil detection, holder concentration — 8 rug signals scored in real-time.",color:"#ff9800"},
-].map((f,i)=><div key={i} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:12,padding:mb?"14px 12px":"18px 16px"}}>
-<div style={{fontSize:mb?22:28,marginBottom:6}}>{f.icon}</div>
-<div style={{fontSize:mb?13:15,fontWeight:800,color:f.color,marginBottom:4}}>{f.title}</div>
-<div style={{fontSize:mb?11:12,color:T.dm,lineHeight:1.5}}>{f.desc}</div>
+{ic:<IC.brain s={mb?24:28} c={T.pu}/>,title:"Intelligence Engine",desc:"40+ on-chain features. Learns from every outcome — graduated, rugged, slow bled. The longer it runs, the more it knows. Proof of work, applied to alpha.",color:T.pu},
+{ic:<IC.chart s={mb?24:28} c={T.gn}/>,title:"Autonomous Execution",desc:"Define your parameters. The system finds entries, sizes positions, manages exits. Momentum derivatives detect fading pumps before the score drops. You verify, not operate.",color:T.gn},
+{ic:<IC.scan s={mb?24:28} c={T.cy||"#00bcd4"}/>,title:"Consensus Scanner",desc:"Every new token is scored by the network in real-time. Momentum, volume, social proof, bundle detection — 15+ signals reach consensus on which tokens have genuine demand.",color:T.cy||"#00bcd4"},
+{ic:<IC.bolt s={mb?24:28} c={T.yl}/>,title:"Pattern Memory",desc:"Every chart is stored. Every rug is catalogued. The system classifies price shapes — healthy pumps, sniper spikes, slow grinds, rugs — and uses history to inform the present.",color:T.yl},
+{ic:<IC.fleet s={mb?24:28} c={T.rd}/>,title:"Fleet Coordination",desc:"Multiple wallets, one brain. Each trades independently on-chain — no bundled transactions, no detectable link. Off-chain coordination via game theory. Nash equilibrium, not vibes.",color:T.rd},
+{ic:<IC.eye s={mb?24:28} c="#ff9800"/>,title:"Adversarial Defense",desc:"Dev sell speed. Coordinated dumps. Sybil wallets. Holder concentration. 8 rug vectors scored in real-time. The system assumes every token is hostile until proven otherwise.",color:"#ff9800"},
+].map((f,i)=><div key={i} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:12,padding:mb?"14px 12px":"20px 16px"}}>
+<div style={{marginBottom:8}}>{f.ic}</div>
+<div style={{fontSize:mb?13:15,fontWeight:800,color:f.color,marginBottom:5}}>{f.title}</div>
+<div style={{fontSize:mb?11:12,color:T.dm,lineHeight:1.6}}>{f.desc}</div>
 </div>)}
 </div>
 
 {/* ═══ HOW IT WORKS ═══ */}
-<div style={{marginTop:mb?32:48,textAlign:"center"}}>
-<div style={{fontSize:mb?18:22,fontWeight:800,color:T.tx,marginBottom:20}}>How it works</div>
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr 1fr",gap:mb?6:12}}>
+<div style={{marginTop:mb?36:52,textAlign:"center"}}>
+<div style={{fontSize:mb?18:22,fontWeight:800,color:T.tx,marginBottom:6}}>Trustless by design</div>
+<div style={{fontSize:mb?11:13,color:T.ft,marginBottom:20,maxWidth:400,margin:"0 auto 20px"}}>Four steps. No intermediary at any point. Your keys, your rules.</div>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"1fr 1fr 1fr 1fr",gap:mb?6:12}}>
 {[
-{step:"1",title:"Connect",desc:"Phantom wallet. No sign-up, no email, no KYC."},
-{step:"2",title:"Fund",desc:"Create a trading key, deposit SOL. Your keys, your funds."},
-{step:"3",title:"Configure",desc:"Set min score, SOL/trade, TP/SL. Or use defaults."},
-{step:"4",title:"Profit",desc:"Auto-Ape finds tokens, buys, manages exits. You watch."},
+{step:"1",title:"Connect",desc:"One wallet signature. No sign-up, no email, no KYC. Pseudonymous by default."},
+{step:"2",title:"Fund",desc:"Generate a dedicated trading keypair. Deposit SOL. You hold the private key at all times."},
+{step:"3",title:"Configure",desc:"Set your risk parameters — or accept the defaults. The system is opinionated but overridable."},
+{step:"4",title:"Verify",desc:"Watch the system work. Every entry, every exit, every score — transparent and auditable in real-time."},
 ].map((s,i)=><div key={i} style={{padding:mb?"10px 8px":"16px 12px",textAlign:"center"}}>
 <div style={{width:mb?28:36,height:mb?28:36,borderRadius:"50%",background:"linear-gradient(135deg,#534bb1,#551bf9)",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:mb?14:18,fontWeight:900,color:"#fff",marginBottom:8}}>{s.step}</div>
 <div style={{fontSize:mb?12:14,fontWeight:800,color:T.tx,marginBottom:3}}>{s.title}</div>
-<div style={{fontSize:mb?10:11,color:T.dm,lineHeight:1.4}}>{s.desc}</div>
+<div style={{fontSize:mb?10:11,color:T.dm,lineHeight:1.5}}>{s.desc}</div>
 </div>)}
 </div>
 </div>
 
 {/* ═══ TIERS ═══ */}
-<div style={{marginTop:mb?32:48,display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:12}}>
+<div style={{marginTop:mb?36:52}}>
+<div style={{textAlign:"center",marginBottom:mb?12:20}}>
+<div style={{fontSize:mb?18:22,fontWeight:800,color:T.tx,marginBottom:4}}>Choose your commitment level</div>
+<div style={{fontSize:mb?11:13,color:T.ft}}>The system is the same. The terms differ.</div>
+</div>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:14}}>
 {[
-{tier:"Free",price:"0 SOL",color:T.ft,features:["Radar + Auto-Ape","Up to 2 positions","25% profit share on wins","Full intel scoring"]},
-{tier:"Pro",price:"10 SOL",color:T.pu,features:["Everything in Free","Fleet trading (multi-wallet)","Batch deploy up to 20 tokens","0% profit share","Export private keys"]},
-{tier:"VIP",price:"Whitelisted",color:T.yl,features:["Everything in Pro","Priority support","200 launches/hr rate limit","Early access to new features"]},
-].map((t,i)=><div key={i} style={{background:T.sf,border:"1px solid "+(t.color)+"22",borderRadius:12,padding:mb?"14px 12px":"20px 16px"}}>
-<div style={{fontSize:mb?16:20,fontWeight:900,color:t.color,marginBottom:2}}>{t.tier}</div>
-<div style={{fontSize:mb?11:13,color:T.dm,marginBottom:12}}>{t.price}</div>
-{t.features.map((f,j)=><div key={j} style={{fontSize:mb?10:12,color:T.tx,padding:"3px 0",display:"flex",alignItems:"center",gap:6}}><span style={{color:t.color,fontSize:10}}>+</span>{f}</div>)}
+{tier:"Free",price:"0 SOL",sub:"Start verifying immediately",color:T.ft,features:["Full radar + intelligence scoring","Auto-Ape with momentum exits","Up to 2 concurrent positions","25% profit share on net gains","Zero cost if you lose"]},
+{tier:"Pro",price:"1 SOL",sub:"Remove the training wheels",color:T.pu,features:["Everything in Free","Fleet trading — multi-wallet coordination","Batch deploy up to 20 tokens","0% profit share — you keep everything","Export all private keys"]},
+{tier:"VIP",price:"10 SOL",sub:"Full sovereignty",color:T.yl,features:["Everything in Pro","200 launches/hr rate limit","Priority execution queue","Early access to new systems","Direct line to development"]},
+].map((t,i)=><div key={i} style={{background:T.sf,border:"1px solid "+(t.color)+"22",borderRadius:12,padding:mb?"16px 14px":"22px 18px",position:"relative"}}>
+{i===1&&<div style={{position:"absolute",top:-8,right:12,fontSize:9,fontWeight:900,padding:"2px 8px",borderRadius:4,background:T.pu,color:"#fff",letterSpacing:".05em"}}>POPULAR</div>}
+<div style={{fontSize:mb?18:22,fontWeight:900,color:t.color,marginBottom:1}}>{t.tier}</div>
+<div style={{fontSize:mb?13:16,color:T.tx,fontWeight:800,marginBottom:2}}>{t.price}</div>
+<div style={{fontSize:mb?10:11,color:T.dm,marginBottom:14}}>{t.sub}</div>
+{t.features.map((f,j)=><div key={j} style={{fontSize:mb?10:12,color:T.tx,padding:"4px 0",display:"flex",alignItems:"flex-start",gap:6}}><span style={{color:t.color,fontSize:11,marginTop:1,flexShrink:0}}>+</span><span>{f}</span></div>)}
 </div>)}
+</div>
 </div>
 
 {/* ═══ BOTTOM CTA ═══ */}
-<div style={{marginTop:mb?36:52,textAlign:"center",paddingBottom:20}}>
-<B onClick={connect} style={{padding:"14px 36px",fontSize:18,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)"}}><IC.ph/> Get Started</B>
-<div style={{marginTop:12,fontSize:11,color:T.ft}}>Solana only. Requires Phantom wallet.</div>
+<div style={{marginTop:mb?40:60,textAlign:"center",paddingBottom:28}}>
+<B onClick={connect} style={{padding:"14px 40px",fontSize:18,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)",letterSpacing:".02em"}}><IC.ph/> Enter the Network</B>
+<div style={{marginTop:14,fontSize:11,color:T.ft,lineHeight:1.6}}>Solana. Phantom wallet. Nothing else required.</div>
+<div style={{marginTop:8,fontSize:10,color:T.ft+"88"}}>If you don't believe me or don't get it, I don't have time to try to convince you.</div>
 </div>
 </div>
 </div></TC.Provider>;
