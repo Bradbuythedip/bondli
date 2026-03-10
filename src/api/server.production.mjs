@@ -1626,13 +1626,21 @@ function startAutoTrader(wallet, settings) {
       minScore: settings.minScore || 65,
       solPerTrade: settings.solPerTrade || 0.05,
       maxPositions: settings.maxPositions || 5,
-      takeProfitPct: settings.takeProfitPct || 50,
-      stopLossPct: settings.stopLossPct || 30,
-      moonbagPct: settings.moonbagPct || 25, // keep 25% as moonbag on TP
+      // 3 Take Profit tiers: sell % of remaining at each level
+      tp1: settings.tp1 || 50,         // TP1 trigger: +50%
+      tp1Sell: settings.tp1Sell || 50,  // sell 50% at TP1
+      tp2: settings.tp2 || 100,        // TP2 trigger: +100%
+      tp2Sell: settings.tp2Sell || 30,  // sell 30% of remaining at TP2
+      tp3: settings.tp3 || 200,        // TP3 trigger: +200% (runner)
+      tp3Sell: settings.tp3Sell || 50,  // sell 50% of remaining, rest = moonbag
+      // 2 Stop Loss tiers
+      sl1: settings.sl1 || 25,         // SL1 trigger: -25%
+      sl1Sell: settings.sl1Sell || 50,  // sell 50% to reduce exposure
+      sl2: settings.sl2 || 50,         // SL2 trigger: -50% full exit
       requireBoosted: settings.requireBoosted || false,
       enabled: true,
     },
-    positions: new Map(), // ca → { entryMcap, entrySol, entryTime, peakMcap }
+    positions: new Map(), // ca → { entryMcap, entrySol, entryTime, peakMcap, tpHit, slHit }
     log: [],
     interval: null,
   };
@@ -1650,7 +1658,27 @@ function startAutoTrader(wallet, settings) {
       if (!tw) return;
       const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
 
-      // Check existing positions for TP/SL
+      // ── HELPER: execute a partial sell ──
+      async function execSell(ca, sellPct, kp, reason) {
+        try {
+          const resp = await fetch("https://pumpportal.fun/api/trade-local", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ publicKey: kp.publicKey.toBase58(), action: "sell", mint: ca, amount: sellPct + "%", denominatedInSol: "false", slippage: 30, priorityFee: 0.005, pool: "auto" }),
+          });
+          if (resp.ok) {
+            const txBytes = await resp.arrayBuffer();
+            if (txBytes.byteLength > 100) {
+              const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+              tx.sign([kp]);
+              const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+              return sig;
+            }
+          }
+        } catch (e) { log(`Sell error ${ca.slice(0,6)} (${reason}): ${e.message}`); }
+        return null;
+      }
+
+      // ── Check existing positions for tiered TP/SL ──
       for (const [ca, pos] of state.positions) {
         let token = radar.tokens.get(ca);
 
@@ -1667,111 +1695,94 @@ function startAutoTrader(wallet, settings) {
               }
             }
           } catch {}
-          if (!token) { pos._lastFetchFail = Date.now(); } // don't retry for 5 min
+          if (!token) { pos._lastFetchFail = Date.now(); }
         }
-        // Reset fetch fail after 5 min
         if (pos._lastFetchFail && Date.now() - pos._lastFetchFail > 300000) delete pos._lastFetchFail;
-
         if (!token) continue;
+
         const currentMcap = token.mcapUsd || 0;
         if (pos.entryMcap <= 0) continue;
         const changePct = ((currentMcap - pos.entryMcap) / pos.entryMcap) * 100;
-
-        // Track peak MC for trailing stop and runner detection
         pos.peakMcap = Math.max(pos.peakMcap || pos.entryMcap, currentMcap);
         const fromPeak = pos.peakMcap > 0 ? ((pos.peakMcap - currentMcap) / pos.peakMcap) * 100 : 0;
+        if (!pos.tpHit) pos.tpHit = 0;
+        if (!pos.slHit) pos.slHit = 0;
 
-        // ── RUNNER DETECTION: Is this token running hard? ──
-        const isRunner = changePct >= state.settings.takeProfitPct * 2; // 2x+ TP = runner
-        const moonbagPct = state.settings.moonbagPct || 25; // keep 25% as moonbag
+        const s = state.settings;
 
-        if (changePct >= state.settings.takeProfitPct) {
-          // Decide sell amount: if runner, keep moonbag; if not, sell more but still keep some
-          const sellPct = isRunner ? (100 - moonbagPct) : (100 - Math.floor(moonbagPct / 2));
-
-          // TRAILING STOP for runners: don't sell if still ripping (< 15% from peak)
-          if (isRunner && fromPeak < 15) {
-            log(`RUNNER ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — trailing (${fromPeak.toFixed(0)}% from peak $${pos.peakMcap})`);
-            continue; // let it ride
-          }
-
-          log(`TP hit ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — selling ${sellPct}%${isRunner ? ` (keeping ${moonbagPct}% moonbag)` : ""}`);
-          try {
-            const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ publicKey: tw.pubkey, action: "sell", mint: ca, amount: sellPct + "%", denominatedInSol: "false", slippage: 30, priorityFee: 0.005, pool: "auto" }),
-            });
-            if (sellResp.ok) {
-              const txBytes = await sellResp.arrayBuffer();
-              if (txBytes.byteLength > 100) {
-                const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
-                tx.sign([kp]);
-                const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-                log(`SOLD ${sellPct}% of ${ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
-                broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, sellPct, moonbag: sellPct < 100 } });
-              }
-            }
-          } catch (e) { log(`Sell error ${ca.slice(0,6)}: ${e.message}`); }
-
-          if (sellPct >= 100) {
-            state.positions.delete(ca);
-            trackSell(wallet, ca);
+        // ═══ TAKE PROFIT — 3 tiers ═══
+        // TP3: Runner — sell tp3Sell% of remaining (rest = moonbag forever)
+        if (pos.tpHit < 3 && changePct >= s.tp3) {
+          // Trailing: if still within 15% of peak, let it ride
+          if (fromPeak < 15) {
+            log(`🏃 RUNNER ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — trailing (${fromPeak.toFixed(0)}% from peak)`);
           } else {
-            // Keep moonbag — update entry to current so we don't re-trigger TP immediately
-            pos.entryMcap = currentMcap;
+            log(`TP3 ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — selling ${s.tp3Sell}% (moonbag rest)`);
+            const sig = await execSell(ca, s.tp3Sell, kp, "TP3");
+            if (sig) {
+              broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "TP3", sellPct: s.tp3Sell, moonbag: true } });
+              log(`TP3 SOLD ${s.tp3Sell}% of ${ca.slice(0,6)} — moonbag remaining`);
+            }
+            pos.tpHit = 3;
             pos.isMoonbag = true;
-            pos.moonbagSellPct = sellPct;
           }
-        } else if (changePct <= -state.settings.stopLossPct) {
-          // Don't stop-loss moonbags (we already took profit, let them ride to zero or moon)
-          if (pos.isMoonbag) {
-            if (changePct <= -80) { // only cut moonbag at -80% (basically dead)
-              log(`Moonbag dead ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — cutting`);
-            } else {
-              continue; // let moonbag ride
-            }
-          } else {
-            log(`SL hit ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — cutting loss`);
+        }
+        // TP2: Second target — sell tp2Sell% of remaining
+        else if (pos.tpHit < 2 && changePct >= s.tp2) {
+          log(`TP2 ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — selling ${s.tp2Sell}%`);
+          const sig = await execSell(ca, s.tp2Sell, kp, "TP2");
+          if (sig) {
+            broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "TP2", sellPct: s.tp2Sell } });
+            log(`TP2 SOLD ${s.tp2Sell}% of ${ca.slice(0,6)}`);
           }
-          try {
-            const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ publicKey: tw.pubkey, action: "sell", mint: ca, amount: "100%", denominatedInSol: "false", slippage: 30, priorityFee: 0.005, pool: "auto" }),
-            });
-            if (sellResp.ok) {
-              const txBytes = await sellResp.arrayBuffer();
-              if (txBytes.byteLength > 100) {
-                const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
-                tx.sign([kp]);
-                await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-                log(`SL SOLD ${ca.slice(0,6)}`);
-                broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: pos.isMoonbag ? "moonbag-dead" : "stop-loss" } });
-              }
-            }
-          } catch (e) { log(`SL sell error: ${e.message}`); }
+          pos.tpHit = 2;
+        }
+        // TP1: First profit taking
+        else if (pos.tpHit < 1 && changePct >= s.tp1) {
+          log(`TP1 ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — selling ${s.tp1Sell}%`);
+          const sig = await execSell(ca, s.tp1Sell, kp, "TP1");
+          if (sig) {
+            broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "TP1", sellPct: s.tp1Sell } });
+            log(`TP1 SOLD ${s.tp1Sell}% of ${ca.slice(0,6)}`);
+          }
+          pos.tpHit = 1;
+        }
+        // Trailing stop: dropped 30%+ from peak while still green and hasn't hit TP1 yet
+        else if (fromPeak > 30 && changePct > 10 && pos.tpHit === 0) {
+          log(`Trailing ${ca.slice(0,6)}: +${changePct.toFixed(0)}% (down ${fromPeak.toFixed(0)}% from peak) — selling ${s.tp1Sell}%`);
+          const sig = await execSell(ca, s.tp1Sell, kp, "trailing");
+          if (sig) {
+            broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "TRAIL", sellPct: s.tp1Sell } });
+          }
+          pos.tpHit = 1;
+        }
+
+        // ═══ STOP LOSS — 2 tiers ═══
+        // Moonbags: only cut at -80% (basically dead)
+        if (pos.isMoonbag && changePct <= -80) {
+          log(`Moonbag dead ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — full exit`);
+          const sig = await execSell(ca, 100, kp, "moonbag-dead");
+          if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "moonbag-dead" } });
           state.positions.delete(ca);
           trackSell(wallet, ca);
-        } else if (fromPeak > 30 && changePct > 0 && !pos.isMoonbag) {
-          // TRAILING STOP: dropped 30%+ from peak but still green overall — take profit
-          log(`Trailing stop ${ca.slice(0,6)}: +${changePct.toFixed(0)}% (down ${fromPeak.toFixed(0)}% from peak) — selling ${100 - moonbagPct}%`);
-          try {
-            const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ publicKey: tw.pubkey, action: "sell", mint: ca, amount: (100 - moonbagPct) + "%", denominatedInSol: "false", slippage: 30, priorityFee: 0.005, pool: "auto" }),
-            });
-            if (sellResp.ok) {
-              const txBytes = await sellResp.arrayBuffer();
-              if (txBytes.byteLength > 100) {
-                const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
-                tx.sign([kp]);
-                await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-                log(`TRAILING SOLD ${ca.slice(0,6)}`);
-                broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "trailing-stop", moonbag: true } });
-              }
-            }
-          } catch (e) { log(`Trailing sell error: ${e.message}`); }
-          pos.entryMcap = currentMcap;
-          pos.isMoonbag = true;
+        }
+        // SL2: Full exit
+        else if (!pos.isMoonbag && pos.slHit < 2 && changePct <= -s.sl2) {
+          log(`SL2 ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — full exit`);
+          const sig = await execSell(ca, 100, kp, "SL2");
+          if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "SL2", reason: "stop-loss" } });
+          state.positions.delete(ca);
+          trackSell(wallet, ca);
+        }
+        // SL1: Reduce exposure — sell sl1Sell% to cut risk
+        else if (!pos.isMoonbag && pos.slHit < 1 && changePct <= -s.sl1) {
+          log(`SL1 ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — selling ${s.sl1Sell}% to reduce risk`);
+          const sig = await execSell(ca, s.sl1Sell, kp, "SL1");
+          if (sig) {
+            broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "SL1", sellPct: s.sl1Sell } });
+            log(`SL1 SOLD ${s.sl1Sell}% of ${ca.slice(0,6)}`);
+          }
+          pos.slHit = 1;
         }
       }
 
@@ -1894,6 +1905,42 @@ app.post("/api/auto-trade/stop", async (req, res) => {
   res.json({ ok: true });
 });
 
+// Close all auto-trade positions (sell everything)
+app.post("/api/auto-trade/close", async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+    const state = autoTraders.get(wallet);
+    if (!state) return res.status(404).json({ error: "No auto-trader running" });
+    const tw = await getTradingWallet(wallet);
+    if (!tw) return res.status(400).json({ error: "No trading wallet" });
+    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+    const results = [];
+    for (const [ca, pos] of state.positions) {
+      try {
+        const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ publicKey: tw.pubkey, action: "sell", mint: ca, amount: "100%", denominatedInSol: "false", slippage: 30, priorityFee: 0.005, pool: "auto" }),
+        });
+        if (sellResp.ok) {
+          const txBytes = await sellResp.arrayBuffer();
+          if (txBytes.byteLength > 100) {
+            const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+            tx.sign([kp]);
+            const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+            results.push({ ca, sold: true, sig: sig.slice(0, 12) });
+            broadcastWS({ event: "auto-sell", data: { ca, wallet, reason: "close-all" } });
+          }
+        }
+      } catch (e) { results.push({ ca, sold: false, error: e.message }); }
+      trackSell(wallet, ca);
+    }
+    state.positions.clear();
+    stopAutoTrader(wallet);
+    res.json({ ok: true, closed: results.length, results });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post("/api/auto-trade/update", async (req, res) => {
   const { wallet, settings } = req.body;
   const state = autoTraders.get(wallet);
@@ -1913,7 +1960,16 @@ app.get("/api/auto-trade/status", (req, res) => {
       const token = radar.tokens.get(ca);
       const currentMcap = token?.mcapUsd || 0;
       const changePct = p.entryMcap > 0 ? ((currentMcap - p.entryMcap) / p.entryMcap) * 100 : 0;
-      return { ca, name: token?.name || ca.slice(0, 8), entryMcap: p.entryMcap, currentMcap, peakMcap: p.peakMcap || p.entryMcap, changePct: +changePct.toFixed(1), entrySol: p.entrySol, age: Math.round((Date.now() - p.entryTime) / 60000), isMoonbag: !!p.isMoonbag };
+      return {
+        ca, name: token?.name || ca.slice(0, 8),
+        entryMcap: p.entryMcap, currentMcap,
+        peakMcap: p.peakMcap || p.entryMcap,
+        changePct: +changePct.toFixed(1),
+        entrySol: p.entrySol,
+        age: Math.round((Date.now() - p.entryTime) / 60000),
+        tpHit: p.tpHit || 0, slHit: p.slHit || 0,
+        isMoonbag: !!p.isMoonbag,
+      };
     }),
     log: state.log.slice(-20),
   });
