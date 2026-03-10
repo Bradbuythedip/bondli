@@ -209,7 +209,7 @@ useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null)sOl(d
 useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(d=>sFl(d)).catch(()=>{})},5000);return()=>clearInterval(iv)},[launched,lCA]);
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>r.json()).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
-useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(d)).catch(()=>{});poll();const iv=setInterval(poll,10000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
+useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const iv=setInterval(poll,10000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs)sRT(d.tabs);if(d.poolSize!=null)sRP(d.poolSize);if(d.gradMc)sGradMc(d.gradMc);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,5000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
 useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,10000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.grf(user.pubkey).then(d=>sRefData(d)).catch(()=>{})},[user?.pubkey]);
