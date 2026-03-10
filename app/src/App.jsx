@@ -587,7 +587,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",padding:"3px 0",bo
 {user?.pubkey&&!user.demo&&trW&&(()=>{
 const aaOpen=autoTrade?.open||autoTrade?.active;
 const aaActive=autoTrade?.active;
-const S=autoTrade?.settings||{minScore:65,solPerTrade:0.05,maxPositions:5,tp1:50,tp1Sell:50,tp2:100,tp2Sell:30,tp3:200,tp3Sell:20,sl1:25,sl1Sell:50,sl2:50,momentumExit:true};
+const S=autoTrade?.settings||{minScore:70,solPerTrade:0.05,maxPositions:3,tp1:35,tp1Sell:50,tp2:80,tp2Sell:30,tp3:150,tp3Sell:50,sl1:15,sl1Sell:60,sl2:30,momentumExit:true};
 const adj=(k,step,mn,mx)=>{const cur=S[k]??0;const nv=Math.max(mn,Math.min(mx,+(cur+step).toFixed(4)));sAutoTrade(p=>({...p,settings:{...p.settings,[k]:nv}}))};
 /* Auto-balance TP sell %s to always total 100%.
    When one changes, the others shrink/grow proportionally.
@@ -693,7 +693,7 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 {S.momentumExit&&<div style={{fontSize:mb?8:7,color:T.dm,marginTop:4,lineHeight:1.5}}>Score drops 20+pts → SL tightens 50% • Score drops 30+pts → immediate sell • Re-scores every 15s from live radar data</div>}
 </div>
 {/* APPLY button when settings changed while active */}
-{aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:8}}>APPLY CHANGES</button>}
+{aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);sAutoTrade(p=>({...p,log:[...(p?.log||[]),{msg:"Settings applied",time:Date.now()}]}));toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:8}}>APPLY CHANGES</button>}
 {/* Positions */}
 {autoTrade?.positions?.length>0&&<div style={{marginBottom:6}}><div style={{fontSize:mb?10:9,fontWeight:700,color:T.ft,marginBottom:4}}>Positions ({autoTrade.positions.length})</div>{autoTrade.positions.map(p=><div key={p.ca} style={{display:"flex",alignItems:"center",gap:5,padding:mb?"5px 0":"3px 0",borderBottom:"1px solid "+T.bd+"44",flexWrap:"wrap"}}>
 <span style={{fontSize:mb?12:11,fontWeight:700,color:T.tx,flex:1,minWidth:60}}>{p.name}</span>
