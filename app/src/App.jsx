@@ -584,59 +584,87 @@ return<div key={i} style={{display:"flex",alignItems:"center",padding:"3px 0",bo
 </div>}
 
 {/* Auto-Ape Settings */}
-{user?.pubkey&&!user.demo&&trW&&<div style={{background:T.sf,border:"1px solid "+(autoTrade?.active?T.gn:T.bd),borderRadius:10,padding:mb?10:16,marginTop:8}}>
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-<div style={{display:"flex",alignItems:"center",gap:6}}><IC.trend s={16} c={autoTrade?.active?T.gn:T.ft}/><span style={{fontSize:15,fontWeight:800}}>Auto-Ape</span>{autoTrade?.active&&<span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}</div>
+{user?.pubkey&&!user.demo&&trW&&(()=>{
+const aaOpen=autoTrade?.open||autoTrade?.active;
+const aaActive=autoTrade?.active;
+const S=autoTrade?.settings||{minScore:65,solPerTrade:0.05,maxPositions:5,tp1:50,tp1Sell:50,tp2:100,tp2Sell:30,tp3:200,tp3Sell:50,sl1:25,sl1Sell:50,sl2:50};
+const adj=(k,step,mn,mx)=>{const cur=S[k]??0;const nv=Math.max(mn,Math.min(mx,+(cur+step).toFixed(4)));sAutoTrade(p=>({...p,settings:{...p.settings,[k]:nv}}))};
+const StepBtn=({k,step,mn,mx,c,fmt})=>{const v=S[k]??0;return<div style={{display:"flex",alignItems:"center",gap:0,background:T.bg,borderRadius:6,overflow:"hidden",border:"1px solid "+(c||T.bd)+"22"}}>
+<button onClick={()=>adj(k,-Math.abs(step),mn,mx)} style={{padding:mb?"10px 12px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?18:14,fontWeight:800,cursor:"pointer",lineHeight:1}}>-</button>
+<div style={{flex:1,textAlign:"center",fontSize:mb?15:13,fontWeight:800,color:c||T.tx,padding:"4px 0",minWidth:mb?44:36}}>{fmt?fmt(v):v}</div>
+<button onClick={()=>adj(k,Math.abs(step),mn,mx)} style={{padding:mb?"10px 12px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?18:14,fontWeight:800,cursor:"pointer",lineHeight:1}}>+</button>
+</div>};
+return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),borderRadius:10,padding:mb?10:16,marginTop:8}}>
+{/* Header + buttons */}
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:aaOpen?8:0}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}><IC.trend s={16} c={aaActive?T.gn:T.ft}/><span style={{fontSize:15,fontWeight:800}}>Auto-Ape</span>{aaActive&&<span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}</div>
 <div style={{display:"flex",gap:4}}>
-{!autoTrade?.active&&<button onClick={async()=>{try{const r=await a.ats(user.pubkey,{minScore:65,solPerTrade:0.05,maxPositions:5,tp1:50,tp1Sell:50,tp2:100,tp2Sell:30,tp3:200,tp3Sell:50,sl1:25,sl1Sell:50,sl2:50});sAutoTrade({active:true,settings:r.settings,positions:[],log:[]});toast("Auto-ape started","success")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 14px",borderRadius:6,border:"none",background:T.gn,color:"#fff",fontWeight:800,fontSize:12,cursor:"pointer"}}>START</button>}
-{autoTrade?.active&&<button onClick={async()=>{try{await a.atp(user.pubkey);sAutoTrade(p=>({...p,active:false}));toast("Auto-ape paused","success")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 14px",borderRadius:6,border:"none",background:T.yl,color:"#000",fontWeight:800,fontSize:12,cursor:"pointer"}}>PAUSE</button>}
-{autoTrade?.active&&<button onClick={async()=>{if(!confirm("Close ALL positions and stop auto-ape?"))return;try{const r=await a.atc(user.pubkey);sAutoTrade({active:false});toast(`Closed ${r.closed||0} positions`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 14px",borderRadius:6,border:"none",background:T.rd,color:"#fff",fontWeight:800,fontSize:12,cursor:"pointer"}}>CLOSE ALL</button>}
+{/* OPEN: expand panel to configure */}
+{!aaOpen&&<button onClick={()=>sAutoTrade(p=>({...p,open:true,settings:p?.settings||S}))} style={{padding:mb?"8px 16px":"6px 14px",borderRadius:6,border:"1px solid "+T.bd,background:T.bg,color:T.tx,fontWeight:800,fontSize:mb?13:12,cursor:"pointer"}}>OPEN</button>}
+{/* START: begin auto-trading */}
+{aaOpen&&!aaActive&&<button onClick={async()=>{try{const r=await a.ats(user.pubkey,S);sAutoTrade({open:true,active:true,settings:r.settings,positions:[],log:[]});toast("Auto-ape started","success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"8px 16px":"6px 14px",borderRadius:6,border:"none",background:T.gn,color:"#fff",fontWeight:800,fontSize:mb?13:12,cursor:"pointer"}}>START</button>}
+{/* PAUSE: stop buying, keep monitoring */}
+{aaActive&&<button onClick={async()=>{try{await a.atp(user.pubkey);sAutoTrade(p=>({...p,active:false,open:true}));toast("Paused — positions still monitored","success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"8px 16px":"6px 14px",borderRadius:6,border:"none",background:T.yl,color:"#000",fontWeight:800,fontSize:mb?13:12,cursor:"pointer"}}>PAUSE</button>}
+{/* CLOSE ALL: sell everything, stop */}
+{aaOpen&&(aaActive||autoTrade?.positions?.length>0)&&<button onClick={async()=>{if(!confirm("Sell ALL positions and stop?"))return;try{const r=await a.atc(user.pubkey);sAutoTrade({open:true,active:false,settings:S,positions:[],log:[]});toast(`Closed ${r.closed||0} positions`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"8px 16px":"6px 14px",borderRadius:6,border:"none",background:T.rd,color:"#fff",fontWeight:800,fontSize:mb?13:12,cursor:"pointer"}}>CLOSE ALL</button>}
+{/* Collapse */}
+{aaOpen&&!aaActive&&<button onClick={()=>sAutoTrade(p=>({...p,open:false}))} style={{padding:mb?"8px 10px":"6px 8px",borderRadius:6,border:"1px solid "+T.bd,background:"none",color:T.ft,fontWeight:800,fontSize:mb?13:11,cursor:"pointer"}}>×</button>}
 </div>
 </div>
-<div style={{fontSize:11,color:T.dm,marginBottom:8}}>Walk away mode: auto-buys green intel tokens with 3 TP tiers + 2 SL levels + moonbags.</div>
-{autoTrade?.active&&<div>
-{/* Core settings row */}
-<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:6}}>
-{[{l:"Min Score",k:"minScore",v:autoTrade.settings?.minScore||65,mn:40,mx:90,st:5},{l:"SOL/Trade",k:"solPerTrade",v:autoTrade.settings?.solPerTrade||0.05,mn:0.01,mx:1,st:0.01},{l:"Max Pos",k:"maxPositions",v:autoTrade.settings?.maxPositions||5,mn:1,mx:15,st:1}].map(s=><div key={s.k} style={{background:T.bg,borderRadius:6,padding:6,textAlign:"center"}}><div style={{fontSize:8,color:T.ft,fontWeight:700}}>{s.l}</div><input type="number" min={s.mn} max={s.mx} step={s.st} value={s.v} onChange={e=>{const v=Number(e.target.value);sAutoTrade(p=>({...p,settings:{...p.settings,[s.k]:v}}));a.atu(user.pubkey,{[s.k]:v}).catch(()=>{})}} style={{width:"100%",padding:4,background:T.sf,border:"1px solid "+T.bd,borderRadius:4,color:T.tx,fontSize:13,fontWeight:800,textAlign:"center",outline:"none",boxSizing:"border-box"}}/></div>)}
+{!aaOpen&&<div style={{fontSize:11,color:T.dm,marginTop:4}}>Walk away mode: auto-buys green tokens, sells at 3 TP / 2 SL tiers.</div>}
+{/* Expanded panel */}
+{aaOpen&&<div>
+<div style={{fontSize:11,color:T.dm,marginBottom:8}}>Configure targets, then hit START. Uses +/- to adjust.</div>
+{/* Core settings */}
+<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
+{[{l:"Min Score",k:"minScore",st:5,mn:40,mx:90},{l:"SOL/Trade",k:"solPerTrade",st:0.01,mn:0.01,mx:1,fmt:v=>v.toFixed(2)},{l:"Max Pos",k:"maxPositions",st:1,mn:1,mx:15}].map(s=><div key={s.k} style={{textAlign:"center"}}><div style={{fontSize:mb?9:8,color:T.ft,fontWeight:700,marginBottom:3}}>{s.l}</div><StepBtn k={s.k} step={s.st} mn={s.mn} mx={s.mx} fmt={s.fmt}/></div>)}
 </div>
-{/* 3 Take Profit tiers */}
-<div style={{fontSize:9,fontWeight:700,color:T.gn,marginBottom:3}}>Take Profit Tiers</div>
-<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:6}}>
-{[{l:"TP1",k:"tp1",sk:"tp1Sell",v:autoTrade.settings?.tp1||50,sv:autoTrade.settings?.tp1Sell||50},{l:"TP2",k:"tp2",sk:"tp2Sell",v:autoTrade.settings?.tp2||100,sv:autoTrade.settings?.tp2Sell||30},{l:"TP3",k:"tp3",sk:"tp3Sell",v:autoTrade.settings?.tp3||200,sv:autoTrade.settings?.tp3Sell||50}].map(t=><div key={t.k} style={{background:T.bg,borderRadius:6,padding:6,textAlign:"center",border:"1px solid "+T.gn+"18"}}>
-<div style={{fontSize:8,color:T.gn,fontWeight:700,marginBottom:2}}>{t.l}{t.k==="tp3"?" (Runner)":""}</div>
-<div style={{display:"flex",gap:3,alignItems:"center"}}>
-<div style={{flex:1}}><div style={{fontSize:7,color:T.ft}}>Trigger</div><input type="number" min={10} max={1000} step={10} value={t.v} onChange={e=>{const v=Number(e.target.value);sAutoTrade(p=>({...p,settings:{...p.settings,[t.k]:v}}));a.atu(user.pubkey,{[t.k]:v}).catch(()=>{})}} style={{width:"100%",padding:3,background:T.sf,border:"1px solid "+T.bd,borderRadius:4,color:T.gn,fontSize:12,fontWeight:800,textAlign:"center",outline:"none",boxSizing:"border-box"}}/></div>
-<div style={{flex:1}}><div style={{fontSize:7,color:T.ft}}>Sell%</div><input type="number" min={10} max={100} step={5} value={t.sv} onChange={e=>{const v=Number(e.target.value);sAutoTrade(p=>({...p,settings:{...p.settings,[t.sk]:v}}));a.atu(user.pubkey,{[t.sk]:v}).catch(()=>{})}} style={{width:"100%",padding:3,background:T.sf,border:"1px solid "+T.bd,borderRadius:4,color:T.gn,fontSize:12,fontWeight:800,textAlign:"center",outline:"none",boxSizing:"border-box"}}/></div>
-</div>
-<div style={{fontSize:7,color:T.dm,marginTop:2}}>{t.k==="tp1"?"Secure profit":t.k==="tp2"?"Scale out":t.k==="tp3"?"Rest = moonbag":""}</div>
+{/* TP tiers */}
+<div style={{fontSize:mb?10:9,fontWeight:700,color:T.gn,marginBottom:4}}>Take Profit</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
+{[{l:"TP1",k:"tp1",sk:"tp1Sell",st:10,sst:5,desc:"Secure"},{l:"TP2",k:"tp2",sk:"tp2Sell",st:10,sst:5,desc:"Scale out"},{l:"TP3 Runner",k:"tp3",sk:"tp3Sell",st:25,sst:5,desc:"Moonbag"}].map(t=><div key={t.k} style={{background:T.bg,borderRadius:6,padding:mb?8:6,border:"1px solid "+T.gn+"22"}}>
+<div style={{fontSize:mb?10:8,color:T.gn,fontWeight:800,marginBottom:4,textAlign:"center"}}>{t.l}</div>
+<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>+%</div>
+<StepBtn k={t.k} step={t.st} mn={10} mx={1000} c={T.gn} fmt={v=>"+"+v+"%"}/>
+<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2,marginTop:4}}>Sell %</div>
+<StepBtn k={t.sk} step={t.sst} mn={10} mx={100} c={T.gn} fmt={v=>v+"%"}/>
+<div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:3}}>{t.desc}</div>
 </div>)}
 </div>
-{/* 2 Stop Loss tiers */}
-<div style={{fontSize:9,fontWeight:700,color:T.rd,marginBottom:3}}>Stop Loss Tiers</div>
-<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginBottom:6}}>
-{[{l:"SL1 — Reduce",k:"sl1",sk:"sl1Sell",v:autoTrade.settings?.sl1||25,sv:autoTrade.settings?.sl1Sell||50},{l:"SL2 — Full Exit",k:"sl2",v:autoTrade.settings?.sl2||50}].map(s=><div key={s.k} style={{background:T.bg,borderRadius:6,padding:6,textAlign:"center",border:"1px solid "+T.rd+"18"}}>
-<div style={{fontSize:8,color:T.rd,fontWeight:700,marginBottom:2}}>{s.l}</div>
-{s.sk?<div style={{display:"flex",gap:3,alignItems:"center"}}>
-<div style={{flex:1}}><div style={{fontSize:7,color:T.ft}}>Trigger</div><input type="number" min={5} max={80} step={5} value={s.v} onChange={e=>{const v=Number(e.target.value);sAutoTrade(p=>({...p,settings:{...p.settings,[s.k]:v}}));a.atu(user.pubkey,{[s.k]:v}).catch(()=>{})}} style={{width:"100%",padding:3,background:T.sf,border:"1px solid "+T.bd,borderRadius:4,color:T.rd,fontSize:12,fontWeight:800,textAlign:"center",outline:"none",boxSizing:"border-box"}}/></div>
-<div style={{flex:1}}><div style={{fontSize:7,color:T.ft}}>Sell%</div><input type="number" min={10} max={100} step={5} value={s.sv} onChange={e=>{const v=Number(e.target.value);sAutoTrade(p=>({...p,settings:{...p.settings,[s.sk]:v}}));a.atu(user.pubkey,{[s.sk]:v}).catch(()=>{})}} style={{width:"100%",padding:3,background:T.sf,border:"1px solid "+T.bd,borderRadius:4,color:T.rd,fontSize:12,fontWeight:800,textAlign:"center",outline:"none",boxSizing:"border-box"}}/></div>
-</div>:<div><div style={{fontSize:7,color:T.ft}}>Trigger</div><input type="number" min={10} max={90} step={5} value={s.v} onChange={e=>{const v=Number(e.target.value);sAutoTrade(p=>({...p,settings:{...p.settings,[s.k]:v}}));a.atu(user.pubkey,{[s.k]:v}).catch(()=>{})}} style={{width:"100%",padding:3,background:T.sf,border:"1px solid "+T.bd,borderRadius:4,color:T.rd,fontSize:12,fontWeight:800,textAlign:"center",outline:"none",boxSizing:"border-box"}}/></div>}
-<div style={{fontSize:7,color:T.dm,marginTop:2}}>{s.sk?"Cut exposure, keep rest":"Sell 100% — bail"}</div>
-</div>)}
+{/* SL tiers */}
+<div style={{fontSize:mb?10:9,fontWeight:700,color:T.rd,marginBottom:4}}>Stop Loss</div>
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginBottom:8}}>
+<div style={{background:T.bg,borderRadius:6,padding:mb?8:6,border:"1px solid "+T.rd+"22"}}>
+<div style={{fontSize:mb?10:8,color:T.rd,fontWeight:800,marginBottom:4,textAlign:"center"}}>SL1 Reduce</div>
+<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>Trigger</div>
+<StepBtn k="sl1" step={5} mn={5} mx={80} c={T.rd} fmt={v=>"-"+v+"%"}/>
+<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2,marginTop:4}}>Sell %</div>
+<StepBtn k="sl1Sell" step={5} mn={10} mx={100} c={T.rd} fmt={v=>v+"%"}/>
+<div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:3}}>Cut exposure</div>
 </div>
-{/* Active Positions with tier badges */}
-{autoTrade.positions?.length>0&&<div style={{marginBottom:6}}><div style={{fontSize:9,fontWeight:700,color:T.ft,marginBottom:4}}>Active Positions ({autoTrade.positions.length})</div>{autoTrade.positions.map(p=><div key={p.ca} style={{display:"flex",alignItems:"center",gap:5,padding:"4px 0",borderBottom:"1px solid "+T.bd+"44"}}>
-<span style={{fontSize:11,fontWeight:700,color:T.tx,flex:1}}>{p.name}</span>
-{p.isMoonbag&&<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.yl+"22",color:T.yl,border:"1px solid "+T.yl+"44"}}>MOON</span>}
-{p.tpHit>0&&<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.gn+"22",color:T.gn}}>TP{p.tpHit}</span>}
-{p.slHit>0&&<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.rd+"22",color:T.rd}}>SL{p.slHit}</span>}
-<span style={{fontSize:10,color:T.ft}}>${fm(p.currentMcap)}</span>
-<span style={{fontSize:11,fontWeight:800,color:p.changePct>=0?T.gn:T.rd}}>{p.changePct>=0?"+":""}{p.changePct}%</span>
-<span style={{fontSize:8,color:T.ft}}>{p.age}m</span>
+<div style={{background:T.bg,borderRadius:6,padding:mb?8:6,border:"1px solid "+T.rd+"22"}}>
+<div style={{fontSize:mb?10:8,color:T.rd,fontWeight:800,marginBottom:4,textAlign:"center"}}>SL2 Exit</div>
+<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>Trigger</div>
+<StepBtn k="sl2" step={5} mn={10} mx={90} c={T.rd} fmt={v=>"-"+v+"%"}/>
+<div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:6}}>Sell 100% — bail</div>
+</div>
+</div>
+{/* APPLY button when settings changed while active */}
+{aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:8}}>APPLY CHANGES</button>}
+{/* Positions */}
+{autoTrade?.positions?.length>0&&<div style={{marginBottom:6}}><div style={{fontSize:mb?10:9,fontWeight:700,color:T.ft,marginBottom:4}}>Positions ({autoTrade.positions.length})</div>{autoTrade.positions.map(p=><div key={p.ca} style={{display:"flex",alignItems:"center",gap:5,padding:mb?"5px 0":"3px 0",borderBottom:"1px solid "+T.bd+"44",flexWrap:"wrap"}}>
+<span style={{fontSize:mb?12:11,fontWeight:700,color:T.tx,flex:1,minWidth:60}}>{p.name}</span>
+{p.isMoonbag&&<span style={{fontSize:mb?8:7,fontWeight:800,padding:"2px 5px",borderRadius:3,background:T.yl+"22",color:T.yl}}>MOON</span>}
+{p.tpHit>0&&<span style={{fontSize:mb?8:7,fontWeight:800,padding:"2px 5px",borderRadius:3,background:T.gn+"22",color:T.gn}}>TP{p.tpHit}</span>}
+{p.slHit>0&&<span style={{fontSize:mb?8:7,fontWeight:800,padding:"2px 5px",borderRadius:3,background:T.rd+"22",color:T.rd}}>SL{p.slHit}</span>}
+<span style={{fontSize:mb?11:10,color:T.ft}}>${fm(p.currentMcap)}</span>
+<span style={{fontSize:mb?12:11,fontWeight:800,color:p.changePct>=0?T.gn:T.rd}}>{p.changePct>=0?"+":""}{p.changePct}%</span>
+<span style={{fontSize:mb?9:8,color:T.ft}}>{p.age}m</span>
 </div>)}</div>}
 {/* Log */}
-{autoTrade.log?.length>0&&<div><div style={{fontSize:9,fontWeight:700,color:T.ft,marginBottom:3}}>Log</div><div style={{maxHeight:80,overflowY:"auto",fontSize:9,color:T.dm,lineHeight:1.6,fontFamily:M}}>{autoTrade.log.slice().reverse().map((l,i)=><div key={i}><span style={{color:T.ft}}>{new Date(l.time).toLocaleTimeString()}</span> {l.msg}</div>)}</div></div>}
+{autoTrade?.log?.length>0&&<div><div style={{fontSize:mb?10:9,fontWeight:700,color:T.ft,marginBottom:3}}>Log</div><div style={{maxHeight:mb?120:80,overflowY:"auto",fontSize:mb?10:9,color:T.dm,lineHeight:1.6,fontFamily:M}}>{autoTrade.log.slice().reverse().map((l,i)=><div key={i}><span style={{color:T.ft}}>{new Date(l.time).toLocaleTimeString()}</span> {l.msg}</div>)}</div></div>}
 </div>}
-</div>}
+</div>})()}
 
 {/* Tier features */}
 <div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:16,marginTop:8}}>
