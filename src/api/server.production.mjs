@@ -1048,15 +1048,18 @@ app.get("/api/access/check", async (req, res) => {
   const wallet = req.query.wallet;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const user = await getUser(wallet);
-  if (user._redisError) {
+  // Even if Redis is down, check env whitelist first — VIPs should never be locked out
+  const tierInfo = resolveTier(wallet, user._redisError ? {} : user);
+  if (user._redisError && tierInfo.tier === "free") {
     return res.status(503).json({ error: "Service temporarily unavailable" });
   }
-  const tierInfo = resolveTier(wallet, user);
   // Only save if tier upgraded or not yet stored — never downgrade a stored VIP/pro to free
-  const storedTier = user?.tier;
-  const tierRank = { vip: 3, pro: 2, free: 1 };
-  if (!storedTier || (tierRank[tierInfo.tier] || 0) >= (tierRank[storedTier] || 0)) {
-    await saveUser(wallet, { tier: tierInfo.tier, whitelisted: tierInfo.whitelisted });
+  if (!user._redisError) {
+    const storedTier = user?.tier;
+    const tierRank = { vip: 3, pro: 2, free: 1 };
+    if (!storedTier || (tierRank[tierInfo.tier] || 0) >= (tierRank[storedTier] || 0)) {
+      await saveUser(wallet, { tier: tierInfo.tier, whitelisted: tierInfo.whitelisted });
+    }
   }
   res.json({ tier: tierInfo.tier, whitelisted: tierInfo.whitelisted, paid: user.paid || false });
 });
@@ -1065,10 +1068,11 @@ app.post("/api/access/activate-free", async (req, res) => {
   const { wallet } = req.body;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const existing = await getUser(wallet);
-  if (existing._redisError) {
+  // Check whitelist even if Redis is down — VIPs should always get through
+  const tierInfo = resolveTier(wallet, existing._redisError ? {} : existing);
+  if (existing._redisError && tierInfo.tier === "free") {
     return res.status(503).json({ error: "Service temporarily unavailable" });
   }
-  const tierInfo = resolveTier(wallet, existing);
   if (tierInfo.tier === "vip" || tierInfo.tier === "pro" || tierInfo.whitelisted) {
     return res.json({ ok: true, tier: tierInfo.tier, message: "Already " + tierInfo.tier });
   }
@@ -1948,12 +1952,20 @@ function startAutoTrader(wallet, settings) {
         // ═══ MOMENTUM EXIT — score derivatives detect rugs BEFORE the score drops ═══
         // The score is a lagging indicator. Its velocity and acceleration are leading ones.
         // A decelerating score means the pump is running out of energy — exit before the crash.
-        if (s.momentumExit && token && !pos.isMoonbag) {
+        // IMPORTANT: Skip momentum scoring for DexScreener fallback tokens — they lack trade
+        // data so extractQuickFeatures returns all-zero features → score = 0 → false exit.
+        const hasRadarData = token && token.buys != null && token.trades != null;
+        if (s.momentumExit && hasRadarData && !pos.isMoonbag) {
           try {
             const features = extractQuickFeatures(token);
             if (features) {
               const liveScore = memeIntel.scorer.score(features);
               const currentScore = liveScore?.score || 0;
+              // Guard: if score suddenly drops to near-0 but we had a real score before,
+              // the token likely lost radar data — skip this cycle entirely
+              if (currentScore < 5 && pos.entryScore > 20 && pos.liveScore > 20) {
+                log(`MOMENTUM SKIP ${ca.slice(0,6)}: score=${currentScore} looks like data loss (entry=${pos.entryScore}, last=${pos.liveScore})`);
+              } else {
               if (!pos.entryScore) pos.entryScore = currentScore;
               pos.liveScore = currentScore;
               const scoreDrop = pos.entryScore - currentScore;
@@ -2019,6 +2031,7 @@ function startAutoTrader(wallet, settings) {
                 s.tp2 = Math.round(state.settings.tp2 * 1.25);
                 s.tp3 = Math.round(state.settings.tp3 * 1.25);
               }
+              } // end else (score is real, not data loss)
             }
           } catch (e) { log(`Momentum score error ${ca.slice(0,6)}: ${e.message}`); }
         }
@@ -2026,9 +2039,11 @@ function startAutoTrader(wallet, settings) {
         // ═══ TAKE PROFIT — 3 tiers ═══
         // TP3: Runner — sell tp3Sell% of remaining (rest = moonbag forever)
         if (pos.tpHit < 3 && changePct >= s.tp3) {
-          // Trailing: if still within 15% of peak, let it ride
-          if (fromPeak < 15) {
-            log(`🏃 RUNNER ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — trailing (${fromPeak.toFixed(0)}% from peak)`);
+          // Dynamic trailing: wider at higher gains, tighter at lower
+          // At 2x (100%), trail within 20% of peak. At 5x+, trail within 25%.
+          const trailPct = changePct > 400 ? 25 : changePct > 200 ? 20 : 15;
+          if (fromPeak < trailPct) {
+            log(`🏃 RUNNER ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — trailing (${fromPeak.toFixed(0)}% from peak, trail=${trailPct}%)`);
           } else {
             log(`TP3 ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — selling ${s.tp3Sell}% (moonbag rest)`);
             const sig = await execSell(ca, s.tp3Sell, kp, "TP3");
@@ -2071,13 +2086,23 @@ function startAutoTrader(wallet, settings) {
         }
 
         // ═══ STOP LOSS — 2 tiers ═══
-        // Moonbags: only cut at -80% (basically dead)
-        if (pos.isMoonbag && changePct <= -80) {
-          log(`Moonbag dead ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — full exit`);
-          const sig = await execSell(ca, 100, kp, "moonbag-dead");
-          if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "moonbag-dead" } });
-          exitPosition(ca);
-          trackSell(wallet, ca);
+        // Moonbags: trailing exit if dropped 60%+ from peak while still green (protect runner gains)
+        // OR full exit if basically dead (-80%)
+        if (pos.isMoonbag) {
+          if (changePct <= -80) {
+            log(`Moonbag dead ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — full exit`);
+            const sig = await execSell(ca, 100, kp, "moonbag-dead");
+            if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "moonbag-dead" } });
+            exitPosition(ca);
+            trackSell(wallet, ca);
+          } else if (fromPeak > 60 && changePct > 30) {
+            // Moonbag was running hard but pulled back significantly — take remaining profit
+            log(`Moonbag trail ${ca.slice(0,6)}: +${changePct.toFixed(0)}% (−${fromPeak.toFixed(0)}% from peak) — exit moonbag`);
+            const sig = await execSell(ca, 100, kp, "moonbag-trail");
+            if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "moonbag-trail" } });
+            exitPosition(ca);
+            trackSell(wallet, ca);
+          }
         }
         // SL2: Full exit
         else if (!pos.isMoonbag && pos.slHit < 2 && changePct <= -s.sl2) {
