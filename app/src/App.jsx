@@ -215,7 +215,7 @@ useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null)sOl(d
 useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(d=>sFl(d)).catch(()=>{})},5000);return()=>clearInterval(iv)},[launched,lCA]);
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>r.json()).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
-useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const iv=setInterval(poll,10000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
+useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?3000:10000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
 useEffect(()=>{if(tab!=="intel")return;a.gcp().then(d=>sChartPatterns(d)).catch(()=>{});const iv=setInterval(()=>a.gcp().then(d=>sChartPatterns(d)).catch(()=>{}),30000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs)sRT(d.tabs);if(d.poolSize!=null)sRP(d.poolSize);if(d.gradMc)sGradMc(d.gradMc);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,5000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
 useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,10000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
@@ -715,7 +715,7 @@ const StepBtn=({k,step,mn,mx,c,fmt,onAdj})=>{const v=S[k]??0;return<div style={{
 <button onClick={()=>onAdj?onAdj(Math.abs(step)):adj(k,Math.abs(step),mn,mx)} style={{padding:mb?"10px 12px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?18:14,fontWeight:800,cursor:"pointer",lineHeight:1}}>+</button>
 </div>};
 const tpTotal=(S.tp1Sell||0)+(S.tp2Sell||0)+(S.tp3Sell||0);
-return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),borderRadius:10,padding:mb?10:16,marginTop:6}}>
+return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),borderRadius:10,padding:mb?10:16,marginTop:6,overflow:"hidden"}}>
 {/* Header + buttons */}
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:aaOpen?8:0}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}><IC.trend s={16} c={aaActive?T.gn:T.ft}/><span style={{fontSize:15,fontWeight:800}}>Auto-Ape</span>{aaActive&&<span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}</div>
@@ -809,12 +809,18 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 </div>
 {aaActive&&<span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}
 </div>
-{(!autoTrade?.positions||autoTrade.positions.length===0)?
+{(()=>{
+const openPos=autoTrade?.positions||[];
+const closedPos=autoTrade?.recentlyClosed||[];
+const hasAny=openPos.length>0||closedPos.length>0;
+return !hasAny?
 <div style={{textAlign:"center",padding:mb?"12px 0":"24px 0",color:T.ft}}>
 <div style={{fontSize:24,opacity:.2,marginBottom:4}}>◎</div>
 <div style={{fontSize:11}}>{aaActive?"Scanning for entries...":"Start Auto-Ape to open positions"}</div>
 </div>
-:autoTrade.positions.map(p=>{
+:<>
+{/* Open positions */}
+{openPos.map(p=>{
 const pnlColor=p.changePct>=0?T.gn:T.rd;
 const pnlSol=p.entrySol>0?(p.entrySol*(p.changePct/100)):0;
 const currentVal=p.entrySol>0?(p.entrySol+pnlSol):0;
@@ -826,7 +832,6 @@ return<div key={p.ca} style={{padding:"6px 0",borderBottom:"1px solid "+T.bd+"44
 {p.entrySol>0&&<span style={{fontSize:10,fontWeight:800,color:pnlColor}}>{pnlSol>=0?"+":""}{pnlSol.toFixed(4)} SOL</span>}
 </div>
 </div>
-{/* P&L bar */}
 {p.entrySol>0&&<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,padding:"3px 6px",background:pnlColor+"0a",borderRadius:4,border:"1px solid "+pnlColor+"18"}}>
 <div style={{flex:1,display:"flex",justifyContent:"space-between",fontSize:9,color:T.ft}}>
 <span>In: {p.entrySol.toFixed(3)}</span>
@@ -844,6 +849,27 @@ return<div key={p.ca} style={{padding:"6px 0",borderBottom:"1px solid "+T.bd+"44
 {p.scoreTrend&&p.scoreTrend!=="stable"&&<span style={{fontSize:7,fontWeight:800,color:p.scoreTrend==="rising"?T.gn:T.rd}}>{p.scoreTrend==="rising"?"↑":"↓"}</span>}
 </div>
 </div>})}
+{/* Recently closed positions */}
+{closedPos.length>0&&<>
+<div style={{fontSize:9,fontWeight:700,color:T.ft,padding:"6px 0 3px",borderBottom:"1px solid "+T.bd+"22"}}>RECENTLY CLOSED</div>
+{closedPos.slice().reverse().map(p=>{
+const pnlColor=p.changePct>=0?T.gn:T.rd;
+const ago=Math.round((Date.now()-p.exitTime)/60000);
+return<div key={p.ca+p.exitTime} style={{padding:"5px 0",borderBottom:"1px solid "+T.bd+"22",opacity:.7}}>
+<div style={{display:"flex",alignItems:"center",gap:4,marginBottom:2}}>
+<span style={{fontSize:11,fontWeight:700,color:T.dm,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{p.name}</span>
+<span style={{fontSize:12,fontWeight:900,color:pnlColor}}>{p.changePct>=0?"+":""}{p.changePct}%</span>
+<span style={{fontSize:9,fontWeight:800,color:pnlColor}}>{p.pnlSol>=0?"+":""}{p.pnlSol} SOL</span>
+</div>
+<div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+<span style={{fontSize:8,color:T.ft}}>In: {p.entrySol?.toFixed(3)||"?"} SOL</span>
+<span style={{fontSize:8,color:T.ft}}>Score: {p.entryScore}→{p.exitScore}</span>
+<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.rd+"18",color:T.rd}}>{p.exitReason?.replace(/-/g," ").toUpperCase()}</span>
+<span style={{fontSize:8,color:T.ft}}>{ago}m ago</span>
+</div>
+</div>})}
+</>}
+</>})()}
 </div>
 
 {/* Log */}
