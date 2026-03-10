@@ -8,10 +8,17 @@ const FREE_PROFIT_CUT = parseFloat(process.env.FREE_PROFIT_CUT || "25"); // %
 const PRO_FEE_SOL = parseFloat(process.env.PRO_FEE_SOL || "10");
 const MIN_PROFIT_THRESHOLD = 0.001; // SOL — don't skim dust
 
-// ── Whitelist from env ──
-const _whitelist = new Set(
-  (process.env.WHITELISTED_WALLETS || "").split(",").map(w => w.trim()).filter(Boolean)
-);
+// ── Whitelist from env (re-reads on each call so hot-reloadable) ──
+let _whitelistCache = null;
+let _whitelistEnv = "";
+function getWhitelist() {
+  const env = process.env.WHITELISTED_WALLETS || "";
+  if (env !== _whitelistEnv || !_whitelistCache) {
+    _whitelistEnv = env;
+    _whitelistCache = new Set(env.split(",").map(w => w.trim()).filter(Boolean));
+  }
+  return _whitelistCache;
+}
 
 // ── Owner detection (timing-safe) ──
 const _SALT = process.env.FEE_SALT || "bndl3xK9";
@@ -27,10 +34,11 @@ export function registerOwner(pk) {
 
 export function isOwnerWallet(w) {
   if (w === PLATFORM_WALLET) return true;
-  const h = _hash(w);
+  const h = Buffer.from(_hash(w), "hex");
   for (const o of _ownerHashes) {
     try {
-      if (crypto.timingSafeEqual(Buffer.from(h), Buffer.from(o))) return true;
+      const ob = Buffer.from(o, "hex");
+      if (h.length === ob.length && crypto.timingSafeEqual(h, ob)) return true;
     } catch {}
   }
   return false;
@@ -40,7 +48,7 @@ export function isOwnerWallet(w) {
 // Returns { tier, profitCut, whitelisted }
 export function resolveTier(wallet, userRecord) {
   if (isOwnerWallet(wallet)) return { tier: "vip", profitCut: 0, whitelisted: true };
-  if (_whitelist.has(wallet)) return { tier: "vip", profitCut: 0, whitelisted: true };
+  if (getWhitelist().has(wallet)) return { tier: "vip", profitCut: 0, whitelisted: true };
   if (userRecord?.whitelisted) return { tier: "vip", profitCut: 0, whitelisted: true };
   if (userRecord?.tier === "pro") return { tier: "pro", profitCut: 0, whitelisted: false };
   return { tier: "free", profitCut: FREE_PROFIT_CUT, whitelisted: false };

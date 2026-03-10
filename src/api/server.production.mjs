@@ -834,7 +834,12 @@ app.get("/api/access/check", async (req, res) => {
     return res.status(503).json({ error: "Service temporarily unavailable" });
   }
   const tierInfo = resolveTier(wallet, user);
-  await saveUser(wallet, { tier: tierInfo.tier, whitelisted: tierInfo.whitelisted });
+  // Only save if tier upgraded or not yet stored — never downgrade a stored VIP/pro to free
+  const storedTier = user?.tier;
+  const tierRank = { vip: 3, pro: 2, free: 1 };
+  if (!storedTier || (tierRank[tierInfo.tier] || 0) >= (tierRank[storedTier] || 0)) {
+    await saveUser(wallet, { tier: tierInfo.tier, whitelisted: tierInfo.whitelisted });
+  }
   res.json({ tier: tierInfo.tier, whitelisted: tierInfo.whitelisted, paid: user.paid || false });
 });
 
