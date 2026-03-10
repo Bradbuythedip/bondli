@@ -44,8 +44,18 @@ async function fetchDexScreenerBoosted() {
 async function fetchDexScreenerGraduated() {
   const d = await jfetch(`${DEXSCREENER_BASE}/latest/dex/search?q=pump.fun%20raydium`);
   if (!d?.pairs) return [];
-  return d.pairs
-    .filter(p => p.chainId === "solana" && p.fdv > 50000)
+  // Deduplicate pairs by base token address — keep the highest volume pair per token
+  const byToken = new Map();
+  for (const p of d.pairs) {
+    if (p.chainId !== "solana" || !p.fdv || p.fdv <= 50000) continue;
+    const ca = p.baseToken?.address;
+    if (!ca) continue;
+    const existing = byToken.get(ca);
+    if (!existing || (p.volume?.h24 || 0) > (existing.volume?.h24 || 0)) {
+      byToken.set(ca, p);
+    }
+  }
+  return [...byToken.values()]
     .sort((a, b) => (b.volume?.h24 || 0) - (a.volume?.h24 || 0))
     .slice(0, 30)
     .map(p => ({
@@ -180,16 +190,31 @@ export class HistoricalMovers {
       }
     }
 
-    const result = {
-      topGainers: [...seen.values()]
+    // Helper: deduplicate an array by CA, skip tokens already used in prior sections
+    const usedCAs = new Set();
+    const dedup = (arr, limit) => {
+      const out = [];
+      for (const t of arr) {
+        if (!t.ca || usedCAs.has(t.ca)) continue;
+        usedCAs.add(t.ca);
+        out.push(seen.get(t.ca) || t);
+        if (out.length >= limit) break;
+      }
+      return out;
+    };
+
+    const topGainers = dedup(
+      [...seen.values()]
         .filter(t => t.change24h > 0 && t.mcapUsd > 0)
-        .sort((a, b) => (b.change24h || 0) - (a.change24h || 0))
-        .slice(0, 25),
-      hotGraduated: graduated
-        .filter(t => t.mcapUsd > 50000)
-        .slice(0, 25),
-      trending: trending.slice(0, 25),
-      boosted: boosted.slice(0, 15),
+        .sort((a, b) => (b.change24h || 0) - (a.change24h || 0)),
+      25
+    );
+
+    const result = {
+      topGainers,
+      hotGraduated: dedup(graduated.filter(t => t.mcapUsd > 50000), 25),
+      trending: dedup(trending, 25),
+      boosted: dedup(boosted, 15),
       updatedAt: Date.now(),
     };
 
