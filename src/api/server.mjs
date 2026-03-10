@@ -54,7 +54,9 @@ async function getWalletTier(wallet) {
       const tier = await redis.get("tier:" + wallet);
       if (tier === "pro") return { tier: "pro", whitelisted: false, paid: true, profitCut: 0 };
       if (tier === "free") return { tier: "free", whitelisted: false, paid: false, profitCut: FREE_PROFIT_CUT };
-    } catch {}
+    } catch {
+      return { tier: "error", whitelisted: false, paid: false, profitCut: 0 };
+    }
   }
   return { tier: "none", whitelisted: false, paid: false, profitCut: 0 };
 }
@@ -167,6 +169,9 @@ app.get("/api/access/check", apiLimiter, async (req, res) => {
   if (!wallet) return res.status(400).json({ error: "wallet required" });
 
   const info = await getWalletTier(wallet);
+  if (info.tier === "error") {
+    return res.status(503).json({ error: "Service temporarily unavailable" });
+  }
   res.json({
     access: info.tier !== "none",
     tier: info.tier,
@@ -185,6 +190,9 @@ app.post("/api/access/activate-free", apiLimiter, async (req, res) => {
   const existing = await getWalletTier(wallet);
   if (existing.tier === "pro" || existing.whitelisted) {
     return res.json({ ok: true, tier: "pro", message: "Already pro/VIP" });
+  }
+  if (existing.tier === "error") {
+    return res.status(503).json({ error: "Service temporarily unavailable" });
   }
 
   await setWalletTier(wallet, "free");

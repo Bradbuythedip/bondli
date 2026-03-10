@@ -551,15 +551,17 @@ setInterval(() => {
 
   // ── MOMENTUM: Sustained buying pressure ──
   radar.tabs.momentum = deduped
-    .filter(t => t.buys >= 2 && (now - t.createdAt) > 30000)
+    .filter(t => t.buys >= 2 && (now - t.createdAt) > 30000 && t.mcapUsd >= 3000)
     .map(t => {
       const ageMin = Math.max(0.5, (now - t.createdAt) / 60000);
       const buyRate = t.buys / ageMin;
       const pressure = t.buys / Math.max(1, t.buys + t.sells);
       const ub = t.uniqueBuyers?.size || 0;
       const mcGrowth = t.spark?.length > 2 ? (t.spark[t.spark.length-1] - t.spark[0]) / Math.max(1, t.spark[0]) : 0;
+      if (mcGrowth < -0.3) return null;
       return { ...t, _momentum: buyRate*12 + pressure*20 + ub*10 + mcGrowth*30 + Math.min(15, t.volumeSol*3) };
     })
+    .filter(Boolean)
     .sort((a, b) => b._momentum - a._momentum)
     .slice(0, 50).map(serialize);
 
