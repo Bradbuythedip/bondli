@@ -43,5 +43,9 @@ arf(w,c){return this.f("/api/referral/apply",{method:"POST",body:{wallet:w,refCo
 dr(d){return this.f("/api/dry-run",{method:"POST",body:d})}
 gm(tf){return this.f(`/api/movers${tf?`?timeframe=${tf}`:""}`)}
 gmt(c){return this.f(`/api/movers/token/${c}`)}
+ats(w,s){return this.f("/api/auto-trade/start",{method:"POST",body:{wallet:w,settings:s}})}
+atp(w){return this.f("/api/auto-trade/stop",{method:"POST",body:{wallet:w}})}
+atu(w,s){return this.f("/api/auto-trade/update",{method:"POST",body:{wallet:w,settings:s}})}
+atst(w){return this.f(`/api/auto-trade/status?wallet=${w}`)}
 }
 export const a=new A();export default a;

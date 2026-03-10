@@ -100,6 +100,10 @@ if (process.env.OWNER_WALLET) registerOwner(process.env.OWNER_WALLET);
 // FIX: Replaces hardcoded * 170
 // ═══════════════════════════════════════
 let solUsdPrice = 135;
+// Pump.fun graduation: bonding curve fills at ~85 SOL virtual
+// MC at graduation ≈ 85 * solPrice * ~3 (token distribution multiplier)
+// Dynamic: recalculated as SOL price changes. Floor at 30K.
+function gradMcUsd() { return Math.max(30000, Math.round(85 * solUsdPrice * 3)); }
 async function pollSolPrice() {
   try {
     const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
@@ -117,6 +121,36 @@ pollSolPrice();
 setInterval(pollSolPrice, 30000);
 
 // ═══════════════════════════════════════
+// DEXSCREENER BOOST POLLER — paid/boosted token detection
+// ═══════════════════════════════════════
+async function pollDexBoosted() {
+  try {
+    const r = await fetch("https://api.dexscreener.com/token-boosts/top/v1", { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!Array.isArray(data)) return;
+    const now = Date.now();
+    for (const t of data) {
+      if (t.chainId === "solana" && t.tokenAddress) {
+        radar.dexBoosted.set(t.tokenAddress, {
+          amount: t.totalAmount || 0,
+          icon: t.icon || null,
+          description: t.description || null,
+          url: t.url || null,
+          updatedAt: now,
+        });
+      }
+    }
+    // Clean old entries (>1h)
+    for (const [ca, v] of radar.dexBoosted) {
+      if (now - v.updatedAt > 3600000) radar.dexBoosted.delete(ca);
+    }
+  } catch {}
+}
+pollDexBoosted();
+setInterval(pollDexBoosted, 120000); // every 2 min
+
+// ═══════════════════════════════════════
 // PUMPPORTAL WEBSOCKET — RADAR ENGINE (v2)
 // Per API docs: WS sends marketCapSol, vSolInBondingCurve, vTokensInBondingCurve
 // but does NOT send name/symbol/uri — metadata fetched from pump.fun frontend API
@@ -130,6 +164,7 @@ const radar = {
   reconnects: 0,
   subscribedTokens: new Set(), // track subscribed mints for unsubscribe
   _debugCount: 0,
+  dexBoosted: new Map(), // ca → { amount, updatedAt } — DexScreener paid/boosted
 };
 
 const PUMP_FUN_API = "https://frontend-api-v3.pump.fun";
@@ -448,12 +483,18 @@ function processRadarMessage(data) {
 setInterval(() => {
   const now = Date.now();
 
-  // Clean old tokens (2h TTL)
+  // Clean old tokens — graduated/high MC get 4h, rest get 2h
   for (const [ca, t] of radar.tokens) {
-    if (now - t.createdAt > 7200000) radar.tokens.delete(ca);
+    const ttl = (t.graduated || t.mcapUsd >= 10000) ? 14400000 : 7200000;
+    if (now - t.createdAt > ttl) radar.tokens.delete(ca);
   }
 
-  const all = [...radar.tokens.values()].filter(t => now - t.createdAt < 3600000);
+  // Active tokens: 1h for normal, 2h for graduating/graduated tokens
+  const all = [...radar.tokens.values()].filter(t => {
+    const age = now - t.createdAt;
+    if (t.graduated || t.mcapUsd >= 10000) return age < 7200000; // 2h for graduated/high MC
+    return age < 3600000; // 1h for normal
+  });
 
   // Dedup by normalized name + ticker
   function dedup(tokens) {
@@ -541,12 +582,12 @@ setInterval(() => {
     .filter(t => t.mcapUsd >= 10000 || t.graduated)
     .map(t => ({
       ...t,
-      _gradScore: (t.graduated ? 200 : 0) + Math.min(100, (t.mcapUsd / 69000) * 100),
+      _gradScore: (t.graduated ? 200 : 0) + Math.min(100, (t.mcapUsd / gradMcUsd()) * 100),
     }))
     .sort((a, b) => b._gradScore - a._gradScore)
     .slice(0, 50).map(t => {
       const s = serialize(t);
-      s.pctToGrad = Math.min(100, Math.round((t.mcapUsd / 69000) * 100));
+      s.pctToGrad = Math.min(100, Math.round((t.mcapUsd / gradMcUsd()) * 100));
       s.graduated = t.graduated;
       return s;
     });
@@ -1449,6 +1490,194 @@ app.post("/api/sell-all", async (req, res) => {
 });
 
 // ═══════════════════════════════════════
+// AUTO-APE ENGINE — walk-away auto-trading
+// Monitors intel scores, auto-buys green tokens, auto-sells on profit/loss
+// ═══════════════════════════════════════
+const autoTraders = new Map(); // wallet → { settings, positions, interval, log }
+
+function startAutoTrader(wallet, settings) {
+  if (autoTraders.has(wallet)) stopAutoTrader(wallet);
+  const state = {
+    settings: {
+      minScore: settings.minScore || 65,
+      solPerTrade: settings.solPerTrade || 0.05,
+      maxPositions: settings.maxPositions || 5,
+      takeProfitPct: settings.takeProfitPct || 50,
+      stopLossPct: settings.stopLossPct || 30,
+      requireBoosted: settings.requireBoosted || false,
+      enabled: true,
+    },
+    positions: new Map(), // ca → { entryMcap, entrySol, entryTime }
+    log: [],
+    interval: null,
+  };
+
+  const log = (msg) => {
+    state.log.push({ msg, time: Date.now() });
+    if (state.log.length > 50) state.log.shift();
+    console.log(`[AUTO-APE][${wallet.slice(0,6)}] ${msg}`);
+  };
+
+  state.interval = setInterval(async () => {
+    if (!state.settings.enabled) return;
+    try {
+      const tw = await getTradingWallet(wallet);
+      if (!tw) return;
+      const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+
+      // Check existing positions for TP/SL
+      for (const [ca, pos] of state.positions) {
+        const token = radar.tokens.get(ca);
+        if (!token) continue;
+        const currentMcap = token.mcapUsd || 0;
+        if (pos.entryMcap <= 0) continue;
+        const changePct = ((currentMcap - pos.entryMcap) / pos.entryMcap) * 100;
+
+        if (changePct >= state.settings.takeProfitPct) {
+          log(`TP hit ${ca.slice(0,6)}: +${changePct.toFixed(0)}% (${pos.entryMcap}→${currentMcap})`);
+          try {
+            const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ publicKey: tw.pubkey, action: "sell", mint: ca, amount: 100, denominatedInSol: "false", slippage: 30, priorityFee: 0.005, pool: "auto" }),
+            });
+            if (sellResp.ok) {
+              const txBytes = await sellResp.arrayBuffer();
+              if (txBytes.byteLength > 100) {
+                const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+                tx.sign([kp]);
+                const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                log(`SOLD ${ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
+                broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet } });
+              }
+            }
+          } catch (e) { log(`Sell error ${ca.slice(0,6)}: ${e.message}`); }
+          state.positions.delete(ca);
+        } else if (changePct <= -state.settings.stopLossPct) {
+          log(`SL hit ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — cutting loss`);
+          try {
+            const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ publicKey: tw.pubkey, action: "sell", mint: ca, amount: 100, denominatedInSol: "false", slippage: 30, priorityFee: 0.005, pool: "auto" }),
+            });
+            if (sellResp.ok) {
+              const txBytes = await sellResp.arrayBuffer();
+              if (txBytes.byteLength > 100) {
+                const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+                tx.sign([kp]);
+                await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                log(`SL SOLD ${ca.slice(0,6)}`);
+                broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "stop-loss" } });
+              }
+            }
+          } catch (e) { log(`SL sell error: ${e.message}`); }
+          state.positions.delete(ca);
+        }
+      }
+
+      // Look for new tokens to ape
+      if (state.positions.size >= state.settings.maxPositions) return;
+      const tokens = [...radar.tokens.values()].filter(t => t.mcapUsd > 3000 && t.buys >= 2);
+      const hot = tokens.filter(t => {
+        if (state.positions.has(t.ca)) return false;
+        const buys = t.buys || 0; const ub = t.uniqueBuyers?.size || 0; const vol = t.volumeSol || 0;
+        const mc = t.mcapUsd || 0; const sells = t.sells || 0;
+        const buyScore = Math.min(15, Math.log2(buys + 1) * 2.5);
+        const ubScore = Math.min(12, Math.log2(ub + 1) * 2);
+        const volScore = Math.min(10, Math.log10(vol * 100 + 1) * 3);
+        const mcScore = mc >= gradMcUsd() ? 15 : mc >= 20000 ? 7 : mc >= 10000 ? 4 : mc >= 5000 ? 2 : 0;
+        const pressureScore = buys > 3 ? Math.min(5, (buys / Math.max(1, buys + sells)) * 5) : 0;
+        const sellPenalty = sells > buys * 0.7 ? Math.min(15, (sells - buys * 0.5) * 2) : 0;
+        const dexBoost = radar.dexBoosted.get(t.ca);
+        const boostScore = dexBoost ? Math.min(8, 3 + Math.log2(dexBoost.amount + 1)) : 0;
+        if (state.settings.requireBoosted && !dexBoost) return false;
+        const score = Math.max(0, Math.min(99, Math.round(buyScore + ubScore + volScore + mcScore + pressureScore + boostScore - sellPenalty)));
+        return score >= state.settings.minScore;
+      }).sort((a, b) => (b.buys || 0) - (a.buys || 0));
+
+      for (const t of hot.slice(0, 3)) {
+        if (state.positions.size >= state.settings.maxPositions) break;
+        // Check balance
+        let balance = 0;
+        try { balance = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL; } catch { continue; }
+        if (balance < state.settings.solPerTrade + 0.01) { log("Low balance: " + balance.toFixed(4)); break; }
+
+        log(`APE ${t.name||t.ca.slice(0,6)} | MC:$${t.mcapUsd} | ${state.settings.solPerTrade} SOL`);
+        try {
+          const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: t.ca, amount: state.settings.solPerTrade, denominatedInSol: "true", slippage: 25, priorityFee: 0.005, pool: "auto" }),
+          });
+          if (buyResp.ok) {
+            const txBytes = await buyResp.arrayBuffer();
+            if (txBytes.byteLength > 100) {
+              const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+              tx.sign([kp]);
+              const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: state.settings.solPerTrade, entryTime: Date.now() });
+              log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
+              broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: state.settings.solPerTrade, mcap: t.mcapUsd, wallet } });
+            }
+          }
+        } catch (e) { log(`Buy error: ${e.message}`); }
+      }
+    } catch (e) { log(`Loop error: ${e.message}`); }
+  }, 15000); // check every 15s
+
+  autoTraders.set(wallet, state);
+  log("Auto-ape started: minScore=" + state.settings.minScore + " sol=" + state.settings.solPerTrade + " TP=" + state.settings.takeProfitPct + "% SL=" + state.settings.stopLossPct + "%");
+  return state;
+}
+
+function stopAutoTrader(wallet) {
+  const state = autoTraders.get(wallet);
+  if (state) { clearInterval(state.interval); state.settings.enabled = false; }
+  autoTraders.delete(wallet);
+}
+
+// ── Auto-trade routes ──
+app.post("/api/auto-trade/start", async (req, res) => {
+  try {
+    const { wallet, settings } = req.body;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+    const tw = await getTradingWallet(wallet);
+    if (!tw) return res.status(400).json({ error: "No trading wallet" });
+    const state = startAutoTrader(wallet, settings || {});
+    res.json({ ok: true, settings: state.settings });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/auto-trade/stop", async (req, res) => {
+  const { wallet } = req.body;
+  stopAutoTrader(wallet);
+  res.json({ ok: true });
+});
+
+app.post("/api/auto-trade/update", async (req, res) => {
+  const { wallet, settings } = req.body;
+  const state = autoTraders.get(wallet);
+  if (!state) return res.status(404).json({ error: "No auto-trader running" });
+  Object.assign(state.settings, settings);
+  res.json({ ok: true, settings: state.settings });
+});
+
+app.get("/api/auto-trade/status", (req, res) => {
+  const wallet = req.query.wallet;
+  const state = autoTraders.get(wallet);
+  if (!state) return res.json({ active: false });
+  res.json({
+    active: state.settings.enabled,
+    settings: state.settings,
+    positions: [...state.positions.entries()].map(([ca, p]) => {
+      const token = radar.tokens.get(ca);
+      const currentMcap = token?.mcapUsd || 0;
+      const changePct = p.entryMcap > 0 ? ((currentMcap - p.entryMcap) / p.entryMcap) * 100 : 0;
+      return { ca, name: token?.name || ca.slice(0, 8), entryMcap: p.entryMcap, currentMcap, changePct: +changePct.toFixed(1), entrySol: p.entrySol, age: Math.round((Date.now() - p.entryTime) / 60000) };
+    }),
+    log: state.log.slice(-20),
+  });
+});
+
+// ═══════════════════════════════════════
 // ROUTES: POSITIONS / PORTFOLIO
 // ═══════════════════════════════════════
 app.get("/api/positions/:wallet", async (req, res) => {
@@ -1599,7 +1828,7 @@ app.get("/api/img", async (req, res) => {
 // ROUTES: RADAR
 // ═══════════════════════════════════════
 app.get("/api/radar", (req, res) => {
-  res.json({ tabs: radar.tabs, poolSize: radar.poolSize, online: radar.online, solPrice: solUsdPrice });
+  res.json({ tabs: radar.tabs, poolSize: radar.poolSize, online: radar.online, solPrice: solUsdPrice, gradMc: gradMcUsd() });
 });
 
 app.get("/api/radar/token/:ca", (req, res) => {
@@ -1833,7 +2062,7 @@ app.get("/api/admin/users", requireAdmin, async (req, res) => {
 app.get("/api/intel/stats", (req, res) => {
   const tokens = [...radar.tokens.values()];
   const withMcap = tokens.filter(t => t.mcapUsd > 0);
-  const graduated = tokens.filter(t => t.mcapUsd >= 69000);
+  const graduated = tokens.filter(t => t.mcapUsd >= gradMcUsd());
   const hot = tokens.filter(t => t.buys >= 2 || t.volumeSol > 0.1);
   
   const topFeatures = [
@@ -1860,7 +2089,7 @@ app.get("/api/intel/stats", (req, res) => {
     const buyScore = Math.min(15, Math.log2(buys + 1) * 2.5);
     const ubScore = Math.min(12, Math.log2(ub + 1) * 2);
     const volScore = Math.min(10, Math.log10(vol * 100 + 1) * 3);
-    const mcScore = mc >= 69000 ? 15 : mc >= 40000 ? 10 : mc >= 20000 ? 7 : mc >= 10000 ? 4 : mc >= 5000 ? 2 : 0;
+    const mcScore = mc >= gradMcUsd() ? 15 : mc >= 40000 ? 10 : mc >= 20000 ? 7 : mc >= 10000 ? 4 : mc >= 5000 ? 2 : 0;
     const socialScore = (t.twitter ? 2 : 0) + (t.website ? 1 : 0) + (t.telegram ? 1 : 0);
     const pressureScore = buys > 3 ? Math.min(5, (buys / Math.max(1, buys + sells)) * 5) : 0;
     const sellPenalty = sells > buys * 0.7 ? Math.min(15, (sells - buys * 0.5) * 2) : 0;
@@ -1903,17 +2132,23 @@ app.get("/api/intel/stats", (req, res) => {
     rugScore = Math.min(100, rugScore);
     const rugPenalty = Math.round(rugScore * 0.2); // max -20 from rug risk
 
-    const raw = buyScore + ubScore + volScore + mcScore + socialScore + pressureScore - sellPenalty - rugPenalty;
+    // DexScreener paid/boosted signal bonus
+    const dexBoost = radar.dexBoosted.get(t.ca);
+    const boostScore = dexBoost ? Math.min(8, 3 + Math.log2(dexBoost.amount + 1)) : 0;
+
+    const raw = buyScore + ubScore + volScore + mcScore + socialScore + pressureScore + boostScore - sellPenalty - rugPenalty;
     const score = Math.max(0, Math.min(99, Math.round(raw)));
 
     return {
       ca: t.ca,
       name: t.name || t.ticker || "",
       score,
-      bondProb: Math.min(99, Math.round((mc / 69000) * 100)),
+      bondProb: Math.min(99, Math.round((mc / gradMcUsd()) * 100)),
       rugScore,
       rugFlags,
       mcapUsd: mc,
+      dexBoosted: !!dexBoost,
+      boostAmount: dexBoost?.amount || 0,
       buys, ub, vol,
       time: t.createdAt,
     };
@@ -1943,10 +2178,11 @@ app.get("/api/intel/stats", (req, res) => {
     monitor: { tracking: hot.length },
     recentEvents: unique.slice(0, 10).map(t => ({
       type: "score",
-      data: { ca: t.ca, score: t.score, bondProb: t.bondProb, rugScore: t.rugScore || 0, rugFlags: t.rugFlags || [], name: t.name, mcap: t.mcapUsd },
+      data: { ca: t.ca, score: t.score, bondProb: t.bondProb, rugScore: t.rugScore || 0, rugFlags: t.rugFlags || [], name: t.name, mcap: t.mcapUsd, dexBoosted: t.dexBoosted, boostAmount: t.boostAmount },
       time: t.time,
     })),
     solPrice: solUsdPrice,
+    gradMc: gradMcUsd(),
   });
 });
 
