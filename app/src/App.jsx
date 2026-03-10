@@ -37,6 +37,7 @@ sim:({s:z=16,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="non
 sol:({s:z=12})=><svg width={z} height={z} viewBox="0 0 398 312" fill="none"><defs><linearGradient id="sl" x1="360" y1="14" x2="42" y2="298"><stop stopColor="#00FFA3"/><stop offset="1" stopColor="#DC1FFF"/></linearGradient></defs><path d="M64.6 237.9c2.4-2.4 5.7-3.8 9.2-3.8h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1l62.7-62.7z" fill="url(#sl)"/><path d="M64.6 3.8C67.1 1.4 70.4 0 73.8 0h317.4c5.8 0 8.7 7 4.6 11.1l-62.7 62.7c-2.4 2.4-5.7 3.8-9.2 3.8H6.5c-5.8 0-8.7-7-4.6-11.1L64.6 3.8z" fill="url(#sl)"/><path d="M333.1 120.1c-2.4-2.4-5.7-3.8-9.2-3.8H6.5c-5.8 0-8.7 7-4.6 11.1l62.7 62.7c2.4 2.4 5.7 3.8 9.2 3.8h317.4c5.8 0 8.7-7 4.6-11.1l-62.7-62.7z" fill="url(#sl)"/></svg>,
 close:({s:z=14,c="#888"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
 brain:({s:z=20,c="#b388ff"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2C9.5 2 8 3.5 7.5 5 6 4.5 4 5.5 3.5 7.5 2.5 8 2 9.5 2 11c0 2 1 3.5 2.5 4C4 16 3.5 18 5 19.5c1 1 2.5 1.5 4 1.5h1"/><path d="M12 2c2.5 0 4 1.5 4.5 3C18 4.5 20 5.5 20.5 7.5 21.5 8 22 9.5 22 11c0 2-1 3.5-2.5 4C20 16 20.5 18 19 19.5c-1 1-2.5 1.5-4 1.5h-1"/><path d="M12 2v19"/><path d="M5 10c2 0 3.5.5 4.5 2"/><path d="M19 10c-2 0-3.5.5-4.5 2"/><path d="M6 16c1.5-1 3-1.5 4.5-1"/><path d="M18 16c-1.5-1-3-1.5-4.5-1"/></svg>,
+bulb:({s:z=20,c="#b388ff"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 00-4 12.7V17h8v-2.3A7 7 0 0012 2z"/><path d="M12 6v4"/><path d="M10 8h4"/></svg>,
 chart:({s:z=20,c="#00e676"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><line x1="16" y1="7" x2="22" y2="7"/><line x1="22" y1="7" x2="22" y2="13"/></svg>,
 scan:({s:z=20,c="#00bcd4"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><path d="M3 7V5a2 2 0 012-2h2"/><path d="M17 3h2a2 2 0 012 2v2"/><path d="M21 17v2a2 2 0 01-2 2h-2"/><path d="M7 21H5a2 2 0 01-2-2v-2"/><circle cx="12" cy="12" r="3"/><path d="M12 5v2M12 17v2M5 12h2M17 12h2"/></svg>,
 bolt:({s:z=20,c="#ffd600"})=><svg width={z} height={z} viewBox="0 0 24 24" fill={c} stroke="none"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>,
@@ -240,16 +241,16 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 <div style={{maxWidth:940,margin:"0 auto",padding:mb?"0 12px 36px":"0 20px 56px"}}>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:14}}>
 {[
-{ic:<IC.brain s={mb?22:26} c={T.pu}/>,title:"40+ Feature ML Scoring",desc:"Tipping Point virality. Kahneman cognitive biases. On-chain velocity. Social signals. Each token scored on 40+ features in real-time. Weights update on every outcome. The model never stops learning.",color:T.pu},
-{ic:<IC.chart s={mb?22:26} c={T.gn}/>,title:"Score Derivatives",desc:"Raw score is a lagging indicator. Velocity and acceleration are leading ones. Rocket trend means the score is accelerating — entry signal. Crashing trend means momentum died — exit 1-2 cycles before the chart shows it.",color:T.gn},
-{ic:<IC.scan s={mb?22:26} c={T.cy||"#00bcd4"}/>,title:"Bundle Detection",desc:"8 signals. Buys within 2s of creation. Identical SOL amounts. Same-slot transactions. Dust buy inflation. Low unique wallet ratios. Scored 0-100. High bundle score means the chart is fake.",color:T.cy||"#00bcd4"},
-{ic:<IC.bolt s={mb?22:26} c={T.yl}/>,title:"Chart Pattern Memory",desc:"Every token with 5+ price points gets stored — rugs and winners alike. Classified: healthy_pump, sniper_spike, slow_grind, rug, pump_dump. The system has seen your chart before.",color:T.yl},
-{ic:<IC.fleet s={mb?22:26} c={T.rd}/>,title:"Fleet + Game Theory",desc:"Multiple wallets. Independent on-chain transactions. No bundling. Off-chain Nash equilibrium: SELL_NOW on dev dumps, RIDE on whale buys, ACCUMULATE on organic momentum. Kelly Criterion sizing, not guessing.",color:T.rd},
-{ic:<IC.eye s={mb?22:26} c="#ff9800"/>,title:"8 Rug Vectors",desc:"Dev sell speed. Coordinated dumps. Sybil detection. Liquidity drain velocity. Holder concentration. Wallet age analysis. Sell wave detection. MC drop rate. 3+ moderate signals = reject.",color:"#ff9800"},
+{ic:<IC.bulb s={mb?22:26} c={T.pu}/>,title:"40+ Feature ML",desc:"Scores every token in real-time. Learns from every outcome. Weights update automatically.",color:T.pu},
+{ic:<IC.chart s={mb?22:26} c={T.gn}/>,title:"Score Derivatives",desc:"Velocity and acceleration are leading indicators. Exits 1-2 cycles before the chart shows it.",color:T.gn},
+{ic:<IC.scan s={mb?22:26} c={T.cy||"#00bcd4"}/>,title:"Bundle Detection",desc:"8 signals scored 0-100. Same-slot buys, identical amounts, dust inflation. High score = fake chart.",color:T.cy||"#00bcd4"},
+{ic:<IC.bolt s={mb?22:26} c={T.yl}/>,title:"Pattern Memory",desc:"Every chart stored and classified. Healthy pumps, sniper spikes, slow grinds, rugs. Seen it before.",color:T.yl},
+{ic:<IC.fleet s={mb?22:26} c={T.rd}/>,title:"Fleet + Nash",desc:"Multi-wallet, no bundling. Nash equilibrium signals. Kelly Criterion sizing. Game theory, not guessing.",color:T.rd},
+{ic:<IC.eye s={mb?22:26} c="#ff9800"/>,title:"8 Rug Vectors",desc:"Dev dumps, sybil wallets, liquidity drains, sell waves, holder concentration. 3+ signals = reject.",color:"#ff9800"},
 ].map((f,i)=><div key={i} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:12,padding:mb?"14px 12px":"20px 16px"}}>
 <div style={{marginBottom:8}}>{f.ic}</div>
-<div style={{fontSize:mb?13:14,fontWeight:800,color:f.color,marginBottom:5,letterSpacing:".01em"}}>{f.title}</div>
-<div style={{fontSize:mb?11:12,color:T.dm,lineHeight:1.6}}>{f.desc}</div>
+<div style={{fontSize:mb?13:14,fontWeight:800,color:f.color,marginBottom:5}}>{f.title}</div>
+<div style={{fontSize:mb?11:12,color:T.dm,lineHeight:1.5}}>{f.desc}</div>
 </div>)}
 </div>
 
@@ -260,61 +261,51 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 </div>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"1fr 1fr 1fr 1fr",gap:mb?6:12}}>
 {[
-{step:"1",title:"Connect",desc:"Phantom wallet. No sign-up. No email. No KYC."},
-{step:"2",title:"Fund",desc:"Generate a trading keypair. Deposit SOL. You hold the keys."},
-{step:"3",title:"Set rules",desc:"Min score, SOL per trade, TP/SL tiers. Or use defaults."},
-{step:"4",title:"Walk away",desc:"The system finds, buys, manages, and exits. You verify the results."},
+{step:"1",title:"Connect",desc:"Phantom. No sign-up. No KYC."},
+{step:"2",title:"Fund",desc:"Generate keypair. Deposit SOL."},
+{step:"3",title:"Set rules",desc:"Min score, SOL/trade, TP/SL."},
+{step:"4",title:"Walk away",desc:"It finds, buys, exits. You verify."},
 ].map((s,i)=><div key={i} style={{padding:mb?"10px 8px":"16px 12px",textAlign:"center"}}>
 <div style={{width:mb?28:36,height:mb?28:36,borderRadius:"50%",background:"linear-gradient(135deg,#534bb1,#551bf9)",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:mb?14:18,fontWeight:900,color:"#fff",marginBottom:8}}>{s.step}</div>
 <div style={{fontSize:mb?12:14,fontWeight:800,color:T.tx,marginBottom:3}}>{s.title}</div>
-<div style={{fontSize:mb?10:11,color:T.dm,lineHeight:1.5}}>{s.desc}</div>
+<div style={{fontSize:mb?10:11,color:T.dm,lineHeight:1.4}}>{s.desc}</div>
 </div>)}
 </div>
 </div>
 
-{/* ═══ WHAT'S UNDER THE HOOD ═══ */}
-<div style={{marginTop:mb?32:48}}>
-<div style={{textAlign:"center",marginBottom:mb?12:20}}>
-<div style={{fontSize:mb?16:20,fontWeight:800,color:T.tx}}>Under the hood</div>
-</div>
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:mb?6:10}}>
+{/* ═══ SPECS ═══ */}
+<div style={{marginTop:mb?28:44,display:"flex",flexWrap:"wrap",justifyContent:"center",gap:mb?4:8}}>
 {[
-{label:"Momentum exit",val:"3 layers",desc:"Score derivatives, absolute drop, runner detection"},
-{label:"Entry gates",val:"3 gates",desc:"Base filters, hard rug gate, ape scoring"},
-{label:"Online learning",val:"Rate 0.02",desc:"Gradient updates on every token outcome"},
-{label:"Radar tabs",val:"4 feeds",desc:"Momentum, Hot, New, Graduating"},
-{label:"Trading modes",val:"4 modes",desc:"CREATE, APE, BATCH, SOLO"},
-{label:"Recovery",val:"4 methods",desc:"Sell-sweep, force-recover, close, emergency"},
-].map((r,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:mb?"8px 10px":"10px 14px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8}}>
-<div style={{fontSize:mb?16:20,fontWeight:900,color:T.gn,minWidth:mb?50:60,textAlign:"right"}}>{r.val}</div>
-<div><div style={{fontSize:mb?11:13,fontWeight:700,color:T.tx}}>{r.label}</div><div style={{fontSize:mb?10:11,color:T.ft}}>{r.desc}</div></div>
+{n:"40+",l:"features"},
+{n:"3",l:"exit layers"},
+{n:"8",l:"rug signals"},
+{n:"4",l:"radar feeds"},
+{n:"4",l:"trade modes"},
+{n:"0.02",l:"learn rate"},
+].map((s,i)=><div key={i} style={{textAlign:"center",padding:mb?"8px 12px":"10px 18px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,minWidth:mb?80:100}}>
+<div style={{fontSize:mb?18:22,fontWeight:900,color:T.gn,lineHeight:1}}>{s.n}</div>
+<div style={{fontSize:mb?9:10,color:T.ft,marginTop:3,textTransform:"uppercase",letterSpacing:".06em"}}>{s.l}</div>
 </div>)}
-</div>
 </div>
 
 {/* ═══ TIERS ═══ */}
 <div style={{marginTop:mb?36:52}}>
-<div style={{textAlign:"center",marginBottom:mb?12:20}}>
-<div style={{fontSize:mb?16:20,fontWeight:800,color:T.tx,marginBottom:4}}>Access tiers</div>
-<div style={{fontSize:mb?10:12,color:T.ft}}>Same system. Different terms.</div>
-</div>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:14}}>
 {[
-{tier:"Free",price:"0 SOL",sub:"Start now",color:T.ft,features:["Full radar + ML scoring","Auto-Ape + momentum exits","2 concurrent positions","25% profit share on wins","Zero cost when you lose"]},
-{tier:"Pro",price:"1 SOL",sub:"No limits",color:T.pu,features:["Everything in Free","Fleet trading — multi-wallet","Batch deploy up to 20 tokens","0% profit share","Export private keys","50 launches/hr"]},
-{tier:"VIP",price:"10 SOL",sub:"Full access",color:T.yl,features:["Everything in Pro","200 launches/hr","Priority execution queue","Early access to new systems","Direct line to dev"]},
-].map((t,i)=><div key={i} style={{background:T.sf,border:"1px solid "+(t.color)+"22",borderRadius:12,padding:mb?"16px 14px":"22px 18px",position:"relative"}}>
+{tier:"Free",price:"0 SOL",color:T.ft,features:["Radar + ML scoring","Auto-Ape + momentum exits","2 positions","25% profit share"]},
+{tier:"Pro",price:"1 SOL",color:T.pu,features:["+ Fleet multi-wallet","+ Batch deploy (20)","+ 0% profit share","+ Export keys","+ 50 launches/hr"]},
+{tier:"VIP",price:"10 SOL",color:T.yl,features:["+ 200 launches/hr","+ Priority queue","+ Early access","+ Direct to dev"]},
+].map((t,i)=><div key={i} onClick={connect} style={{background:T.sf,border:"1px solid "+(t.color)+"33",borderRadius:12,padding:mb?"16px 14px":"22px 18px",position:"relative",cursor:"pointer",transition:"all .15s ease"}} onMouseEnter={e=>{e.currentTarget.style.borderColor=t.color+"88";e.currentTarget.style.transform="translateY(-2px)"}} onMouseLeave={e=>{e.currentTarget.style.borderColor=t.color+"33";e.currentTarget.style.transform="none"}}>
 {i===1&&<div style={{position:"absolute",top:-8,right:12,fontSize:9,fontWeight:900,padding:"2px 8px",borderRadius:4,background:T.pu,color:"#fff",letterSpacing:".05em"}}>POPULAR</div>}
-<div style={{fontSize:mb?18:22,fontWeight:900,color:t.color,marginBottom:1}}>{t.tier}</div>
-<div style={{fontSize:mb?13:16,color:T.tx,fontWeight:800,marginBottom:2}}>{t.price}</div>
-<div style={{fontSize:mb?10:11,color:T.dm,marginBottom:12}}>{t.sub}</div>
-{t.features.map((f,j)=><div key={j} style={{fontSize:mb?10:12,color:T.tx,padding:"3px 0",display:"flex",alignItems:"flex-start",gap:6}}><span style={{color:t.color,fontSize:11,marginTop:1,flexShrink:0}}>+</span><span>{f}</span></div>)}
+<div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:8}}><span style={{fontSize:mb?20:26,fontWeight:900,color:t.color}}>{t.tier}</span><span style={{fontSize:mb?13:15,color:T.tx,fontWeight:800}}>{t.price}</span></div>
+{t.features.map((f,j)=><div key={j} style={{fontSize:mb?11:12,color:T.dm,padding:"2px 0"}}>{f}</div>)}
+<div style={{marginTop:10,fontSize:mb?11:12,fontWeight:700,color:t.color,opacity:.8}}>Select {t.tier} →</div>
 </div>)}
 </div>
 </div>
 
 {/* ═══ BOTTOM CTA ═══ */}
-<div style={{marginTop:mb?40:60,textAlign:"center",paddingBottom:28}}>
+<div style={{marginTop:mb?36:52,textAlign:"center",paddingBottom:28}}>
 <B onClick={connect} style={{padding:"14px 40px",fontSize:18,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)"}}><IC.ph/> Enter</B>
 <div style={{marginTop:14,fontSize:11,color:T.ft}}>Solana. Phantom. Nothing else.</div>
 </div>
