@@ -15,7 +15,7 @@ function getWhitelist() {
   const env = process.env.WHITELISTED_WALLETS || "";
   if (env !== _whitelistEnv || !_whitelistCache) {
     _whitelistEnv = env;
-    _whitelistCache = new Set(env.split(",").map(w => w.trim()).filter(Boolean));
+    _whitelistCache = new Set(env.split(",").map(w => w.trim().replace(/['"]/g, "")).filter(w => w.length >= 32));
   }
   return _whitelistCache;
 }
