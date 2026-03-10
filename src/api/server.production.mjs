@@ -2126,7 +2126,16 @@ app.post("/api/auto-trade/update", async (req, res) => {
   const { wallet, settings } = req.body;
   const state = autoTraders.get(wallet);
   if (!state) return res.status(404).json({ error: "No auto-trader running" });
+  const prev = { ...state.settings };
   Object.assign(state.settings, settings);
+  // Log what changed so it shows live in Intel log
+  const changes = Object.keys(settings).filter(k => settings[k] !== prev[k]);
+  const summary = changes.map(k => `${k}:${prev[k]}→${state.settings[k]}`).join(" ");
+  const msg = summary ? `Settings updated: ${summary}` : "Settings applied (no changes)";
+  state.log.push({ msg, time: Date.now() });
+  if (state.log.length > 50) state.log.shift();
+  console.log(`[AUTO-APE][${wallet.slice(0,6)}] ${msg}`);
+  broadcastWS({ event: "settings-updated", data: { wallet, settings: state.settings, changes } });
   res.json({ ok: true, settings: state.settings });
 });
 

@@ -693,7 +693,7 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 {S.momentumExit&&<div style={{fontSize:mb?8:7,color:T.dm,marginTop:4,lineHeight:1.5}}>Score drops 20+pts → SL tightens 50% • Score drops 30+pts → immediate sell • Re-scores every 15s from live radar data</div>}
 </div>
 {/* APPLY button when settings changed while active */}
-{aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:8}}>APPLY CHANGES</button>}
+{aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);sAutoTrade(p=>({...p,log:[...(p?.log||[]),{msg:"Settings applied",time:Date.now()}]}));toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:8}}>APPLY CHANGES</button>}
 {/* Positions */}
 {autoTrade?.positions?.length>0&&<div style={{marginBottom:6}}><div style={{fontSize:mb?10:9,fontWeight:700,color:T.ft,marginBottom:4}}>Positions ({autoTrade.positions.length})</div>{autoTrade.positions.map(p=><div key={p.ca} style={{display:"flex",alignItems:"center",gap:5,padding:mb?"5px 0":"3px 0",borderBottom:"1px solid "+T.bd+"44",flexWrap:"wrap"}}>
 <span style={{fontSize:mb?12:11,fontWeight:700,color:T.tx,flex:1,minWidth:60}}>{p.name}</span>
