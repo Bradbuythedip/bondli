@@ -1455,27 +1455,61 @@ app.get("/api/positions/:wallet", async (req, res) => {
   try {
     const tw = await getTradingWallet(req.params.wallet);
     if (!tw) return res.json({ positions: [] });
-    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
-    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
 
-    const positions = [];
-    for (const ta of tokenAccounts.value) {
+    // Collect all wallet keypairs (primary + extras)
+    const allKeypairs = [Keypair.fromSecretKey(bs58.decode(tw.secret))];
+    if (redis) {
+      try {
+        const raw = await redis.get("extra_wallets:" + req.params.wallet);
+        if (raw) {
+          const extras = JSON.parse(raw);
+          for (const ew of extras) {
+            try { allKeypairs.push(Keypair.fromSecretKey(bs58.decode(ew.secret))); } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    // Scan all wallets for token accounts
+    const allTokenAccounts = [];
+    for (const kp of allKeypairs) {
+      try {
+        const accts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+        allTokenAccounts.push(...accts.value);
+      } catch {}
+    }
+
+    // Aggregate amounts by mint across all wallets
+    const mintAmounts = new Map(); // mint → { amount, decimals }
+    for (const ta of allTokenAccounts) {
       const info = ta.account.data.parsed.info;
       const amount = parseFloat(info.tokenAmount.uiAmountString || "0");
       if (amount <= 0) continue;
       const mint = info.mint;
       const decimals = info.tokenAmount.decimals || 6;
+      const existing = mintAmounts.get(mint);
+      if (existing) { existing.amount += amount; } else { mintAmounts.set(mint, { amount, decimals }); }
+    }
+
+    const positions = [];
+    for (const [mint, { amount, decimals }] of mintAmounts) {
       
       // Get token info from radar or fetch from pump.fun
       let radarToken = radar.tokens.get(mint);
       
-      // If not in radar, try to fetch basic info
+      // If not in radar, try pump.fun then DexScreener
       if (!radarToken) {
         try {
           const meta = await fetchPumpFunMetadata(mint);
           if (meta) {
             radarToken = { name: meta.name, ticker: meta.symbol, image: meta.image, mcapSol: 0, mcapUsd: meta.marketCap || 0 };
           }
+        } catch {}
+      }
+      if (!radarToken) {
+        try {
+          const dr = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(5000) });
+          if (dr.ok) { const dd = await dr.json(); const p = dd?.pairs?.[0]; if (p) radarToken = { name: p.baseToken?.name||"", ticker: p.baseToken?.symbol||"", image: p.info?.imageUrl||"", mcapSol: 0, mcapUsd: p.fdv||0 }; }
         } catch {}
       }
       
