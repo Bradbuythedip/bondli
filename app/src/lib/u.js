@@ -7,4 +7,4 @@ export const fs=(n,d=4)=>n==null?"—":n.toFixed(d);
 export const tp=(p,s=6,e=4)=>(!p||p.length<s+e+3)?p||"":p.slice(0,s)+"..."+p.slice(-e);
 export function dbp(sol,ape){if(ape)return{dv:0,fe:.0,fl:+sol.toFixed(4),pc:0};let p,mn,mx;if(sol<1){p=.5;mn=.1;mx=.5}else if(sol<5){p=.4;mn=.3;mx=2}else if(sol<15){p=.25;mn=1;mx=4}else{p=.15;mn=2;mx=8}const d=Math.min(mx,Math.max(mn,sol*p));return{dv:+d.toFixed(4),fe:.02,fl:+Math.max(0,sol-d-.02).toFixed(4),pc:+((d/sol)*100).toFixed(1)}}
 export const wc=(s)=>s<.5?3:s<1?5:s<5?9:s<10?11:s<25?15:20;
-export const hp=(pt=[15])=>{try{navigator?.vibrate?.(pt)}catch{}};
+export const hp=(pt=[15])=>{try{if(navigator?.vibrate){navigator.vibrate(pt);return}const ctx=new(window.AudioContext||window.webkitAudioContext)();const o=ctx.createOscillator();o.type="triangle";o.frequency.value=1;const g=ctx.createGain();g.gain.value=0.001;o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+0.01);setTimeout(()=>ctx.close(),100)}catch{}};
