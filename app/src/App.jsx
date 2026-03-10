@@ -220,7 +220,71 @@ const resetHome=()=>{sLd(false);sLCA("");sAsid("");sFl(null)};
 const quickBuy=async(ca,s)=>{if(!user?.pubkey||user.demo){toast("Connect wallet","error");return}if(!trW){toast("Create trading key","error");return}if(trB<s){toast(`Need ${s} SOL`,"error");return}const r=await a.qb(user.pubkey,ca,s);if(r.signature){sTrB(b=>b-s);hp([6,15,6]);toast("Bought "+s+" SOL","success");sTab("bags");sRExp(null);if(r.position){sPos(prev=>{if(prev.some(p=>p.mint===ca))return prev;return[{mint:ca,name:r.position.name,ticker:r.position.ticker,image:r.position.image,mcapUsd:r.position.mcapUsd,mcapSol:r.position.mcapSol,marketCapSol:r.position.mcapSol,valueSol:s,valueUsd:s*solP,amount:0,holdPct:0,pnlSol:0,pnlPct:0,pending:true},...prev]});sHeld(prev=>new Set([...prev,ca]))}const rb=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)));if(d.positions.some(p=>p.mint===ca))return}}catch{}if(n<8)setTimeout(()=>rb(n+1),(n+1)*2500)};setTimeout(()=>rb(0),4000);return r.signature}throw new Error(r.error||"Failed")};
 const quickSell=async(ca,pct)=>{if(!user?.pubkey)return;const r=await a.qs(user.pubkey,ca,pct);return r.signature||null};
 
-if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHeight:"100dvh",background:T.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",fontFamily:M,padding:20}}><div style={{animation:"pf 3s ease infinite",marginBottom:24}}><Logo s={mb?44:56}/></div><div style={{fontWeight:800,fontSize:mb?42:56,letterSpacing:"-.02em",marginBottom:4}}>BOND<span style={{color:T.rd}}>LI</span></div><div style={{fontSize:mb?20:22,color:T.dm,marginBottom:28,textAlign:"center"}}>Fleet trading engine for pump.fun</div><B onClick={connect} style={{padding:"16px 36px",fontSize:20,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)",animation:"gl 3s infinite"}}><IC.ph/> Connect</B><button onClick={()=>sU({pubkey:"demo",tier:"demo",demo:true})} style={{marginTop:10,background:"none",border:"none",fontSize:16,color:T.ft,cursor:"pointer"}}>demo</button></div></TC.Provider>;
+if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHeight:"100dvh",background:T.bg,fontFamily:M,overflow:"auto"}}>
+{/* ═══ HERO ═══ */}
+<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:mb?"60px 16px 40px":"80px 20px 50px",textAlign:"center"}}>
+<div style={{animation:"pf 3s ease infinite",marginBottom:20}}><Logo s={mb?44:56}/></div>
+<div style={{fontWeight:900,fontSize:mb?42:64,letterSpacing:"-.03em",lineHeight:1,marginBottom:8}}>BOND<span style={{color:T.rd}}>LI</span></div>
+<div style={{fontSize:mb?18:24,color:T.dm,marginBottom:6,maxWidth:500}}>AI-powered trading engine for pump.fun</div>
+<div style={{fontSize:mb?12:14,color:T.ft,marginBottom:32,maxWidth:440,lineHeight:1.5}}>Real-time intel scoring, auto-ape with momentum exits, chart pattern learning, and fleet coordination — all from one wallet connect.</div>
+<B onClick={connect} style={{padding:"16px 40px",fontSize:20,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)",animation:"gl 3s infinite"}}><IC.ph/> Connect Wallet</B>
+<button onClick={()=>sU({pubkey:"demo",tier:"demo",demo:true})} style={{marginTop:10,background:"none",border:"none",fontSize:14,color:T.ft,cursor:"pointer",textDecoration:"underline",textUnderlineOffset:3}}>try demo mode</button>
+</div>
+
+{/* ═══ FEATURE GRID ═══ */}
+<div style={{maxWidth:900,margin:"0 auto",padding:mb?"0 12px 40px":"0 20px 60px"}}>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:12}}>
+{[
+{icon:"\u{1F9E0}",title:"Meme Intelligence",desc:"40+ feature ML model scores every token in real-time. Learns from outcomes — gets smarter with every trade.",color:T.pu},
+{icon:"\u{1F4C8}",title:"Auto-Ape",desc:"Set min score, SOL per trade, TP/SL tiers — it finds and trades tokens automatically. Momentum exits protect profits.",color:T.gn},
+{icon:"\u{1F50D}",title:"Radar Scanner",desc:"4-tab live scanner: Momentum, Hot, New, Graduating. Scores on 15+ factors including bundle detection and social intel.",color:T.cy||"#00bcd4"},
+{icon:"\u{26A1}",title:"Chart Pattern Learning",desc:"Stores graduated token charts and classifies patterns. Recognizes healthy pumps vs rugs from price shape alone.",color:T.yl},
+{icon:"\u{1F3AF}",title:"Fleet Trading",desc:"Multi-wallet coordination with game theory. Nash equilibrium signals: HOLD, RIDE, SELL_NOW, ACCUMULATE.",color:T.rd},
+{icon:"\u{1F6E1}\uFE0F",title:"Rug Protection",desc:"Dev sell speed, coordinated dumps, sybil detection, holder concentration — 8 rug signals scored in real-time.",color:"#ff9800"},
+].map((f,i)=><div key={i} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:12,padding:mb?"14px 12px":"18px 16px"}}>
+<div style={{fontSize:mb?22:28,marginBottom:6}}>{f.icon}</div>
+<div style={{fontSize:mb?13:15,fontWeight:800,color:f.color,marginBottom:4}}>{f.title}</div>
+<div style={{fontSize:mb?11:12,color:T.dm,lineHeight:1.5}}>{f.desc}</div>
+</div>)}
+</div>
+
+{/* ═══ HOW IT WORKS ═══ */}
+<div style={{marginTop:mb?32:48,textAlign:"center"}}>
+<div style={{fontSize:mb?18:22,fontWeight:800,color:T.tx,marginBottom:20}}>How it works</div>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr 1fr",gap:mb?6:12}}>
+{[
+{step:"1",title:"Connect",desc:"Phantom wallet. No sign-up, no email, no KYC."},
+{step:"2",title:"Fund",desc:"Create a trading key, deposit SOL. Your keys, your funds."},
+{step:"3",title:"Configure",desc:"Set min score, SOL/trade, TP/SL. Or use defaults."},
+{step:"4",title:"Profit",desc:"Auto-Ape finds tokens, buys, manages exits. You watch."},
+].map((s,i)=><div key={i} style={{padding:mb?"10px 8px":"16px 12px",textAlign:"center"}}>
+<div style={{width:mb?28:36,height:mb?28:36,borderRadius:"50%",background:"linear-gradient(135deg,#534bb1,#551bf9)",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:mb?14:18,fontWeight:900,color:"#fff",marginBottom:8}}>{s.step}</div>
+<div style={{fontSize:mb?12:14,fontWeight:800,color:T.tx,marginBottom:3}}>{s.title}</div>
+<div style={{fontSize:mb?10:11,color:T.dm,lineHeight:1.4}}>{s.desc}</div>
+</div>)}
+</div>
+</div>
+
+{/* ═══ TIERS ═══ */}
+<div style={{marginTop:mb?32:48,display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:12}}>
+{[
+{tier:"Free",price:"0 SOL",color:T.ft,features:["Radar + Auto-Ape","Up to 2 positions","25% profit share on wins","Full intel scoring"]},
+{tier:"Pro",price:"10 SOL",color:T.pu,features:["Everything in Free","Fleet trading (multi-wallet)","Batch deploy up to 20 tokens","0% profit share","Export private keys"]},
+{tier:"VIP",price:"Whitelisted",color:T.yl,features:["Everything in Pro","Priority support","200 launches/hr rate limit","Early access to new features"]},
+].map((t,i)=><div key={i} style={{background:T.sf,border:"1px solid "+(t.color)+"22",borderRadius:12,padding:mb?"14px 12px":"20px 16px"}}>
+<div style={{fontSize:mb?16:20,fontWeight:900,color:t.color,marginBottom:2}}>{t.tier}</div>
+<div style={{fontSize:mb?11:13,color:T.dm,marginBottom:12}}>{t.price}</div>
+{t.features.map((f,j)=><div key={j} style={{fontSize:mb?10:12,color:T.tx,padding:"3px 0",display:"flex",alignItems:"center",gap:6}}><span style={{color:t.color,fontSize:10}}>+</span>{f}</div>)}
+</div>)}
+</div>
+
+{/* ═══ BOTTOM CTA ═══ */}
+<div style={{marginTop:mb?36:52,textAlign:"center",paddingBottom:20}}>
+<B onClick={connect} style={{padding:"14px 36px",fontSize:18,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)"}}><IC.ph/> Get Started</B>
+<div style={{marginTop:12,fontSize:11,color:T.ft}}>Solana only. Requires Phantom wallet.</div>
+</div>
+</div>
+</div></TC.Provider>;
 
 const rTokens=rt[rTab]||[];const allRadar=(()=>{const seen=new Set();return[...(rt.momentum||[]),...(rt.hot||[]),...(rt.new||[]),...(rt.graduating||[])].filter(t=>{if(seen.has(t.ca))return false;seen.add(t.ca);return true})})();const rFiltered=rSearch?allRadar.filter(t=>(t.name||"").toLowerCase().includes(rSearch.toLowerCase())||(tk(t.ticker)||"").toLowerCase().includes(rSearch.toLowerCase())||t.ca?.includes(rSearch)||t.ca?.startsWith(rSearch)):rTokens;
 const expToken=rExp?rFiltered.find(t=>t.ca===rExp)||rTokens.find(t=>t.ca===rExp)||allRadar.find(t=>t.ca===rExp):null;
