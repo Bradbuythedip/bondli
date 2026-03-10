@@ -37,7 +37,7 @@ import { FleetTrader, skimSweep } from "../engine/fleet-trader.mjs";
 import { createToken } from "../engine/token-creator.mjs";
 import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, PLATFORM_WALLET } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
-import { MemeIntelligence } from "../engine/meme-intelligence.mjs";
+import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
 import { XSocialIntel } from "../engine/x-social-intel.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
 
@@ -89,6 +89,7 @@ if (REDIS_URL) {
 const sessionManager = new SessionManager(redis);
 const fleetTrader = new FleetTrader();
 const memeIntel = new MemeIntelligence(redis);
+const scoreDynamics = new ScoreDynamics(5000);
 const historicalMovers = new HistoricalMovers(redis);
 const xSocial = new XSocialIntel();
 
@@ -759,6 +760,25 @@ setInterval(() => {
   };
 
   const deduped = dedup(all);
+
+  // ── SCORE DYNAMICS: record score for every active token every 5s ──
+  // This feeds the velocity/acceleration tracker so buy decisions
+  // know if a token's score is accelerating (runner) or decelerating (rug)
+  for (const t of deduped) {
+    try {
+      const qf = extractQuickFeatures(t);
+      if (qf) {
+        const s = memeIntel.scorer.score(qf);
+        scoreDynamics.record(t.ca, s.score);
+      }
+    } catch {}
+  }
+  // Prune stale entries every ~60s (counter resets to 0 on 12th tick at 5s interval)
+  if (++scoreDynamics._pruneCounter >= 12) {
+    scoreDynamics._pruneCounter = 0;
+    scoreDynamics.prune();
+  }
+  if (scoreDynamics._pruneCounter === undefined) scoreDynamics._pruneCounter = 0;
 
   // ── NEW: Fresh launches (last 10 min) ──
   radar.tabs.new = deduped
@@ -1811,22 +1831,48 @@ function startAutoTrader(wallet, settings) {
 
         const s = { ...state.settings };
 
-        // ═══ MOMENTUM EXIT — dynamic SL/TP based on live intel score ═══
-        // Re-score the token using live radar data and compare to entry score.
-        // If momentum is fading (score dropping), tighten stops to protect capital.
+        // ═══ MOMENTUM EXIT — score derivatives detect rugs BEFORE the score drops ═══
+        // The score is a lagging indicator. Its velocity and acceleration are leading ones.
+        // A decelerating score means the pump is running out of energy — exit before the crash.
         if (s.momentumExit && token && !pos.isMoonbag) {
           try {
             const features = extractQuickFeatures(token);
             if (features) {
               const liveScore = memeIntel.scorer.score(features);
               const currentScore = liveScore?.score || 0;
-              // Store entry score on first check
               if (!pos.entryScore) pos.entryScore = currentScore;
               pos.liveScore = currentScore;
               const scoreDrop = pos.entryScore - currentScore;
 
+              // Record score and get velocity/acceleration
+              const dyn = scoreDynamics.record(ca, currentScore);
+              pos.scoreVelocity = dyn.velocity;
+              pos.scoreAcceleration = dyn.acceleration;
+              pos.scoreTrend = dyn.trend;
+
+              // ── DERIVATIVES-BASED EXIT (catches rugs 1-2 cycles earlier) ──
+              // Crashing: velocity < -0.3 pts/s = score is collapsing fast
+              if (dyn.trend === "crashing" && dyn.scores >= 3) {
+                log(`CRASH EXIT ${ca.slice(0,6)}: score v=${dyn.velocity}/s a=${dyn.acceleration}/s² trend=CRASHING — FULL SELL`);
+                const sig = await execSell(ca, 100, kp, "crash-exit");
+                if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "CRASH", reason: "score-crashing", velocity: dyn.velocity } });
+                exitPosition(ca);
+                trackSell(wallet, ca);
+                continue;
+              }
+              // Fading: score still positive but decelerating hard = pump dying
+              // Only act if we have 3+ data points (acceleration needs history)
+              if (dyn.trend === "fading" && dyn.acceleration < -0.02 && dyn.scores >= 3 && changePct > 5 && pos.tpHit === 0) {
+                log(`FADE TRIM ${ca.slice(0,6)}: score fading a=${dyn.acceleration}/s² +${changePct.toFixed(0)}% — selling ${s.tp1Sell}% early`);
+                const sig = await execSell(ca, s.tp1Sell, kp, "fade-trim");
+                if (sig) {
+                  broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "FADE", sellPct: s.tp1Sell, acceleration: dyn.acceleration } });
+                  pos.tpHit = 1;
+                }
+              }
+
+              // ── ABSOLUTE SCORE DROP (existing logic, kept as safety net) ──
               if (scoreDrop >= 30) {
-                // Severe momentum loss — immediate full exit
                 log(`MOMENTUM EXIT ${ca.slice(0,6)}: score ${pos.entryScore}→${currentScore} (−${scoreDrop}) — FULL SELL`);
                 const sig = await execSell(ca, 100, kp, "momentum-exit");
                 if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOMENTUM", reason: "score-crash" } });
@@ -1834,7 +1880,6 @@ function startAutoTrader(wallet, settings) {
                 trackSell(wallet, ca);
                 continue;
               } else if (scoreDrop >= 20) {
-                // Moderate momentum loss — tighten SL triggers by 50%
                 s.sl1 = Math.round(s.sl1 * 0.5);
                 s.sl2 = Math.round(s.sl2 * 0.5);
                 if (scoreDrop >= 25 && changePct > 5 && pos.tpHit === 0) {
@@ -1849,8 +1894,13 @@ function startAutoTrader(wallet, settings) {
                 s.sl1 = Math.round(s.sl1 * 0.75);
                 s.sl2 = Math.round(s.sl2 * 0.75);
               }
-              // Score INCREASING = strong momentum — widen TP targets to let it run
-              if (currentScore > pos.entryScore + 10) {
+
+              // ── RUNNER DETECTION: accelerating score = let it fly ──
+              if (dyn.trend === "rocket" || (dyn.trend === "rising" && currentScore > pos.entryScore + 10)) {
+                s.tp1 = Math.round(state.settings.tp1 * 1.5);  // widen TPs more aggressively
+                s.tp2 = Math.round(state.settings.tp2 * 1.5);
+                s.tp3 = Math.round(state.settings.tp3 * 1.5);
+              } else if (currentScore > pos.entryScore + 10) {
                 s.tp1 = Math.round(state.settings.tp1 * 1.25);
                 s.tp2 = Math.round(state.settings.tp2 * 1.25);
                 s.tp3 = Math.round(state.settings.tp3 * 1.25);
@@ -2049,8 +2099,22 @@ function startAutoTrader(wallet, settings) {
         const boostScore = dexBoost ? Math.min(8, 3 + Math.log2(dexBoost.amount + 1)) : 0;
         if (state.settings.requireBoosted && !dexBoost) return false;
 
+        // Score dynamics: use velocity/acceleration to boost or penalize
+        let dynamicsBonus = 0;
+        const dyn = scoreDynamics.get(t.ca);
+        if (dyn && dyn.scores >= 2) {
+          // Reject tokens with crashing or declining score trend
+          if (dyn.trend === "crashing" || dyn.trend === "declining") return false;
+          // Fading momentum = deceleration warning
+          if (dyn.trend === "fading") dynamicsBonus = -8;
+          // Rising steadily
+          else if (dyn.trend === "rising") dynamicsBonus = 5;
+          // Rocket: accelerating score = strong signal
+          else if (dyn.trend === "rocket") dynamicsBonus = 12;
+        }
+
         t._apeScore = Math.max(0, Math.min(99, Math.round(
-          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore - sellPenalty - rugPenalty
+          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus - sellPenalty - rugPenalty
         )));
         t._rugFlags = qf ? [
           qf.rg_devSellSpeed > 0.3 && "dev_selling",
@@ -2059,6 +2123,7 @@ function startAutoTrader(wallet, settings) {
           qf._rg_quickFlipRate > 0.2 && "quick_flips",
           qf.rg_holderConcentration > 0.6 && "whale_heavy",
         ].filter(Boolean) : [];
+        t._scoreTrend = dyn?.trend || "new";
         return t._apeScore >= state.settings.minScore;
       }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
 
@@ -2071,7 +2136,8 @@ function startAutoTrader(wallet, settings) {
         if (balance < state.settings.solPerTrade + 0.01) { log("Low balance: " + balance.toFixed(4)); break; }
 
         const rugFlags = t._rugFlags?.length > 0 ? ` [WARN: ${t._rugFlags.join(",")}]` : "";
-        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${state.settings.solPerTrade} SOL${rugFlags}`);
+        const trendTag = t._scoreTrend && t._scoreTrend !== "new" && t._scoreTrend !== "stable" ? ` trend:${t._scoreTrend}` : "";
+        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${state.settings.solPerTrade} SOL${rugFlags}`);
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -2216,6 +2282,9 @@ app.get("/api/auto-trade/status", (req, res) => {
         entryScore: p.entryScore || 0,
         liveScore: p.liveScore || p.entryScore || 0,
         scoreDelta: (p.liveScore || p.entryScore || 0) - (p.entryScore || 0),
+        scoreVelocity: p.scoreVelocity || 0,
+        scoreAcceleration: p.scoreAcceleration || 0,
+        scoreTrend: p.scoreTrend || "stable",
       };
     }),
     log: state.log.slice(-20),

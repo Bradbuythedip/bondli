@@ -239,6 +239,22 @@ function extractFeatures(token) {
   return f;
 }
 
+// ═══ PRE-COMPUTED LOOKUP TABLES ═══
+// Built once at module load — eliminates string splits and array filters from hot path
+
+const GROUP_FOR_KEY = {};      // "tp_lawOfFew" → "tp"
+const KEYS_BY_GROUP = {};      // "tp" → ["tp_lawOfFew", ...]
+const KEY_INDEX = {};          // "tp_lawOfFew" → 0 (position in FEATURE_KEYS)
+for (let i = 0; i < FEATURE_KEYS.length; i++) {
+  const k = FEATURE_KEYS[i];
+  const g = k.substring(0, k.indexOf("_")); // faster than split("_")[0]
+  GROUP_FOR_KEY[k] = g;
+  KEY_INDEX[k] = i;
+  if (!KEYS_BY_GROUP[g]) KEYS_BY_GROUP[g] = [];
+  KEYS_BY_GROUP[g].push(k);
+}
+const GROUP_NAMES = Object.keys(KEYS_BY_GROUP); // ["tp","k","oc","rg","so","mt"]
+
 // ═══ SCORING ENGINE ═══
 // Combines rule-based frameworks + learned weights
 
@@ -264,54 +280,83 @@ class ScoringEngine {
     this.accuracy = { correct: 0, total: 0 };
   }
 
-  score(features) {
-    let weightedSum = 0;
-    let totalWeight = 0;
+  // Rebuild multiplier cache after weight changes — one Float64Array lookup per feature
+  _rebuildCache() {
+    this._mCache = new Float64Array(FEATURE_KEYS.length);
+    this._mTotal = 0;
+    for (let i = 0; i < FEATURE_KEYS.length; i++) {
+      const k = FEATURE_KEYS[i];
+      const m = (this.weights[k] || 1.0) * (this.groupWeights[GROUP_FOR_KEY[k]] || 1.0);
+      this._mCache[i] = m;
+      this._mTotal += m;
+    }
+    // Pre-compute per-group weight sums for sub-score normalization
+    this._groupWeightSums = {};
+    for (const g of GROUP_NAMES) {
+      let s = 0;
+      for (const k of KEYS_BY_GROUP[g]) s += this._mCache[KEY_INDEX[k]];
+      this._groupWeightSums[g] = s;
+    }
+  }
 
-    for (const key of FEATURE_KEYS) {
-      const val = features[key] || 0;
-      const group = key.split("_")[0];
-      const gw = this.groupWeights[group] || 1.0;
-      const w = (this.weights[key] || 1.0) * gw;
-      weightedSum += val * w;
-      totalWeight += w;
+  score(features) {
+    // Lazy-init multiplier cache
+    if (!this._mCache) this._rebuildCache();
+
+    // ── Single pass: weighted sum + per-group sums ──
+    // Zero-alloc: reuse pre-allocated group accumulators
+    let weightedSum = 0;
+    let gs_tp = 0, gs_k = 0, gs_oc = 0, gs_rg = 0, gs_so = 0, gs_mt = 0;
+    const mc = this._mCache;
+
+    for (let i = 0; i < FEATURE_KEYS.length; i++) {
+      const val = features[FEATURE_KEYS[i]] || 0;
+      const wv = val * mc[i];
+      weightedSum += wv;
+      // Branch-free group accumulation via switch on first char + length
+      // tp(2), k(1), oc(2), rg(2), so(2), mt(2)
+      switch (GROUP_FOR_KEY[FEATURE_KEYS[i]]) {
+        case "tp": gs_tp += wv; break;
+        case "k":  gs_k  += wv; break;
+        case "oc": gs_oc += wv; break;
+        case "rg": gs_rg += wv; break;
+        case "so": gs_so += wv; break;
+        case "mt": gs_mt += wv; break;
+      }
     }
 
+    const totalWeight = this._mTotal;
     const rawScore = totalWeight > 0 ? weightedSum / totalWeight : 0;
 
-    // Compute sub-scores for each framework
-    const subScores = {};
-    for (const group of ["tp", "k", "oc", "rg", "so", "mt"]) {
-      const keys = FEATURE_KEYS.filter(k => k.startsWith(group + "_"));
-      const vals = keys.map(k => (features[k] || 0) * (this.weights[k] || 1));
-      subScores[group] = vals.length > 0 ? avg(vals) : 0;
-    }
+    // Sub-scores normalized by group weight
+    const gws = this._groupWeightSums;
+    const s_tp = gws.tp > 0 ? gs_tp / gws.tp : 0;
+    const s_k  = gws.k  > 0 ? gs_k  / gws.k  : 0;
+    const s_oc = gws.oc > 0 ? gs_oc / gws.oc : 0;
+    const s_rg = gws.rg > 0 ? gs_rg / gws.rg : 0;
+    const s_so = gws.so > 0 ? gs_so / gws.so : 0;
+    const s_mt = gws.mt > 0 ? gs_mt / gws.mt : 0;
 
-    // Rug risk composite (0 = safe, 1 = high rug risk)
-    const rugRisk = subScores.rg;
-    // Aggressive non-linear penalty: even mild rug signals should hurt
-    // rugRisk 0.0-0.2 → 0-15 penalty (early warning)
-    // rugRisk 0.2-0.4 → 15-35 penalty (real concern)
-    // rugRisk 0.4-1.0 → 35-75 penalty (likely rug, score destroyed)
+    // ── Rug penalty (no branches on common path) ──
+    const rugRisk = s_rg;
     const rugPenalty = rugRisk < 0.2
-      ? Math.round(rugRisk * 75)
+      ? (rugRisk * 75 + 0.5) | 0
       : rugRisk < 0.4
-        ? Math.round(15 + (rugRisk - 0.2) * 100)
-        : Math.round(35 + (rugRisk - 0.4) * 67);
+        ? (15 + (rugRisk - 0.2) * 100 + 0.5) | 0
+        : (35 + (rugRisk - 0.4) * 67 + 0.5) | 0;
 
-    // Tipping Point composite
-    const tippingScore = (subScores.tp * 0.4 + subScores.k * 0.3 + subScores.oc * 0.2 + subScores.so * 0.1);
+    // ── Tipping Point composite ──
+    const tippingScore = s_tp * 0.4 + s_k * 0.3 + s_oc * 0.2 + s_so * 0.1;
 
-    // Bonding probability: based on velocity + tipping score, penalized by rug risk
-    const bondProb = Math.min(99, Math.max(1, Math.round(
-      tippingScore * 40 +
-      (features.oc_buyVelocity5m || 0) * 25 +
-      (features.oc_uniqueBuyers5m || 0) * 20 +
-      (features.k_herdSignal || 0) * 15 -
-      rugPenalty * 0.8 // rug penalty hits bond probability harder
-    )));
+    // ── Bond probability ──
+    const bpRaw = tippingScore * 40
+      + (features.oc_buyVelocity5m || 0) * 25
+      + (features.oc_uniqueBuyers5m || 0) * 20
+      + (features.k_herdSignal || 0) * 15
+      - rugPenalty * 0.8;
+    const bondProb = bpRaw < 1 ? 1 : bpRaw > 99 ? 99 : (bpRaw + 0.5) | 0;
 
-    // Rug flags for UI display — lowered to warn earlier
+    // ── Rug flags — direct reads, no array iteration ──
     const rugFlags = [];
     if ((features.rg_devSellSpeed || 0) > 0.2) rugFlags.push("dev_dumping");
     if ((features.rg_holderConcentration || 0) > 0.5) rugFlags.push("whale_concentrated");
@@ -321,21 +366,24 @@ class ScoringEngine {
     if ((features.rg_mcapDropRate || 0) > 0.25) rugFlags.push("mcap_crashing");
     if ((features.rg_buyerRetention || 0) < 0.5) rugFlags.push("early_buyers_fled");
 
+    const finalScore = (rawScore * 100 + 0.5) | 0;
+    const clamped = finalScore - rugPenalty;
+
     return {
-      score: Math.max(0, Math.min(99, Math.round(rawScore * 100) - rugPenalty)),
-      tippingScore: Math.round(tippingScore * 100),
+      score: clamped < 0 ? 0 : clamped > 99 ? 99 : clamped,
+      tippingScore: (tippingScore * 100 + 0.5) | 0,
       bondProb,
-      rugScore: Math.round(rugRisk * 100),
+      rugScore: (rugRisk * 100 + 0.5) | 0,
       rugFlags,
       subScores: {
-        tippingPoint: Math.round(subScores.tp * 100),
-        kahneman: Math.round(subScores.k * 100),
-        onChain: Math.round(subScores.oc * 100),
-        rugDetection: Math.round(subScores.rg * 100),
-        social: Math.round(subScores.so * 100),
-        timing: Math.round(subScores.mt * 100),
+        tippingPoint: (s_tp * 100 + 0.5) | 0,
+        kahneman: (s_k * 100 + 0.5) | 0,
+        onChain: (s_oc * 100 + 0.5) | 0,
+        rugDetection: (s_rg * 100 + 0.5) | 0,
+        social: (s_so * 100 + 0.5) | 0,
+        timing: (s_mt * 100 + 0.5) | 0,
       },
-      confidence: Math.min(99, 40 + Math.round(this.trainCount / 10)),
+      confidence: Math.min(99, 40 + ((this.trainCount / 10 + 0.5) | 0)),
       modelVersion: this.trainCount,
     };
   }
@@ -355,6 +403,9 @@ class ScoringEngine {
         this.weights[key] = Math.max(0.1, Math.min(5.0, this.weights[key]));
       }
     }
+
+    // Invalidate multiplier cache — weights changed
+    this._mCache = null;
 
     // Track accuracy
     this.trainCount++;
@@ -395,6 +446,7 @@ class ScoringEngine {
     if (data.groupWeights) this.groupWeights = data.groupWeights;
     if (data.trainCount) this.trainCount = data.trainCount;
     if (data.accuracy) this.accuracy = data.accuracy;
+    this._mCache = null; // invalidate cache
   }
 }
 
@@ -750,5 +802,122 @@ function outcomeToLabel(outcome) {
 //     token.intelScore = await intel.score(token);
 //   });
 
+// ═══ SCORE DYNAMICS — Velocity & Acceleration ═══
+// Axiom: a token's fate is encoded not in its score, but in the *derivatives* of its score.
+//
+// Physics of rug pulls:
+//   - Score decelerating (d²S/dt² < 0) while still positive = the pump is losing energy.
+//     Like a ball thrown upward — still rising, but gravity is winning. Get out before the peak.
+//   - Sharp negative velocity spike (dS/dt << 0) = something broke. Instant exit signal.
+//   - Score accelerating upward (d²S/dt² > 0) = momentum building. Runner — let it ride.
+//
+// The score itself is a lagging indicator. The derivatives are *leading* indicators.
+// By the time the score drops below threshold, you've already lost. The acceleration
+// told you 2 cycles ago.
+
+class ScoreDynamics {
+  constructor(maxTokens = 5000) {
+    this.history = new Map(); // ca → { scores: [{s, t}], v, a }
+    this.maxTokens = maxTokens;
+  }
+
+  // Record a score observation. Returns { velocity, acceleration, trend }
+  // velocity: points per second (positive = improving)
+  // acceleration: change in velocity per second (positive = momentum building)
+  // trend: "rocket" | "rising" | "fading" | "crashing" | "stable"
+  record(ca, score) {
+    const now = Date.now();
+    let entry = this.history.get(ca);
+    if (!entry) {
+      entry = { scores: [], v: 0, a: 0 };
+      this.history.set(ca, entry);
+      // Evict oldest if at capacity
+      if (this.history.size > this.maxTokens) {
+        const oldest = this.history.keys().next().value;
+        this.history.delete(oldest);
+      }
+    }
+
+    const scores = entry.scores;
+    scores.push({ s: score, t: now });
+
+    // Keep only last 6 observations (enough for 2nd derivative)
+    if (scores.length > 6) scores.shift();
+
+    if (scores.length < 2) {
+      entry.v = 0;
+      entry.a = 0;
+      return { velocity: 0, acceleration: 0, trend: "stable", scores: scores.length };
+    }
+
+    // ── Compute velocity: weighted linear regression on recent points ──
+    // More recent points get more weight (exponential decay)
+    const n = scores.length;
+    const latest = scores[n - 1];
+    const prev = scores[n - 2];
+    const dt = (latest.t - prev.t) / 1000; // seconds
+
+    // Instantaneous velocity (points per second)
+    const v = dt > 0 ? (latest.s - prev.s) / dt : 0;
+
+    // Smoothed velocity (EMA with previous to reduce noise)
+    entry.v = entry.v === 0 ? v : entry.v * 0.3 + v * 0.7;
+
+    // ── Compute acceleration: change in velocity ──
+    if (scores.length >= 3) {
+      const pp = scores[n - 3];
+      const dtPrev = (prev.t - pp.t) / 1000;
+      const vPrev = dtPrev > 0 ? (prev.s - pp.s) / dtPrev : 0;
+      const aDt = (latest.t - pp.t) / 1000;
+      const rawA = aDt > 0 ? (v - vPrev) / aDt : 0;
+      entry.a = entry.a === 0 ? rawA : entry.a * 0.3 + rawA * 0.7;
+    }
+
+    // ── Classify trend ──
+    let trend;
+    if (entry.v > 0.3 && entry.a > 0.01) trend = "rocket";       // accelerating upward
+    else if (entry.v > 0.1) trend = "rising";                      // steady climb
+    else if (entry.v > 0 && entry.a < -0.01) trend = "fading";     // still up but decelerating
+    else if (entry.v < -0.3) trend = "crashing";                   // falling fast
+    else if (entry.v < -0.05) trend = "declining";                  // drifting down
+    else trend = "stable";
+
+    return {
+      velocity: +entry.v.toFixed(4),
+      acceleration: +entry.a.toFixed(6),
+      trend,
+      scores: n,
+    };
+  }
+
+  // Get current dynamics for a token (without recording new score)
+  get(ca) {
+    const entry = this.history.get(ca);
+    if (!entry) return null;
+    const n = entry.scores.length;
+    return {
+      velocity: +entry.v.toFixed(4),
+      acceleration: +entry.a.toFixed(6),
+      trend: entry.v > 0.3 && entry.a > 0.01 ? "rocket"
+        : entry.v > 0.1 ? "rising"
+        : entry.v > 0 && entry.a < -0.01 ? "fading"
+        : entry.v < -0.3 ? "crashing"
+        : entry.v < -0.05 ? "declining"
+        : "stable",
+      lastScore: n > 0 ? entry.scores[n - 1].s : 0,
+      scores: n,
+    };
+  }
+
+  // Prune tokens not seen in 30 minutes
+  prune() {
+    const cutoff = Date.now() - 1800000;
+    for (const [ca, entry] of this.history) {
+      const last = entry.scores[entry.scores.length - 1];
+      if (!last || last.t < cutoff) this.history.delete(ca);
+    }
+  }
+}
+
 export default MemeIntelligence;
-export { extractFeatures, ScoringEngine, RAGMemory, OutcomeMonitor, FEATURE_KEYS };
+export { extractFeatures, ScoringEngine, RAGMemory, OutcomeMonitor, ScoreDynamics, FEATURE_KEYS };
