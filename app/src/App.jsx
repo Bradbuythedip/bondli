@@ -587,13 +587,33 @@ return<div key={i} style={{display:"flex",alignItems:"center",padding:"3px 0",bo
 {user?.pubkey&&!user.demo&&trW&&(()=>{
 const aaOpen=autoTrade?.open||autoTrade?.active;
 const aaActive=autoTrade?.active;
-const S=autoTrade?.settings||{minScore:65,solPerTrade:0.05,maxPositions:5,tp1:50,tp1Sell:50,tp2:100,tp2Sell:30,tp3:200,tp3Sell:50,sl1:25,sl1Sell:50,sl2:50};
+const S=autoTrade?.settings||{minScore:65,solPerTrade:0.05,maxPositions:5,tp1:50,tp1Sell:50,tp2:100,tp2Sell:30,tp3:200,tp3Sell:20,sl1:25,sl1Sell:50,sl2:50,momentumExit:true};
 const adj=(k,step,mn,mx)=>{const cur=S[k]??0;const nv=Math.max(mn,Math.min(mx,+(cur+step).toFixed(4)));sAutoTrade(p=>({...p,settings:{...p.settings,[k]:nv}}))};
-const StepBtn=({k,step,mn,mx,c,fmt})=>{const v=S[k]??0;return<div style={{display:"flex",alignItems:"center",gap:0,background:T.bg,borderRadius:6,overflow:"hidden",border:"1px solid "+(c||T.bd)+"22"}}>
-<button onClick={()=>adj(k,-Math.abs(step),mn,mx)} style={{padding:mb?"10px 12px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?18:14,fontWeight:800,cursor:"pointer",lineHeight:1}}>-</button>
+/* Auto-balance TP sell %s to always total 100%.
+   When one changes, the others shrink/grow proportionally.
+   Keys: tp1Sell, tp2Sell, tp3Sell — each is the % of TOTAL position to sell at that tier. */
+const adjTP=(k,step)=>{
+  const keys=["tp1Sell","tp2Sell","tp3Sell"];
+  const others=keys.filter(x=>x!==k);
+  const cur=S[k]||0;
+  const nv=Math.max(5,Math.min(90,cur+step));
+  const remaining=100-nv;
+  const otherSum=(S[others[0]]||0)+(S[others[1]]||0);
+  const r0=otherSum>0?Math.round(remaining*(S[others[0]]||0)/otherSum):Math.round(remaining/2);
+  const r1=remaining-r0;
+  sAutoTrade(p=>({...p,settings:{...p.settings,[k]:nv,[others[0]]:Math.max(5,r0),[others[1]]:Math.max(5,r1)}}));
+};
+/* Auto-balance SL: sl1Sell is partial, remainder is implied for SL2 (always 100%) */
+const adjSL=(step)=>{
+  const nv=Math.max(10,Math.min(90,+(S.sl1Sell||50)+step));
+  sAutoTrade(p=>({...p,settings:{...p.settings,sl1Sell:nv}}));
+};
+const StepBtn=({k,step,mn,mx,c,fmt,onAdj})=>{const v=S[k]??0;return<div style={{display:"flex",alignItems:"center",gap:0,background:T.bg,borderRadius:6,overflow:"hidden",border:"1px solid "+(c||T.bd)+"22"}}>
+<button onClick={()=>onAdj?onAdj(-Math.abs(step)):adj(k,-Math.abs(step),mn,mx)} style={{padding:mb?"10px 12px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?18:14,fontWeight:800,cursor:"pointer",lineHeight:1}}>-</button>
 <div style={{flex:1,textAlign:"center",fontSize:mb?15:13,fontWeight:800,color:c||T.tx,padding:"4px 0",minWidth:mb?44:36}}>{fmt?fmt(v):v}</div>
-<button onClick={()=>adj(k,Math.abs(step),mn,mx)} style={{padding:mb?"10px 12px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?18:14,fontWeight:800,cursor:"pointer",lineHeight:1}}>+</button>
+<button onClick={()=>onAdj?onAdj(Math.abs(step)):adj(k,Math.abs(step),mn,mx)} style={{padding:mb?"10px 12px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?18:14,fontWeight:800,cursor:"pointer",lineHeight:1}}>+</button>
 </div>};
+const tpTotal=(S.tp1Sell||0)+(S.tp2Sell||0)+(S.tp3Sell||0);
 return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),borderRadius:10,padding:mb?10:16,marginTop:8}}>
 {/* Header + buttons */}
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:aaOpen?8:0}}>
@@ -619,35 +639,58 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
 {[{l:"Min Score",k:"minScore",st:5,mn:40,mx:90},{l:"SOL/Trade",k:"solPerTrade",st:0.01,mn:0.01,mx:1,fmt:v=>v.toFixed(2)},{l:"Max Pos",k:"maxPositions",st:1,mn:1,mx:15}].map(s=><div key={s.k} style={{textAlign:"center"}}><div style={{fontSize:mb?9:8,color:T.ft,fontWeight:700,marginBottom:3}}>{s.l}</div><StepBtn k={s.k} step={s.st} mn={s.mn} mx={s.mx} fmt={s.fmt}/></div>)}
 </div>
-{/* TP tiers */}
-<div style={{fontSize:mb?10:9,fontWeight:700,color:T.gn,marginBottom:4}}>Take Profit</div>
+{/* TP tiers — sell %s auto-balance to 100% */}
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+<div style={{fontSize:mb?10:9,fontWeight:700,color:T.gn}}>Take Profit</div>
+<div style={{fontSize:mb?9:8,fontWeight:700,color:tpTotal===100?T.gn:T.yl}}>{tpTotal}% allocated</div>
+</div>
+{/* Visual allocation bar */}
+<div style={{display:"flex",height:mb?8:6,borderRadius:4,overflow:"hidden",marginBottom:6,border:"1px solid "+T.gn+"22"}}>
+<div style={{width:(S.tp1Sell||0)+"%",background:T.gn,transition:"width .2s"}}/>
+<div style={{width:(S.tp2Sell||0)+"%",background:T.gn+"88",transition:"width .2s"}}/>
+<div style={{width:(S.tp3Sell||0)+"%",background:T.gn+"44",transition:"width .2s"}}/>
+</div>
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
 {[{l:"TP1",k:"tp1",sk:"tp1Sell",st:10,sst:5,desc:"Secure"},{l:"TP2",k:"tp2",sk:"tp2Sell",st:10,sst:5,desc:"Scale out"},{l:"TP3 Runner",k:"tp3",sk:"tp3Sell",st:25,sst:5,desc:"Moonbag"}].map(t=><div key={t.k} style={{background:T.bg,borderRadius:6,padding:mb?8:6,border:"1px solid "+T.gn+"22"}}>
 <div style={{fontSize:mb?10:8,color:T.gn,fontWeight:800,marginBottom:4,textAlign:"center"}}>{t.l}</div>
-<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>+%</div>
+<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>Trigger</div>
 <StepBtn k={t.k} step={t.st} mn={10} mx={1000} c={T.gn} fmt={v=>"+"+v+"%"}/>
 <div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2,marginTop:4}}>Sell %</div>
-<StepBtn k={t.sk} step={t.sst} mn={10} mx={100} c={T.gn} fmt={v=>v+"%"}/>
+<StepBtn k={t.sk} step={t.sst} mn={5} mx={90} c={T.gn} fmt={v=>v+"%"} onAdj={s=>adjTP(t.sk,s)}/>
 <div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:3}}>{t.desc}</div>
 </div>)}
 </div>
 {/* SL tiers */}
-<div style={{fontSize:mb?10:9,fontWeight:700,color:T.rd,marginBottom:4}}>Stop Loss</div>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+<div style={{fontSize:mb?10:9,fontWeight:700,color:T.rd}}>Stop Loss</div>
+<div style={{fontSize:mb?9:8,color:T.dm}}>SL1: {S.sl1Sell||50}% → SL2: 100% exit</div>
+</div>
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginBottom:8}}>
 <div style={{background:T.bg,borderRadius:6,padding:mb?8:6,border:"1px solid "+T.rd+"22"}}>
 <div style={{fontSize:mb?10:8,color:T.rd,fontWeight:800,marginBottom:4,textAlign:"center"}}>SL1 Reduce</div>
 <div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>Trigger</div>
 <StepBtn k="sl1" step={5} mn={5} mx={80} c={T.rd} fmt={v=>"-"+v+"%"}/>
 <div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2,marginTop:4}}>Sell %</div>
-<StepBtn k="sl1Sell" step={5} mn={10} mx={100} c={T.rd} fmt={v=>v+"%"}/>
-<div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:3}}>Cut exposure</div>
+<StepBtn k="sl1Sell" step={5} mn={10} mx={90} c={T.rd} fmt={v=>v+"%"} onAdj={s=>adjSL(s)}/>
+<div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:3}}>Cut {S.sl1Sell||50}%, keep {100-(S.sl1Sell||50)}%</div>
 </div>
 <div style={{background:T.bg,borderRadius:6,padding:mb?8:6,border:"1px solid "+T.rd+"22"}}>
-<div style={{fontSize:mb?10:8,color:T.rd,fontWeight:800,marginBottom:4,textAlign:"center"}}>SL2 Exit</div>
+<div style={{fontSize:mb?10:8,color:T.rd,fontWeight:800,marginBottom:4,textAlign:"center"}}>SL2 Full Exit</div>
 <div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>Trigger</div>
 <StepBtn k="sl2" step={5} mn={10} mx={90} c={T.rd} fmt={v=>"-"+v+"%"}/>
-<div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:6}}>Sell 100% — bail</div>
+<div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:6}}>Sells 100% — full bail</div>
 </div>
+</div>
+{/* Momentum exit toggle */}
+<div style={{background:T.bg,borderRadius:6,padding:mb?10:8,border:"1px solid "+T.pu+"22",marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+<div>
+<div style={{fontSize:mb?11:10,fontWeight:800,color:T.pu}}>Momentum Exit</div>
+<div style={{fontSize:mb?9:8,color:T.dm,marginTop:2}}>Auto-tightens stops when token intel score drops. Sells faster on fading momentum.</div>
+</div>
+<button onClick={()=>sAutoTrade(p=>({...p,settings:{...p.settings,momentumExit:!S.momentumExit}}))} style={{padding:mb?"8px 14px":"6px 12px",borderRadius:6,border:"1px solid "+(S.momentumExit?T.pu:T.bd),background:S.momentumExit?T.pu+"22":"none",color:S.momentumExit?T.pu:T.ft,fontWeight:800,fontSize:mb?12:11,cursor:"pointer",whiteSpace:"nowrap"}}>{S.momentumExit?"ON":"OFF"}</button>
+</div>
+{S.momentumExit&&<div style={{fontSize:mb?8:7,color:T.dm,marginTop:4,lineHeight:1.5}}>Score drops 20+pts → SL tightens 50% • Score drops 30+pts → immediate sell • Re-scores every 15s from live radar data</div>}
 </div>
 {/* APPLY button when settings changed while active */}
 {aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:8}}>APPLY CHANGES</button>}
@@ -657,6 +700,7 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 {p.isMoonbag&&<span style={{fontSize:mb?8:7,fontWeight:800,padding:"2px 5px",borderRadius:3,background:T.yl+"22",color:T.yl}}>MOON</span>}
 {p.tpHit>0&&<span style={{fontSize:mb?8:7,fontWeight:800,padding:"2px 5px",borderRadius:3,background:T.gn+"22",color:T.gn}}>TP{p.tpHit}</span>}
 {p.slHit>0&&<span style={{fontSize:mb?8:7,fontWeight:800,padding:"2px 5px",borderRadius:3,background:T.rd+"22",color:T.rd}}>SL{p.slHit}</span>}
+{p.liveScore!=null&&<span style={{fontSize:mb?8:7,fontWeight:800,padding:"2px 5px",borderRadius:3,background:(p.scoreDelta>=0?T.gn:T.rd)+"18",color:p.scoreDelta>=0?T.gn:T.rd}}>{p.liveScore}{p.scoreDelta!==0&&(p.scoreDelta>0?"+":"")+p.scoreDelta}</span>}
 <span style={{fontSize:mb?11:10,color:T.ft}}>${fm(p.currentMcap)}</span>
 <span style={{fontSize:mb?12:11,fontWeight:800,color:p.changePct>=0?T.gn:T.rd}}>{p.changePct>=0?"+":""}{p.changePct}%</span>
 <span style={{fontSize:mb?9:8,color:T.ft}}>{p.age}m</span>

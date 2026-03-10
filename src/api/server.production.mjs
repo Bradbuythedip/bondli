@@ -1638,6 +1638,7 @@ function startAutoTrader(wallet, settings) {
       sl1Sell: settings.sl1Sell || 50,  // sell 50% to reduce exposure
       sl2: settings.sl2 || 50,         // SL2 trigger: -50% full exit
       requireBoosted: settings.requireBoosted || false,
+      momentumExit: settings.momentumExit !== false, // default ON — auto-tighten stops on score drop
       enabled: true,
     },
     positions: new Map(), // ca → { entryMcap, entrySol, entryTime, peakMcap, tpHit, slHit }
@@ -1708,7 +1709,56 @@ function startAutoTrader(wallet, settings) {
         if (!pos.tpHit) pos.tpHit = 0;
         if (!pos.slHit) pos.slHit = 0;
 
-        const s = state.settings;
+        const s = { ...state.settings };
+
+        // ═══ MOMENTUM EXIT — dynamic SL/TP based on live intel score ═══
+        // Re-score the token using live radar data and compare to entry score.
+        // If momentum is fading (score dropping), tighten stops to protect capital.
+        if (s.momentumExit && token && !pos.isMoonbag) {
+          const features = extractQuickFeatures(token);
+          if (features) {
+            const liveScore = memeIntel.engine.score(features);
+            const currentScore = liveScore?.score || 0;
+            // Store entry score on first check
+            if (!pos.entryScore) pos.entryScore = currentScore;
+            pos.liveScore = currentScore;
+            const scoreDrop = pos.entryScore - currentScore;
+
+            if (scoreDrop >= 30) {
+              // Severe momentum loss — immediate full exit
+              log(`MOMENTUM EXIT ${ca.slice(0,6)}: score ${pos.entryScore}→${currentScore} (−${scoreDrop}) — FULL SELL`);
+              const sig = await execSell(ca, 100, kp, "momentum-exit");
+              if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOMENTUM", reason: "score-crash" } });
+              state.positions.delete(ca);
+              trackSell(wallet, ca);
+              continue;
+            } else if (scoreDrop >= 20) {
+              // Moderate momentum loss — tighten SL triggers by 50%
+              s.sl1 = Math.round(s.sl1 * 0.5);
+              s.sl2 = Math.round(s.sl2 * 0.5);
+              // Also lower trailing stop threshold
+              if (scoreDrop >= 25 && changePct > 5 && pos.tpHit === 0) {
+                // Take early partial profit if we're green but fading
+                log(`MOMENTUM TRIM ${ca.slice(0,6)}: score −${scoreDrop}, +${changePct.toFixed(0)}% — selling ${s.tp1Sell}% early`);
+                const sig = await execSell(ca, s.tp1Sell, kp, "momentum-trim");
+                if (sig) {
+                  broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOM-TRIM", sellPct: s.tp1Sell } });
+                  pos.tpHit = 1;
+                }
+              }
+            } else if (scoreDrop >= 10) {
+              // Mild fade — tighten SL by 25%
+              s.sl1 = Math.round(s.sl1 * 0.75);
+              s.sl2 = Math.round(s.sl2 * 0.75);
+            }
+            // Score INCREASING = strong momentum — widen TP targets to let it run
+            if (currentScore > pos.entryScore + 10) {
+              s.tp1 = Math.round(state.settings.tp1 * 1.25);
+              s.tp2 = Math.round(state.settings.tp2 * 1.25);
+              s.tp3 = Math.round(state.settings.tp3 * 1.25);
+            }
+          }
+        }
 
         // ═══ TAKE PROFIT — 3 tiers ═══
         // TP3: Runner — sell tp3Sell% of remaining (rest = moonbag forever)
@@ -1865,7 +1915,7 @@ function startAutoTrader(wallet, settings) {
               const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
               tx.sign([kp]);
               const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: state.settings.solPerTrade, entryTime: Date.now(), peakMcap: t.mcapUsd });
+              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: state.settings.solPerTrade, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0 });
               trackBuy(wallet, t.ca, state.settings.solPerTrade); // instant bags visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
               broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: state.settings.solPerTrade, mcap: t.mcapUsd, wallet } });
@@ -1969,6 +2019,9 @@ app.get("/api/auto-trade/status", (req, res) => {
         age: Math.round((Date.now() - p.entryTime) / 60000),
         tpHit: p.tpHit || 0, slHit: p.slHit || 0,
         isMoonbag: !!p.isMoonbag,
+        entryScore: p.entryScore || 0,
+        liveScore: p.liveScore || p.entryScore || 0,
+        scoreDelta: (p.liveScore || p.entryScore || 0) - (p.entryScore || 0),
       };
     }),
     log: state.log.slice(-20),
