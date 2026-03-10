@@ -624,7 +624,9 @@ async function getUser(wallet) {
     try {
       const raw = await redis.get("user:" + wallet);
       if (raw) { u = JSON.parse(raw); users.set(wallet, u); }
-    } catch {}
+    } catch {
+      return { tier: "unknown", whitelisted: false, _redisError: true };
+    }
   }
   return u || { tier: "free", whitelisted: false };
 }
@@ -668,6 +670,9 @@ app.get("/api/access/check", async (req, res) => {
   const wallet = req.query.wallet;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const user = await getUser(wallet);
+  if (user._redisError) {
+    return res.status(503).json({ error: "Service temporarily unavailable" });
+  }
   const tierInfo = resolveTier(wallet, user);
   await saveUser(wallet, { tier: tierInfo.tier, whitelisted: tierInfo.whitelisted });
   res.json({ tier: tierInfo.tier, whitelisted: tierInfo.whitelisted, paid: user.paid || false });
@@ -676,6 +681,14 @@ app.get("/api/access/check", async (req, res) => {
 app.post("/api/access/activate-free", async (req, res) => {
   const { wallet } = req.body;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
+  const existing = await getUser(wallet);
+  if (existing._redisError) {
+    return res.status(503).json({ error: "Service temporarily unavailable" });
+  }
+  const tierInfo = resolveTier(wallet, existing);
+  if (tierInfo.tier === "vip" || tierInfo.tier === "pro" || tierInfo.whitelisted) {
+    return res.json({ ok: true, tier: tierInfo.tier, message: "Already " + tierInfo.tier });
+  }
   await saveUser(wallet, { tier: "free", activatedAt: new Date().toISOString() });
   res.json({ ok: true, tier: "free" });
 });
