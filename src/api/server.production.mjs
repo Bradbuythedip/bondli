@@ -1304,12 +1304,16 @@ app.post("/api/quick-ape", async (req, res) => {
       return res.status(400).json({ error: "Buy failed on all routes. Token may be inactive or liquidity too low." });
     }
 
+    // Track position immediately for instant bags visibility
+    trackBuy(wallet, ca, solAmount);
+
     // Wait for confirmation (non-blocking for response but log result)
     connection.confirmTransaction(sig, "confirmed").then(() => {
       console.log(`[BUY] Confirmed: ${sig}`);
     }).catch(() => {});
 
-    res.json({ ok: true, signature: sig, ca, method, balance: +(balance - solAmount).toFixed(4) });
+    const radarToken = radar.tokens.get(ca);
+    res.json({ ok: true, signature: sig, ca, method, balance: +(balance - solAmount).toFixed(4), position: { mint: ca, name: radarToken?.name || "", ticker: radarToken?.ticker || "", image: radarToken?.image || "", mcapUsd: radarToken?.mcapUsd || 0, mcapSol: radarToken?.mcapSol || 0, solSpent: solAmount } });
   } catch (e) {
     console.error("[QUICK-APE] Error:", e.message);
     res.status(500).json({ error: e.message });
@@ -1435,6 +1439,9 @@ app.post("/api/quick-sell", async (req, res) => {
     if (!sig) {
       return res.status(400).json({ error: "Sell failed on all routes: " + lastErr.slice(0, 150) });
     }
+
+    // Track sell for immediate bags update
+    if (pct >= 100) trackSell(wallet, ca);
 
     // Background confirmation
     connection.confirmTransaction(sig, "confirmed").then(() => {
@@ -1678,6 +1685,34 @@ app.get("/api/auto-trade/status", (req, res) => {
 });
 
 // ═══════════════════════════════════════
+// LOCAL POSITION TRACKING — immediate visibility after buys
+// RPC can take 30-60s to index new token accounts on public endpoints
+// ═══════════════════════════════════════
+const pendingPositions = new Map(); // wallet → Map(ca → { name, ticker, image, mcapUsd, solSpent, time })
+
+function trackBuy(wallet, ca, solAmount) {
+  if (!pendingPositions.has(wallet)) pendingPositions.set(wallet, new Map());
+  const wp = pendingPositions.get(wallet);
+  const token = radar.tokens.get(ca);
+  wp.set(ca, {
+    name: token?.name || "",
+    ticker: token?.ticker || "",
+    image: token?.image || "",
+    mcapUsd: token?.mcapUsd || 0,
+    mcapSol: token?.mcapSol || 0,
+    solSpent: solAmount,
+    time: Date.now(),
+  });
+  // Clean entries older than 10 min (by then RPC should have caught up)
+  for (const [c, p] of wp) { if (Date.now() - p.time > 600000) wp.delete(c); }
+}
+
+function trackSell(wallet, ca) {
+  const wp = pendingPositions.get(wallet);
+  if (wp) wp.delete(ca);
+}
+
+// ═══════════════════════════════════════
 // ROUTES: POSITIONS / PORTFOLIO
 // ═══════════════════════════════════════
 app.get("/api/positions/:wallet", async (req, res) => {
@@ -1705,7 +1740,9 @@ app.get("/api/positions/:wallet", async (req, res) => {
       try {
         const accts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
         allTokenAccounts.push(...accts.value);
-      } catch {}
+      } catch (e) {
+        console.warn(`[POSITIONS] RPC error for ${kp.publicKey.toBase58().slice(0,8)}: ${e.message}`);
+      }
     }
 
     // Aggregate amounts by mint across all wallets
@@ -1768,6 +1805,39 @@ app.get("/api/positions/:wallet", async (req, res) => {
       });
     }
     
+    // Merge pending positions (recent buys not yet indexed by RPC)
+    const pending = pendingPositions.get(req.params.wallet);
+    if (pending) {
+      const existingMints = new Set(positions.map(p => p.mint));
+      for (const [ca, p] of pending) {
+        if (existingMints.has(ca)) continue; // RPC already found it
+        const token = radar.tokens.get(ca) || p;
+        const mcUsd = token.mcapUsd || p.mcapUsd || 0;
+        // Estimate tokens from SOL spent: solSpent / mcapSol * totalSupply
+        const estTokens = p.mcapSol > 0 ? (p.solSpent / p.mcapSol) * 1_000_000_000 : 0;
+        const holdPct = estTokens / 1_000_000_000;
+        const valueUsd = mcUsd > 0 ? holdPct * mcUsd : p.solSpent * solUsdPrice;
+        const valueSol = solUsdPrice > 0 ? valueUsd / solUsdPrice : p.solSpent;
+        positions.push({
+          mint: ca,
+          ticker: token.ticker || p.ticker || "",
+          name: token.name || p.name || "",
+          image: token.image || p.image || "",
+          amount: estTokens,
+          decimals: 6,
+          mcapSol: token.mcapSol || p.mcapSol || 0,
+          mcapUsd: mcUsd,
+          marketCapSol: token.mcapSol || p.mcapSol || 0,
+          valueSol: +valueSol.toFixed(6),
+          valueUsd: +valueUsd.toFixed(2),
+          holdPct: +(holdPct * 100).toFixed(3),
+          pnlSol: 0,
+          pnlPct: 0,
+          pending: true, // flag for frontend to show loading state
+        });
+      }
+    }
+
     // Sort by value descending
     positions.sort((a, b) => b.valueUsd - a.valueUsd);
     res.json({ positions });
