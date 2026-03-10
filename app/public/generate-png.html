@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html><head><title>Bondli Logo PNG Generator</title></head>
+<body style="background:#111;color:#fff;font-family:monospace;padding:40px">
+<h2>Bondli Logo PNG Generator</h2>
+<p>Right-click each image below and "Save image as..." to download the PNG.</p>
+<div style="display:flex;gap:40px;flex-wrap:wrap">
+  <div>
+    <h3>512x512 Icon</h3>
+    <canvas id="c1" width="512" height="512"></canvas>
+  </div>
+  <div>
+    <h3>1024x1024 Logo</h3>
+    <canvas id="c2" width="1024" height="1024"></canvas>
+  </div>
+</div>
+<script>
+function drawPill(ctx, cx, cy, scale, ghostB) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.scale(scale, scale);
+  // Right half
+  const g1 = ctx.createLinearGradient(0, -19, 0, 19);
+  g1.addColorStop(0, '#ff5555');
+  g1.addColorStop(0.5, '#dd1818');
+  g1.addColorStop(1, '#881010');
+  ctx.beginPath();
+  ctx.moveTo(0, -19);
+  ctx.quadraticCurveTo(8, -19, 11, -13);
+  ctx.lineTo(12, -1);
+  ctx.lineTo(12, 1);
+  ctx.lineTo(11, 15);
+  ctx.quadraticCurveTo(8, 19, 0, 19);
+  ctx.lineTo(0, -19);
+  ctx.fillStyle = g1;
+  ctx.fill();
+  // Left half
+  const g2 = ctx.createLinearGradient(-12, -19, 12, 19);
+  g2.addColorStop(0, 'rgba(255,64,64,0.95)');
+  g2.addColorStop(1, 'rgba(119,16,16,0.9)');
+  ctx.beginPath();
+  ctx.moveTo(0, -19);
+  ctx.quadraticCurveTo(-8, -19, -11, -13);
+  ctx.lineTo(-12, -1);
+  ctx.lineTo(-12, 1);
+  ctx.lineTo(-11, 15);
+  ctx.quadraticCurveTo(-8, 19, 0, 19);
+  ctx.lineTo(0, -19);
+  ctx.fillStyle = g2;
+  ctx.fill();
+  // Ghost B
+  if (ghostB) {
+    ctx.font = '900 16px "Arial Black", Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillText('B', 0, 2);
+  }
+  ctx.restore();
+}
+
+// 512x512 icon
+const c1 = document.getElementById('c1').getContext('2d');
+c1.fillStyle = '#09090d';
+c1.beginPath(); c1.roundRect(0, 0, 512, 512, 48); c1.fill();
+drawPill(c1, 256, 200, 8, true);
+// Lines
+c1.strokeStyle = '#fff'; c1.lineWidth = 8; c1.lineCap = 'round';
+c1.globalAlpha = 1; c1.beginPath(); c1.moveTo(176, 340); c1.lineTo(336, 340); c1.stroke();
+c1.globalAlpha = 0.7; c1.beginPath(); c1.moveTo(192, 365); c1.lineTo(320, 365); c1.stroke();
+c1.globalAlpha = 0.4; c1.beginPath(); c1.moveTo(216, 390); c1.lineTo(296, 390); c1.stroke();
+c1.globalAlpha = 1;
+// Wordmark
+c1.font = '900 52px "Arial Black", Arial, sans-serif';
+c1.textAlign = 'center';
+c1.fillStyle = '#fff';
+c1.fillText('BOND', 230, 460);
+c1.fillStyle = '#dd1818';
+c1.fillText('LI', 310, 460);
+
+// 1024x1024 logo
+const c2 = document.getElementById('c2').getContext('2d');
+c2.fillStyle = '#09090d';
+c2.fillRect(0, 0, 1024, 1024);
+drawPill(c2, 512, 360, 16, true);
+c2.font = '900 96px "Arial Black", Arial, sans-serif';
+c2.textAlign = 'center';
+c2.fillStyle = '#fff';
+c2.fillText('BOND', 440, 880);
+c2.fillStyle = '#dd1818';
+c2.fillText('LI', 600, 880);
+</script>
+</body></html>
