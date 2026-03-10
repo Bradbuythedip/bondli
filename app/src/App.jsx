@@ -597,32 +597,30 @@ const rugScore=e.data?.rugScore||0;const rugFlags=e.data?.rugFlags||[];
 const isRug=rugScore>50||rugFlags.length>=2;
 const sc=isRug?"#ff1744":score>=50?T.gn:score>=25?T.yl:T.pu;
 const mcap=e.data?.mcap||0;const mcapStr=mcap>=1000?(mcap/1000).toFixed(1)+"K":mcap>0?mcap.toString():"—";
-return<div key={i} style={{display:"flex",alignItems:"center",padding:"3px 0",borderBottom:i<11?"1px solid "+T.bd+"44":"none"}}>
-{/* Rank */}
-<span style={{fontSize:8,color:T.ft,width:14,textAlign:"center",flexShrink:0}}>{i+1}</span>
-{/* Name */}
-<div style={{width:100,flexShrink:0,paddingLeft:4,paddingRight:6}}>
+return<div key={i} style={{display:"grid",gridTemplateColumns:"16px 110px 1fr 28px 58px 32px",alignItems:"center",padding:"3px 0",borderBottom:i<11?"1px solid "+T.bd+"44":"none",gap:0}}>
+{/* Rank — fixed col */}
+<span style={{fontSize:8,color:T.ft,textAlign:"center"}}>{i+1}</span>
+{/* Name — fixed col */}
+<div style={{paddingLeft:2,paddingRight:4,overflow:"hidden"}}>
 <span style={{fontSize:10,color:T.tx,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"flex",alignItems:"center",gap:2}}>{name.slice(0,14)}{e.data?.dexBoosted&&<span style={{fontSize:6,fontWeight:800,color:"#ffd600",background:"#ffd60015",padding:"0 2px",borderRadius:2}} title={"DexScreener boosted: $"+e.data.boostAmount}>BOOST</span>}</span>
 </div>
-{/* Score bar with gradient */}
-<div style={{flex:1,height:16,borderRadius:4,background:T.sf,overflow:"hidden",position:"relative",marginRight:6}}>
-{/* Main score bar */}
+{/* Score bar — fills remaining space */}
+<div style={{height:16,borderRadius:4,background:T.sf,overflow:"hidden",position:"relative",marginRight:4}}>
 <div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,score)+"%",borderRadius:4,background:`linear-gradient(90deg,${sc}66,${sc})`,transition:"width 0.6s ease"}}/>
-{/* Bond probability overlay (thin white line) */}
 <div style={{position:"absolute",left:Math.min(98,bp)+"%",top:2,width:2,height:12,borderRadius:1,background:"rgba(255,255,255,0.5)",transition:"left 0.6s ease"}}/>
-{/* Rug warning stripe */}
 {isRug&&<div style={{position:"absolute",right:0,top:0,height:"100%",width:"30%",background:"repeating-linear-gradient(45deg,transparent,transparent 2px,#ff174422 2px,#ff174422 4px)"}}/>}
 </div>
-{/* Score + Bond prob + MC */}
-<div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0,width:90}}>
-<span style={{fontSize:12,color:sc,fontWeight:900,width:22,textAlign:"right"}}>{score}</span>
-<div style={{display:"flex",flexDirection:"column",alignItems:"flex-end"}}>
+{/* Score — fixed col */}
+<span style={{fontSize:12,color:sc,fontWeight:900,textAlign:"right"}}>{score}</span>
+{/* Bond + MC — fixed col */}
+<div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",paddingLeft:4}}>
 <span style={{fontSize:7,color:T.yl,fontWeight:700}}>{bp}% bond</span>
-<span style={{fontSize:10,color:T.ft}}>${mcapStr}</span>
+<span style={{fontSize:9,color:T.ft}}>${mcapStr}</span>
 </div>
+{/* Rug badge — fixed col (always present, empty if no rug) */}
+<div style={{textAlign:"center"}}>
+{isRug&&<span style={{fontSize:7,color:"#ff1744",fontWeight:800,padding:"1px 4px",borderRadius:3,background:"#ff174415"}} title={rugFlags.join(", ")}>RUG</span>}
 </div>
-{/* Rug indicator */}
-{isRug&&<span style={{fontSize:7,color:"#ff1744",fontWeight:800,padding:"1px 4px",borderRadius:3,background:"#ff174415",flexShrink:0,marginLeft:2}} title={rugFlags.join(", ")}>RUG</span>}
 </div>})}
 </div>
 {/* Stats footer */}
@@ -643,18 +641,19 @@ return<div key={i} style={{display:"flex",alignItems:"center",padding:"3px 0",bo
 <span style={{fontSize:10,color:T.ft}}>{showHow?"▾":"▸"}</span>
 </button>
 {showHow&&<>
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginBottom:6}}>
-{[{name:"Tipping Point",color:T.gn,items:["Law of the Few — whale concentration","Stickiness — meme phrase power","Context — trending topic match","Connector/Maven/Salesman signals"]},
-{name:"Kahneman System 1/2",color:T.yl,items:["Cognitive ease — name pronounceability","Emotional valence — humor/outrage","Herd signal — buy acceleration","Loss aversion — sell pressure ratio"]},
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:4,marginBottom:6}}>
+{[{name:"Tipping Point (Gladwell)",color:T.gn,items:["Law of the Few — whale/influencer concentration","Stickiness Factor — meme phrase memorability","Power of Context — trending topic + market mood","Maven/Connector/Salesman — wallet archetype signals","10K Hour Rule — token pattern maturity depth"]},
+{name:"Thinking Fast & Slow (Kahneman)",color:T.yl,items:["Cognitive Ease — name pronounceability score","Anchoring Bias — first price vs current price drift","Availability Heuristic — recency of similar rugs","Loss Aversion — 2x weight on sell pressure vs buys","Herd Signal — System 1 buy acceleration cascade","Peak-End Rule — chart shape memory at peak + now","Prospect Theory — framing effect on holder behavior"]},
+{name:"Blink + Outliers (Gladwell)",color:"#ff9800",items:["Thin-Slicing — first 30s pattern = 80% accuracy","Outlier Detection — 3σ deviation from normal launches","Rapid Cognition — sub-second rug signature match","Accumulative Advantage — early mover wallet clustering"]},
 {name:"On-Chain Velocity",color:T.or,items:["Buy velocity 1m/5m","Unique buyers in 5 min","Gini coefficient of buys","Dev wallet hold %"]},
-{name:"Social Signals",color:T.pu,items:["Twitter/Telegram/Website presence","Name length + ticker length","Description sentiment","Emoji detection"]}
+{name:"Social Signals",color:T.pu,items:["Twitter/Telegram/Website presence","Name length + ticker length","Description sentiment","Emoji density + type analysis"]}
 ].map(fw=><div key={fw.name} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:6,padding:8}}>
 <div style={{fontSize:11,fontWeight:800,color:fw.color,marginBottom:4}}>{fw.name}</div>
 {fw.items.map(it=><div key={it} style={{fontSize:10,color:T.dm,padding:"1px 0",display:"flex",alignItems:"center",gap:3}}><span style={{width:3,height:3,borderRadius:"50%",background:fw.color+"44",flexShrink:0}}/>{it}</div>)}
 </div>)}
 </div>
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"repeat(4,1fr)",gap:3,marginBottom:6}}>
-{[{name:"Rule Engine",st:"active",c:T.gn},{name:"RAG Memory",st:"active",c:T.gn},{name:"Online ML",st:"active",c:T.yl},{name:"Nightly LoRA",st:"planned",c:T.ft}
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"repeat(5,1fr)",gap:3,marginBottom:6}}>
+{[{name:"Rule Engine",st:"active",c:T.gn},{name:"RAG Memory",st:"active",c:T.gn},{name:"Online ML",st:"active",c:T.yl},{name:"Behavioral AI",st:"active",c:"#ff9800"},{name:"Nightly LoRA",st:"planned",c:T.ft}
 ].map(l=><div key={l.name} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 8px",display:"flex",alignItems:"center",gap:4}}>
 <span style={{width:4,height:4,borderRadius:"50%",background:l.c,flexShrink:0}}/>
 <span style={{fontSize:10,fontWeight:700,color:l.c,flex:1}}>{l.name}</span>
@@ -668,7 +667,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",padding:"3px 0",bo
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:11,fontWeight:800}}>Model Behavior</span><span style={{fontSize:7,color:T.dm}}>live feature weights</span></div>
 {/* Feature weight bars */}
 <div style={{display:"grid",gap:4}}>
-{intelData.scorer.topFeatures.slice(0,8).map((f,i)=>{const maxW=parseFloat(intelData.scorer.topFeatures[0]?.weight)||2.5;const pct=Math.min(100,Math.round((parseFloat(f.weight)/maxW)*100));const featureNames={oc_buyVelocity5m:"Buy Velocity (5m)",tp_stickiness:"Meme Stickiness",oc_uniqueBuyers5m:"Unique Buyers (5m)",k_herdSignal:"Herd Signal",tp_lawOfFew:"Law of Few",k_cognitiveEase:"Name Ease",oc_volumeSol5m:"Volume SOL (5m)",so_hasTwitter:"Has Twitter",ch_healthScore:"Chart Health",ch_pumpDump:"Pump & Dump",rg_devSellSpeed:"Dev Sell Speed",rg_mcapDropRate:"MC Drop Rate",rg_buyerRetention:"Buyer Retention"};return<div key={f.feature} style={{display:"flex",alignItems:"center",gap:6}}>
+{intelData.scorer.topFeatures.slice(0,8).map((f,i)=>{const maxW=parseFloat(intelData.scorer.topFeatures[0]?.weight)||2.5;const pct=Math.min(100,Math.round((parseFloat(f.weight)/maxW)*100));const featureNames={oc_buyVelocity5m:"Buy Velocity (5m)",tp_stickiness:"Meme Stickiness",oc_uniqueBuyers5m:"Unique Buyers (5m)",k_herdSignal:"Herd Signal",tp_lawOfFew:"Law of Few",k_cognitiveEase:"Name Ease",oc_volumeSol5m:"Volume SOL (5m)",so_hasTwitter:"Has Twitter",ch_healthScore:"Chart Health",ch_pumpDump:"Pump & Dump",rg_devSellSpeed:"Dev Sell Speed",rg_mcapDropRate:"MC Drop Rate",rg_buyerRetention:"Buyer Retention",k_anchoring:"Anchoring Bias",k_availability:"Availability Heuristic",k_lossAversion:"Loss Aversion (2x)",k_peakEnd:"Peak-End Rule",k_prospectTheory:"Prospect Theory",gl_thinSlice:"Thin-Slice (30s)",gl_outlier:"Outlier Detection",gl_10kMaturity:"Pattern Maturity",gl_accumAdvantage:"Early Mover Cluster",tp_context:"Power of Context"};return<div key={f.feature} style={{display:"flex",alignItems:"center",gap:6}}>
 <span style={{fontSize:7,color:T.dm,minWidth:90,textAlign:"right"}}>{featureNames[f.feature]||f.feature}</span>
 <div style={{flex:1,height:6,borderRadius:3,background:T.bg,overflow:"hidden"}}><div style={{width:pct+"%",height:"100%",borderRadius:3,background:`linear-gradient(90deg,${T.pu},${T.gn})`,transition:"width 1s"}}/></div>
 <span style={{fontSize:7,color:T.tx,fontWeight:700,minWidth:25}}>{f.weight}</span>
@@ -817,15 +816,27 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 </div>
 :autoTrade.positions.map(p=>{
 const pnlColor=p.changePct>=0?T.gn:T.rd;
+const pnlSol=p.entrySol>0?(p.entrySol*(p.changePct/100)):0;
+const currentVal=p.entrySol>0?(p.entrySol+pnlSol):0;
 return<div key={p.ca} style={{padding:"6px 0",borderBottom:"1px solid "+T.bd+"44"}}>
 <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:3}}>
 <span style={{fontSize:12,fontWeight:800,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{p.name}</span>
+<div style={{display:"flex",flexDirection:"column",alignItems:"flex-end"}}>
 <span style={{fontSize:14,fontWeight:900,color:pnlColor}}>{p.changePct>=0?"+":""}{p.changePct}%</span>
+{p.entrySol>0&&<span style={{fontSize:10,fontWeight:800,color:pnlColor}}>{pnlSol>=0?"+":""}{pnlSol.toFixed(4)} SOL</span>}
 </div>
+</div>
+{/* P&L bar */}
+{p.entrySol>0&&<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,padding:"3px 6px",background:pnlColor+"0a",borderRadius:4,border:"1px solid "+pnlColor+"18"}}>
+<div style={{flex:1,display:"flex",justifyContent:"space-between",fontSize:9,color:T.ft}}>
+<span>In: {p.entrySol.toFixed(3)}</span>
+<span style={{color:T.tx,fontWeight:700}}>Now: {currentVal.toFixed(3)}</span>
+<span style={{color:pnlColor,fontWeight:800}}>P&L: {pnlSol>=0?"+":""}{pnlSol.toFixed(4)}</span>
+</div>
+</div>}
 <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
 <span style={{fontSize:9,color:T.ft}}>${fm(p.currentMcap)} MC</span>
 <span style={{fontSize:9,color:T.ft}}>{p.age}m</span>
-{p.entrySol>0&&<span style={{fontSize:9,color:T.dm}}>{p.entrySol.toFixed(3)} SOL</span>}
 {p.isMoonbag&&<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.yl+"22",color:T.yl}}>MOONBAG</span>}
 {p.tpHit>0&&<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.gn+"22",color:T.gn}}>TP{p.tpHit}</span>}
 {p.slHit>0&&<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.rd+"22",color:T.rd}}>SL{p.slHit}</span>}
