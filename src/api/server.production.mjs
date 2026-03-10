@@ -1722,7 +1722,7 @@ function startAutoTrader(wallet, settings) {
         if (s.momentumExit && token && !pos.isMoonbag) {
           const features = extractQuickFeatures(token);
           if (features) {
-            const liveScore = memeIntel.engine.score(features);
+            const liveScore = memeIntel.scorer.score(features);
             const currentScore = liveScore?.score || 0;
             // Store entry score on first check
             if (!pos.entryScore) pos.entryScore = currentScore;
