@@ -112,9 +112,9 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 </div></div>}
 
 // ═══ SIMULATION — pump.fun bonding curve simulator ═══
-function SimMode({mb,budget:extBudget,sniperCount}){const T=uT();const cvRef=useRef(null);const frame=useRef(0);
+function SimMode({mb,budget:extBudget,sniperCount,gradMc:gMc}){const T=uT();const cvRef=useRef(null);const frame=useRef(0);
 const st=useRef({p:.00001,pts:[],buys:[],sells:[],noise:[],mc:0,sig:"WAIT",ph:"idle",spent:0,back:0,bonded:false,bondProb:0,peakMc:0,roi:0});
-const[running,sR]=useState(false);const budget=extBudget||2;const[speed,sSpeed]=useState(1);const[tick,sTick]=useState(0);const snprs=sniperCount||2;
+const[running,sR]=useState(false);const budget=extBudget||2;const[speed,sSpeed]=useState(1);const[tick,sTick]=useState(0);const snprs=sniperCount||2;const gradMc=gMc||34000;
 const PHASES={scan:"Scanning for entry — analyzing first trades",accumulate:"Fleet buying in — staggered Gaussian timing",hold:"Holding position — monitoring opponent behavior",distribute:"Selling into demand — taking profit",sweep:"Final sweep — recovering all SOL from fleet wallets",complete:"Session complete — all funds returned"};
 const calcBondProb=(mc,mom,bp)=>{if(mc>=gradMc)return 100;const base=Math.min(80,(mc/gradMc)*100);const m=mom>0?Math.min(15,mom*500):Math.max(-20,mom*300);const b=bp>0.5?10:bp>0.3?5:0;return Math.max(0,Math.min(99,Math.round(base+m+b)))};
 useEffect(()=>{if(!running)return;const s=st.current;s.p=.000006+Math.random()*.000008;s.pts=[];s.buys=[];s.sells=[];s.noise=[];s.mc=0;s.spent=0;s.back=0;s.bonded=false;s.bondProb=0;s.peakMc=0;s.roi=0;s.ph="scan";s.sig="SCAN";frame.current=0;
@@ -385,7 +385,7 @@ data-role={role}/>
 </div>}
 
 {/* ═══ LAUNCH PREVIEW SIM ═══ */}
-<EB l="Preview"><SimMode mb={mb} budget={sol} sniperCount={snc}/></EB>
+<EB l="Preview"><SimMode mb={mb} budget={sol} sniperCount={snc} gradMc={gradMc}/></EB>
 
 {/* ═══ LAUNCH COST BREAKDOWN ═══ */}
 {!isApe&&canLaunch&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?8:12,marginBottom:6}}>
