@@ -475,7 +475,7 @@ return<div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
 </div>
 
 {/* Live Radar Pulse — enhanced activity visualization */}
-<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,maxHeight:340,overflowY:"auto"}}>
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
 <span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>
