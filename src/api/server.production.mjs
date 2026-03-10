@@ -792,8 +792,9 @@ setInterval(() => {
         };
         const features = extractQuickFeatures(t);
         if (features) memeIntel.learn(features, outcome);
-        // Store graduated chart snapshots for pattern learning
-        if (t.graduated && t.spark?.length >= 10) {
+        // Store chart snapshots for pattern learning — ALL tokens with enough data,
+        // not just graduated. Rugs are critical training data for the model.
+        if (t.spark?.length >= 5) {
           storeChartSnapshot(ca, t, outcome).catch(() => {});
         }
       } catch {}
@@ -2137,7 +2138,15 @@ function startAutoTrader(wallet, settings) {
         const ub = t.uniqueBuyers?.size || 0;
         const ageMin = (Date.now() - t.createdAt) / 60000;
         const sells = t.sells || 0;
-        // Base filters: mcap > $5k, 5+ buys, 3+ unique buyers, token at least 2min old, sells < buys
+        // Base filters — relaxed for accelerating tokens
+        // Acceleration data lets us enter earlier on tokens with strong score velocity
+        const dyn = scoreDynamics.get(t.ca);
+        const isAccelerating = dyn && dyn.scores >= 2 && (dyn.trend === "rocket" || dyn.trend === "rising");
+        // Accelerating tokens: lower thresholds (3 buys, 2 UB, 1min old, $3k MC)
+        // Normal tokens: standard thresholds (5 buys, 3 UB, 2min old, $5k MC)
+        if (isAccelerating) {
+          return mc > 3000 && buys >= 3 && ub >= 2 && ageMin >= 1 && sells <= buys;
+        }
         return mc > 5000 && buys >= 5 && ub >= 3 && ageMin >= 2 && sells <= buys * 0.8;
       });
       const hot = tokens.filter(t => {
@@ -2239,21 +2248,32 @@ function startAutoTrader(wallet, settings) {
         if (state.settings.requireBoosted && !dexBoost) return false;
 
         // Score dynamics: use velocity/acceleration to boost or penalize
+        // This is the KEY signal for early movers — rocket trend means the token's
+        // score is accelerating (buy velocity increasing, MC climbing, new buyers flooding in)
         let dynamicsBonus = 0;
         const dyn = scoreDynamics.get(t.ca);
         if (dyn && dyn.scores >= 2) {
           // Reject tokens with crashing or declining score trend
           if (dyn.trend === "crashing" || dyn.trend === "declining") return false;
           // Fading momentum = deceleration warning
-          if (dyn.trend === "fading") dynamicsBonus = -8;
-          // Rising steadily
-          else if (dyn.trend === "rising") dynamicsBonus = 5;
-          // Rocket: accelerating score = strong signal
-          else if (dyn.trend === "rocket") dynamicsBonus = 12;
+          if (dyn.trend === "fading") dynamicsBonus = -10;
+          // Rising steadily — meaningful boost
+          else if (dyn.trend === "rising") dynamicsBonus = 10;
+          // Rocket: accelerating score = STRONG signal — this is what catches early movers
+          else if (dyn.trend === "rocket") dynamicsBonus = 20;
+
+          // Additional velocity bonus: faster acceleration = more conviction
+          if (dyn.velocity > 0.5) dynamicsBonus += Math.min(8, Math.round(dyn.velocity * 5));
+          // Acceleration bonus: positive 2nd derivative = momentum building
+          if (dyn.acceleration > 0.02) dynamicsBonus += Math.min(5, Math.round(dyn.acceleration * 100));
         }
 
+        // Chart health bonus: if the sparkline shape matches healthy graduated patterns
+        const chartBonus = qf?.ch_healthScore > 0.6 ? Math.round((qf.ch_healthScore - 0.5) * 16) :
+                           qf?.ch_healthScore < 0.3 ? -8 : 0;
+
         t._apeScore = Math.max(0, Math.min(99, Math.round(
-          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus - sellPenalty - rugPenalty
+          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus - sellPenalty - rugPenalty
         )));
         t._rugFlags = qf ? [
           qf.rg_devSellSpeed > 0.3 && "dev_selling",

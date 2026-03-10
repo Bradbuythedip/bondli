@@ -1,55 +1,182 @@
 # Bondli
 
-**AI-powered game theory trading engine for pump.fun**
+**AI-powered trading engine for pump.fun**
 
-Bondli uses real-time opponent modeling and Nash equilibrium logic to coordinate multi-wallet fleet trading on Solana's pump.fun bonding curves. It watches every trade on your token, detects whales, dumps, snipers, and bundled launches — then automatically adapts your fleet's buy/sell timing to maximize profit probability.
+Bondli uses a 40+ feature machine learning model, real-time score derivatives, chart pattern recognition, and game theory to auto-trade Solana meme tokens. It watches every trade, scores every token, learns from every outcome, and exits before the rug.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    bondli.fun                        │
-│              React/Vite Frontend                     │
-│   ┌──────────┐ ┌──────────┐ ┌──────────────────┐   │
-│   │  Wizard   │ │  Radar   │ │  Live Dashboard  │   │
-│   │  (Create/ │ │  (3-tab  │ │  (Chart, Fleet,  │   │
-│   │   Ape)    │ │  scanner)│ │  GameState, Keys)│   │
-│   └──────────┘ └──────────┘ └──────────────────┘   │
-└────────────────────┬────────────────────────────────┘
-                     │ HTTP + WebSocket
-┌────────────────────┴────────────────────────────────┐
-│            server.production.mjs (2300 lines)        │
-│  ┌─────────┐ ┌────────┐ ┌────────┐ ┌────────────┐  │
-│  │ Session  │ │ Radar  │ │ Bundle │ │   Analyze   │  │
-│  │ Manager  │ │ Engine │ │ Detect │ │  (6-factor) │  │
-│  └─────────┘ └────────┘ └────────┘ └────────────┘  │
-│  ┌─────────┐ ┌────────┐ ┌────────┐ ┌────────────┐  │
-│  │  Auth   │ │  Fees  │ │  Batch │ │  Recovery   │  │
-│  │ (Wallet)│ │ (Tier) │ │ Deploy │ │  (Sweep)    │  │
-│  └─────────┘ └────────┘ └────────┘ └────────────┘  │
-└────────────────────┬────────────────────────────────┘
-                     │
-┌────────────────────┴────────────────────────────────┐
-│            fleet-trader.mjs (970 lines)              │
-│  ┌───────────────────────────────────────────────┐  │
-│  │              GameState (WS)                    │  │
-│  │  Opponent modeling · Nash signals · Bayesian   │  │
-│  │  HOLD / RIDE / SELL_NOW / ACCUMULATE           │  │
-│  └───────────────────────────────────────────────┘  │
-│  ┌──────────┐ ┌──────────┐ ┌──────────────────┐    │
-│  │  CREATE   │ │   APE    │ │  Volume Engine   │    │
-│  │  Strategy │ │ Strategy │ │  (Wash cycles)   │    │
-│  └──────────┘ └──────────┘ └──────────────────┘    │
-│  ┌──────────┐ ┌──────────┐ ┌──────────────────┐    │
-│  │  Kelly   │ │ Reactive │ │  Sweep / Skim    │    │
-│  │  Sizing  │ │ Sell Loop│ │  (Profit share)  │    │
-│  └──────────┘ └──────────┘ └──────────────────┘    │
-└────────────────────┬────────────────────────────────┘
-                     │
-        PumpPortal WebSocket + Solana RPC
+┌──────────────────────────────────────────────────────────┐
+│                      bondli.fun                           │
+│                 React/Vite Frontend                        │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────────┐  │
+│  │  Landing  │ │  Radar   │ │   Bags   │ │   Intel    │  │
+│  │  (Hero +  │ │  (4-tab  │ │  (Live   │ │  (Auto-Ape │  │
+│  │  Features)│ │  scanner)│ │  positions│ │  + Charts) │  │
+│  └──────────┘ └──────────┘ └──────────┘ └────────────┘  │
+└────────────────────────┬─────────────────────────────────┘
+                         │ HTTP + WebSocket
+┌────────────────────────┴─────────────────────────────────┐
+│              server.production.mjs                         │
+│  ┌───────────────┐ ┌────────────┐ ┌────────────────────┐ │
+│  │  Meme Intel   │ │   Radar    │ │    Auto-Ape        │ │
+│  │  (ML scorer)  │ │  (WS feed) │ │  (entry + exit)    │ │
+│  └───────────────┘ └────────────┘ └────────────────────┘ │
+│  ┌───────────────┐ ┌────────────┐ ┌────────────────────┐ │
+│  │  Chart Pattern│ │   Bundle   │ │   Score Dynamics   │ │
+│  │  Storage      │ │  Detection │ │  (velocity/accel)  │ │
+│  └───────────────┘ └────────────┘ └────────────────────┘ │
+│  ┌───────────────┐ ┌────────────┐ ┌────────────────────┐ │
+│  │  Session Mgr  │ │  Auth/Fees │ │   Recovery/Sweep   │ │
+│  └───────────────┘ └────────────┘ └────────────────────┘ │
+└────────────────────────┬─────────────────────────────────┘
+                         │
+┌────────────────────────┴─────────────────────────────────┐
+│              Engine Layer                                  │
+│  ┌───────────────────────────────────────────────────┐   │
+│  │           meme-intelligence.mjs                    │   │
+│  │  ScoringEngine · RAGMemory · OutcomeMonitor       │   │
+│  │  ScoreDynamics · 40+ features · Online learning   │   │
+│  └───────────────────────────────────────────────────┘   │
+│  ┌───────────────────────────────────────────────────┐   │
+│  │           fleet-trader.mjs                         │   │
+│  │  GameState · Nash signals · Kelly sizing           │   │
+│  │  CREATE / APE / BATCH / SOLO strategies            │   │
+│  └───────────────────────────────────────────────────┘   │
+│  ┌───────────────┐ ┌────────────┐ ┌────────────────────┐ │
+│  │  fee-engine   │ │  config    │ │  token-creator     │ │
+│  └───────────────┘ └────────────┘ └────────────────────┘ │
+└──────────────────────────────────────────────────────────┘
+        PumpPortal WebSocket + Solana RPC + Redis
 ```
+
+---
+
+## Meme Intelligence Engine
+
+The core of Bondli is a real-time ML scoring engine that evaluates every token on 40+ features, learns from outcomes, and feeds into all trading decisions.
+
+### Feature Groups
+
+**Tipping Point Framework** (6 features)
+- Law of Few: whale concentration in first 50 buys
+- Stickiness: meme phrase memorability
+- Context: trending topic match
+- Connector/Maven/Salesman scores: influencer, alpha, viral wallet detection
+
+**Kahneman System 1/2** (6 features)
+- Cognitive ease: name simplicity + pronounceability
+- Emotional valence: humor/outrage/surprise density
+- Anchor bias: round-number MC proximity ($1M, $10M)
+- Herd signal: buy count acceleration
+- Loss aversion: sell pressure ratio
+- Framing effect: description sentiment
+
+**On-Chain Velocity** (10 features)
+- Buy velocity (1m, 5m), unique buyers, Gini coefficient
+- Average buy size, dev hold %, top holder concentration
+- Sell ratio, mcap in SOL, volume in SOL
+
+**Social Signals** (6 features)
+- Has Twitter/Telegram/Website, name/ticker/description length, emoji presence
+
+**Rug Detection** (8 features + 4 private signals)
+- Dev sell speed, holder concentration, coordinated dump detection
+- Liquidity drain velocity, wallet age/sybil score, sell wave detection
+- Mcap drop rate, buyer retention
+- Private: dev self-snipe, early dump, quick-flip rate, pump-dump pattern
+
+**Chart Shape Analysis** (2 features)
+- Chart health score: overall shape health (0=crash, 1=healthy growth)
+- Pump-dump detection: classic pump-and-dump sparkline pattern
+
+**Meta** (3 features)
+- Hour of day, day of week, is weekend
+
+### How It Learns
+
+1. Every token that enters radar gets scored in real-time
+2. When tokens are evicted (2-4h TTL), their outcome is labeled:
+   - Graduated? Peak multiple? Rugged? Dev dumped? MC drop %?
+3. Features + outcome are fed to the online learning engine
+4. Weights are adjusted using gradient-like updates (learning rate 0.02)
+5. Chart snapshots are stored for ALL tokens with 5+ spark points — rugs and winners alike
+6. Pattern classifier categorizes charts: `healthy_pump`, `sniper_spike`, `slow_grind`, `rug`, `pump_dump`
+
+### Score Dynamics
+
+The raw score is a lagging indicator. Score dynamics provide leading signals:
+
+- **Velocity**: points per second (how fast score is changing)
+- **Acceleration**: change in velocity per second (momentum of momentum)
+- **Trend classification**: `rocket` → `rising` → `stable` → `fading` → `declining` → `crashing`
+
+Score dynamics drive both entry decisions (rocket trend = early ape) and exit decisions (crashing trend = immediate sell).
+
+---
+
+## Auto-Ape
+
+Walk-away auto-trading engine. Set parameters once, it handles everything.
+
+### Configuration
+
+| Parameter | Default | Description |
+|---|---|---|
+| Min Score | 50-70 | Minimum ape score to trigger buy |
+| SOL/Trade | 0.05-0.2 | SOL per position entry |
+| Max Positions | 2-3 | Concurrent open positions |
+| TP1 / Sell% | +35% / 50% | First take-profit: secure capital |
+| TP2 / Sell% | +80% / 30% | Second take-profit: scale out |
+| TP3 / Sell% | +150% / 50% | Runner: sell half, moonbag rest |
+| SL1 / Sell% | -15% / 60% | First stop: cut exposure |
+| SL2 | -30% | Full exit |
+| Momentum Exit | ON | Score-based dynamic exit system |
+
+### Entry Logic
+
+Tokens pass through three gates:
+
+1. **Base filters** — minimum MC, buys, unique buyers, age, sell ratio
+   - Accelerating tokens (rocket/rising trend) get relaxed thresholds: $3k MC, 3 buys, 1min age
+   - Normal tokens: $5k MC, 5 buys, 2min age
+2. **Hard rug gate** — 8 rug signals checked individually + composite (3+ moderate signals = reject)
+3. **Ape scoring** — weighted sum of activity, volume, MC sweet spot, chart shape, buy pressure, velocity, dynamics bonus, minus sell/rug penalties
+
+The dynamics bonus is the key signal for catching early movers:
+- Rocket trend: +20 points (was +12)
+- Rising trend: +10 points (was +5)
+- Additional velocity bonus: up to +8 for fast movers
+- Additional acceleration bonus: up to +5 for building momentum
+- Chart health bonus: up to +8 for healthy chart shapes
+
+### Momentum Exit System
+
+Three layers of exit logic when enabled:
+
+**Layer 1 — Derivatives (leading indicator)**
+- Score velocity < -0.3 pts/s → trend = "crashing" → FULL SELL (catches rugs 1-2 cycles early)
+- Score decelerating hard (fading + acceleration < -0.02) → TRIM SELL (pump dying)
+
+**Layer 2 — Absolute Score Drop (safety net)**
+- Score drops 30+ pts → FULL SELL
+- Score drops 20+ pts → tighten stops 50%, trim sell if 25+ pts and green
+- Score drops 10+ pts → tighten stops 25%
+
+**Layer 3 — Runner Detection (opposite)**
+- Rocket trend or score rising 10+ pts above entry → widen TPs 50%
+- Score improving 10+ pts → widen TPs 25%
+
+**Data loss protection**: If score suddenly drops to near-0 but was previously stable (>20), the system detects this as radar data loss and skips the cycle instead of selling.
+
+### Profit Protection
+
+- **Dynamic trailing**: TP3 trail width scales with gain size (15% at 1-2x, 20% at 2-4x, 25% at 5x+)
+- **Moonbag trailing**: if moonbag drops 60%+ from peak while still green (+30%+), exits to protect gains
+- **Moonbag dead**: full exit at -80% (token is basically dead)
 
 ---
 
@@ -57,60 +184,35 @@ Bondli uses real-time opponent modeling and Nash equilibrium logic to coordinate
 
 ### CREATE — Launch Your Own Token
 
-Deploys a new token on pump.fun with an organic-looking launch. Multiple wallets buy independently from the bonding curve at staggered intervals, making it look like real users discovering the token.
+Deploys a new token on pump.fun with organic-looking launch. Multiple wallets buy independently from the bonding curve at staggered intervals.
 
-**Phase 1 — Staggered Buys**
-- 3-6 wallets buy at 3-50 second intervals
-- Randomized amounts (±50% jitter)
-- Each wallet buys independently from the bonding curve (no SPL transfers)
-
-**Phase 2 — Volume Generation**
-- Small buy/sell wash cycles between wallets
-- Creates natural-looking chart activity with green and red candles
-
-**Phase 3 — Staggered Sells**
-- Wallets exit at 45-120 second intervals
-- GameState can override: delay sells if momentum is positive, dump if cascade detected
+- Phase 1: 3-6 wallets buy at 3-50s intervals, randomized amounts (±50% jitter)
+- Phase 2: Small buy/sell wash cycles for natural chart activity
+- Phase 3: Staggered sells at 45-120s intervals, GameState can override
 
 ### APE — Snipe Existing CA
 
-Fast multi-wallet entry on an existing token. Wallet count is conviction-driven using Kelly Criterion:
+Fast multi-wallet entry using Kelly Criterion sizing:
 
 | Radar Score | Conviction | Wallets | Buy Stagger | Sell Timing |
 |---|---|---|---|---|
-| 80-100 | High | 5-7 | 1.5s apart | 20-125s (hold for pump) |
-| 55-79 | Medium | 3-4 | 2.5s apart | 15-50s (moderate hold) |
-| 25-54 | Low | 1-2 | 4s apart | 10-18s (quick scout + exit) |
-
-Kelly sizing: high conviction → even distribution across wallets. Low conviction → 40% on scout wallet, 60% split across rest.
-
-**Phase 1 — Rapid Snipe**: all wallets buy within 2-10 seconds
-**Phase 2 — Hold + Volume**: small sells/rebuys to keep chart active, GameState monitors for exit signals
-**Phase 3 — Exit**: staggered sells, 3-10s apart
+| 80-100 | High | 5-7 | 1.5s apart | 20-125s |
+| 55-79 | Medium | 3-4 | 2.5s apart | 15-50s |
+| 25-54 | Low | 1-2 | 4s apart | 10-18s |
 
 ### BATCH — Multi-Token Deploy
 
-Deploys 1-20 tokens with rotating fresh keypairs per token. Master wallet funds each fresh creator with 0.05 SOL, fresh creator deploys. No on-chain link between tokens except the initial funding transaction. Pro/VIP only.
+1-20 tokens with rotating fresh keypairs per token. No on-chain link between tokens. Pro/VIP only.
 
 ### SOLO — Low Budget
 
-For budgets under 0.15 SOL. Single wallet (master keypair) trades directly. Dev holds tokens from creation buy, sells in 3 rounds over ~45 seconds.
+Single wallet for budgets under 0.15 SOL.
 
 ---
 
 ## Game Theory Engine (GameState)
 
-Each active session opens a dedicated PumpPortal WebSocket connection that monitors every buy and sell on the token in real-time. The GameState class maintains:
-
-- **Opponent profiles**: per-wallet buy/sell counts, total SOL, average size, first/last seen
-- **Buy pressure**: ratio of buys to total trades in rolling 30-second window
-- **Momentum**: net SOL flow (buys minus sells) in last 30 seconds
-- **Whale detection**: any single buy > 0.5 SOL in last 15 seconds
-- **Dev sell detection**: creator wallet selling (trust collapse signal)
-- **Dump cascade**: 3+ unique wallets selling within 10 seconds
-- **Volume rate**: SOL per minute (rolling 60s)
-- **Unique buyers**: distinct buy wallets in last 2 minutes
-- **Bonding progress**: real-time bonding curve percentage
+Real-time opponent modeling via PumpPortal WebSocket per active session.
 
 ### Nash Equilibrium Signals
 
@@ -125,48 +227,24 @@ Each active session opens a dedicated PumpPortal WebSocket connection that monit
 | `ACCUMULATE` | 5+ unique buyers + momentum | Growing organic interest | Re-buy with remaining SOL |
 | `HOLD` | Neutral | Default strategy | ±30% speed adjust |
 
-The sell loop checks GameState before every round:
-- `SELL_NOW` → dumps 95% immediately and exits
-- `RIDE` → delays the sell, skips the round if signal persists
-- `ACCUMULATE` → buys more instead of selling (round 1 only)
-- `HOLD` → normal sell with inter-round delay adjusted by `sellMultiplier`
-
 ---
 
 ## Radar Scanner
 
-Real-time token discovery via PumpPortal WebSocket. Tracks up to 80 tokens simultaneously with zero HTTP API dependency (no Cloudflare blocking).
+Real-time token discovery via PumpPortal WebSocket. Tracks up to 80 tokens with zero HTTP API dependency.
 
-### Three Tabs
+### Four Tabs
 
-**🆕 New** — tokens under 5 minutes old with early buy traction. Optimized for catching tokens in the first 60 seconds. Ultra-fresh (<1 min) gets +20 bonus.
+- **Momentum** — tokens with accelerating score (rocket/rising trend). Best for Auto-Ape entries.
+- **New** — tokens under 5 minutes old with early buy traction
+- **Hot** — volume spikes regardless of age (up to 20 min)
+- **Graduating** — bonding curve > 30% heading toward Raydium graduation
 
-**🔥 Hot** — volume spikes regardless of age (up to 20 min). Scores on SOL volume, trade velocity, buy pressure, and MCap sweet spot ($2K-$30K). Best tab for aping.
+### Scoring (15+ factors)
 
-**🎓 Graduating** — tokens with bonding curve > 30% heading toward Raydium graduation (~$67K MCap). Scores on bonding %, volume confirmation, participant count. Shows bonding percentage prominently.
+Trade activity, freshness, MC sweet spot, social signals (+5 per link, +5 valid Twitter, +5 live website), image dupe penalty (-20), bundle penalty (-8 to -30).
 
-### Scoring Factors
-
-Each token is scored independently for all three tabs (0-100). The score combines:
-
-- Trade activity (buys, volume, buy pressure)
-- Freshness / velocity
-- MCap sweet spot
-- Social signals (+5 per social link, +5 valid Twitter, +5 live website)
-- Image dupe penalty (-20 for reused images)
-- Bundle penalty (-8 to -30 for coordinated buy patterns)
-
-### Social Intelligence
-
-Extracted from IPFS metadata (zero API cost):
-- Twitter: URL validation, handle extraction
-- Website: URL validation, HEAD reachability check
-- Telegram: presence detection
-- Tokens with all three socials get +25 score boost
-
-### Bundle Detection
-
-Analyzes the first 30 trades of every token for 8 coordinated buy signals:
+### Bundle Detection (8 signals)
 
 | Signal | Score | Detection |
 |---|---|---|
@@ -179,31 +257,35 @@ Analyzes the first 30 trades of every token for 8 coordinated buy signals:
 | 50%+ dust buys (<0.01 SOL) | +12 | Fake buyer inflation |
 | One wallet buying 3+ times | +10 | Obvious bot loop |
 
-Bundle score ≥ 40 shows orange ⚠BUNDLED warning. Score ≥ 60 gets -30 radar penalty.
-
-### Image Dupe Detection
-
-Normalizes and caches every token image URL. When a new token reuses the same image as a previous token, it's flagged with a reference to the original. Catches copy-paste scam tokens.
-
 ---
 
-## Custom Charting
+## Chart Pattern Storage
 
-WS-powered real-time charts built from PumpPortal trade data. No external chart dependencies.
+Every token with 5+ spark points gets its chart stored on eviction (not just graduated tokens). This means the model learns from rugs, pumps, slow grinds, and everything in between.
 
-- **Price line** with gradient fill (green = up, red = down)
-- **Buy/sell markers**: green dots for buys, red for sells, dot size scales with trade amount
-- **MCap + % change** header
-- **Bonding progress bar** at bottom
-- **GameState signal badge** (HOLD/RIDE/SELL_NOW/ACCUMULATE with buy pressure %)
-- **Three modes**: ❤️ Live (WS canvas), DEX (DexScreener embed), PF (pump.fun embed)
-- Auto-switches to DexScreener after 45s if WS data is sparse
+### Stored Data
 
-Charts appear in:
-- Live dashboard (launched tokens)
-- Radar detail panel (click any token to see chart before aping)
+- Sparkline array, peak multiple, MC start/peak/end
+- Buys, sells, unique buyers, age at eviction
+- Rugged flag, dev dumped flag
+- Pattern classification: `healthy_pump`, `sniper_spike`, `slow_grind`, `rug`, `pump_dump`
 
-Chart data endpoint: `GET /api/chart/:ca` returns up to 200 price points with buy/sell type, SOL amount, wallet, and bonding %.
+### Pattern Classification Logic
+
+| Pattern | Criteria |
+|---|---|
+| `rug` | Rugged or dev dumped |
+| `sniper_spike` | 8x+ multiple, peak in first 30% of lifetime |
+| `healthy_pump` | 3x+ multiple, peak in last 40%, holds 40%+ of peak |
+| `slow_grind` | Under 3x, 30+ spark points, graduated |
+| `pump_dump` | 5x+ multiple, end < 20% of peak |
+
+### API
+
+```
+GET /api/chart-patterns        → { total, patterns: { [type]: stats }, recentCharts }
+GET /api/chart-patterns/recent → { charts: [...snapshots] }
+```
 
 ---
 
@@ -211,43 +293,27 @@ Chart data endpoint: `GET /api/chart/:ca` returns up to 200 price points with bu
 
 | Feature | Free | Pro (10 SOL) | VIP (Whitelisted) |
 |---|---|---|---|
-| Launch tokens | ✓ | ✓ | ✓ |
-| Ape existing CA | ✓ | ✓ | ✓ |
-| Radar scanner | ✓ | ✓ | ✓ |
-| Game theory engine | ✓ | ✓ | ✓ |
-| Fleet wallet keys visible | ✗ | ✓ | ✓ |
-| Batch deploy (1-20 tokens) | ✗ | ✓ | ✓ |
-| Description branding | "bondli.fun deployed" enforced | Custom | Custom |
-| Profit share on close | 25% of net profit | 0% | 0% |
-| Rate limit | 5 launches/hr | 50/hr | 200/hr |
+| Radar + Auto-Ape | Yes | Yes | Yes |
+| Intel scoring | Yes | Yes | Yes |
+| Fleet trading (multi-wallet) | No | Yes | Yes |
+| Batch deploy (1-20 tokens) | No | Yes | Yes |
+| Export private keys | No | Yes | Yes |
+| Custom description | No | Yes | Yes |
+| Profit share on wins | 25% | 0% | 0% |
+| Rate limit | 5/hr | 50/hr | 200/hr |
 
-Profit share is enforced server-side via `skimSweep` on session close. Only applies to net profit — if you lose money, fee is $0.
+VIP wallets are checked against the `WHITELISTED_WALLETS` env var. VIP access works even when Redis is temporarily down — the env whitelist is always checked first.
 
 ---
 
 ## Recovery System
 
-### Sweep Endpoints
+- `POST /api/session/sell-sweep` — sell all remaining tokens, sweep SOL to master, then to user
+- `POST /api/session/force-recover` — raw SOL sweep (no token sells)
+- `POST /api/close` — GameState-informed sells, sweep, profit skim
+- `POST /api/emergency-recover` — emergency recovery from trading wallet
 
-All sweep operations send `balance - 5000` lamports (base fee only, no priority fee). Account goes to exactly 0 after fee deduction — avoids Solana's `InsufficientFundsForRent` error.
-
-- `POST /api/session/sell-sweep` — sells all remaining tokens, sweeps SOL to master, then master to user
-- `POST /api/session/force-recover` — raw SOL sweep from all fleet wallets to user (no token sells)
-- `POST /api/close` — normal close: GameState-informed sells, sweep, profit skim
-
-### Fleet Wallet Keys
-
-Pro/VIP users see private keys directly on each wallet card in the live dashboard:
-- Truncated preview with 🔑 Key copy button per wallet
-- 🔑 Copy All Keys button in Fleet Wallets header
-- Keys are available immediately after launch (returned in launch response)
-- Dev/master wallet key from `devSecret`, fleet keys from `walletKeys`
-
-### Session Persistence
-
-- Fleet wallet keys stored in Redis with 24h TTL (`fleetkeys:<sessionId>`)
-- Sessions persist for 30 days
-- VIP key export endpoint: `GET /api/session/:id/keys`
+All sweeps send `balance - 5000` lamports (base fee only) to avoid `InsufficientFundsForRent`.
 
 ---
 
@@ -256,47 +322,55 @@ Pro/VIP users see private keys directly on each wallet card in the live dashboar
 ### Session Lifecycle
 
 ```
-POST /api/session/create    → { sessionId, devWallet, ... }
-POST /api/session/launch    → { tokenCA, walletKeys, devSecret, ... }
-GET  /api/fleet             → { phase, wallets, trades, wsChart, gameState, ... }
-POST /api/close             → { netProfit, solRecovered, ... }
-POST /api/session/sell-sweep → { totalSold, totalSwept, ... }
+POST /api/session/create       → { sessionId, devWallet, ... }
+POST /api/session/launch       → { tokenCA, walletKeys, devSecret, ... }
+GET  /api/fleet                → { phase, wallets, trades, wsChart, gameState, ... }
+POST /api/close                → { netProfit, solRecovered, ... }
+POST /api/session/sell-sweep   → { totalSold, totalSwept, ... }
 POST /api/session/force-recover → { totalRecovered, wallets, ... }
 ```
 
-### Radar
+### Radar + Intel
 
 ```
-GET  /api/radar           → { tabs: { new, hot, graduating }, wsAlive, poolSize }
-GET  /api/radar/token/:ca → { name, ticker, mcap, bp, bundleScore, bundleFlags, socials, ... }
-GET  /api/chart/:ca       → { points: [{ t, mcap, type, sol, bp, wallet }], ... }
-POST /api/radar/toggle    → { enabled }
+GET  /api/radar                → { tabs: { momentum, hot, new, graduating }, poolSize }
+GET  /api/radar/token/:ca      → { name, ticker, mcap, bp, bundleScore, socials, ... }
+GET  /api/chart/:ca            → { points: [{ t, mcap, type, sol, bp, wallet }] }
+GET  /api/analyze/:ca          → { score, flags }
+GET  /api/chart-patterns       → { total, patterns, recentCharts }
+GET  /api/movers               → { tokens: [...] }
 ```
 
-### Analysis
+### Auto-Trade
 
 ```
-GET  /api/analyze?ca=...  → { score, verdict, factors, ... }
-GET  /api/price/:ca       → { mcap, bp, price, complete }
+POST /api/auto-trade/start     → { ok, settings }
+POST /api/auto-trade/stop      → { ok }
+POST /api/auto-trade/update    → { ok, settings }
+GET  /api/auto-trade/status    → { active, settings, positions, log }
+POST /api/auto-trade/close     → { ok, positions }
 ```
 
-### Batch Deploy
+### Trading Wallet
 
 ```
-POST /api/batch-deploy    → { results: [{ ca, creator, creatorSecret, ... }], rotatedKeys }
+POST /api/trading-wallet/create → { ok, tradingWallet, pubkey }
+POST /api/trading-wallet/export → { ok, secretKey }
+GET  /api/trading-wallet/:w     → { exists, balance }
+POST /api/quick-ape             → { ok, sig }
+POST /api/quick-sell            → { ok, sig }
+GET  /api/positions/:wallet     → { positions }
 ```
 
-Each token gets a fresh creator keypair funded from master. Response includes creator pubkey + secret for each deploy.
-
-### User / Auth
+### Auth + User
 
 ```
-POST /api/access/activate-free  → { ok }
-POST /api/access/activate-pro   → { ok } (with tx verification)
 GET  /api/access/check          → { tier, whitelisted }
-GET  /api/sessions?wallet=...   → { sessions, count }
-GET  /api/fees?tier=...         → { profitCut, label }
-GET  /api/referral/:wallet      → { code, referrals, ... }
+POST /api/access/activate-free  → { ok }
+POST /api/access/activate-pro   → { ok }
+GET  /api/username/:wallet      → { username }
+POST /api/username              → { ok }
+GET  /api/referral/:wallet      → { code, referrals }
 ```
 
 ---
@@ -305,51 +379,42 @@ GET  /api/referral/:wallet      → { code, referrals, ... }
 
 ```
 bondli/
-├── index.html                    # Favicon (red pill + matrix), meta tags, OG
+├── app/
+│   ├── index.html                  # Meta tags, OG, PWA manifest
+│   └── src/
+│       ├── main.jsx                # React entry
+│       ├── App.jsx                 # Full frontend (~1700 lines)
+│       │   ├── Landing page        # Hero, features, tiers, how-it-works
+│       │   ├── Radar scanner       # 4-tab with momentum, hot, new, graduating
+│       │   ├── Bags view           # Live positions + quick-sell
+│       │   ├── Intel / Auto-Ape    # 2-column: config + live positions panel
+│       │   ├── Deploy wizard       # CREATE/APE/BATCH session flow
+│       │   └── War Room            # Live dashboard for active sessions
+│       └── lib/
+│           ├── a.js                # API client (minified method names)
+│           ├── c.js                # Constants (API URL, RPC)
+│           └── t.js                # Theme system (dark/light)
 ├── src/
-│   ├── main.jsx                  # React entry
-│   ├── App.jsx                   # Full frontend (1620 lines)
-│   │   ├── BondliLogo            # Red pill SVG (unique gradient IDs)
-│   │   ├── LandingPage           # Phantom connect
-│   │   ├── TierGate              # Free/Pro selection
-│   │   ├── PriceChart            # WS-powered canvas chart
-│   │   ├── RadarFeed             # 3-tab scanner (New/Hot/Graduating)
-│   │   ├── ReferralPanel         # Referral codes
-│   │   ├── LaunchFlow            # Session create → fund → launch
-│   │   └── App                   # Main app shell + live dashboard
-│   └── api/
-│       └── server.production.mjs # Express API (2295 lines)
-│           ├── Radar engine      # PumpPortal WS + multi-tab scoring
-│           ├── Bundle detection  # 8-signal analysis on first 30 trades
-│           ├── Social intel      # Twitter/website/telegram + image dupe
-│           ├── CA analysis       # 6-factor scoring (MCap, momentum, etc)
-│           ├── Session manager   # Redis-backed session lifecycle
-│           ├── Auth middleware    # Wallet signature + tier enforcement
-│           ├── Rate limiting     # Per-tier rate limits
-│           └── Recovery          # Sweep endpoints (rent-safe)
-├── src/engine/
-│   ├── fleet-trader.mjs          # Trading engine (971 lines)
-│   │   ├── GameState             # Real-time opponent modeling via WS
-│   │   ├── CREATE strategy       # Organic staggered buys → volume → sells
-│   │   ├── APE strategy          # Conviction-driven snipe → hold → exit
-│   │   ├── Volume engine         # Wash trading between wallets
-│   │   ├── Reactive sell loop    # GameState-driven sell timing
-│   │   └── Sweep / skim          # SOL recovery + profit share
-│   ├── fee-engine.mjs            # Tier-based profit sharing
-│   ├── config.mjs                # RPC, fees, platform wallet
-│   ├── token-creator.mjs         # pump.fun SDK token creation
-│   └── session-manager.mjs       # Redis session CRUD
-├── src/middleware/
-│   ├── auth.mjs                  # Wallet signature verification
-│   ├── rate-limiter.mjs          # Redis-backed rate limiting
-│   ├── security.mjs              # Headers, body limits, IP extraction
-│   └── validate.mjs              # Request schemas
-├── src/payments/
-│   ├── payment-verifier.mjs      # On-chain tx verification
-│   └── payment-routes.mjs        # Pro upgrade endpoints
-└── src/db/
-    ├── user-store.mjs            # Persistent user database
-    └── session-store.mjs         # Session persistence
+│   ├── api/
+│   │   └── server.production.mjs   # Express API + Radar + Auto-Ape
+│   ├── engine/
+│   │   ├── meme-intelligence.mjs   # ML scorer, RAG memory, score dynamics
+│   │   ├── fleet-trader.mjs        # Trading engine + GameState
+│   │   ├── fee-engine.mjs          # Tier-based profit sharing + whitelist
+│   │   ├── config.mjs              # RPC, fees, platform wallet
+│   │   ├── token-creator.mjs       # pump.fun SDK token creation
+│   │   └── session-manager.mjs     # Redis session CRUD
+│   ├── middleware/
+│   │   ├── auth.mjs                # Wallet signature verification
+│   │   ├── rate-limiter.mjs        # Redis-backed rate limiting
+│   │   ├── security.mjs            # Headers, body limits, IP extraction
+│   │   └── validate.mjs            # Request schemas
+│   ├── payments/
+│   │   ├── payment-verifier.mjs    # On-chain tx verification
+│   │   └── payment-routes.mjs      # Pro upgrade endpoints
+│   └── db/
+│       ├── user-store.mjs          # Persistent user database
+│       └── session-store.mjs       # Session persistence
 ```
 
 ---
@@ -367,6 +432,8 @@ PRIORITY_FEE=100000
 HELIUS_SEND_TX_URL=<optional helius endpoint>
 PRO_FEE_SOL=10
 FREE_PROFIT_CUT=25
+WHITELISTED_WALLETS=<comma-separated base58 pubkeys>
+FEE_SALT=<optional salt for owner hash>
 ```
 
 ---
@@ -376,41 +443,25 @@ FREE_PROFIT_CUT=25
 Hosted on Railway with Redis addon. Frontend built with Vite, served as static files.
 
 ```bash
-# Install
 npm install
-
-# Dev
-npm run dev
-
-# Production (Railway)
-NODE_ENV=production node src/api/server.production.mjs
+npm run dev          # development
+NODE_ENV=production node src/api/server.production.mjs  # production
 ```
-
-Railway auto-deploys on push to `main`. The `npm error signal SIGTERM` in deploy logs is normal — it's the old process being killed during deploy, not a crash.
-
----
-
-## Security Notes
-
-- Fleet wallet private keys are stored in Redis with 24h TTL and returned to Pro/VIP users
-- All session mutations require wallet header verification
-- Free tier descriptions enforced server-side (can't bypass by modifying frontend)
-- Rate limiting per tier prevents abuse
-- Profit skim is enforced atomically on all exit paths (close, sell-sweep, recover)
-- Batch deploy rotates creator keypairs — no on-chain link between tokens
 
 ---
 
 ## What Makes This Different
 
-Most pump.fun bots are simple scripts: buy → wait → sell. Bondli is different because:
+1. **ML scoring with online learning** — 40+ features, learns from every outcome, gets smarter over time. Not static rules.
 
-1. **It watches what other traders are doing in real-time** and adapts. If a whale buys in, the fleet delays selling to ride momentum. If the dev starts dumping, the fleet exits before the cascade.
+2. **Score derivatives catch rugs early** — velocity and acceleration of the score are leading indicators. By the time the score drops, the derivatives already triggered the exit.
 
-2. **Multiple wallets act as one brain.** Each wallet trades independently on-chain (no bundle detection risk) but is coordinated by the GameState engine off-chain.
+3. **Chart pattern recognition** — stores and classifies every token's price curve. Learns which shapes lead to graduation vs rugs.
 
-3. **Conviction-driven sizing.** The radar scores every token on 15+ factors. Higher scores get more wallets and more capital. Lower scores get scout positions with fast exit. Kelly Criterion math, not vibes.
+4. **Acceleration-based entry** — doesn't wait for tokens to "prove themselves" at $15k MC. Catches early movers by detecting score acceleration (rocket trend) and entering with relaxed filters.
 
-4. **Bundle detection protects ape entries.** Before you ape, the radar has already analyzed the first 30 trades for 8 different coordination signals. Bundled tokens get flagged and penalized.
+5. **Multi-wallet fleet coordination** — each wallet trades independently on-chain but is coordinated by GameState off-chain. No bundle detection risk.
 
-5. **Every trade generates intelligence.** Social links, image reuse, dev behavior, buy pressure, momentum — all computed in real-time and fed into scoring.
+6. **Conviction-driven sizing** — Kelly Criterion math, not vibes. Higher radar scores get more wallets and capital.
+
+7. **Walk-away auto-trading** — set min score, SOL, TP/SL tiers, toggle momentum exit. It finds, buys, manages, and exits positions automatically.
