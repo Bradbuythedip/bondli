@@ -183,7 +183,7 @@ const[rTab,sRTab]=useState("momentum");const[rLoad,sRL]=useState(true);const[rPo
 const[rExp,sRExp]=useState(null);const[buying,sBuy]=useState(null);const[selling,sSell]=useState(null);const[rSearch,sRS]=useState("");
 const[rEnabled,sRE]=useState(true);const[autoTrade,sAutoTrade]=useState(null);const[movers,sMovers]=useState(null);const[moversTf,sMoversTf]=useState("24h");const[moversLoad,sMoversLoad]=useState(false);const[img,sImg]=useState(null);const[showKeys,sShowKeys]=useState(false);
 const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");const[refMsg,sRefMsg]=useState("");
-const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);
+const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
 const[intelData,sIntel]=useState(null);
 
@@ -226,7 +226,7 @@ const expToken=rExp?rFiltered.find(t=>t.ca===rExp)||rTokens.find(t=>t.ca===rExp)
 
 return<TC.Provider value={T}><style>{css(T)}</style>
 {toasts.length>0&&<div style={{position:"fixed",top:mb?4:60,left:"50%",transform:"translateX(-50%)",zIndex:9999,display:"flex",flexDirection:"column",gap:3,maxWidth:mb?"95%":480,width:"auto",minWidth:200}}>{toasts.map(t=><div key={t.id} onClick={()=>sToasts(x=>x.filter(y=>y.id!==t.id))} style={{padding:"8px 16px",borderRadius:8,fontFamily:M,fontSize:14,fontWeight:600,background:t.type==="error"?T.rd+"15":t.type==="success"?T.gn+"15":T.sf,color:t.type==="error"?T.rd:t.type==="success"?T.gn:T.tx,border:"1px solid "+(t.type==="error"?T.rd+"33":t.type==="success"?T.gn+"33":T.bd),animation:"fd .15s ease",cursor:"pointer",backdropFilter:"blur(8px)",textAlign:"center",wordBreak:"break-word"}}>{t.msg}</div>)}</div>}
-<div style={{minHeight:"100dvh",background:T.bg,color:T.tx,fontFamily:M,paddingBottom:mb?68:16}}>
+<div style={{minHeight:"100dvh",background:T.bg,color:T.tx,fontFamily:M,paddingBottom:mb?80:16}}>
 <header style={{padding:mb?"5px 8px":"6px 20px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",justifyContent:"space-between",background:T.bg}}><div onClick={resetHome} style={{display:"flex",alignItems:"center",gap:mb?4:7,cursor:"pointer"}}><Logo s={mb?20:24}/><span style={{fontWeight:800,fontSize:mb?20:24}}>{mb?"B":"BOND"}<span style={{color:T.rd}}>{mb?"L":"LI"}</span></span>{wsOn&&(launched||pSess.length>0)&&<span style={{width:4,height:4,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}</div>{trW&&<div style={{display:"flex",alignItems:"center",gap:3}}><span style={{fontSize:mb?26:32,fontWeight:900,color:trB>.01?T.gn:T.ft}}>{solFmt(trB)}</span><IC.sol s={mb?16:20}/></div>}<div style={{display:"flex",alignItems:"center",gap:mb?2:5}}>{launched&&<button onClick={async()=>{if(!confirm("STOP ALL?"))return;try{for(const s of pSess)try{await a.ss(s.id,user.pubkey)}catch{};sPS([]);toast("Stopped","success");resetHome()}catch(e){toast(e.message,"error")}}} style={{background:T.rd+"12",border:"1px solid "+T.rd+"22",borderRadius:6,padding:"3px 7px",cursor:"pointer",color:T.rd,display:"flex",alignItems:"center",gap:2,fontSize:14,fontWeight:700}}><IC.stop s={14}/>STOP</button>}<button onClick={tog} style={{background:"none",border:"1px solid "+T.bd,borderRadius:6,padding:"3px 5px",cursor:"pointer",color:T.dm,display:"flex"}}>{isDark?<IC.sun/>:<IC.moon/>}</button><button onClick={()=>sShowKeys(!showKeys)} style={{background:"none",border:"1px solid "+T.bd,borderRadius:6,padding:"3px 5px",cursor:"pointer",color:T.dm,display:"flex"}}><IC.gear s={13}/></button><div onClick={disconnect} style={{display:"flex",alignItems:"center",gap:3,padding:"2px 5px",background:T.sf,borderRadius:6,border:"1px solid "+T.bd,cursor:"pointer"}}><span style={{padding:"2px 6px",borderRadius:3,fontSize:12,fontWeight:800,background:tierColor+"18",color:tierColor,border:"1px solid "+tierColor+"22"}}>{tierLabel}</span><Av pk={user.pubkey||""} s={18}/><span style={{fontSize:13,color:T.dm,maxWidth:mb?50:80,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user.demo?"demo":(cUser||wN(user.pubkey||""))}</span></div></div></header>
 
 {trW?<div style={{padding:"6px 12px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",gap:6,fontSize:14,color:T.ft}}><IC.zap s={13}/><span onClick={()=>{navigator.clipboard?.writeText(trW);toast("Copied","success")}} style={{cursor:"pointer"}}>{tp(trW,6,4)}</span>{online>0&&<span style={{color:T.gn+"77"}}>{online} online</span>}<div style={{marginLeft:"auto",display:"flex",gap:2}}><button onClick={()=>{navigator.clipboard?.writeText(trW);toast("Deposit address copied","success")}} style={{background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:4,padding:"3px 8px",cursor:"pointer",color:T.gn,fontSize:13,fontWeight:700}}>deposit</button></div></div>:user&&!user.demo&&<div style={{padding:"8px 10px",borderBottom:"1px solid "+T.bd,textAlign:"center"}}><B onClick={async()=>{try{const r=await a.ctw(a.w);if(r.ok){sTrW(r.tradingWallet);sTrK(r);toast("Key created","success")}}catch(e){toast(e.message,"error")}}} small><IC.key s={12} c="#0a0a0f"/> Create Trading Key</B></div>}
@@ -439,16 +439,15 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 
 {/* INTEL TAB — Meme Analytics for everyone */}
 {tab==="intel"&&<EB l="Intel"><div style={{animation:"si .2s ease"}}>
-<div style={{background:T.sf,border:"1px solid "+T.pu+"18",borderRadius:10,padding:mb?10:16,marginBottom:8}}>
-<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.sim s={18} c={T.pu}/><span style={{fontSize:16,fontWeight:800}}>Meme Intelligence</span><span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/></div>
-<div style={{fontSize:14,color:T.dm,marginBottom:12,lineHeight:1.5}}>Self-evolving scoring engine. Every pump.fun token gets scored using Tipping Point + Kahneman System 1/2 frameworks. The model learns from every outcome — graduated tokens, rug pulls, fleet P&L — and improves on every single launch.</div>
-<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:10}}>
-{[{l:"TOKENS",v:intelData?.memory?.total||"—",c:T.pu},{l:"ACCURACY",v:intelData?.scorer?.accuracy||"—",c:T.gn},{l:"GRAD RATE",v:intelData?.memory?.graduationRate||"—",c:T.yl},{l:"TRACKING",v:intelData?.monitor?.tracking||"—",c:T.or}].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:20,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:10,color:T.ft,fontWeight:700,marginTop:2}}>{s.l}</div></div>)}
+<div style={{background:T.sf,border:"1px solid "+T.pu+"18",borderRadius:10,padding:mb?8:12,marginBottom:6}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}><IC.sim s={16} c={T.pu}/><span style={{fontSize:15,fontWeight:800}}>Meme Intelligence</span><span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/></div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3,marginBottom:6}}>
+{[{l:"TOKENS",v:intelData?.memory?.total||"—",c:T.pu},{l:"ACCURACY",v:intelData?.scorer?.accuracy||"—",c:T.gn},{l:"GRAD RATE",v:intelData?.memory?.graduationRate||"—",c:T.yl},{l:"TRACKING",v:intelData?.monitor?.tracking||"—",c:T.or}].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 4px",textAlign:"center"}}><div style={{fontSize:18,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:9,color:T.ft,fontWeight:700,marginTop:1}}>{s.l}</div></div>)}
 </div>
 <div style={{fontSize:11,color:T.ft,textAlign:"center"}}>{intelData?`${intelData.scorer?.trainCount||0} tokens scored · SOL $${intelData.solPrice?.toFixed(0)||"?"} · uptime ${intelData.uptime||"—"}`:"Connecting to intel engine..."}</div>
 
 {/* ═══ LIVE INTEL: Scores + Spotlight + Pulse (3 columns) ═══ */}
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:6,marginTop:8}}>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:4,marginTop:6}}>
 
 {/* Recent Scores */}
 <div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,maxHeight:280,overflowY:"auto"}}><div style={{fontSize:13,fontWeight:700,color:T.dm,marginBottom:6}}>Recent Scores {(user?.tier==="pro"||user?.whitelisted)&&<span style={{color:T.gn,fontSize:8}}>· click to ape</span>}</div>{(intelData?.recentEvents||[]).slice(0,8).map((e,i)=>{const fullCA=e.data?.ca||"";const name=e.data?.name||fullCA.slice(0,6);return<div key={i} onClick={()=>{if(!user?.whitelisted&&user?.tier==="free"){toast("Pro/VIP only","error");return}
@@ -547,34 +546,34 @@ return<div key={i} style={{display:"flex",alignItems:"center",padding:"3px 0",bo
 </div>{/* end grid */}
 </div>
 
-{/* Scoring frameworks */}
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:6,marginBottom:8}}>
+{/* How it works — collapsible */}
+<button onClick={()=>sShowHow(!showHow)} style={{width:"100%",padding:"8px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+<span style={{fontSize:12,fontWeight:700,color:T.dm}}>How scoring works</span>
+<span style={{fontSize:10,color:T.ft}}>{showHow?"▾":"▸"}</span>
+</button>
+{showHow&&<>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginBottom:6}}>
 {[{name:"Tipping Point",color:T.gn,items:["Law of the Few — whale concentration","Stickiness — meme phrase power","Context — trending topic match","Connector/Maven/Salesman signals"]},
 {name:"Kahneman System 1/2",color:T.yl,items:["Cognitive ease — name pronounceability","Emotional valence — humor/outrage","Herd signal — buy acceleration","Loss aversion — sell pressure ratio"]},
 {name:"On-Chain Velocity",color:T.or,items:["Buy velocity 1m/5m","Unique buyers in 5 min","Gini coefficient of buys","Dev wallet hold %"]},
 {name:"Social Signals",color:T.pu,items:["Twitter/Telegram/Website presence","Name length + ticker length","Description sentiment","Emoji detection"]}
-].map(fw=><div key={fw.name} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:8,padding:10}}>
-<div style={{fontSize:13,fontWeight:800,color:fw.color,marginBottom:6}}>{fw.name}</div>
-{fw.items.map(it=><div key={it} style={{fontSize:11,color:T.dm,padding:"2px 0",display:"flex",alignItems:"center",gap:4}}><span style={{width:3,height:3,borderRadius:"50%",background:fw.color+"44",flexShrink:0}}/>{it}</div>)}
+].map(fw=><div key={fw.name} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:6,padding:8}}>
+<div style={{fontSize:11,fontWeight:800,color:fw.color,marginBottom:4}}>{fw.name}</div>
+{fw.items.map(it=><div key={it} style={{fontSize:10,color:T.dm,padding:"1px 0",display:"flex",alignItems:"center",gap:3}}><span style={{width:3,height:3,borderRadius:"50%",background:fw.color+"44",flexShrink:0}}/>{it}</div>)}
 </div>)}
 </div>
-
-{/* Architecture */}
-<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:16}}>
-<div style={{fontSize:14,fontWeight:800,marginBottom:8}}>Architecture</div>
-{[{name:"Rule Engine",desc:"Tipping Point + System 1/2 heuristics",st:"active",c:T.gn},
-{name:"RAG Memory",desc:"Vector similarity to past tokens + outcomes",st:"active",c:T.gn},
-{name:"Online ML",desc:"Streaming model updates on every label",st:"active",c:T.yl},
-{name:"Nightly LoRA",desc:"Fine-tune on 7 days of outcomes",st:"planned",c:T.ft}
-].map(l=><div key={l.name} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",borderBottom:"1px solid "+T.bd}}>
-<span style={{width:5,height:5,borderRadius:"50%",background:l.c,flexShrink:0}}/>
-<div style={{flex:1}}><div style={{fontSize:13,fontWeight:700,color:l.c}}>{l.name}</div><div style={{fontSize:11,color:T.dm}}>{l.desc}</div></div>
-<span style={{fontSize:10,padding:"2px 6px",borderRadius:3,border:"1px solid "+l.c+"33",color:l.c,fontWeight:700}}>{l.st}</span>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"repeat(4,1fr)",gap:3,marginBottom:6}}>
+{[{name:"Rule Engine",st:"active",c:T.gn},{name:"RAG Memory",st:"active",c:T.gn},{name:"Online ML",st:"active",c:T.yl},{name:"Nightly LoRA",st:"planned",c:T.ft}
+].map(l=><div key={l.name} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 8px",display:"flex",alignItems:"center",gap:4}}>
+<span style={{width:4,height:4,borderRadius:"50%",background:l.c,flexShrink:0}}/>
+<span style={{fontSize:10,fontWeight:700,color:l.c,flex:1}}>{l.name}</span>
+<span style={{fontSize:8,color:l.c,fontWeight:700}}>{l.st}</span>
 </div>)}
 </div>
+</>}
 
 {/* Live ML Behavior — scoring distribution + feature weights */}
-{intelData?.scorer?.topFeatures?.length>0&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:16,marginTop:8}}>
+{intelData?.scorer?.topFeatures?.length>0&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?8:12,marginTop:6}}>
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:11,fontWeight:800}}>Model Behavior</span><span style={{fontSize:7,color:T.dm}}>live feature weights</span></div>
 {/* Feature weight bars */}
 <div style={{display:"grid",gap:4}}>
@@ -626,7 +625,7 @@ const StepBtn=({k,step,mn,mx,c,fmt,onAdj})=>{const v=S[k]??0;return<div style={{
 <button onClick={()=>onAdj?onAdj(Math.abs(step)):adj(k,Math.abs(step),mn,mx)} style={{padding:mb?"10px 12px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?18:14,fontWeight:800,cursor:"pointer",lineHeight:1}}>+</button>
 </div>};
 const tpTotal=(S.tp1Sell||0)+(S.tp2Sell||0)+(S.tp3Sell||0);
-return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),borderRadius:10,padding:mb?10:16,marginTop:8}}>
+return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),borderRadius:10,padding:mb?10:16,marginTop:6}}>
 {/* Header + buttons */}
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:aaOpen?8:0}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}><IC.trend s={16} c={aaActive?T.gn:T.ft}/><span style={{fontSize:15,fontWeight:800}}>Auto-Ape</span>{aaActive&&<span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}</div>
@@ -723,8 +722,8 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 </div>})()}
 
 {/* Tier features */}
-<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:16,marginTop:8}}>
-<div style={{fontSize:14,fontWeight:800,marginBottom:8}}>Intel Access by Tier</div>
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?8:12,marginTop:6}}>
+<div style={{fontSize:13,fontWeight:800,marginBottom:6}}>Intel Access by Tier</div>
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
 <div style={{padding:8,background:T.bg,borderRadius:6,border:"1px solid "+T.gn+"18"}}>
 <div style={{fontSize:13,fontWeight:800,color:T.gn,marginBottom:4}}>Free</div>
@@ -742,7 +741,7 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 </div>
 
 {/* Admin panel — owner only */}
-{isOwner&&<div style={{background:T.sf,border:"1px solid "+T.yl+"18",borderRadius:10,padding:mb?10:16,marginTop:8}}>
+{isOwner&&<div style={{background:T.sf,border:"1px solid "+T.yl+"18",borderRadius:10,padding:mb?8:12,marginTop:6}}>
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><IC.crown s={14} c={T.yl}/><span style={{fontSize:12,fontWeight:800,color:T.yl}}>Admin Panel</span></div>
 <div style={{fontSize:8,color:T.dm,marginBottom:8}}>Platform owner tools. Visible only to whitelisted wallets.</div>
 <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
