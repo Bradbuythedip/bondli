@@ -72,6 +72,10 @@ const FEATURE_KEYS = [
   "rg_mcapDropRate",    // mcap drop rate from peak (0=stable, 1=crashed)
   "rg_buyerRetention",  // % of early buyers still holding (0=all dumped, 1=all held)
 
+  // Chart shape analysis
+  "ch_healthScore",     // overall chart health (0=crash, 0.5=neutral, 1=healthy growth)
+  "ch_pumpDump",        // pump-and-dump pattern detection (0=none, 1=classic p&d)
+
   // Meta
   "mt_hourOfDay",       // 0-23 normalized to 0-1
   "mt_dayOfWeek",       // 0-6 normalized to 0-1

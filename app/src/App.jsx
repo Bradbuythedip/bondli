@@ -185,7 +185,7 @@ const[rEnabled,sRE]=useState(true);const[autoTrade,sAutoTrade]=useState(null);co
 const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");const[refMsg,sRefMsg]=useState("");
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
-const[intelData,sIntel]=useState(null);
+const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);
 
 const toast=useCallback((m,t="info")=>{const id=Date.now()+Math.random();sToasts(x=>[...x,{id,msg:m,type:t}]);setTimeout(()=>sToasts(x=>x.filter(y=>y.id!==id)),5000)},[]);
 const hasAccess=user&&(user.demo||user.tier==="free"||user.tier==="pro"||user.tier==="vip");
@@ -209,6 +209,7 @@ useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>r.json()).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const iv=setInterval(poll,10000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
+useEffect(()=>{if(tab!=="intel")return;a.gcp().then(d=>sChartPatterns(d)).catch(()=>{});const iv=setInterval(()=>a.gcp().then(d=>sChartPatterns(d)).catch(()=>{}),30000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs)sRT(d.tabs);if(d.poolSize!=null)sRP(d.poolSize);if(d.gradMc)sGradMc(d.gradMc);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,5000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
 useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,10000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.grf(user.pubkey).then(d=>sRefData(d)).catch(()=>{})},[user?.pubkey]);
@@ -577,7 +578,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",padding:"3px 0",bo
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:11,fontWeight:800}}>Model Behavior</span><span style={{fontSize:7,color:T.dm}}>live feature weights</span></div>
 {/* Feature weight bars */}
 <div style={{display:"grid",gap:4}}>
-{intelData.scorer.topFeatures.slice(0,8).map((f,i)=>{const maxW=parseFloat(intelData.scorer.topFeatures[0]?.weight)||2.5;const pct=Math.min(100,Math.round((parseFloat(f.weight)/maxW)*100));const featureNames={oc_buyVelocity5m:"Buy Velocity (5m)",tp_stickiness:"Meme Stickiness",oc_uniqueBuyers5m:"Unique Buyers (5m)",k_herdSignal:"Herd Signal",tp_lawOfFew:"Law of Few",k_cognitiveEase:"Name Ease",oc_volumeSol5m:"Volume SOL (5m)",so_hasTwitter:"Has Twitter"};return<div key={f.feature} style={{display:"flex",alignItems:"center",gap:6}}>
+{intelData.scorer.topFeatures.slice(0,8).map((f,i)=>{const maxW=parseFloat(intelData.scorer.topFeatures[0]?.weight)||2.5;const pct=Math.min(100,Math.round((parseFloat(f.weight)/maxW)*100));const featureNames={oc_buyVelocity5m:"Buy Velocity (5m)",tp_stickiness:"Meme Stickiness",oc_uniqueBuyers5m:"Unique Buyers (5m)",k_herdSignal:"Herd Signal",tp_lawOfFew:"Law of Few",k_cognitiveEase:"Name Ease",oc_volumeSol5m:"Volume SOL (5m)",so_hasTwitter:"Has Twitter",ch_healthScore:"Chart Health",ch_pumpDump:"Pump & Dump",rg_devSellSpeed:"Dev Sell Speed",rg_mcapDropRate:"MC Drop Rate",rg_buyerRetention:"Buyer Retention"};return<div key={f.feature} style={{display:"flex",alignItems:"center",gap:6}}>
 <span style={{fontSize:7,color:T.dm,minWidth:90,textAlign:"right"}}>{featureNames[f.feature]||f.feature}</span>
 <div style={{flex:1,height:6,borderRadius:3,background:T.bg,overflow:"hidden"}}><div style={{width:pct+"%",height:"100%",borderRadius:3,background:`linear-gradient(90deg,${T.pu},${T.gn})`,transition:"width 1s"}}/></div>
 <span style={{fontSize:7,color:T.tx,fontWeight:700,minWidth:25}}>{f.weight}</span>
@@ -644,7 +645,8 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 </div>
 {!aaOpen&&<div style={{fontSize:11,color:T.dm,marginTop:4}}>Walk away mode: auto-buys green tokens, sells at 3 TP / 2 SL tiers.</div>}
 {/* Expanded panel */}
-{aaOpen&&<div>
+{aaOpen&&<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:mb?0:12}}>
+<div>{/* LEFT: Config */}
 <div style={{fontSize:11,color:T.dm,marginBottom:8}}>Configure targets, then hit START. Uses +/- to adjust.</div>
 {/* Core settings */}
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
@@ -704,20 +706,93 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 {S.momentumExit&&<div style={{fontSize:mb?8:7,color:T.dm,marginTop:4,lineHeight:1.5}}>Score drops 20+pts → SL tightens 50% • Score drops 30+pts → immediate sell • Re-scores every 15s from live radar data</div>}
 </div>
 {/* APPLY button when settings changed while active */}
-{aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);sAutoTrade(p=>({...p,log:[...(p?.log||[]),{msg:"Settings applied",time:Date.now()}]}));toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:8}}>APPLY CHANGES</button>}
-{/* Positions */}
-{autoTrade?.positions?.length>0&&<div style={{marginBottom:6}}><div style={{fontSize:mb?10:9,fontWeight:700,color:T.ft,marginBottom:4}}>Positions ({autoTrade.positions.length})</div>{autoTrade.positions.map(p=><div key={p.ca} style={{display:"flex",alignItems:"center",gap:5,padding:mb?"5px 0":"3px 0",borderBottom:"1px solid "+T.bd+"44",flexWrap:"wrap"}}>
-<span style={{fontSize:mb?12:11,fontWeight:700,color:T.tx,flex:1,minWidth:60}}>{p.name}</span>
-{p.isMoonbag&&<span style={{fontSize:mb?8:7,fontWeight:800,padding:"2px 5px",borderRadius:3,background:T.yl+"22",color:T.yl}}>MOON</span>}
-{p.tpHit>0&&<span style={{fontSize:mb?8:7,fontWeight:800,padding:"2px 5px",borderRadius:3,background:T.gn+"22",color:T.gn}}>TP{p.tpHit}</span>}
-{p.slHit>0&&<span style={{fontSize:mb?8:7,fontWeight:800,padding:"2px 5px",borderRadius:3,background:T.rd+"22",color:T.rd}}>SL{p.slHit}</span>}
-{p.liveScore!=null&&<span style={{fontSize:mb?8:7,fontWeight:800,padding:"2px 5px",borderRadius:3,background:(p.scoreDelta>=0?T.gn:T.rd)+"18",color:p.scoreDelta>=0?T.gn:T.rd}}>{p.liveScore}{p.scoreDelta!==0&&(p.scoreDelta>0?"+":"")+p.scoreDelta}</span>}
-<span style={{fontSize:mb?11:10,color:T.ft}}>${fm(p.currentMcap)}</span>
-<span style={{fontSize:mb?12:11,fontWeight:800,color:p.changePct>=0?T.gn:T.rd}}>{p.changePct>=0?"+":""}{p.changePct}%</span>
-<span style={{fontSize:mb?9:8,color:T.ft}}>{p.age}m</span>
-</div>)}</div>}
+{aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);sAutoTrade(p=>({...p,log:[...(p?.log||[]),{msg:"Settings applied",time:Date.now()}]}));toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:4}}>APPLY CHANGES</button>}
+</div>{/* END LEFT */}
+
+{/* RIGHT: Live Positions + Log + Chart Patterns */}
+<div style={{display:"flex",flexDirection:"column",gap:6}}>
+{/* Live Positions */}
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:8,padding:10,minHeight:mb?0:180}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+<div style={{display:"flex",alignItems:"center",gap:4}}>
+<span style={{fontSize:12,fontWeight:800}}>Positions</span>
+{autoTrade?.positions?.length>0&&<span style={{fontSize:10,fontWeight:800,color:T.gn,background:T.gn+"18",padding:"1px 6px",borderRadius:4}}>{autoTrade.positions.length}</span>}
+</div>
+{aaActive&&<span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}
+</div>
+{(!autoTrade?.positions||autoTrade.positions.length===0)?
+<div style={{textAlign:"center",padding:mb?"12px 0":"24px 0",color:T.ft}}>
+<div style={{fontSize:24,opacity:.2,marginBottom:4}}>◎</div>
+<div style={{fontSize:11}}>{aaActive?"Scanning for entries...":"Start Auto-Ape to open positions"}</div>
+</div>
+:autoTrade.positions.map(p=>{
+const pnlColor=p.changePct>=0?T.gn:T.rd;
+return<div key={p.ca} style={{padding:"6px 0",borderBottom:"1px solid "+T.bd+"44"}}>
+<div style={{display:"flex",alignItems:"center",gap:4,marginBottom:3}}>
+<span style={{fontSize:12,fontWeight:800,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{p.name}</span>
+<span style={{fontSize:14,fontWeight:900,color:pnlColor}}>{p.changePct>=0?"+":""}{p.changePct}%</span>
+</div>
+<div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+<span style={{fontSize:9,color:T.ft}}>${fm(p.currentMcap)} MC</span>
+<span style={{fontSize:9,color:T.ft}}>{p.age}m</span>
+{p.entrySol>0&&<span style={{fontSize:9,color:T.dm}}>{p.entrySol.toFixed(3)} SOL</span>}
+{p.isMoonbag&&<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.yl+"22",color:T.yl}}>MOONBAG</span>}
+{p.tpHit>0&&<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.gn+"22",color:T.gn}}>TP{p.tpHit}</span>}
+{p.slHit>0&&<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.rd+"22",color:T.rd}}>SL{p.slHit}</span>}
+{p.liveScore!=null&&<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:(p.scoreDelta>=0?T.gn:T.rd)+"18",color:p.scoreDelta>=0?T.gn:T.rd}}>Score {p.liveScore}{p.scoreDelta!==0&&" ("+(p.scoreDelta>0?"+":"")+p.scoreDelta+")"}</span>}
+{p.scoreTrend&&p.scoreTrend!=="stable"&&<span style={{fontSize:7,fontWeight:800,color:p.scoreTrend==="rising"?T.gn:T.rd}}>{p.scoreTrend==="rising"?"↑":"↓"}</span>}
+</div>
+</div>})}
+</div>
+
 {/* Log */}
-{autoTrade?.log?.length>0&&<div><div style={{fontSize:mb?10:9,fontWeight:700,color:T.ft,marginBottom:3}}>Log</div><div style={{maxHeight:mb?120:80,overflowY:"auto",fontSize:mb?10:9,color:T.dm,lineHeight:1.6,fontFamily:M}}>{autoTrade.log.slice().reverse().map((l,i)=><div key={i}><span style={{color:T.ft}}>{new Date(l.time).toLocaleTimeString()}</span> {l.msg}</div>)}</div></div>}
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:8,padding:10}}>
+<div style={{fontSize:11,fontWeight:700,color:T.ft,marginBottom:4}}>Activity Log</div>
+{autoTrade?.log?.length>0?
+<div style={{maxHeight:mb?100:200,overflowY:"auto",fontSize:10,color:T.dm,lineHeight:1.6,fontFamily:M}}>
+{autoTrade.log.slice().reverse().map((l,i)=><div key={i} style={{padding:"1px 0",borderBottom:i<autoTrade.log.length-1?"1px solid "+T.bd+"22":"none"}}>
+<span style={{color:T.ft}}>{new Date(l.time).toLocaleTimeString()}</span>{" "}
+<span style={{color:l.msg?.includes("BOUGHT")||l.msg?.includes("APE")?T.gn:l.msg?.includes("SELL")||l.msg?.includes("EXIT")?T.rd:T.dm}}>{l.msg}</span>
+</div>)}
+</div>
+:<div style={{fontSize:10,color:T.ft,textAlign:"center",padding:"8px 0"}}>No activity yet</div>}
+</div>
+
+{/* Graduated Chart Patterns — live data from stored snapshots */}
+<div style={{background:T.bg,border:"1px solid "+T.yl+"18",borderRadius:8,padding:10}}>
+<div style={{display:"flex",alignItems:"center",gap:4,marginBottom:6}}>
+<span style={{fontSize:11,fontWeight:800,color:T.yl}}>Chart Patterns</span>
+<span style={{fontSize:9,color:T.ft}}>{chartPatterns?.total||0} stored</span>
+</div>
+{/* Pattern type breakdown */}
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3,marginBottom:6}}>
+{[{k:"healthy_pump",l:"Healthy",c:T.gn},{k:"sniper_spike",l:"Spike",c:T.yl},{k:"slow_grind",l:"Grind",c:T.pu},{k:"rug",l:"Rug",c:T.rd}].map(p=>{
+const stats=chartPatterns?.patterns?.[p.k];
+return<div key={p.k} style={{padding:"4px 6px",borderRadius:4,border:"1px solid "+p.c+"22",background:p.c+"06"}}>
+<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+<span style={{fontSize:9,fontWeight:800,color:p.c}}>{p.l}</span>
+<span style={{fontSize:10,fontWeight:900,color:p.c}}>{stats?.count||0}</span>
+</div>
+{stats&&<div style={{fontSize:7,color:T.dm}}>{stats.avgPeakMcx}x peak · {stats.avgAge}m avg</div>}
+</div>})}
+</div>
+{/* Recent graduated charts with mini sparklines */}
+{chartPatterns?.recentCharts?.length>0&&<div style={{display:"flex",flexDirection:"column",gap:2}}>
+{chartPatterns.recentCharts.slice(0,6).map((c,i)=>{
+const pColor=c.pattern==="rug"?T.rd:c.pattern==="healthy_pump"?T.gn:c.pattern==="sniper_spike"?T.yl:T.pu;
+return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px 0",borderBottom:"1px solid "+T.bd+"33"}}>
+<span style={{fontSize:9,fontWeight:700,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{c.name||c.ticker||"?"}</span>
+<span style={{fontSize:7,fontWeight:800,color:pColor,padding:"1px 3px",borderRadius:2,background:pColor+"18"}}>{c.pattern?.replace("_"," ")}</span>
+<span style={{fontSize:8,color:T.ft}}>{c.peakMcx?.toFixed(1)}x</span>
+{/* Mini sparkline */}
+{c.spark?.length>3&&<svg width={40} height={14} style={{flexShrink:0}}>
+{(()=>{const s=c.spark;const mn=Math.min(...s);const mx=Math.max(...s);const rng=mx-mn||1;const pts=s.map((v,j)=>`${(j/(s.length-1))*40},${14-((v-mn)/rng)*12}`).join(" ");return<polyline points={pts} fill="none" stroke={pColor} strokeWidth={1.2}/>})()}
+</svg>}
+</div>})}
+</div>}
+{(!chartPatterns||chartPatterns.total===0)&&<div style={{fontSize:9,color:T.ft,textAlign:"center",padding:"6px 0"}}>Charts stored as tokens graduate</div>}
+</div>
+</div>{/* END RIGHT */}
 </div>}
 </div>})()}
 
