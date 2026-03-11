@@ -23,6 +23,10 @@ import createPaymentRoutes from "../payments/payment-routes.mjs";
 // Sessions
 import SessionStore from "../db/session-store.mjs";
 
+// Intel — token discovery + scoring
+import { HistoricalMovers } from "../engine/historical-movers.mjs";
+import { scoreToken } from "../engine/velocity-scorer.mjs";
+
 // Launch Sessions (dev wallet generation + funding)
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
 import { createToken } from "../engine/token-creator.mjs";
@@ -120,13 +124,14 @@ app.use((req, res, next) => {
 // ═══════════════════════════════════════
 // SERVICES
 // ═══════════════════════════════════════
-let sessionStore, paymentVerifier, sessionManager;
+let sessionStore, paymentVerifier, sessionManager, movers;
 const orch = new Orchestrator();
 
 async function initServices() {
   const redis = await initRedis(process.env.REDIS_URL);
   sessionStore = new SessionStore(redis);
   sessionManager = new SessionManager(redis);
+  movers = new HistoricalMovers(redis);
   const connection = new Connection(CONFIG.RPC_URL, "confirmed");
   paymentVerifier = new PaymentVerifier(connection);
   await paymentVerifier.init();
@@ -319,6 +324,38 @@ app.get("/api/config", apiLimiter, (req, res) => {
     proFee: PRO_FEE_SOL,
     freeProfitCut: FREE_PROFIT_CUT,
   });
+});
+
+// ═══════════════════════════════════════
+// ROUTES — Ape Targets (velocity-potential scoring)
+// ═══════════════════════════════════════
+
+// Get low-velocity, high-potential tokens to ape
+app.get("/api/ape-targets", apiLimiter, async (req, res) => {
+  try {
+    if (!movers) return res.status(503).json({ error: "Still initializing" });
+    const targets = await movers.getApeTargets();
+    res.json(targets);
+  } catch (e) {
+    console.error("[APE-TARGETS]", e.message);
+    res.status(500).json({ error: "Failed to fetch ape targets" });
+  }
+});
+
+// Score a specific token
+app.get("/api/score/:ca", apiLimiter, async (req, res) => {
+  try {
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(req.params.ca)) {
+      return res.status(400).json({ error: "Invalid contract address" });
+    }
+    if (!movers) return res.status(503).json({ error: "Still initializing" });
+    const scored = await movers.scoreToken(req.params.ca);
+    if (!scored) return res.status(404).json({ error: "Token not found" });
+    res.json(scored);
+  } catch (e) {
+    console.error("[SCORE]", e.message);
+    res.status(500).json({ error: "Failed to score token" });
+  }
 });
 
 app.get("/api/fees", apiLimiter, (req, res) => {
