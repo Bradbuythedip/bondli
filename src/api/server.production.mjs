@@ -981,6 +981,8 @@ setInterval(() => {
       age: Math.round((now - t.createdAt) / 1000),
       devWallet: t.devWallet, graduated: t.graduated, bundled: t.bundled,
       marketCapSol: t.mcapSol,
+      dexBoosted: !!radar.dexBoosted.get(t.ca),
+      boostAmount: radar.dexBoosted.get(t.ca)?.amount || 0,
     };
   };
 
@@ -2784,6 +2786,49 @@ function startAutoTrader(wallet, settings) {
         }
       }
 
+      // ═══ DIP-BUY DCA — add to existing positions on dips with recovery signals ═══
+      // If MC dropped 20%+ from peak but score is now rising/rocket, average down
+      for (const [ca, pos] of state.positions) {
+        if (pos.isMoonbag || pos.slHit >= 1 || pos.dcaBuys >= 2) continue; // max 2 DCA buys
+        const token = radar.tokens.get(ca);
+        if (!token) continue;
+        const currentMcap = token.mcapUsd || 0;
+        if (pos.entryMcap <= 0 || currentMcap <= 0) continue;
+        const fromPeak = pos.peakMcap > 0 ? ((pos.peakMcap - currentMcap) / pos.peakMcap) * 100 : 0;
+        const dyn = scoreDynamics.get(ca);
+        const isRecovering = dyn && dyn.scores >= 3 && (dyn.trend === "rising" || dyn.trend === "rocket");
+        // Dip criteria: MC dropped 20%+ from peak AND score is now recovering
+        if (fromPeak >= 20 && isRecovering) {
+          let balance = 0;
+          try { balance = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL; } catch { continue; }
+          const dcaAmount = Math.round(state.settings.solPerTrade * 0.5 * 1000) / 1000; // half-size DCA
+          if (balance < dcaAmount + 0.01) continue;
+          log(`DIP-BUY ${token.name||ca.slice(0,6)} | dip:${fromPeak.toFixed(0)}% from peak | trend:${dyn.trend} | MC:$${Math.round(currentMcap)} | ${dcaAmount} SOL`);
+          try {
+            const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: ca, amount: dcaAmount, denominatedInSol: "true", slippage: 25, priorityFee: 0.005, pool: "auto" }),
+            });
+            if (buyResp.ok) {
+              const txBytes = await buyResp.arrayBuffer();
+              if (txBytes.byteLength > 100) {
+                const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+                tx.sign([kp]);
+                const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                pos.dcaBuys = (pos.dcaBuys || 0) + 1;
+                pos.totalSol = (pos.totalSol || pos.entrySol) + dcaAmount;
+                // Recalculate average entry (weighted)
+                const totalInvested = (pos.entrySol || state.settings.solPerTrade) + dcaAmount * pos.dcaBuys;
+                pos.entryMcap = (pos.entryMcap * (pos.entrySol || state.settings.solPerTrade) + currentMcap * dcaAmount) / (totalInvested || 1);
+                trackBuy(wallet, ca, dcaAmount);
+                log(`DIP-BOUGHT ${token.name||ca.slice(0,6)} +${dcaAmount} SOL (DCA #${pos.dcaBuys}) sig:${sig.slice(0,12)}...`);
+                broadcastWS({ event: "auto-ape", data: { ca, name: token.name, sol: dcaAmount, mcap: currentMcap, wallet, score: pos.liveScore || 0, dca: true, dcaNum: pos.dcaBuys } });
+              }
+            }
+          } catch (e) { log(`DIP-BUY error ${ca.slice(0,6)}: ${e.message}`); }
+        }
+      }
+
       // Look for new tokens to ape
       if (state.positions.size >= state.settings.maxPositions) {
         if (!state._lastFullLog || Date.now() - state._lastFullLog > 30000) {
@@ -2793,9 +2838,14 @@ function startAutoTrader(wallet, settings) {
         return;
       }
 
-      // Clean expired cooldowns (older than 30min)
+      // Clean expired cooldowns — 10min for tokens with recovery signals, 30min for others
       const cd = soldCooldowns.get(wallet);
-      if (cd) for (const [c, t] of cd) { if (Date.now() - t > 1800000) cd.delete(c); }
+      if (cd) for (const [c, t] of cd) {
+        const dyn = scoreDynamics.get(c);
+        const isRecovering = dyn && dyn.scores >= 3 && (dyn.trend === "rising" || dyn.trend === "rocket");
+        const cooldownMs = isRecovering ? 600000 : 1800000; // 10min if recovering, 30min otherwise
+        if (Date.now() - t > cooldownMs) cd.delete(c);
+      }
 
       // ── PIPELINE STATS: track why tokens are rejected ──
       const pipeline = { total: 0, baseFilter: 0, alreadyOwned: 0, cooldown: 0, rugGate: 0, trendReject: 0, scoreLow: 0, passed: 0, nearMisses: [] };
@@ -2810,10 +2860,10 @@ function startAutoTrader(wallet, settings) {
         const dyn = scoreDynamics.get(t.ca);
         const isAccelerating = dyn && dyn.scores >= 2 && (dyn.trend === "rocket" || dyn.trend === "rising");
         if (isAccelerating) {
-          if (!(mc > 2000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys)) { pipeline.baseFilter++; return false; }
+          if (!(mc > 1500 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) { pipeline.baseFilter++; return false; }
           return true;
         }
-        if (!(mc > 3000 && buys >= 3 && ub >= 2 && ageMin >= 1 && sells <= buys)) { pipeline.baseFilter++; return false; }
+        if (!(mc > 2500 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) { pipeline.baseFilter++; return false; }
         return true;
       });
       const hot = tokens.filter(t => {
@@ -2918,10 +2968,12 @@ function startAutoTrader(wallet, settings) {
         let dynamicsBonus = 0;
         const dyn = scoreDynamics.get(t.ca);
         if (dyn && dyn.scores >= 2) {
-          // Reject tokens with crashing or declining score trend
-          if (dyn.trend === "crashing" || dyn.trend === "declining") { pipeline.trendReject++; return false; }
+          // Only reject tokens that are actively crashing — declining is a potential dip buy
+          if (dyn.trend === "crashing") { pipeline.trendReject++; return false; }
+          // Declining = dip opportunity — penalize but don't reject
+          if (dyn.trend === "declining") dynamicsBonus = -10;
           // Fading momentum = slight warning
-          if (dyn.trend === "fading") dynamicsBonus = -5;
+          else if (dyn.trend === "fading") dynamicsBonus = -5;
           // Rising steadily — meaningful boost
           else if (dyn.trend === "rising") dynamicsBonus = 12;
           // Rocket: accelerating score = STRONG signal — this is what catches early movers
