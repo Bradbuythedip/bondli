@@ -1248,7 +1248,7 @@ setInterval(() => {
     .sort((a, b) => b._gradScore - a._gradScore)
     .slice(0, 50).map(t => {
       const s = serialize(t);
-      s.pctToGrad = Math.min(100, Math.round((t.mcapUsd / gradMcUsd()) * 100));
+      s.pctToGrad = t.graduated ? 100 : Math.min(99, Math.round((t.mcapUsd / gradMcUsd()) * 100));
       s.graduated = t.graduated;
       return s;
     });
@@ -4493,7 +4493,7 @@ app.get("/api/intel/stats", (req, res) => {
       ca: t.ca,
       name: t.name || t.ticker || "",
       score,
-      bondProb: Math.min(99, Math.round((mc / gradMcUsd()) * 100)),
+      bondProb: t.graduated ? 100 : Math.min(99, Math.round((mc / gradMcUsd()) * 100)),
       rugScore,
       rugFlags,
       mcapUsd: mc,
