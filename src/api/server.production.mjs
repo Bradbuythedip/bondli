@@ -113,8 +113,8 @@ async function pollSolPrice() {
   } catch {
     // Fallback: try Jupiter
     try {
-      const r2 = await fetch("https://price.jup.ag/v6/price?ids=SOL", { signal: AbortSignal.timeout(5000) });
-      if (r2.ok) { const d2 = await r2.json(); if (d2?.data?.SOL?.price > 0) solUsdPrice = d2.data.SOL.price; }
+      const r2 = await fetch("https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112", { signal: AbortSignal.timeout(5000) });
+      if (r2.ok) { const d2 = await r2.json(); const sp = d2?.data?.["So11111111111111111111111111111111111111112"]?.price; if (sp > 0) solUsdPrice = +sp; }
     } catch {}
   }
 }
@@ -1452,7 +1452,7 @@ app.post("/api/session/launch", async (req, res) => {
     if (!tokenCA) {
       await sessionManager.update(sessionId, { status: "creating" });
       try {
-        const createResult = await createToken(devKp, session.tokenConfig, connection);
+        const createResult = await createToken(connection, devKp, session.tokenConfig);
         tokenCA = createResult.mint?.toBase58?.() || createResult.mint || createResult.ca;
         await sessionManager.update(sessionId, { tokenCA, status: "created" });
         console.log(`[LAUNCH] Token created: ${tokenCA}`);
@@ -1727,37 +1727,80 @@ app.post("/api/quick-ape", async (req, res) => {
 
     // Strategy 2: Jupiter fallback for graduated tokens
     if (!sig && isGraduated) {
+      const solLamports = Math.round(solAmount * LAMPORTS_PER_SOL);
+      // Try Jupiter Ultra API first
       try {
-        const quoteResp = await fetch(
-          `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${ca}&amount=${Math.round(solAmount * LAMPORTS_PER_SOL)}&slippageBps=2500`,
-          { signal: AbortSignal.timeout(10000) }
-        );
-        if (quoteResp.ok) {
-          const quote = await quoteResp.json();
-          const swapResp = await fetch("https://quote-api.jup.ag/v6/swap", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              quoteResponse: quote,
-              userPublicKey: tw.pubkey,
-              wrapAndUnwrapSol: true,
-              dynamicComputeUnitLimit: true,
-              prioritizationFeeLamports: 5000,
-            }),
-            signal: AbortSignal.timeout(10000),
-          });
-          if (swapResp.ok) {
-            const { swapTransaction } = await swapResp.json();
-            const swapBuf = Buffer.from(swapTransaction, "base64");
-            const tx = VersionedTransaction.deserialize(swapBuf);
+        const orderResp = await fetch("https://lite-api.jup.ag/ultra/v1/order", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            inputMint: "So11111111111111111111111111111111111111112",
+            outputMint: ca,
+            amount: solLamports,
+            taker: tw.pubkey,
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+        if (orderResp.ok) {
+          const order = await orderResp.json();
+          if (order.transaction) {
+            const txBuf = Buffer.from(order.transaction, "base64");
+            const tx = VersionedTransaction.deserialize(txBuf);
             tx.sign([kp]);
-            sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-            method = "jupiter";
-            console.log(`[BUY] Jupiter success: ${sig}`);
+            const rawTx = Buffer.from(tx.serialize()).toString("base64");
+            const execResp = await fetch("https://lite-api.jup.ag/ultra/v1/execute", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ signedTransaction: rawTx, requestId: order.requestId }),
+              signal: AbortSignal.timeout(15000),
+            });
+            if (execResp.ok) {
+              const execResult = await execResp.json();
+              if (execResult.signature || execResult.txid) {
+                sig = execResult.signature || execResult.txid;
+                method = "jupiter-ultra";
+                console.log(`[BUY] Jupiter Ultra success: ${sig}`);
+              }
+            }
           }
         }
       } catch (e) {
-        console.log(`[BUY] Jupiter fallback error: ${e.message}`);
+        console.log(`[BUY] Jupiter Ultra error: ${e.message}`);
+      }
+      // Fallback to Jupiter v6
+      if (!sig) {
+        try {
+          const quoteResp = await fetch(
+            `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${ca}&amount=${solLamports}&slippageBps=2500`,
+            { signal: AbortSignal.timeout(10000) }
+          );
+          if (quoteResp.ok) {
+            const quote = await quoteResp.json();
+            const swapResp = await fetch("https://quote-api.jup.ag/v6/swap", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                quoteResponse: quote,
+                userPublicKey: tw.pubkey,
+                wrapAndUnwrapSol: true,
+                dynamicComputeUnitLimit: true,
+                prioritizationFeeLamports: 5000,
+              }),
+              signal: AbortSignal.timeout(10000),
+            });
+            if (swapResp.ok) {
+              const { swapTransaction } = await swapResp.json();
+              const swapBuf = Buffer.from(swapTransaction, "base64");
+              const tx = VersionedTransaction.deserialize(swapBuf);
+              tx.sign([kp]);
+              sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+              method = "jupiter-v6";
+              console.log(`[BUY] Jupiter v6 success: ${sig}`);
+            }
+          }
+        } catch (e) {
+          console.log(`[BUY] Jupiter v6 fallback error: ${e.message}`);
+        }
       }
     }
 
@@ -1787,22 +1830,27 @@ app.post("/api/quick-sell", async (req, res) => {
     if (!wallet || !ca) return res.status(400).json({ error: "wallet, ca required" });
 
     const tw = await getTradingWallet(wallet);
-    if (!tw) return res.status(400).json({ error: "No trading wallet" });
+    if (!tw) return res.status(400).json({ error: "No trading wallet. Create one first." });
     const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
     const pct = Math.min(100, Math.max(1, percent || 100));
 
-    // Pre-flight: check token balance
+    // Pre-flight: check token balance + get decimals
     let tokenBalance = 0;
+    let tokenDecimals = 6;
     try {
       const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
       const account = tokenAccounts.value.find(ta => ta.account.data.parsed.info.mint === ca);
       if (account) {
         tokenBalance = parseFloat(account.account.data.parsed.info.tokenAmount.uiAmountString || "0");
+        tokenDecimals = account.account.data.parsed.info.tokenAmount.decimals || 6;
       }
-    } catch {}
+    } catch (e) {
+      console.log(`[SELL] Token balance check failed: ${e.message}`);
+      // Don't block — PumpPortal handles balance internally
+    }
 
     if (tokenBalance <= 0) {
-      return res.status(400).json({ error: "No token balance found for this mint. You may not hold this token." });
+      return res.status(400).json({ error: "No token balance found. You may not hold this token, or RPC hasn't synced yet. Try again in a few seconds." });
     }
 
     const radarToken = radar.tokens.get(ca);
@@ -1810,7 +1858,7 @@ app.post("/api/quick-sell", async (req, res) => {
 
     let sig = null;
     let method = "";
-    let lastErr = "";
+    let errors = []; // collect all errors for debugging
 
     // Strategy 1: PumpPortal (try multiple pools)
     const pools = isGraduated ? ["auto", "raydium", "pump"] : ["pump", "auto", "raydium"];
@@ -1831,18 +1879,19 @@ app.post("/api/quick-sell", async (req, res) => {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(reqBody),
-          signal: AbortSignal.timeout(10000),
+          signal: AbortSignal.timeout(12000),
         });
 
         if (!response.ok) {
-          lastErr = await response.text();
-          console.log(`[SELL] pool=${pool} failed ${response.status}: ${lastErr.slice(0, 150)}`);
+          const errText = await response.text().catch(() => "unknown");
+          errors.push(`PP:${pool}=${response.status}:${errText.slice(0, 80)}`);
+          console.log(`[SELL] pool=${pool} failed ${response.status}: ${errText.slice(0, 150)}`);
           continue;
         }
 
         const txBytes = await response.arrayBuffer();
         if (txBytes.byteLength < 100) {
-          lastErr = "Empty response from PumpPortal";
+          errors.push(`PP:${pool}=empty_response`);
           continue;
         }
 
@@ -1853,7 +1902,7 @@ app.post("/api/quick-sell", async (req, res) => {
         console.log(`[SELL] Success pool=${pool}: ${sig}`);
         break;
       } catch (e) {
-        lastErr = e.message;
+        errors.push(`PP:${pool}=${e.message.slice(0, 60)}`);
         console.log(`[SELL] pool=${pool} error: ${e.message}`);
         continue;
       }
@@ -1862,43 +1911,146 @@ app.post("/api/quick-sell", async (req, res) => {
     // Strategy 2: Jupiter fallback for graduated tokens
     if (!sig && isGraduated) {
       try {
-        const sellAmount = Math.round(tokenBalance * (pct / 100) * 1e6); // assumes 6 decimals
-        const quoteResp = await fetch(
-          `https://quote-api.jup.ag/v6/quote?inputMint=${ca}&outputMint=So11111111111111111111111111111111111111112&amount=${sellAmount}&slippageBps=3000`,
-          { signal: AbortSignal.timeout(10000) }
-        );
-        if (quoteResp.ok) {
-          const quote = await quoteResp.json();
-          const swapResp = await fetch("https://quote-api.jup.ag/v6/swap", {
+        const sellAmount = Math.round(tokenBalance * (pct / 100) * Math.pow(10, tokenDecimals));
+        // Try Jupiter Ultra first (newest API), then v6 as fallback
+        let jupSuccess = false;
+
+        // Jupiter Ultra API
+        try {
+          const orderResp = await fetch("https://lite-api.jup.ag/ultra/v1/order", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              quoteResponse: quote,
-              userPublicKey: tw.pubkey,
-              wrapAndUnwrapSol: true,
-              dynamicComputeUnitLimit: true,
-              prioritizationFeeLamports: 5000,
+              inputMint: ca,
+              outputMint: "So11111111111111111111111111111111111111112",
+              amount: sellAmount,
+              taker: tw.pubkey,
             }),
             signal: AbortSignal.timeout(10000),
           });
-          if (swapResp.ok) {
-            const { swapTransaction } = await swapResp.json();
-            const swapBuf = Buffer.from(swapTransaction, "base64");
-            const tx = VersionedTransaction.deserialize(swapBuf);
-            tx.sign([kp]);
-            sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-            method = "jupiter";
-            console.log(`[SELL] Jupiter success: ${sig}`);
+          if (orderResp.ok) {
+            const order = await orderResp.json();
+            if (order.transaction) {
+              const txBuf = Buffer.from(order.transaction, "base64");
+              const tx = VersionedTransaction.deserialize(txBuf);
+              tx.sign([kp]);
+              const rawTx = Buffer.from(tx.serialize()).toString("base64");
+              // Execute via Ultra
+              const execResp = await fetch("https://lite-api.jup.ag/ultra/v1/execute", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ signedTransaction: rawTx, requestId: order.requestId }),
+                signal: AbortSignal.timeout(15000),
+              });
+              if (execResp.ok) {
+                const execResult = await execResp.json();
+                if (execResult.signature || execResult.txid) {
+                  sig = execResult.signature || execResult.txid;
+                  method = "jupiter-ultra";
+                  jupSuccess = true;
+                  console.log(`[SELL] Jupiter Ultra success: ${sig}`);
+                }
+              } else {
+                const errText = await execResp.text().catch(() => "");
+                errors.push(`JUP-Ultra-exec=${execResp.status}:${errText.slice(0, 60)}`);
+              }
+            }
+          } else {
+            const errText = await orderResp.text().catch(() => "");
+            errors.push(`JUP-Ultra=${orderResp.status}:${errText.slice(0, 60)}`);
+          }
+        } catch (e) {
+          errors.push(`JUP-Ultra=${e.message.slice(0, 60)}`);
+          console.log(`[SELL] Jupiter Ultra error: ${e.message}`);
+        }
+
+        // Jupiter v6 fallback
+        if (!jupSuccess) {
+          try {
+            const quoteResp = await fetch(
+              `https://quote-api.jup.ag/v6/quote?inputMint=${ca}&outputMint=So11111111111111111111111111111111111111112&amount=${sellAmount}&slippageBps=3000`,
+              { signal: AbortSignal.timeout(10000) }
+            );
+            if (quoteResp.ok) {
+              const quote = await quoteResp.json();
+              const swapResp = await fetch("https://quote-api.jup.ag/v6/swap", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  quoteResponse: quote,
+                  userPublicKey: tw.pubkey,
+                  wrapAndUnwrapSol: true,
+                  dynamicComputeUnitLimit: true,
+                  prioritizationFeeLamports: 5000,
+                }),
+                signal: AbortSignal.timeout(10000),
+              });
+              if (swapResp.ok) {
+                const { swapTransaction } = await swapResp.json();
+                const swapBuf = Buffer.from(swapTransaction, "base64");
+                const tx = VersionedTransaction.deserialize(swapBuf);
+                tx.sign([kp]);
+                sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                method = "jupiter-v6";
+                console.log(`[SELL] Jupiter v6 success: ${sig}`);
+              } else {
+                const errText = await swapResp.text().catch(() => "");
+                errors.push(`JUP-v6-swap=${swapResp.status}:${errText.slice(0, 60)}`);
+              }
+            } else {
+              const errText = await quoteResp.text().catch(() => "");
+              errors.push(`JUP-v6-quote=${quoteResp.status}:${errText.slice(0, 60)}`);
+            }
+          } catch (e) {
+            errors.push(`JUP-v6=${e.message.slice(0, 60)}`);
+            console.log(`[SELL] Jupiter v6 fallback error: ${e.message}`);
           }
         }
       } catch (e) {
-        lastErr = e.message;
-        console.log(`[SELL] Jupiter fallback error: ${e.message}`);
+        errors.push(`JUP=${e.message.slice(0, 60)}`);
+        console.log(`[SELL] Jupiter error: ${e.message}`);
+      }
+    }
+
+    // Strategy 3: Direct RPC token close for dust/dead tokens
+    if (!sig && tokenBalance > 0 && pct === 100) {
+      try {
+        // Try sending raw sell via PumpPortal with token amount instead of percentage
+        const reqBody = {
+          publicKey: tw.pubkey,
+          action: "sell",
+          mint: ca,
+          amount: tokenBalance.toString(),
+          denominatedInSol: "false",
+          slippage: 50,
+          priorityFee: 0.01,
+          pool: "auto",
+        };
+        const response = await fetch("https://pumpportal.fun/api/trade-local", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(reqBody),
+          signal: AbortSignal.timeout(12000),
+        });
+        if (response.ok) {
+          const txBytes = await response.arrayBuffer();
+          if (txBytes.byteLength > 100) {
+            const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+            tx.sign([kp]);
+            sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+            method = "pumpportal:amount-fallback";
+            console.log(`[SELL] Amount-based fallback success: ${sig}`);
+          }
+        }
+      } catch (e) {
+        errors.push(`PP-amount=${e.message.slice(0, 60)}`);
       }
     }
 
     if (!sig) {
-      return res.status(400).json({ error: "Sell failed on all routes: " + lastErr.slice(0, 150) });
+      const errorSummary = errors.length > 0 ? errors.join(" | ") : "All routes failed";
+      console.log(`[SELL] FAILED all routes for ${ca.slice(0,8)}: ${errorSummary}`);
+      return res.status(400).json({ error: "Sell failed: " + errorSummary.slice(0, 200) });
     }
 
     // Track sell for immediate bags update
