@@ -1452,7 +1452,7 @@ app.post("/api/session/launch", async (req, res) => {
     if (!tokenCA) {
       await sessionManager.update(sessionId, { status: "creating" });
       try {
-        const createResult = await createToken(devKp, session.tokenConfig, connection);
+        const createResult = await createToken(connection, devKp, session.tokenConfig);
         tokenCA = createResult.mint?.toBase58?.() || createResult.mint || createResult.ca;
         await sessionManager.update(sessionId, { tokenCA, status: "created" });
         console.log(`[LAUNCH] Token created: ${tokenCA}`);
