@@ -438,10 +438,14 @@ function processRadarMessage(data) {
   // Trade only: tokenAmount, newTokenBalance
   const mint = data.mint || "";
   if (!mint) return;
-  const mcSol = data.marketCapSol || 0;
   const vSol = data.vSolInBondingCurve || 0;
   const vTokens = data.vTokensInBondingCurve || 0;
   const trader = data.traderPublicKey || "";
+  // FDV = price * total supply. PumpPortal's marketCapSol underreports (~half)
+  // because it uses bonding curve supply, not the full 1B token supply.
+  // Compute FDV ourselves: (vSol / vTokens) * 1,000,000,000
+  const TOTAL_SUPPLY = 1_000_000_000;
+  const mcSol = vTokens > 0 ? (vSol / vTokens) * TOTAL_SUPPLY : (data.marketCapSol || 0);
 
   // ═══ TOKEN CREATION ═══
   if (data.txType === "create") {
@@ -3110,15 +3114,18 @@ function startAutoTrader(wallet, settings) {
         const dyn = scoreDynamics.get(t.ca);
         const isAccelerating = dyn && dyn.scores >= 2 && (dyn.trend === "rocket" || dyn.trend === "rising");
         // Low-velocity early entry: token has few buys but healthy buy/sell ratio
-        // and is in the pre-discovery MC range ($2K-$10K). These are the tokens
+        // and is in the pre-discovery FDV range ($4K-$30K). These are the tokens
         // we SHOULD be aping — before velocity picks up.
-        const isLowVelocity = mc >= 2000 && mc <= 15000 && buys >= 1 && sells <= buys && ub >= 1 && ageMin >= 0.3 && ageMin <= 30;
+        const isLowVelocity = mc >= 4000 && mc <= 30000 && buys >= 1 && sells <= buys && ub >= 1 && ageMin >= 0.3 && ageMin <= 30;
+        // DexPaid early entry: boosted tokens get relaxed filters — paid = conviction
+        const isDexPaid = !!radar.dexBoosted.get(t.ca);
         if (isAccelerating) {
-          if (!(mc > 1500 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) { pipeline.baseFilter++; return false; }
+          if (!(mc > 3000 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) { pipeline.baseFilter++; return false; }
           return true;
         }
+        if (isDexPaid && mc >= 4000 && buys >= 1 && sells <= buys * 2) return true; // dex paid = early entry signal
         if (isLowVelocity) return true; // let low-velocity tokens through to scoring
-        if (!(mc > 2500 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) { pipeline.baseFilter++; return false; }
+        if (!(mc > 5000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) { pipeline.baseFilter++; return false; }
         return true;
       });
       // ═══ BACKGROUND WALLET AGE ENRICHMENT — non-blocking on-chain wallet age checks ═══
@@ -3201,18 +3208,18 @@ function startAutoTrader(wallet, settings) {
         const ubScore = Math.min(15, Math.log2(ub + 1) * 3);
         const volScore = Math.min(12, Math.log10(vol * 100 + 1) * 4);
 
-        // MC scoring: expanded sweet spot to capture low-velocity early entries
-        // $3K-$8K = pre-discovery zone (highest upside if token has healthy signals)
-        // $8K-$30K = discovery zone (proven activity, still good upside)
-        // $30K+ = late entry (most upside already captured)
+        // MC scoring: ranges based on correct FDV (not bonding curve MC)
+        // $6K-$16K = pre-discovery zone (highest upside if token has healthy signals)
+        // $16K-$60K = discovery zone (proven activity, still good upside)
+        // $60K+ = late entry (most upside already captured)
         const mcScore = mc >= gradMcUsd() ? 3 :
-                        mc >= 50000 ? 5 :
-                        mc >= 30000 ? 7 :
-                        mc >= 15000 ? 10 :
-                        mc >= 8000  ? 12 :
-                        mc >= 5000  ? 11 :
-                        mc >= 3000  ? 9 :
-                        mc >= 2000  ? 6 : 0;
+                        mc >= 100000 ? 5 :
+                        mc >= 60000  ? 7 :
+                        mc >= 30000  ? 10 :
+                        mc >= 16000  ? 12 :
+                        mc >= 10000  ? 11 :
+                        mc >= 6000   ? 9 :
+                        mc >= 4000   ? 6 : 0;
 
         // GREEN detection: is MC growing? (sparkline trend)
         const spark = t.spark || [];
@@ -3259,7 +3266,9 @@ function startAutoTrader(wallet, settings) {
         }
 
         const dexBoost = radar.dexBoosted.get(t.ca);
-        const boostScore = dexBoost ? Math.min(8, 3 + Math.log2(dexBoost.amount + 1)) : 0;
+        // DexPaid = strong early buy signal: devs paying for visibility = conviction + marketing spend
+        // Base 12 pts + scaled by boost amount, capped at 20 pts (was 8 — too weak)
+        const boostScore = dexBoost ? Math.min(20, 12 + Math.log2(dexBoost.amount + 1)) : 0;
         if (state.settings.requireBoosted && !dexBoost) return false;
 
         // ═══ VELOCITY/ACCELERATION GATE ═══
@@ -3320,7 +3329,7 @@ function startAutoTrader(wallet, settings) {
         //   - Capped at 18 to avoid dominating the score
         let earlyApeBonus = 0;
         const buysPerMin = buys / Math.max(ageMin, 0.5);
-        const isEarlyMcap = mc >= 2000 && mc <= 12000;
+        const isEarlyMcap = mc >= 4000 && mc <= 24000;
         const healthyRatio = buys > 0 && sells <= buys * 0.5; // few sells relative to buys
         const noRugFlags = !t._rugFlags || t._rugFlags.length === 0;
         if (isEarlyMcap && healthyRatio && noRugFlags && buysPerMin < 3) {
@@ -4396,7 +4405,7 @@ app.get("/api/intel/stats", (req, res) => {
     const buyScore = Math.min(15, Math.log2(buys + 1) * 2.5);
     const ubScore = Math.min(12, Math.log2(ub + 1) * 2);
     const volScore = Math.min(10, Math.log10(vol * 100 + 1) * 3);
-    const mcScore = mc >= gradMcUsd() ? 15 : mc >= 40000 ? 10 : mc >= 20000 ? 7 : mc >= 10000 ? 4 : mc >= 5000 ? 2 : 0;
+    const mcScore = mc >= gradMcUsd() ? 15 : mc >= 80000 ? 10 : mc >= 40000 ? 7 : mc >= 20000 ? 4 : mc >= 10000 ? 2 : 0;
     const socialScore = (t.twitter ? 2 : 0) + (t.website ? 1 : 0) + (t.telegram ? 1 : 0);
     const pressureScore = buys > 3 ? Math.min(5, (buys / Math.max(1, buys + sells)) * 5) : 0;
     const sellPenalty = sells > buys * 0.7 ? Math.min(15, (sells - buys * 0.5) * 2) : 0;
@@ -4482,9 +4491,9 @@ app.get("/api/intel/stats", (req, res) => {
       ? Math.round(rugScore * 0.3)       // 0-9 points for mild signals
       : Math.round(9 + (rugScore - 30) * 0.44); // 9-40 points for serious signals
 
-    // DexScreener paid/boosted signal bonus
+    // DexScreener paid/boosted signal bonus — strong early buy signal
     const dexBoost = radar.dexBoosted.get(t.ca);
-    const boostScore = dexBoost ? Math.min(8, 3 + Math.log2(dexBoost.amount + 1)) : 0;
+    const boostScore = dexBoost ? Math.min(20, 12 + Math.log2(dexBoost.amount + 1)) : 0;
 
     const raw = buyScore + ubScore + volScore + mcScore + socialScore + pressureScore + boostScore - sellPenalty - rugPenalty;
     const score = Math.max(0, Math.min(99, Math.round(raw)));
@@ -4738,13 +4747,16 @@ function createLiveSim(id, settings) {
     const sellVol = t.sellVolumeSol || 0;
     const dyn = scoreDynamics.get(t.ca);
     const isAccelerating = dyn && dyn.scores >= 2 && (dyn.trend === "rocket" || dyn.trend === "rising");
-    const isLowVelocity = mc >= 2000 && mc <= 15000 && buys >= 1 && sells <= buys && ub >= 1 && ageMin >= 0.3 && ageMin <= 30;
+    const isLowVelocity = mc >= 4000 && mc <= 30000 && buys >= 1 && sells <= buys && ub >= 1 && ageMin >= 0.3 && ageMin <= 30;
+    const isDexPaid = !!radar.dexBoosted.get(t.ca);
 
     // ── BASE FILTER (matches auto-ape) ──
-    if (isAccelerating) {
-      if (!(mc > 1500 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) return 0;
+    if (isDexPaid && mc >= 4000 && buys >= 1 && sells <= buys * 2) {
+      // dex paid = early entry signal, relaxed filters
+    } else if (isAccelerating) {
+      if (!(mc > 3000 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) return 0;
     } else if (!isLowVelocity) {
-      if (!(mc > 2500 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) return 0;
+      if (!(mc > 5000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) return 0;
     }
 
     // ── HARD RUG GATE (matches auto-ape exactly) ──
@@ -4797,7 +4809,7 @@ function createLiveSim(id, settings) {
     const buyScore = Math.min(15, Math.log2(buys + 1) * 3);
     const ubScore = Math.min(15, Math.log2(ub + 1) * 3);
     const volScore = Math.min(12, Math.log10(vol * 100 + 1) * 4);
-    const mcScore = mc >= gradMcUsd() ? 3 : mc >= 50000 ? 5 : mc >= 30000 ? 7 : mc >= 15000 ? 10 : mc >= 8000 ? 12 : mc >= 5000 ? 11 : mc >= 3000 ? 9 : mc >= 2000 ? 6 : 0;
+    const mcScore = mc >= gradMcUsd() ? 3 : mc >= 100000 ? 5 : mc >= 60000 ? 7 : mc >= 30000 ? 10 : mc >= 16000 ? 12 : mc >= 10000 ? 11 : mc >= 6000 ? 9 : mc >= 4000 ? 6 : 0;
 
     const spark = t.spark || [];
     let greenScore = 0;
@@ -4859,7 +4871,7 @@ function createLiveSim(id, settings) {
     // ── EARLY APE BONUS ──
     let earlyApeBonus = 0;
     const buysPerMin = buys / Math.max(ageMin, 0.5);
-    const isEarlyMcap = mc >= 2000 && mc <= 12000;
+    const isEarlyMcap = mc >= 4000 && mc <= 24000;
     const healthyRatio = buys > 0 && sells <= buys * 0.5;
     const noRugFlags = !t._rugFlags || t._rugFlags.length === 0;
     if (isEarlyMcap && healthyRatio && noRugFlags && buysPerMin < 3) {
@@ -4874,9 +4886,9 @@ function createLiveSim(id, settings) {
     let walletAgePenalty = 0;
     if (qf?._walletAgeFresh > 0.7) walletAgePenalty = Math.round(qf._walletAgeFresh * 12);
 
-    // ── DEXSCREENER BOOST ──
+    // ── DEXSCREENER BOOST — strong early buy signal ──
     const dexBoost = radar.dexBoosted.get(t.ca);
-    const boostScore = dexBoost ? Math.min(8, 3 + Math.log2(dexBoost.amount + 1)) : 0;
+    const boostScore = dexBoost ? Math.min(20, 12 + Math.log2(dexBoost.amount + 1)) : 0;
 
     // ── ARTWORK PENALTY ──
     const artPenalty = t._artworkOriginal === false ? Math.max(5, Math.round((100 - (t._artworkScore || 50)) / 5)) : 0;
