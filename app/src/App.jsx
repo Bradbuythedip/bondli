@@ -437,7 +437,7 @@ const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
 const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);
 // Live sim state — must be declared here, NOT inside IIFEs (React Rules of Hooks / error #310)
-const[simExpanded,sSimExpanded]=useState(true);const[simDetailOpen,sSimDetailOpen]=useState(false);const[simGuideOpen,sSimGuideOpen]=useState(false);const[simRunning,sSimRunning]=useState(false);
+const[simExpanded,sSimExpanded]=useState(true);const[simDetailOpen,sSimDetailOpen]=useState(true);const[simGuideOpen,sSimGuideOpen]=useState(false);const[simRunning,sSimRunning]=useState(false);
 const[liveSim,sLiveSim]=useState(null);const[simStarting,sSimStarting]=useState(false);
 // CA lookup state — must be declared before any early returns to satisfy Rules of Hooks
 const[caLookup,sCaLookup]=useState(null);const[caLoading,sCaLoading]=useState(false);const caLookupRef=useRef(null);
@@ -1281,8 +1281,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"3px
 </>}
 </div>})()}
 
-{/* ═══ RISK DASHBOARD (Norman: Make system state visible) ═══ */}
-{/* Shows current settings in terms of REAL RISK, not abstract numbers */}
+{/* ═══ RISK DASHBOARD — always visible below settings ═══ */}
 <div style={{background:T.bg,borderRadius:6,padding:mb?6:6,border:"1px solid "+T.yl+"18",marginBottom:6}}>
 <div style={{fontSize:mb?9:8,fontWeight:700,color:T.yl,marginBottom:4}}>Risk at a Glance</div>
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:3}}>
@@ -1299,7 +1298,6 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"3px
 <div style={{fontSize:mb?7:6,color:T.dm}}>Max Exposure</div>
 </div>
 </div>
-{/* Loss aversion warning — Kahneman: people feel losses 2x more than gains */}
 {S.sl2>S.tp1&&<div style={{fontSize:mb?8:7,color:T.yl,marginTop:4,textAlign:"center"}}>SL2 ({S.sl2}%) {">"} TP1 ({S.tp1}%): Losses will feel {(S.sl2/S.tp1*2).toFixed(1)}x worse than gains (loss aversion)</div>}
 </div>
 {/* ═══ POSITION ANALYTICS — live score+price charts ═══ */}
@@ -1309,22 +1307,25 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"3px
 {/* RIGHT: Live Positions + Log + Chart Patterns */}
 <div style={{display:"flex",flexDirection:"column",gap:6,minWidth:0,overflow:"hidden"}}>
 {/* Live Positions */}
-<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:8,padding:10,minHeight:mb?0:180}}>
+<div style={{background:T.bg,border:"1px solid "+(liveSim?.active?T.cy+"44":T.bd),borderRadius:8,padding:10,minHeight:mb?0:180}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
 <div style={{display:"flex",alignItems:"center",gap:4}}>
 <span style={{fontSize:12,fontWeight:800}}>Positions</span>
-{autoTrade?.positions?.length>0&&<span style={{fontSize:10,fontWeight:800,color:T.gn,background:T.gn+"18",padding:"1px 6px",borderRadius:4}}>{autoTrade.positions.length}</span>}
+{(autoTrade?.positions?.length>0||liveSim?.positions?.length>0)&&<span style={{fontSize:10,fontWeight:800,color:liveSim?.active?T.cy:T.gn,background:(liveSim?.active?T.cy:T.gn)+"18",padding:"1px 6px",borderRadius:4}}>{(liveSim?.active?liveSim?.positions?.length:autoTrade?.positions?.length)||0}</span>}
+{liveSim?.active&&<span style={{fontSize:8,fontWeight:700,color:T.cy,background:T.cy+"18",padding:"1px 4px",borderRadius:3}}>SIM</span>}
 </div>
 {aaActive&&<span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}
+{liveSim?.active&&!aaActive&&<span style={{width:5,height:5,borderRadius:"50%",background:T.cy,animation:"gp 2s infinite"}}/>}
 </div>
 {(()=>{
-const openPos=autoTrade?.positions||[];
-const closedPos=autoTrade?.recentlyClosed||[];
+const simActive=liveSim?.active&&!aaActive;
+const openPos=simActive?(liveSim?.positions||[]):(autoTrade?.positions||[]);
+const closedPos=simActive?(liveSim?.recentlyClosed||[]):(autoTrade?.recentlyClosed||[]);
 const hasAny=openPos.length>0||closedPos.length>0;
 return !hasAny?
 <div style={{textAlign:"center",padding:mb?"12px 0":"24px 0",color:T.ft}}>
 <div style={{fontSize:24,opacity:.2,marginBottom:4}}>◎</div>
-<div style={{fontSize:11}}>{aaActive?"Scanning for entries...":"Start Auto-Ape to open positions"}</div>
+<div style={{fontSize:11}}>{aaActive?"Scanning for entries...":liveSim?.active?"Sim scanning for entries...":"Start Auto-Ape to open positions"}</div>
 </div>
 :<>
 {/* Open positions */}
@@ -1339,7 +1340,8 @@ return<div key={p.ca} style={{padding:"6px 0",borderBottom:"1px solid "+T.bd+"44
 <span style={{fontSize:14,fontWeight:900,color:pnlColor}}>{p.changePct>=0?"+":""}{p.changePct}%</span>
 {p.entrySol>0&&<span style={{fontSize:10,fontWeight:800,color:pnlColor}}>{pnlSol>=0?"+":""}{pnlSol.toFixed(4)} SOL</span>}
 </div>
-<button title="Exit this position" onClick={async(e)=>{e.stopPropagation();if(!confirm(`Sell ${p.name} now?`))return;try{const r=await a.atx(user.pubkey,p.ca);toast(`Exited ${p.name} (${r.pnlPct>=0?"+":""}${r.pnlPct}%)`,"success")}catch(err){toast(err.message,"error")}}} style={{padding:mb?"6px 8px":"4px 6px",borderRadius:4,border:"1px solid "+T.rd+"44",background:T.rd+"18",color:T.rd,fontWeight:900,fontSize:mb?11:9,cursor:"pointer",lineHeight:1,flexShrink:0}}>EXIT</button>
+{!simActive&&<button title="Exit this position" onClick={async(e)=>{e.stopPropagation();if(!confirm(`Sell ${p.name} now?`))return;try{const r=await a.atx(user.pubkey,p.ca);toast(`Exited ${p.name} (${r.pnlPct>=0?"+":""}${r.pnlPct}%)`,"success")}catch(err){toast(err.message,"error")}}} style={{padding:mb?"6px 8px":"4px 6px",borderRadius:4,border:"1px solid "+T.rd+"44",background:T.rd+"18",color:T.rd,fontWeight:900,fontSize:mb?11:9,cursor:"pointer",lineHeight:1,flexShrink:0}}>EXIT</button>}
+{simActive&&<span style={{fontSize:7,fontWeight:800,color:T.cy,background:T.cy+"18",padding:"2px 5px",borderRadius:3}}>SIM</span>}
 </div>
 {p.entrySol>0&&<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,padding:"3px 6px",background:pnlColor+"0a",borderRadius:4,border:"1px solid "+pnlColor+"18"}}>
 <div style={{flex:1,display:"flex",justifyContent:"space-between",fontSize:9,color:T.ft}}>
@@ -1361,19 +1363,20 @@ return<div key={p.ca} style={{padding:"6px 0",borderBottom:"1px solid "+T.bd+"44
 {/* Recently closed positions */}
 {closedPos.length>0&&<>
 <div style={{fontSize:9,fontWeight:700,color:T.ft,padding:"6px 0 3px",borderBottom:"1px solid "+T.bd+"22"}}>RECENTLY CLOSED</div>
-{closedPos.slice().reverse().map(p=>{
-const pnlColor=p.changePct>=0?T.gn:T.rd;
-const ago=Math.round((Date.now()-p.exitTime)/60000);
-return<div key={p.ca+p.exitTime} style={{padding:"5px 0",borderBottom:"1px solid "+T.bd+"22",opacity:.7}}>
+{closedPos.slice().reverse().map((p,ci)=>{
+const pnlColor=(p.changePct||p.pnlSol||0)>=0?T.gn:T.rd;
+const exitT=p.exitTime||p.time||Date.now();
+const ago=Math.round((Date.now()-exitT)/60000);
+return<div key={(p.ca||ci)+""+exitT} style={{padding:"5px 0",borderBottom:"1px solid "+T.bd+"22",opacity:.7}}>
 <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:2}}>
 <span style={{fontSize:11,fontWeight:700,color:T.dm,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{p.name}</span>
-<span style={{fontSize:12,fontWeight:900,color:pnlColor}}>{p.changePct>=0?"+":""}{p.changePct}%</span>
+{p.changePct!=null&&<span style={{fontSize:12,fontWeight:900,color:pnlColor}}>{p.changePct>=0?"+":""}{p.changePct}%</span>}
 <span style={{fontSize:9,fontWeight:800,color:pnlColor}}>{p.pnlSol>=0?"+":""}{p.pnlSol} SOL</span>
 </div>
 <div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
-<span style={{fontSize:8,color:T.ft}}>In: {p.entrySol?.toFixed(3)||"?"} SOL</span>
-<span style={{fontSize:8,color:T.ft}}>Score: {p.entryScore}→{p.exitScore}</span>
-<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.rd+"18",color:T.rd}}>{p.exitReason?.replace(/-/g," ").toUpperCase()}</span>
+{p.entrySol&&<span style={{fontSize:8,color:T.ft}}>In: {p.entrySol?.toFixed(3)||"?"} SOL</span>}
+{p.entryScore!=null&&<span style={{fontSize:8,color:T.ft}}>Score: {p.entryScore}{p.exitScore!=null?"→"+p.exitScore:""}</span>}
+<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:(pnlColor)+"18",color:pnlColor}}>{p.exitReason?.replace(/-/g," ").toUpperCase()||"CLOSED"}</span>
 <span style={{fontSize:8,color:T.ft}}>{ago}m ago</span>
 </div>
 </div>})}
@@ -1382,17 +1385,20 @@ return<div key={p.ca+p.exitTime} style={{padding:"5px 0",borderBottom:"1px solid
 </div>
 
 {/* Log */}
-<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:8,padding:10}}>
-<div style={{fontSize:11,fontWeight:700,color:T.ft,marginBottom:4}}>Activity Log</div>
-{autoTrade?.log?.length>0?
+{(()=>{const logEntries=liveSim?.active?(liveSim?.log||[]):(autoTrade?.log||[]);return<div style={{background:T.bg,border:"1px solid "+(liveSim?.active?T.cy+"44":T.bd),borderRadius:8,padding:10}}>
+<div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+<span style={{fontSize:11,fontWeight:700,color:T.ft}}>Activity Log</span>
+{liveSim?.active&&<span style={{fontSize:8,fontWeight:700,color:T.cy,background:T.cy+"18",padding:"1px 4px",borderRadius:3}}>SIM</span>}
+</div>
+{logEntries.length>0?
 <div style={{maxHeight:mb?100:200,overflowY:"auto",fontSize:10,color:T.dm,lineHeight:1.6,fontFamily:M}}>
-{autoTrade.log.slice().reverse().map((l,i)=><div key={i} style={{padding:"1px 0",borderBottom:i<autoTrade.log.length-1?"1px solid "+T.bd+"22":"none"}}>
+{logEntries.slice().reverse().map((l,i)=><div key={i} style={{padding:"1px 0",borderBottom:i<logEntries.length-1?"1px solid "+T.bd+"22":"none"}}>
 <span style={{color:T.ft}}>{new Date(l.time).toLocaleTimeString()}</span>{" "}
-<span style={{color:l.msg?.includes("BOUGHT")||l.msg?.includes("APE")?T.gn:l.msg?.includes("SELL")||l.msg?.includes("EXIT")?T.rd:T.dm}}>{l.msg}</span>
+<span style={{color:l.msg?.includes("BUY")||l.msg?.includes("APE")?T.gn:l.msg?.includes("SELL")||l.msg?.includes("EXIT")||l.msg?.includes("SL")?T.rd:l.msg?.includes("TP")?T.gn:l.msg?.includes("CALIBRATE")?T.pu:T.dm}}>{l.msg}</span>
 </div>)}
 </div>
-:<div style={{fontSize:10,color:T.ft,textAlign:"center",padding:"8px 0"}}>No activity yet</div>}
-</div>
+:<div style={{fontSize:10,color:T.ft,textAlign:"center",padding:"8px 0"}}>{liveSim?.active?"Sim watching radar...":"No activity yet"}</div>}
+</div>})()}
 
 {/* Scan Pipeline — shows decision funnel + near misses */}
 {autoTrade?.pipeline&&<div style={{background:T.bg,border:"1px solid "+T.cy+"18",borderRadius:8,padding:10}}>
