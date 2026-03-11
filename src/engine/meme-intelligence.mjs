@@ -237,7 +237,6 @@ function extractFeatures(token) {
   f.rg_buyerRetention = earlyBuyers.size > 0 ? Math.max(0, 1 - earlyBuyerSells / earlyBuyers.size) : 0.5;
 
   // ─── Chart shape analysis: gradual-up-no-dips detection ───
-  const spark = t.spark || [];
   if (spark.length >= 5) {
     // Count dips: a "dip" is when spark[i] < spark[i-1]
     let dips = 0;
