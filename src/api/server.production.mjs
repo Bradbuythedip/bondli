@@ -38,6 +38,7 @@ import { createToken } from "../engine/token-creator.mjs";
 import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, PLATFORM_WALLET } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
 import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
+import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
 import { XSocialIntel } from "../engine/x-social-intel.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
 
@@ -91,7 +92,25 @@ const fleetTrader = new FleetTrader();
 const memeIntel = new MemeIntelligence(redis);
 const scoreDynamics = new ScoreDynamics(5000);
 const historicalMovers = new HistoricalMovers(redis);
+const artworkScanner = new ArtworkScanner(5000);
 const xSocial = new XSocialIntel();
+
+// Restore artwork scanner state from Redis
+if (redis) {
+  try {
+    const artData = await redis.get("intel:artwork");
+    if (artData) {
+      artworkScanner.import(JSON.parse(artData));
+      console.log(`[ARTWORK] Restored: ${artworkScanner.seen.size} known images`);
+    }
+  } catch {}
+}
+
+// Persist artwork scanner every 10 min
+setInterval(async () => {
+  if (!redis) return;
+  try { await redis.set("intel:artwork", JSON.stringify(artworkScanner.export()), "EX", 604800); } catch {}
+}, 10 * 60 * 1000);
 
 // Register owner wallet
 if (process.env.OWNER_WALLET) registerOwner(process.env.OWNER_WALLET);
@@ -241,6 +260,21 @@ async function fetchTokenImage(ca, uri) {
     
     if (radar._debugCount < 10) {
       console.log(`[IMG] ${ca.slice(0,8)}: ${token.name} → ${img?.slice(0,60) || "none"}`);
+    }
+
+    // Artwork originality scan — runs async, stores result on token
+    if (img && artworkScanner) {
+      artworkScanner.scan(ca, img, token.name || "").then(artResult => {
+        const t = radar.tokens.get(ca);
+        if (!t) return;
+        t._artworkScore = artResult.score;
+        t._artworkOriginal = artResult.original;
+        t._artworkFlags = artResult.flags;
+        t._artworkMatches = artResult.matches;
+        if (!artResult.original) {
+          console.log(`[ARTWORK] ${ca.slice(0,8)} ${token.name}: COPIED (score:${artResult.score}) flags:${artResult.flags.join(",")}`);
+        }
+      }).catch(() => {});
     }
   } catch (e) {
     // Silent fail — image just won't load
@@ -983,6 +1017,9 @@ setInterval(() => {
       marketCapSol: t.mcapSol,
       dexBoosted: !!radar.dexBoosted.get(t.ca),
       boostAmount: radar.dexBoosted.get(t.ca)?.amount || 0,
+      artworkScore: t._artworkScore ?? null,
+      artworkOriginal: t._artworkOriginal ?? null,
+      artworkFlags: t._artworkFlags || [],
     };
   };
 
@@ -2896,6 +2933,8 @@ function startAutoTrader(wallet, settings) {
           // NEW: smooth grind detection — fake charts with no natural dips
           else if (qf.ch_smoothGrind > 0.6) rugRejectReason = "smooth_grind";
           else if (qf.ch_smoothGrind > 0.4 && qf.ch_dipRatio < 0.1) rugRejectReason = "no_dips";
+          // Artwork originality: exact duplicate image = almost certainly copycat scam
+          else if (t._artworkFlags?.includes("EXACT_DUPLICATE")) rugRejectReason = "stolen_art";
           else {
             const rugSignals = [
               qf.rg_devSellSpeed > 0.25, qf.rg_coordDumpScore > 0.2,
@@ -2903,6 +2942,7 @@ function startAutoTrader(wallet, settings) {
               qf.rg_holderConcentration > 0.6, qf._rg_earlyDump > 0.2,
               qf.rg_mcapDropRate > 0.25, qf._rg_pumpDump > 0.3,
               qf.ch_smoothGrind > 0.35, qf.ch_dipRatio < 0.1,
+              t._artworkOriginal === false, // copied/stolen artwork
             ].filter(Boolean).length;
             if (rugSignals >= 3) rugRejectReason = "multi_rug_" + rugSignals;
           }
@@ -3025,17 +3065,25 @@ function startAutoTrader(wallet, settings) {
         }
 
         t._apeScore = Math.max(0, Math.min(99, Math.round(
-          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus - sellPenalty - rugPenalty
+          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus - sellPenalty - rugPenalty - artPenalty
         )));
-        t._rugFlags = qf ? [
-          qf.rg_devSellSpeed > 0.3 && "dev_selling",
-          qf.rg_coordDumpScore > 0.3 && "coord_sells",
-          qf._rg_sybilScore > 0.3 && "sybil_bots",
-          qf._rg_quickFlipRate > 0.2 && "quick_flips",
-          qf.rg_holderConcentration > 0.6 && "whale_heavy",
-          qf.ch_smoothGrind > 0.35 && "smooth_grind",
-          qf.ch_dipRatio < 0.1 && spark.length >= 8 && "no_dips",
-        ].filter(Boolean) : [];
+        // Artwork penalty: non-original art = rug signal
+        const artPenalty = t._artworkOriginal === false ? Math.max(5, Math.round((100 - (t._artworkScore || 50)) / 5)) : 0;
+
+        t._rugFlags = [
+          ...(qf ? [
+            qf.rg_devSellSpeed > 0.3 && "dev_selling",
+            qf.rg_coordDumpScore > 0.3 && "coord_sells",
+            qf._rg_sybilScore > 0.3 && "sybil_bots",
+            qf._rg_quickFlipRate > 0.2 && "quick_flips",
+            qf.rg_holderConcentration > 0.6 && "whale_heavy",
+            qf.ch_smoothGrind > 0.35 && "smooth_grind",
+            qf.ch_dipRatio < 0.1 && spark.length >= 8 && "no_dips",
+          ] : []),
+          t._artworkOriginal === false && "stolen_art",
+          t._artworkFlags?.includes("SIMILAR_IMAGE") && "similar_art",
+          t._artworkFlags?.includes("LOW_EFFORT_ART") && "low_effort_art",
+        ].filter(Boolean);
         t._scoreTrend = dyn?.trend || "new";
         t._earlyApe = earlyApeBonus > 0; // flag for logging
         // Apply learner-recommended min score (if enough data)
@@ -4000,6 +4048,7 @@ app.get("/api/intel/stats", (req, res) => {
       data: { ca: t.ca, score: t.score, bondProb: t.bondProb, rugScore: t.rugScore || 0, rugFlags: t.rugFlags || [], name: t.name, mcap: t.mcapUsd, dexBoosted: t.dexBoosted, boostAmount: t.boostAmount },
       time: t.time,
     })),
+    artwork: artworkScanner ? artworkScanner.getStats() : null,
     solPrice: solUsdPrice,
     gradMc: gradMcUsd(),
     gradWatch: {
@@ -4030,6 +4079,33 @@ app.get("/api/intel/x-analyze/:ca", async (req, res) => {
   res.json(result);
 });
 
+// Artwork originality scan for a specific token
+app.get("/api/intel/artwork/:ca", async (req, res) => {
+  const token = radar.tokens.get(req.params.ca);
+  if (!token) return res.status(404).json({ error: "Token not in radar" });
+  // Return cached result if available
+  if (token._artworkScore !== undefined) {
+    return res.json({
+      ca: token.ca, name: token.name,
+      score: token._artworkScore, original: token._artworkOriginal,
+      flags: token._artworkFlags || [], matches: token._artworkMatches || [],
+    });
+  }
+  // Scan now if not yet scanned
+  if (!token.image) return res.json({ ca: token.ca, score: 85, original: true, flags: ["NO_IMAGE"], matches: [] });
+  const result = await artworkScanner.scan(token.ca, token.image, token.name || "");
+  token._artworkScore = result.score;
+  token._artworkOriginal = result.original;
+  token._artworkFlags = result.flags;
+  token._artworkMatches = result.matches;
+  res.json(result);
+});
+
+// Artwork stats
+app.get("/api/intel/artwork-stats", (req, res) => {
+  res.json(artworkScanner ? artworkScanner.getStats() : { error: "not initialized" });
+});
+
 // Meme Intelligence deep score for a specific token
 app.get("/api/intel/score/:ca", async (req, res) => {
   const token = radar.tokens.get(req.params.ca);
@@ -4052,6 +4128,18 @@ app.get("/api/intel/score/:ca", async (req, res) => {
     result.xSocial = xResult;
     if (xResult.score > 0) {
       result.score = Math.min(99, result.score + Math.round(xResult.score * 0.1));
+    }
+  }
+
+  // Enrich with artwork originality data
+  if (token._artworkScore !== undefined) {
+    result.artwork = {
+      score: token._artworkScore, original: token._artworkOriginal,
+      flags: token._artworkFlags || [], matches: token._artworkMatches || [],
+    };
+    if (!token._artworkOriginal) {
+      result.score = Math.max(0, result.score - Math.round((100 - token._artworkScore) / 5));
+      result.rugFlags = [...(result.rugFlags || []), "stolen_art"];
     }
   }
 
