@@ -2859,10 +2859,15 @@ function startAutoTrader(wallet, settings) {
         const sells = t.sells || 0;
         const dyn = scoreDynamics.get(t.ca);
         const isAccelerating = dyn && dyn.scores >= 2 && (dyn.trend === "rocket" || dyn.trend === "rising");
+        // Low-velocity early entry: token has few buys but healthy buy/sell ratio
+        // and is in the pre-discovery MC range ($2K-$10K). These are the tokens
+        // we SHOULD be aping — before velocity picks up.
+        const isLowVelocity = mc >= 2000 && mc <= 15000 && buys >= 1 && sells <= buys && ub >= 1 && ageMin >= 0.3 && ageMin <= 30;
         if (isAccelerating) {
           if (!(mc > 1500 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) { pipeline.baseFilter++; return false; }
           return true;
         }
+        if (isLowVelocity) return true; // let low-velocity tokens through to scoring
         if (!(mc > 2500 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) { pipeline.baseFilter++; return false; }
         return true;
       });
@@ -2909,14 +2914,18 @@ function startAutoTrader(wallet, settings) {
         const ubScore = Math.min(15, Math.log2(ub + 1) * 3);
         const volScore = Math.min(12, Math.log10(vol * 100 + 1) * 4);
 
-        // MC scoring: Sweet spot is $8k-$30k — early enough for upside, past initial dump
+        // MC scoring: expanded sweet spot to capture low-velocity early entries
+        // $3K-$8K = pre-discovery zone (highest upside if token has healthy signals)
+        // $8K-$30K = discovery zone (proven activity, still good upside)
+        // $30K+ = late entry (most upside already captured)
         const mcScore = mc >= gradMcUsd() ? 3 :
                         mc >= 50000 ? 5 :
-                        mc >= 30000 ? 8 :
-                        mc >= 15000 ? 12 :
-                        mc >= 8000  ? 10 :
-                        mc >= 5000  ? 7 :
-                        mc >= 3000  ? 4 : 0;
+                        mc >= 30000 ? 7 :
+                        mc >= 15000 ? 10 :
+                        mc >= 8000  ? 12 :
+                        mc >= 5000  ? 11 :
+                        mc >= 3000  ? 9 :
+                        mc >= 2000  ? 6 : 0;
 
         // GREEN detection: is MC growing? (sparkline trend)
         const spark = t.spark || [];
@@ -2993,8 +3002,30 @@ function startAutoTrader(wallet, settings) {
         if (qf?.ch_dipRatio < 0.15 && spark.length >= 8) chartBonus -= 6; // no natural dips penalty
         if (qf?.ch_pumpDump > 0.4) chartBonus -= Math.round(qf.ch_pumpDump * 10);
 
+        // ═══ LOW-VELOCITY POTENTIAL BONUS ═══
+        // Core insight: tokens with LOW activity but HEALTHY signals have the highest
+        // risk-reward ratio. By the time velocity is high, the move is mostly done.
+        // Formula: bonus inversely proportional to velocity, gated by quality signals.
+        //
+        // Math: earlyBonus = qualitySignal * (1 / (buysPerMin + 0.3)) * scaleFactor
+        //   - qualitySignal: healthy buy/sell ratio + no rug flags + MC in sweet spot
+        //   - buysPerMin: lower = earlier = bigger bonus
+        //   - Capped at 18 to avoid dominating the score
+        let earlyApeBonus = 0;
+        const buysPerMin = buys / Math.max(ageMin, 0.5);
+        const isEarlyMcap = mc >= 2000 && mc <= 12000;
+        const healthyRatio = buys > 0 && sells <= buys * 0.5; // few sells relative to buys
+        const noRugFlags = !t._rugFlags || t._rugFlags.length === 0;
+        if (isEarlyMcap && healthyRatio && noRugFlags && buysPerMin < 3) {
+          // Quality signal: combination of healthy ratio + low sell pressure + organic pace
+          const qualitySignal = Math.min(1, (buys > 0 ? 1 - (sells / Math.max(buys, 1)) : 0.5) + (ub >= 2 ? 0.3 : 0));
+          // Inverse velocity: lower buysPerMin = higher bonus
+          const velocityInverse = 1 / (buysPerMin + 0.3);
+          earlyApeBonus = Math.min(18, Math.round(qualitySignal * velocityInverse * 8));
+        }
+
         t._apeScore = Math.max(0, Math.min(99, Math.round(
-          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus - sellPenalty - rugPenalty
+          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus - sellPenalty - rugPenalty
         )));
         t._rugFlags = qf ? [
           qf.rg_devSellSpeed > 0.3 && "dev_selling",
@@ -3006,6 +3037,7 @@ function startAutoTrader(wallet, settings) {
           qf.ch_dipRatio < 0.1 && spark.length >= 8 && "no_dips",
         ].filter(Boolean) : [];
         t._scoreTrend = dyn?.trend || "new";
+        t._earlyApe = earlyApeBonus > 0; // flag for logging
         // Apply learner-recommended min score (if enough data)
         const adj = tradeLearner.getAdjustments();
         const effectiveMin = adj.minScoreShift || state.settings.minScore;
@@ -3064,7 +3096,8 @@ function startAutoTrader(wallet, settings) {
 
         const rugFlags = t._rugFlags?.length > 0 ? ` [WARN: ${t._rugFlags.join(",")}]` : "";
         const trendTag = t._scoreTrend && t._scoreTrend !== "new" && t._scoreTrend !== "stable" ? ` trend:${t._scoreTrend}` : "";
-        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${state.settings.solPerTrade} SOL${rugFlags}`);
+        const earlyTag = t._earlyApe ? " [EARLY-APE]" : "";
+        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag}${earlyTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${state.settings.solPerTrade} SOL${rugFlags}`);
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
