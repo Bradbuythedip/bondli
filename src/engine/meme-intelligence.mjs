@@ -71,6 +71,9 @@ const FEATURE_KEYS = [
   "rg_sellWaveDetect",  // detection of sell waves (multiple sells in rapid succession)
   "rg_mcapDropRate",    // mcap drop rate from peak (0=stable, 1=crashed)
   "rg_buyerRetention",  // % of early buyers still holding (0=all dumped, 1=all held)
+  "rg_zeroSellFlag",    // token has zero or near-zero organic sells (0=has sells, 1=no sells = likely self-bought rug)
+  "rg_buySellImbalance",// extreme buy/sell count imbalance (0=balanced, 1=all buys no sells)
+  "rg_fakeVolumeScore", // volume from very few unique wallets recycling SOL (0=organic, 1=fake)
 
   // Chart shape analysis
   "ch_healthScore",     // overall chart health (0=crash, 0.5=neutral, 1=healthy growth)
@@ -235,6 +238,56 @@ function extractFeatures(token) {
   const earlyBuyers = new Set(buys.slice(0, 20).map(b => b.wallet));
   const earlyBuyerSells = sells.filter(s => earlyBuyers.has(s.wallet)).length;
   f.rg_buyerRetention = earlyBuyers.size > 0 ? Math.max(0, 1 - earlyBuyerSells / earlyBuyers.size) : 0.5;
+
+  // ─── Zero sell detection: tokens with no organic sells are almost always rugs ───
+  // A healthy token ALWAYS has some profit-taking. Zero sells means either:
+  //   1. Dev self-buying to fake activity (will rug when enough liquidity enters)
+  //   2. Token is so new nobody has sold yet (but then why is it ranked high?)
+  //   3. Freeze authority preventing sells (already caught above)
+  // Any token with 10+ buys and 0-1 sells is extremely suspicious.
+  const organicSells = sells.filter(s => {
+    // Filter out sells from the dev wallet — those are rug pulls, not organic
+    const wallet = s.wallet || "";
+    return !wallet.startsWith((t.devWallet || "").slice(0, 8));
+  });
+  if (buys.length >= 5 && organicSells.length === 0) {
+    f.rg_zeroSellFlag = 1.0; // absolute red flag: many buys, zero organic sells
+  } else if (buys.length >= 10 && organicSells.length <= 1) {
+    f.rg_zeroSellFlag = 0.8; // nearly zero sells with significant buy activity
+  } else if (buys.length >= 5 && organicSells.length <= 1) {
+    f.rg_zeroSellFlag = 0.5; // suspicious
+  } else {
+    f.rg_zeroSellFlag = 0;
+  }
+
+  // Buy/sell imbalance: extreme ratios indicate fake/self-bought activity
+  const totalTrades = buys.length + sells.length;
+  if (totalTrades > 0) {
+    const buyPct = buys.length / totalTrades;
+    if (buyPct >= 0.95 && buys.length >= 5) {
+      f.rg_buySellImbalance = 1.0; // 95%+ buys = almost certainly fake
+    } else if (buyPct >= 0.9 && buys.length >= 5) {
+      f.rg_buySellImbalance = 0.7;
+    } else if (buyPct >= 0.8 && buys.length >= 10) {
+      f.rg_buySellImbalance = 0.4;
+    } else {
+      f.rg_buySellImbalance = 0;
+    }
+  } else {
+    f.rg_buySellImbalance = 0;
+  }
+
+  // Fake volume detection: few unique wallets creating many transactions
+  // If 3 wallets account for 80%+ of all buys, volume is likely wash trading
+  const uniqueBuyWallets = new Set(buys.map(b => b.wallet)).size;
+  const buyersToTxRatio = uniqueBuyWallets / Math.max(1, buys.length);
+  if (buys.length >= 8 && buyersToTxRatio < 0.3) {
+    f.rg_fakeVolumeScore = Math.min(1, 0.5 + (0.3 - buyersToTxRatio) * 2); // few wallets, many txns
+  } else if (buys.length >= 5 && buyersToTxRatio < 0.4) {
+    f.rg_fakeVolumeScore = 0.3;
+  } else {
+    f.rg_fakeVolumeScore = 0;
+  }
 
   // ─── Chart shape analysis: gradual-up-no-dips detection ───
   if (spark.length >= 5) {
@@ -454,16 +507,36 @@ class ScoringEngine {
     if ((features.rg_buyerRetention || 0) < 0.5) rugFlags.push("early_buyers_fled");
     if ((features.ch_smoothGrind || 0) > 0.5) rugFlags.push("fake_chart_smooth_grind");
     if ((features.ch_dipRatio || 0.5) < 0.1 && (features.ch_smoothGrind || 0) > 0.3) rugFlags.push("no_natural_dips");
+    if ((features.rg_zeroSellFlag || 0) > 0.5) rugFlags.push("zero_organic_sells");
+    if ((features.rg_buySellImbalance || 0) > 0.5) rugFlags.push("extreme_buy_sell_imbalance");
+    if ((features.rg_fakeVolumeScore || 0) > 0.4) rugFlags.push("fake_volume_wash_trading");
+
+    // ── Zero sell hard penalty ──
+    // A token with many buys and zero sells is the #1 rug pattern
+    const zeroSellPenalty = (features.rg_zeroSellFlag || 0) > 0.7
+      ? Math.round((features.rg_zeroSellFlag) * 30)
+      : (features.rg_buySellImbalance || 0) > 0.5
+        ? Math.round((features.rg_buySellImbalance) * 20)
+        : 0;
 
     const finalScore = (rawScore * 100 + 0.5) | 0;
-    const clamped = finalScore - rugPenalty - chartPenalty;
+    const clamped = finalScore - rugPenalty - chartPenalty - zeroSellPenalty;
+
+    // ── Hard reject: 3+ moderate rug signals = instant block ──
+    // This is the CRITICAL safety gate — prevents buying into obvious rugs
+    const hardReject = rugFlags.length >= 3
+      || (features.rg_zeroSellFlag || 0) >= 0.8
+      || ((features.rg_zeroSellFlag || 0) >= 0.5 && (features.ch_smoothGrind || 0) > 0.3)
+      || ((features.rg_buySellImbalance || 0) >= 0.7 && (features.rg_fakeVolumeScore || 0) > 0.3);
 
     return {
       score: clamped < 0 ? 0 : clamped > 99 ? 99 : clamped,
       tippingScore: (tippingScore * 100 + 0.5) | 0,
       bondProb,
       rugScore: (rugRisk * 100 + 0.5) | 0,
+      hardReject,
       rugFlags,
+      zeroSellPenalty,
       subScores: {
         tippingPoint: (s_tp * 100 + 0.5) | 0,
         kahneman: (s_k * 100 + 0.5) | 0,

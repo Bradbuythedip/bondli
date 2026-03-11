@@ -8,6 +8,7 @@ import { SignalDetector } from "./signal-detector.mjs";
 import { WalletOptimizer } from "./wallet-optimizer.mjs";
 import { WalletSaver } from "./wallet-saver.mjs";
 import { RugScanner } from "./rug-scanner.mjs";
+import { MemeIntelligence } from "./meme-intelligence.mjs";
 import { calculateFee } from "./fee-engine.mjs";
 import { humanDelay, organicSequence, sleep } from "./anti-detection.mjs";
 
@@ -20,6 +21,7 @@ export class Orchestrator {
     this.walletOpt = new WalletOptimizer();
     this.saver = new WalletSaver();
     this.scanner = new RugScanner();
+    this.intel = opts.intel || new MemeIntelligence();
     this.dryRun = opts.dryRun ?? CONFIG.DRY_RUN;
     this.running = false;
     this.sessions = new Map(); // CA -> session
@@ -44,12 +46,49 @@ export class Orchestrator {
     const totalSol = opts.totalSol || CONFIG.TOTAL_SOL;
     this.emit("launch:start", { ca, totalSol, dryRun: this.dryRun });
 
-    // 1. Rug scan
+    // 1. Rug scan (on-chain: mint/freeze authority, holder concentration)
     this.emit("phase", { ca, phase: "SCAN" });
     const scan = await this.scanner.scan(ca);
     if (!scan.safe && !opts.force) {
       this.emit("launch:blocked", { ca, scan });
       throw new Error(`Rug scan failed (score: ${scan.score}): ${scan.flags.join(", ")}`);
+    }
+
+    // 1b. Intel safety gate — CANNOT be bypassed by force:true
+    // This catches rugs that pass basic on-chain checks but have
+    // suspicious trading patterns: zero sells, fake volume, self-bought charts
+    this.emit("phase", { ca, phase: "INTEL_GATE" });
+    const tokenData = opts.tokenData || { ca, recentTrades: opts.recentTrades || [] };
+    try {
+      const intelResult = await this.intel.score(tokenData);
+      if (intelResult.hardReject) {
+        this.emit("launch:blocked", {
+          ca,
+          reason: "intel_hard_reject",
+          rugFlags: intelResult.rugFlags,
+          score: intelResult.score,
+          rugScore: intelResult.rugScore,
+        });
+        throw new Error(
+          `Intel safety gate BLOCKED: ${intelResult.rugFlags.join(", ")} ` +
+          `(score: ${intelResult.score}, rugScore: ${intelResult.rugScore})`
+        );
+      }
+      // Warn but allow if score is very low
+      if (intelResult.score < 25) {
+        this.emit("launch:warning", {
+          ca,
+          reason: "very_low_intel_score",
+          score: intelResult.score,
+          rugFlags: intelResult.rugFlags,
+        });
+        console.warn(`[ORCH] WARNING: Low intel score ${intelResult.score} for ${ca.slice(0,8)}, flags: ${intelResult.rugFlags.join(", ")}`);
+      }
+    } catch (intelErr) {
+      // If the error is from our hard reject, re-throw it
+      if (intelErr.message.includes("Intel safety gate BLOCKED")) throw intelErr;
+      // Otherwise log and continue — don't let intel failures block trading
+      console.warn(`[ORCH] Intel gate error (non-blocking): ${intelErr.message}`);
     }
 
     // 2. Generate wallet fleet

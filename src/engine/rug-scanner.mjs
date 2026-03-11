@@ -7,7 +7,7 @@ export class RugScanner {
     this.connection = new Connection(CONFIG.RPC_URL, "confirmed");
   }
 
-  async scan(mint) {
+  async scan(mint, opts = {}) {
     const results = {
       mint,
       safe: true,
@@ -43,7 +43,26 @@ export class RugScanner {
       // Simplified check - look for known LP lock programs
       results.checks.liquidityCheck = "pump_curve"; // On pump = bonding curve acts as lock
 
-      // 4. Check creator history
+      // 4. Check transaction history for sell activity
+      // Tokens with many buys but zero sells are classic rug setups
+      if (CONFIG.HELIUS_API_KEY) {
+        const txProfile = await this._checkTradeActivity(mint);
+        results.checks.tradeActivity = txProfile;
+        if (txProfile.totalBuys >= 5 && txProfile.totalSells === 0) {
+          results.flags.push("ZERO_SELLS_ON_CHAIN");
+          results.score -= 35; // severe — no organic selling activity at all
+        } else if (txProfile.totalBuys >= 10 && txProfile.totalSells <= 1) {
+          results.flags.push("NEAR_ZERO_SELLS");
+          results.score -= 20;
+        }
+        // Check if all buys come from very few wallets (wash trading)
+        if (txProfile.uniqueBuyers > 0 && txProfile.uniqueBuyers <= 3 && txProfile.totalBuys >= 8) {
+          results.flags.push("WASH_TRADING_FEW_WALLETS");
+          results.score -= 25;
+        }
+      }
+
+      // 5. Check creator history
       if (CONFIG.HELIUS_API_KEY && data?.mintAuthority) {
         const profile = await this._checkCreator(data.mintAuthority);
         results.checks.creatorHistory = profile;
@@ -70,6 +89,61 @@ export class RugScanner {
       }));
     } catch {
       return [];
+    }
+  }
+
+  async _checkTradeActivity(mint) {
+    try {
+      const res = await fetch(
+        `https://api.helius.xyz/v0/addresses/${mint}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=100`
+      );
+      if (!res.ok) return { totalBuys: 0, totalSells: 0, uniqueBuyers: 0, uniqueSellers: 0 };
+      const txs = await res.json();
+
+      let totalBuys = 0;
+      let totalSells = 0;
+      const buyers = new Set();
+      const sellers = new Set();
+
+      for (const tx of txs) {
+        // Detect swap transactions (buys and sells on pump.fun or Raydium)
+        const desc = (tx.description || "").toLowerCase();
+        const isBuy = desc.includes("buy") || desc.includes("swap") && tx.tokenTransfers?.some(t => t.mint === mint);
+        const isSell = desc.includes("sell");
+
+        if (tx.type === "SWAP" || desc.includes("swap")) {
+          // Check token transfer direction to determine buy vs sell
+          for (const transfer of (tx.tokenTransfers || [])) {
+            if (transfer.mint === mint) {
+              if (transfer.tokenAmount > 0) {
+                // Received tokens = buy
+                totalBuys++;
+                if (tx.feePayer) buyers.add(tx.feePayer);
+              } else {
+                // Sent tokens = sell
+                totalSells++;
+                if (tx.feePayer) sellers.add(tx.feePayer);
+              }
+            }
+          }
+        } else if (isBuy) {
+          totalBuys++;
+          if (tx.feePayer) buyers.add(tx.feePayer);
+        } else if (isSell) {
+          totalSells++;
+          if (tx.feePayer) sellers.add(tx.feePayer);
+        }
+      }
+
+      return {
+        totalBuys,
+        totalSells,
+        uniqueBuyers: buyers.size,
+        uniqueSellers: sellers.size,
+        txCount: txs.length,
+      };
+    } catch {
+      return { totalBuys: 0, totalSells: 0, uniqueBuyers: 0, uniqueSellers: 0 };
     }
   }
 
