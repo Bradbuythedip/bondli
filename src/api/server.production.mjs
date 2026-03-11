@@ -981,6 +981,8 @@ setInterval(() => {
       age: Math.round((now - t.createdAt) / 1000),
       devWallet: t.devWallet, graduated: t.graduated, bundled: t.bundled,
       marketCapSol: t.mcapSol,
+      dexBoosted: !!radar.dexBoosted.get(t.ca),
+      boostAmount: radar.dexBoosted.get(t.ca)?.amount || 0,
     };
   };
 
