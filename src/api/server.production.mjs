@@ -3034,7 +3034,7 @@ function startAutoTrader(wallet, settings) {
         const dyn = scoreDynamics.get(t.ca);
         let dynamicsBonus = 0;
 
-        if (!dyn || dyn.scores < 3) {
+        if (!dyn || dyn.scores < 2) {
           // Not enough data yet — skip this cycle, let it cook
           pipeline.scoreLow++;
           return false;
@@ -3200,7 +3200,7 @@ function startAutoTrader(wallet, settings) {
         broadcastWS({ event: "auto-paused", data: { wallet, reason: "inactivity" } });
       }
     } catch (e) { log(`Loop error: ${e.message}`); }
-  }, 8000); // check every 8s — meme tokens move fast
+  }, 4000); // check every 4s — catch high-score tokens faster
 
   autoTraders.set(wallet, state);
   log("Auto-ape started: minScore=" + state.settings.minScore + " sol=" + state.settings.solPerTrade + " TP1=" + state.settings.tp1 + "% SL1=" + state.settings.sl1 + "% SL2=" + state.settings.sl2 + "% maxPos=" + state.settings.maxPositions);
