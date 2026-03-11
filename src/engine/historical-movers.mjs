@@ -1,9 +1,13 @@
 // BONDLI — Historical Movers Engine
 // Fetches top-performing pump.fun tokens from DexScreener + Birdeye
+// + NEW: Discovers low-velocity tokens with high ape potential
 // Caches in Redis with TTL to avoid rate limits
+
+import { rankTokens, scoreToken } from "./velocity-scorer.mjs";
 
 const BIRDEYE_KEY = process.env.BIRDEYE_API_KEY || "";
 const CACHE_TTL = 600; // 10 min
+const DISCOVERY_CACHE_TTL = 120; // 2 min for new token discovery (fresher data)
 const DEXSCREENER_BASE = "https://api.dexscreener.com";
 const BIRDEYE_BASE = "https://public-api.birdeye.so";
 
@@ -118,6 +122,64 @@ async function fetchBirdeyeGainers(timeframe = "24h") {
   }));
 }
 
+// ── DexScreener: latest new pairs on Solana (LOW VELOCITY discovery) ──
+// This is the KEY missing piece — finds tokens before they trend
+async function fetchNewPairs() {
+  const d = await jfetch(`${DEXSCREENER_BASE}/latest/dex/pairs/solana`);
+  if (!d?.pairs) return [];
+  return d.pairs
+    .filter(p => {
+      if (p.chainId !== "solana") return false;
+      // Only tokens with some liquidity (filters dead launches)
+      if ((p.liquidity?.usd || 0) < 1000) return false;
+      // Only pairs created in last 2 hours
+      const ageMs = p.pairCreatedAt ? Date.now() - p.pairCreatedAt : Infinity;
+      if (ageMs > 2 * 60 * 60 * 1000) return false;
+      return true;
+    })
+    .slice(0, 50)
+    .map(p => ({
+      ca: p.baseToken?.address,
+      name: p.baseToken?.name || "?",
+      ticker: p.baseToken?.symbol || "?",
+      priceUsd: parseFloat(p.priceUsd || 0),
+      mcapUsd: p.fdv || 0,
+      volume24h: p.volume?.h24 || 0,
+      change5m: p.priceChange?.m5 || 0,
+      change1h: p.priceChange?.h1 || 0,
+      change6h: p.priceChange?.h6 || 0,
+      change24h: p.priceChange?.h24 || 0,
+      liquidity: p.liquidity?.usd || 0,
+      pairCreated: p.pairCreatedAt,
+      txns24h: p.txns?.h24 || {},
+      dexUrl: p.url,
+      image: p.info?.imageUrl || null,
+      source: "dexscreener-new-pairs",
+    }));
+}
+
+// ── Birdeye: recently created tokens sorted by creation time ──
+async function fetchBirdeyeNewTokens() {
+  if (!BIRDEYE_KEY) return [];
+  const d = await jfetch(
+    `${BIRDEYE_BASE}/defi/token_list?sort_by=lastTradeUnixTime&sort_type=desc&offset=0&limit=50&min_liquidity=1000`,
+    birdHeaders()
+  );
+  if (!d?.data?.tokens) return [];
+  return d.data.tokens.map(t => ({
+    ca: t.address,
+    name: t.name || "?",
+    ticker: t.symbol || "?",
+    priceUsd: t.price || 0,
+    mcapUsd: t.mc || 0,
+    volume24h: t.v24hUSD || 0,
+    change24h: t.v24hChangePercent || 0,
+    liquidity: t.liquidity || 0,
+    image: t.logoURI || null,
+    source: "birdeye-new",
+  }));
+}
+
 // ── DexScreener: token price history ──
 async function fetchTokenHistory(ca) {
   const d = await jfetch(`${DEXSCREENER_BASE}/latest/dex/tokens/${ca}`);
@@ -210,12 +272,75 @@ export class HistoricalMovers {
       25
     );
 
+    // Score ALL tokens with velocity-potential model
+    const allTokens = [...seen.values()];
+    const scored = rankTokens(allTokens, 0.5);
+
     const result = {
       topGainers,
       hotGraduated: dedup(graduated.filter(t => t.mcapUsd > 50000), 25),
       trending: dedup(trending, 25),
       boosted: dedup(boosted, 15),
+      // NEW: velocity-scored rankings from existing data
+      apeTargets: scored.filter(t => t.signal === "STRONG_APE").slice(0, 15),
+      watchList: scored.filter(t => t.signal === "WATCH").slice(0, 15),
       updatedAt: Date.now(),
+    };
+
+    await this._setCache(cacheKey, result);
+    return result;
+  }
+
+  // NEW: Dedicated low-velocity discovery — finds tokens BEFORE they trend
+  // This is the method to call when looking for ape entries
+  async getApeTargets() {
+    const cacheKey = "ape-targets";
+    const cached = await this._getCached(cacheKey);
+    if (cached && Date.now() - cached.scoredAt < DISCOVERY_CACHE_TTL * 1000) return cached;
+
+    // Fetch from discovery sources (new pairs + new tokens)
+    const [newPairs, newTokens, graduated] = await Promise.all([
+      fetchNewPairs().catch(() => []),
+      fetchBirdeyeNewTokens().catch(() => []),
+      fetchDexScreenerGraduated().catch(() => []),
+    ]);
+
+    // Merge and deduplicate
+    const seen = new Map();
+    for (const list of [newPairs, newTokens, graduated]) {
+      for (const t of list) {
+        if (!t.ca) continue;
+        const existing = seen.get(t.ca);
+        if (!existing || (t.volume24h && !existing.volume24h)) {
+          seen.set(t.ca, { ...existing, ...t });
+        }
+      }
+    }
+
+    // Score everything
+    const allTokens = [...seen.values()];
+    const scored = rankTokens(allTokens, 0);
+
+    // Enrich top candidates with detailed data (parallel, top 10 only)
+    const topCandidates = scored.slice(0, 10);
+    const enriched = await Promise.all(
+      topCandidates.map(async (t) => {
+        const detail = await fetchTokenHistory(t.ca).catch(() => null);
+        if (!detail) return t;
+        // Re-score with enriched data (has 5m change, txn counts, etc.)
+        return scoreToken({ ...t, ...detail });
+      })
+    );
+
+    // Re-sort after enrichment
+    enriched.sort((a, b) => b.apeScore - a.apeScore);
+
+    const result = {
+      strongApe: enriched.filter(t => t.signal === "STRONG_APE"),
+      watch: enriched.filter(t => t.signal === "WATCH"),
+      allScored: scored.slice(0, 30),
+      totalDiscovered: allTokens.length,
+      scoredAt: Date.now(),
     };
 
     await this._setCache(cacheKey, result);
@@ -230,5 +355,12 @@ export class HistoricalMovers {
     const detail = await fetchTokenHistory(ca);
     if (detail) await this._setCache(cacheKey, detail);
     return detail;
+  }
+
+  // Score a single token on-demand
+  async scoreToken(ca) {
+    const detail = await this.getTokenDetail(ca);
+    if (!detail) return null;
+    return scoreToken(detail);
   }
 }
