@@ -54,5 +54,12 @@ atst(w){return this.f(`/api/auto-trade/status?wallet=${w}`)}
 gcp(){return this.f("/api/chart-patterns")}
 gcpr(l){return this.f(`/api/chart-patterns/recent?limit=${l||20}`)}
 atsim(s){return this.f("/api/auto-trade/simulate",{method:"POST",body:{settings:s}})}
+// Live sim endpoints (available to all tiers)
+sims(w,s){return this.f("/api/sim/start",{method:"POST",body:{wallet:w,settings:s}})}
+simx(w){return this.f("/api/sim/stop",{method:"POST",body:{wallet:w}})}
+simst(w){return this.f(`/api/sim/status?wallet=${w}`)}
+simu(w,s){return this.f("/api/sim/update",{method:"POST",body:{wallet:w,settings:s}})}
+simg(w){return this.f("/api/sim/graduate",{method:"POST",body:{wallet:w}})}
+simbt(s){return this.f("/api/sim/backtest",{method:"POST",body:{settings:s}})}
 }
 export const a=new A();export default a;
