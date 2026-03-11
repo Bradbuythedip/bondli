@@ -112,6 +112,94 @@ setInterval(async () => {
   try { await redis.set("intel:artwork", JSON.stringify(artworkScanner.export()), "EX", 604800); } catch {}
 }, 10 * 60 * 1000);
 
+// ═══ WALLET AGE CACHE — check how old buyer wallets are on-chain ═══
+// Aged wallets = real users. Fresh wallets = likely dev sybils.
+// Whales with aged wallets buying = bullish conviction signal.
+const walletAgeCache = new Map(); // wallet → { ageMs, firstTxTime, checkedAt }
+const WALLET_AGE_TTL = 3600000; // cache for 1 hour
+const WALLET_AGE_MAX_CACHE = 10000;
+
+async function getWalletAge(walletAddress) {
+  const cached = walletAgeCache.get(walletAddress);
+  if (cached && Date.now() - cached.checkedAt < WALLET_AGE_TTL) return cached;
+
+  try {
+    // Use Helius enhanced API for transaction history (fastest way to get oldest tx)
+    if (CONFIG.HELIUS_API_KEY) {
+      const resp = await fetch(
+        `https://api.helius.xyz/v0/addresses/${walletAddress}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=1&type=TRANSFER`,
+        { signal: AbortSignal.timeout(3000) }
+      );
+      if (resp.ok) {
+        const txs = await resp.json();
+        if (txs.length > 0 && txs[0].timestamp) {
+          const firstTxTime = txs[0].timestamp * 1000; // Helius returns seconds
+          const ageMs = Date.now() - firstTxTime;
+          const entry = { ageMs, firstTxTime, checkedAt: Date.now() };
+          walletAgeCache.set(walletAddress, entry);
+          if (walletAgeCache.size > WALLET_AGE_MAX_CACHE) {
+            const oldest = [...walletAgeCache.entries()].sort((a, b) => a[1].checkedAt - b[1].checkedAt)[0];
+            if (oldest) walletAgeCache.delete(oldest[0]);
+          }
+          return entry;
+        }
+      }
+    }
+
+    // Fallback: use Solana RPC getSignaturesForAddress (returns newest first, but limit=1 is fast)
+    const sigs = await connection.getSignaturesForAddress(
+      new PublicKey(walletAddress),
+      { limit: 1 },
+    );
+    if (sigs.length > 0 && sigs[0].blockTime) {
+      const firstTxTime = sigs[0].blockTime * 1000;
+      const ageMs = Date.now() - firstTxTime;
+      const entry = { ageMs, firstTxTime, checkedAt: Date.now() };
+      walletAgeCache.set(walletAddress, entry);
+      return entry;
+    }
+  } catch (e) {
+    // Non-blocking: wallet age is a bonus signal, not critical path
+  }
+  return null;
+}
+
+// Background wallet age enrichment for token buyers (non-blocking)
+async function enrichWalletAges(token) {
+  const buyTrades = (token.trades || []).filter(tr => tr.side === "buy" && tr.wallet);
+  const uniqueWallets = [...new Set(buyTrades.map(tr => tr.wallet))].slice(0, 20); // cap to avoid rate limits
+  const ages = [];
+  const whaleBuys = []; // wallets that bought > 0.5 SOL with aged wallets
+
+  for (const w of uniqueWallets) {
+    const age = await getWalletAge(w);
+    if (age) {
+      ages.push(age.ageMs);
+      // Check if this is a whale with an aged wallet
+      const walletSol = buyTrades.filter(tr => tr.wallet === w).reduce((s, tr) => s + (tr.sol || 0), 0);
+      if (walletSol >= 0.5 && age.ageMs > 7 * 24 * 3600000) { // > 0.5 SOL + > 7 days old
+        whaleBuys.push({ wallet: w, sol: walletSol, ageDays: Math.round(age.ageMs / 86400000) });
+      }
+    }
+  }
+
+  const totalChecked = ages.length;
+  if (totalChecked === 0) return { walletAgeScore: 0.5, whaleBullish: 0, freshRatio: 0.5, whaleBuys: [] };
+
+  // Fresh = created within last 24 hours
+  const freshCount = ages.filter(a => a < 24 * 3600000).length;
+  const freshRatio = freshCount / totalChecked;
+
+  // Aged = wallets older than 7 days
+  const agedCount = ages.filter(a => a > 7 * 24 * 3600000).length;
+  const walletAgeScore = agedCount / totalChecked; // 0 = all fresh (bad), 1 = all aged (good)
+
+  // Whale bullish: large buys from aged wallets = smart money conviction
+  const whaleBullish = Math.min(1, whaleBuys.length / Math.max(1, Math.ceil(totalChecked * 0.3)));
+
+  return { walletAgeScore, whaleBullish, freshRatio, whaleBuys };
+}
+
 // Register owner wallet
 if (process.env.OWNER_WALLET) registerOwner(process.env.OWNER_WALLET);
 
@@ -843,7 +931,8 @@ function extractQuickFeatures(t) {
     rg_holderConcentration: holderConcentration,
     rg_coordDumpScore: Math.min(1, coordDumps / 5),
     rg_liqRemovalSpeed: sellBuyRatio,
-    rg_walletAgeScore: 1 - sybilScore, // 0 = all sybils (bad), 1 = organic (good)
+    // Wallet age: use cached on-chain age data if available, else fall back to sybil heuristic
+    rg_walletAgeScore: t._walletAgeData ? t._walletAgeData.walletAgeScore : (1 - sybilScore),
     rg_sellWaveDetect: Math.min(1, maxSellBurst / 8),
     rg_mcapDropRate: mcapDropRate,
     rg_buyerRetention: buys > 0 ? Math.min(1, ub / buys) : 0,
@@ -862,6 +951,11 @@ function extractQuickFeatures(t) {
     _rg_zeroSellFlag: zeroSellFlag,
     _rg_buySellImbalance: buySellImbalance,
     _rg_freshWalletRatio: freshWalletRugSignal,
+    // Wallet age on-chain data (0 = all fresh wallets = bad, 1 = all aged = good)
+    _walletAgeFresh: t._walletAgeData ? t._walletAgeData.freshRatio : freshWalletRugSignal,
+    // Whale bullish: aged whale wallets buying = smart money conviction
+    _whaleBullish: t._walletAgeData ? t._walletAgeData.whaleBullish : 0,
+    _whaleBuys: t._walletAgeData ? t._walletAgeData.whaleBuys : [],
   };
 }
 
@@ -3004,7 +3098,7 @@ function startAutoTrader(wallet, settings) {
       }
 
       // ── PIPELINE STATS: track why tokens are rejected ──
-      const pipeline = { total: 0, baseFilter: 0, alreadyOwned: 0, cooldown: 0, rugGate: 0, trendReject: 0, scoreLow: 0, passed: 0, nearMisses: [] };
+      const pipeline = { total: 0, baseFilter: 0, alreadyOwned: 0, cooldown: 0, rugGate: 0, trendReject: 0, scoreLow: 0, passed: 0, nearMisses: [], rugRejects: [], skippedGreen: [] };
 
       const tokens = [...radar.tokens.values()].filter(t => {
         pipeline.total++;
@@ -3027,6 +3121,19 @@ function startAutoTrader(wallet, settings) {
         if (!(mc > 2500 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) { pipeline.baseFilter++; return false; }
         return true;
       });
+      // ═══ BACKGROUND WALLET AGE ENRICHMENT — non-blocking on-chain wallet age checks ═══
+      // Enrich tokens that pass base filter with real wallet age data.
+      // Uses cache so subsequent cycles are instant. Only check tokens not yet enriched.
+      for (const t of tokens) {
+        if (!t._walletAgeData && !t._walletAgeChecking && (t.buys || 0) >= 3) {
+          t._walletAgeChecking = true;
+          enrichWalletAges(t).then(data => {
+            t._walletAgeData = data;
+            t._walletAgeChecking = false;
+          }).catch(() => { t._walletAgeChecking = false; });
+        }
+      }
+
       const hot = tokens.filter(t => {
         if (state.positions.has(t.ca)) { pipeline.alreadyOwned++; return false; }
         if (cd?.has(t.ca)) { pipeline.cooldown++; return false; }
@@ -3047,7 +3154,9 @@ function startAutoTrader(wallet, settings) {
           else if (qf._rg_sybilScore > 0.4) rugRejectReason = "sybil";
           else if (qf._rg_earlyDump > 0.3 && ageMin < 5) rugRejectReason = "early_dump";
           else if (qf._rg_quickFlipRate > 0.25) rugRejectReason = "quick_flip";
-          else if (qf.rg_holderConcentration > 0.7 && buys > 5) rugRejectReason = "whale_heavy";
+          // whale_heavy: only reject if wallets are fresh OR no wallet age data yet
+          // Aged whale wallets buying = smart money conviction, NOT a rug signal
+          else if (qf.rg_holderConcentration > 0.7 && buys > 5 && !(qf._whaleBullish > 0.3)) rugRejectReason = "whale_heavy";
           else if (qf.rg_liqRemovalSpeed > 0.65) rugRejectReason = "liq_removal";
           // NEW: smooth grind detection — fake charts with no natural dips
           else if (qf.ch_smoothGrind > 0.6) rugRejectReason = "smooth_grind";
@@ -3079,7 +3188,12 @@ function startAutoTrader(wallet, settings) {
             ].filter(Boolean).length;
             if (rugSignals >= 3) rugRejectReason = "multi_rug_" + rugSignals;
           }
-          if (rugRejectReason) { pipeline.rugGate++; return false; }
+          if (rugRejectReason) {
+            pipeline.rugGate++;
+            pipeline.rugRejects.push({ name: t.name || t.ca?.slice(0, 8), ca: t.ca?.slice(0, 8), reason: rugRejectReason, mc: Math.round(mc), buys, walletAge: t._walletAgeData ? `${Math.round(t._walletAgeData.walletAgeScore * 100)}%aged` : "unknown", whaleBullish: t._walletAgeData?.whaleBullish || 0 });
+            if (pipeline.rugRejects.length > 15) pipeline.rugRejects.shift();
+            return false;
+          }
         }
 
         // Buy activity (log-scaled to avoid spam bias)
@@ -3220,8 +3334,21 @@ function startAutoTrader(wallet, settings) {
         // Artwork penalty: non-original art = rug signal
         const artPenalty = t._artworkOriginal === false ? Math.max(5, Math.round((100 - (t._artworkScore || 50)) / 5)) : 0;
 
+        // ═══ WHALE BULLISH BONUS — aged whale wallets buying = smart money conviction ═══
+        // If on-chain wallet age data shows whales with aged wallets (>7 days) are buying,
+        // this is a strong bullish signal — real money, not dev sybils.
+        let whaleBullishBonus = 0;
+        if (qf?._whaleBullish > 0.3) {
+          whaleBullishBonus = Math.min(15, Math.round(qf._whaleBullish * 20));
+        }
+        // Fresh wallet penalty from on-chain data (overrides heuristic when available)
+        let walletAgePenalty = 0;
+        if (qf?._walletAgeFresh > 0.7) {
+          walletAgePenalty = Math.round(qf._walletAgeFresh * 12);
+        }
+
         t._apeScore = Math.max(0, Math.min(99, Math.round(
-          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus - sellPenalty - rugPenalty - artPenalty
+          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus - sellPenalty - rugPenalty - artPenalty - walletAgePenalty
         )));
 
         t._rugFlags = [
@@ -3237,10 +3364,21 @@ function startAutoTrader(wallet, settings) {
             qf._rg_zeroSellFlag > 0.5 && "zero_sells",
             qf._rg_buySellImbalance > 0.5 && "all_buys_no_sells",
             qf._rg_freshWalletRatio > 0.7 && "fresh_wallets",
+            qf._walletAgeFresh > 0.7 && "fresh_wallets_onchain",
           ] : []),
           t._artworkOriginal === false && "stolen_art",
           t._artworkFlags?.includes("SIMILAR_IMAGE") && "similar_art",
           t._artworkFlags?.includes("LOW_EFFORT_ART") && "low_effort_art",
+        ].filter(Boolean);
+        // Positive signals (not rug flags, but bullish indicators)
+        t._bullishSignals = [
+          ...(qf ? [
+            qf._whaleBullish > 0.3 && `whale_bullish(${(qf._whaleBullish * 100).toFixed(0)}%)`,
+            qf.rg_walletAgeScore > 0.7 && "aged_wallets",
+          ] : []),
+          dyn?.trend === "rocket" && "rocket_trend",
+          dyn?.trend === "rising" && "rising_trend",
+          earlyApeBonus > 0 && "early_discovery",
         ].filter(Boolean);
         t._scoreTrend = dyn?.trend || "new";
         t._earlyApe = earlyApeBonus > 0; // flag for logging
@@ -3271,7 +3409,7 @@ function startAutoTrader(wallet, settings) {
       }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
 
       // ── PIPELINE DECISION LOG — shows what's happening every cycle ──
-      if (!state._pipelineStats) state._pipelineStats = { lastLog: 0, nearMisses: [], cycles: 0, lastPipeline: null };
+      if (!state._pipelineStats) state._pipelineStats = { lastLog: 0, nearMisses: [], rugRejects: [], skippedGreen: [], cycles: 0, lastPipeline: null };
       state._pipelineStats.cycles++;
       state._pipelineStats.lastPipeline = pipeline;
       // Keep rolling near misses (last 10, deduplicated by ca)
@@ -3283,6 +3421,15 @@ function startAutoTrader(wallet, settings) {
       state._pipelineStats.nearMisses = state._pipelineStats.nearMisses
         .filter(n => Date.now() - n.time < 300000) // keep 5min
         .slice(-10);
+      // Track rug gate rejections with reasons (last 15)
+      for (const rr of pipeline.rugRejects) {
+        const existing = state._pipelineStats.rugRejects.findIndex(n => n.ca === rr.ca);
+        if (existing >= 0) state._pipelineStats.rugRejects[existing] = { ...rr, time: Date.now() };
+        else state._pipelineStats.rugRejects.push({ ...rr, time: Date.now() });
+      }
+      state._pipelineStats.rugRejects = state._pipelineStats.rugRejects
+        .filter(n => Date.now() - n.time < 300000)
+        .slice(-15);
 
       // Log pipeline summary every 30s
       if (Date.now() - state._pipelineStats.lastLog > 30000) {
@@ -3340,7 +3487,9 @@ function startAutoTrader(wallet, settings) {
         const rugFlags = t._rugFlags?.length > 0 ? ` [WARN: ${t._rugFlags.join(",")}]` : "";
         const trendTag = t._scoreTrend && t._scoreTrend !== "new" && t._scoreTrend !== "stable" ? ` trend:${t._scoreTrend}` : "";
         const earlyTag = t._earlyApe ? " [EARLY-APE]" : "";
-        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag}${earlyTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}`);
+        const bullishStr = t._bullishSignals?.length > 0 ? ` [BULLISH: ${t._bullishSignals.join(",")}]` : "";
+        const walletAgeStr = t._walletAgeData ? ` wallets:${Math.round(t._walletAgeData.walletAgeScore * 100)}%aged` : "";
+        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag}${earlyTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -3564,6 +3713,7 @@ app.get("/api/auto-trade/status", (req, res) => {
       cycles: state._pipelineStats.cycles,
       last: state._pipelineStats.lastPipeline,
       nearMisses: state._pipelineStats.nearMisses,
+      rugRejects: state._pipelineStats.rugRejects || [],
     } : null,
   });
 });
@@ -4477,6 +4627,334 @@ app.get("/api/intel/score/:ca", async (req, res) => {
   }
 
   res.json(result);
+});
+
+// ═══════════════════════════════════════
+// LIVE SIM MODE — paper trading available to ALL tiers
+// Mirrors auto-ape logic but without real transactions
+// ═══════════════════════════════════════
+const liveSims = new Map(); // wallet|"anon_ip" → sim state
+
+function createLiveSim(id, settings) {
+  if (liveSims.has(id)) stopLiveSim(id);
+  const state = {
+    settings: {
+      minScore: settings.minScore || 28,
+      solPerTrade: settings.solPerTrade || 0.05,
+      maxPositions: settings.maxPositions || 5,
+      tp1: settings.tp1 || 25, tp1Sell: settings.tp1Sell || 35,
+      tp2: settings.tp2 || 70, tp2Sell: settings.tp2Sell || 35,
+      tp3: settings.tp3 || 150, tp3Sell: settings.tp3Sell || 50,
+      sl1: settings.sl1 || 12, sl1Sell: settings.sl1Sell || 70,
+      sl2: settings.sl2 || 22,
+      momentumExit: settings.momentumExit !== false,
+    },
+    positions: new Map(),
+    closedTrades: [],
+    log: [],
+    decisions: [],
+    startedAt: Date.now(),
+    lastActivity: Date.now(),
+    interval: null,
+    calibration: {
+      predictions: [],
+      accuracy: 0, totalPredictions: 0, correctPredictions: 0,
+      lastCalibrated: Date.now(),
+      adjustments: { tpBias: 0, slBias: 0, scoreBias: 0 },
+    },
+    graduation: { ready: false, simDurationMs: 0, totalSimTrades: 0, simWinRate: 0, simRoi: 0, confidence: 0 },
+    stats: { totalBuys: 0, totalSells: 0, wins: 0, losses: 0, totalPnlSol: 0, totalInvested: 0, bestTrade: null, worstTrade: null, peakPnl: 0, maxDrawdown: 0 },
+    soldCooldowns: new Map(),
+  };
+
+  const simLog = (msg, type = "info") => {
+    state.log.push({ msg, type, time: Date.now() });
+    if (state.log.length > 100) state.log.shift();
+    console.log(`[SIM][${id.slice(0, 8)}] ${msg}`);
+  };
+
+  const addDecision = (action, data) => {
+    const d = { action, ...data, time: Date.now() };
+    state.decisions.push(d);
+    if (state.decisions.length > 200) state.decisions.shift();
+    broadcastWS({ event: "sim-decision", data: { simId: id, ...d } });
+  };
+
+  function calcPositionSize(score, trend, rugFlagCount) {
+    const minS = state.settings.minScore;
+    const range = Math.max(80 - minS, 20);
+    let mult = 0.5 + ((score - minS) / range);
+    if (trend === "rocket") mult += 0.2;
+    else if (trend === "rising") mult += 0.1;
+    else if (trend === "fading") mult -= 0.15;
+    else if (trend === "declining") mult -= 0.25;
+    mult -= rugFlagCount * 0.1;
+    mult = Math.max(0.4, Math.min(1.6, mult));
+    mult += state.calibration.adjustments.scoreBias * 0.01;
+    mult = Math.max(0.3, Math.min(1.8, mult));
+    return Math.round(state.settings.solPerTrade * mult * 1000) / 1000;
+  }
+
+  function closeTrade(ca, changePct, reason) {
+    const pos = state.positions.get(ca);
+    if (!pos) return;
+    const pnlSol = pos.entrySol * (changePct / 100);
+    const trade = { ca, name: pos.name, ticker: pos.ticker, entryScore: pos.entryScore, entrySol: pos.entrySol, changePct, pnlSol: +pnlSol.toFixed(4), exitReason: reason, duration: Date.now() - pos.entryTime, time: Date.now() };
+    state.closedTrades.push(trade);
+    if (state.closedTrades.length > 200) state.closedTrades.shift();
+    if (pnlSol > 0) state.stats.wins++; else state.stats.losses++;
+    state.stats.totalPnlSol += pnlSol;
+    state.stats.totalSells++;
+    if (!state.stats.bestTrade || pnlSol > state.stats.bestTrade.pnlSol) state.stats.bestTrade = trade;
+    if (!state.stats.worstTrade || pnlSol < state.stats.worstTrade.pnlSol) state.stats.worstTrade = trade;
+    if (state.stats.totalPnlSol > state.stats.peakPnl) state.stats.peakPnl = state.stats.totalPnlSol;
+    const dd = state.stats.peakPnl - state.stats.totalPnlSol;
+    if (dd > state.stats.maxDrawdown) state.stats.maxDrawdown = dd;
+    state.positions.delete(ca);
+    state.soldCooldowns.set(ca, Date.now());
+  }
+
+  function updateGraduation() {
+    const dur = Date.now() - state.startedAt;
+    const total = state.stats.wins + state.stats.losses;
+    const wr = total > 0 ? Math.round((state.stats.wins / total) * 100) : 0;
+    const roi = state.stats.totalInvested > 0 ? +((state.stats.totalPnlSol / state.stats.totalInvested) * 100).toFixed(1) : 0;
+    const dPts = Math.min(30, (dur / 3600000) * 30);
+    const tPts = Math.min(25, (total / 20) * 25);
+    const wPts = wr >= 55 ? 25 : wr >= 45 ? 15 : 5;
+    const rPts = roi > 0 ? 20 : roi > -5 ? 10 : 0;
+    state.graduation = { ready: Math.round(dPts + tPts + wPts + rPts) >= 70 && dur >= 3600000, simDurationMs: dur, totalSimTrades: total, simWinRate: wr, simRoi: roi, confidence: Math.min(100, Math.round(dPts + tPts + wPts + rPts)) };
+  }
+
+  state.interval = setInterval(async () => {
+    try {
+      const tokens = [...radar.tokens.values()];
+      if (tokens.length === 0) return;
+      const tokenMap = new Map(tokens.map(t => [t.ca, t]));
+
+      // Check existing positions
+      for (const [ca, pos] of state.positions) {
+        const token = tokenMap.get(ca);
+        if (!token) {
+          if (Date.now() - pos.entryTime > 300000) {
+            addDecision("SELL", { ca, name: pos.name, reason: "radar-exit", pnlPct: 0 });
+            closeTrade(ca, 0, "radar-exit");
+          }
+          continue;
+        }
+        const mc = token.mcapUsd || 0;
+        pos.currentMcap = mc;
+        if (mc > pos.peakMcap) pos.peakMcap = mc;
+        const changePct = pos.entryMcap > 0 ? ((mc - pos.entryMcap) / pos.entryMcap) * 100 : 0;
+        pos.changePct = changePct;
+        const dyn = scoreDynamics.get(ca);
+        pos.trend = dyn?.trend || "new";
+        pos.liveScore = token._apeScore || 0;
+
+        const s = state.settings;
+        if (changePct >= s.tp1 && !pos.tp1Hit) { pos.tp1Hit = true; addDecision("TP1", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); }
+        if (changePct >= s.tp2 && !pos.tp2Hit) { pos.tp2Hit = true; addDecision("TP2", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); }
+        if (changePct >= s.tp3 && !pos.tp3Hit) { pos.tp3Hit = true; addDecision("TP3", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); }
+        if (changePct <= -s.sl2) { addDecision("SELL", { ca, name: pos.name, reason: "SL2", pnlPct: +changePct.toFixed(1) }); closeTrade(ca, changePct, "SL2"); continue; }
+        if (changePct <= -s.sl1 && !pos.sl1Hit) { pos.sl1Hit = true; addDecision("SL1", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); }
+        if (s.momentumExit && dyn?.trend === "crashing" && changePct < -5) { addDecision("SELL", { ca, name: pos.name, reason: "momentum-crash", pnlPct: +changePct.toFixed(1) }); closeTrade(ca, changePct, "momentum-crash"); }
+      }
+
+      // Look for new entries
+      if (state.positions.size >= state.settings.maxPositions) return;
+      const candidates = tokens.filter(t => {
+        if (state.positions.has(t.ca)) return false;
+        if (state.soldCooldowns.has(t.ca)) {
+          const soldAt = state.soldCooldowns.get(t.ca);
+          const dyn = scoreDynamics.get(t.ca);
+          const recovering = dyn && dyn.scores >= 3 && (dyn.trend === "rising" || dyn.trend === "rocket");
+          if (Date.now() - soldAt < (recovering ? 600000 : 1800000)) return false;
+          state.soldCooldowns.delete(t.ca);
+        }
+        const score = t._apeScore || 0;
+        const effectiveMin = state.settings.minScore + state.calibration.adjustments.scoreBias;
+        return score >= effectiveMin;
+      }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
+
+      for (const t of candidates.slice(0, 2)) {
+        if (state.positions.size >= state.settings.maxPositions) break;
+        const score = t._apeScore || 0;
+        const dyn = scoreDynamics.get(t.ca);
+        const trend = dyn?.trend || "new";
+        const rugFlags = t._rugFlags || [];
+        const sizeSol = calcPositionSize(score, trend, rugFlags.length);
+        state.positions.set(t.ca, {
+          name: t.name, ticker: t.ticker, image: t.image, entryMcap: t.mcapUsd || 0,
+          currentMcap: t.mcapUsd || 0, peakMcap: t.mcapUsd || 0, changePct: 0,
+          entrySol: sizeSol, sizeMult: +(sizeSol / state.settings.solPerTrade).toFixed(2),
+          entryScore: score, liveScore: score, trend, entryTime: Date.now(),
+          tp1Hit: false, tp2Hit: false, tp3Hit: false, sl1Hit: false, isMoonbag: false,
+        });
+        state.stats.totalBuys++;
+        state.stats.totalInvested += sizeSol;
+        addDecision("BUY", { ca: t.ca, name: t.name, score, trend, sol: sizeSol, rugFlags });
+        simLog(`SIM BUY ${t.name} score=${score} trend=${trend} sol=${sizeSol}`);
+      }
+
+      updateGraduation();
+    } catch (e) { console.error(`[SIM] Error: ${e.message}`); }
+  }, 4000);
+
+  liveSims.set(id, state);
+  simLog(`Live sim started: minScore=${state.settings.minScore} sol=${state.settings.solPerTrade}`);
+  return state;
+}
+
+function stopLiveSim(id) {
+  const state = liveSims.get(id);
+  if (state) clearInterval(state.interval);
+  liveSims.delete(id);
+}
+
+// Start live sim
+app.post("/api/sim/start", async (req, res) => {
+  try {
+    const { wallet, settings } = req.body;
+    const id = wallet || ("anon_" + (req.headers["x-real-ip"] || req.socket?.remoteAddress || "unknown"));
+    const state = createLiveSim(id, settings || {});
+    res.json({ ok: true, simId: id, settings: state.settings });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Stop sim
+app.post("/api/sim/stop", (req, res) => {
+  const { wallet } = req.body;
+  const id = wallet || ("anon_" + (req.headers["x-real-ip"] || req.socket?.remoteAddress || "unknown"));
+  const state = liveSims.get(id);
+  if (!state) return res.json({ ok: true, message: "No sim running" });
+  const totalTrades = state.stats.wins + state.stats.losses;
+  const finalStats = {
+    duration: Date.now() - state.startedAt, ...state.stats,
+    winRate: totalTrades > 0 ? Math.round((state.stats.wins / totalTrades) * 100) : 0,
+    roi: state.stats.totalInvested > 0 ? +((state.stats.totalPnlSol / state.stats.totalInvested) * 100).toFixed(1) : 0,
+    calibration: state.calibration, graduation: state.graduation,
+    closedTrades: state.closedTrades.slice(-20),
+  };
+  stopLiveSim(id);
+  res.json({ ok: true, finalStats });
+});
+
+// Get sim status
+app.get("/api/sim/status", (req, res) => {
+  const wallet = req.query.wallet;
+  const id = wallet || ("anon_" + (req.headers["x-real-ip"] || req.socket?.remoteAddress || "unknown"));
+  const state = liveSims.get(id);
+  if (!state) return res.json({ active: false });
+  state.lastActivity = Date.now();
+  const totalTrades = state.stats.wins + state.stats.losses;
+  res.json({
+    active: true, settings: state.settings,
+    positions: [...state.positions.entries()].map(([ca, p]) => ({
+      ca, name: p.name, ticker: p.ticker, image: p.image,
+      entryMcap: p.entryMcap, currentMcap: p.currentMcap, peakMcap: p.peakMcap,
+      changePct: p.changePct, entrySol: p.entrySol, sizeMult: p.sizeMult,
+      entryScore: p.entryScore, liveScore: p.liveScore, trend: p.trend,
+      tpHit: (p.tp1Hit ? 1 : 0) + (p.tp2Hit ? 1 : 0) + (p.tp3Hit ? 1 : 0),
+      slHit: p.sl1Hit ? 1 : 0, isMoonbag: !!p.isMoonbag,
+      age: Math.round((Date.now() - p.entryTime) / 60000),
+    })),
+    decisions: state.decisions.slice(-30), log: state.log.slice(-30),
+    stats: { ...state.stats, totalTrades, winRate: totalTrades > 0 ? Math.round((state.stats.wins / totalTrades) * 100) : 0, roi: state.stats.totalInvested > 0 ? +((state.stats.totalPnlSol / state.stats.totalInvested) * 100).toFixed(1) : 0 },
+    calibration: { accuracy: state.calibration.accuracy, totalPredictions: state.calibration.totalPredictions, adjustments: state.calibration.adjustments },
+    graduation: state.graduation,
+    recentlyClosed: state.closedTrades.slice(-10).reverse(),
+    startedAt: state.startedAt, simDuration: Date.now() - state.startedAt,
+  });
+});
+
+// Update sim settings
+app.post("/api/sim/update", (req, res) => {
+  const { wallet, settings } = req.body;
+  const id = wallet || ("anon_" + (req.headers["x-real-ip"] || req.socket?.remoteAddress || "unknown"));
+  const state = liveSims.get(id);
+  if (!state) return res.status(404).json({ error: "No sim running" });
+  state.lastActivity = Date.now();
+  Object.assign(state.settings, settings);
+  res.json({ ok: true, settings: state.settings });
+});
+
+// Graduate sim to real auto-ape
+app.post("/api/sim/graduate", async (req, res) => {
+  try {
+    const { wallet } = req.body;
+    const simState = liveSims.get(wallet);
+    if (!simState) return res.status(404).json({ error: "No sim running" });
+    if (!simState.graduation.ready) {
+      return res.status(400).json({ error: `Not ready. Confidence: ${simState.graduation.confidence}% (need 70%+). Duration: ${Math.round(simState.graduation.simDurationMs / 60000)}m (need 60m+).` });
+    }
+    const graduatedSettings = {
+      ...simState.settings,
+      minScore: Math.max(15, simState.settings.minScore + simState.calibration.adjustments.scoreBias),
+      tp1: Math.max(10, Math.round(simState.settings.tp1 * (1 + simState.calibration.adjustments.tpBias * 0.01))),
+      tp2: Math.max(20, Math.round(simState.settings.tp2 * (1 + simState.calibration.adjustments.tpBias * 0.01))),
+      tp3: Math.max(50, Math.round(simState.settings.tp3 * (1 + simState.calibration.adjustments.tpBias * 0.01))),
+      sl1: Math.max(5, Math.round(simState.settings.sl1 * (1 + simState.calibration.adjustments.slBias * 0.01))),
+      sl2: Math.max(10, Math.round(simState.settings.sl2 * (1 + simState.calibration.adjustments.slBias * 0.01))),
+    };
+    stopLiveSim(wallet);
+    res.json({ ok: true, graduatedSettings, simStats: { duration: simState.graduation.simDurationMs, trades: simState.graduation.totalSimTrades, winRate: simState.graduation.simWinRate, roi: simState.graduation.simRoi, confidence: simState.graduation.confidence, calibrationAccuracy: simState.calibration.accuracy } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Backtest sim (one-shot against current radar data)
+app.post("/api/sim/backtest", async (req, res) => {
+  try {
+    const { settings } = req.body;
+    const s = {
+      minScore: settings?.minScore || 28, solPerTrade: settings?.solPerTrade || 0.05,
+      maxPositions: settings?.maxPositions || 5,
+      tp1: settings?.tp1 || 25, tp1Sell: settings?.tp1Sell || 35,
+      tp2: settings?.tp2 || 70, tp2Sell: settings?.tp2Sell || 35,
+      tp3: settings?.tp3 || 150, tp3Sell: settings?.tp3Sell || 50,
+      sl1: settings?.sl1 || 12, sl1Sell: settings?.sl1Sell || 70, sl2: settings?.sl2 || 22,
+    };
+    const tokens = [...radar.tokens.values()];
+    let totalTrades = 0, wins = 0, losses = 0, totalPnlSol = 0, totalInvested = 0;
+    let bestTrade = null, worstTrade = null;
+    const trades = [];
+
+    for (const t of tokens) {
+      const spark = t.spark || [];
+      if (spark.length < 6) continue;
+      const features = typeof extractQuickFeatures === "function" ? extractQuickFeatures(t) : null;
+      const scoreResult = features && memeIntel?.scorer ? memeIntel.scorer.score(features) : null;
+      const score = scoreResult?.score || t._apeScore || 0;
+      if (score < s.minScore) continue;
+      const entryIdx = Math.floor(spark.length * 0.3);
+      const entryMc = spark[entryIdx] || 1;
+      const peakMc = Math.max(...spark.slice(entryIdx));
+      const endMc = spark[spark.length - 1] || 1;
+      const range = Math.max(80 - s.minScore, 20);
+      let sizeMult = 0.5 + ((score - s.minScore) / range);
+      sizeMult = Math.max(0.4, Math.min(1.6, sizeMult));
+      const tradeSol = Math.round(s.solPerTrade * sizeMult * 1000) / 1000;
+      const peakPct = entryMc > 0 ? ((peakMc - entryMc) / entryMc) * 100 : 0;
+      const endPct = entryMc > 0 ? ((endMc - entryMc) / entryMc) * 100 : 0;
+      let exitReason = "hold", soldPct = 0, realizedPnl = 0;
+      if (peakPct >= s.tp3) { realizedPnl += tradeSol * (s.tp3 / 100) * (s.tp3Sell / 100); soldPct += s.tp3Sell * ((100 - soldPct) / 100); exitReason = "TP3"; }
+      if (peakPct >= s.tp2) { const r = 100 - soldPct; realizedPnl += tradeSol * (r / 100) * (s.tp2 / 100) * (s.tp2Sell / 100); soldPct += s.tp2Sell * (r / 100); if (exitReason === "hold") exitReason = "TP2"; }
+      if (peakPct >= s.tp1) { const r = 100 - soldPct; realizedPnl += tradeSol * (r / 100) * (s.tp1 / 100) * (s.tp1Sell / 100); soldPct += s.tp1Sell * (r / 100); if (exitReason === "hold") exitReason = "TP1"; }
+      if (endPct <= -s.sl2 && soldPct < 100) { realizedPnl += tradeSol * ((100 - soldPct) / 100) * (endPct / 100); soldPct = 100; exitReason = exitReason === "hold" ? "SL2" : exitReason + "+SL2"; }
+      else if (endPct <= -s.sl1 && soldPct < 100) { const r = 100 - soldPct; realizedPnl += tradeSol * (r / 100) * (s.sl1Sell / 100) * (endPct / 100); soldPct += s.sl1Sell * (r / 100); if (exitReason === "hold") exitReason = "SL1"; }
+      if (soldPct < 100) { realizedPnl += tradeSol * ((100 - soldPct) / 100) * (endPct / 100); }
+      const trade = { name: t.name || t.ca?.slice(0, 8), score, sizeMult: +sizeMult.toFixed(2), sol: tradeSol, peakPct: +peakPct.toFixed(1), endPct: +endPct.toFixed(1), pnlSol: +realizedPnl.toFixed(4), exitReason };
+      trades.push(trade); totalTrades++; totalInvested += tradeSol; totalPnlSol += realizedPnl;
+      if (realizedPnl > 0) wins++; else losses++;
+      if (!bestTrade || realizedPnl > bestTrade.pnlSol) bestTrade = trade;
+      if (!worstTrade || realizedPnl < worstTrade.pnlSol) worstTrade = trade;
+    }
+    const winRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100) : 0;
+    const avgPnl = totalTrades > 0 ? +(totalPnlSol / totalTrades).toFixed(4) : 0;
+    const roi = totalInvested > 0 ? +((totalPnlSol / totalInvested) * 100).toFixed(1) : 0;
+    const lossAdjPnl = trades.reduce((sum, t) => sum + (t.pnlSol < 0 ? t.pnlSol * 2 : t.pnlSol), 0);
+    const kahnemanScore = totalInvested > 0 ? +((lossAdjPnl / totalInvested) * 100).toFixed(1) : 0;
+    res.json({ ok: true, totalTrades, wins, losses, winRate, totalPnlSol: +totalPnlSol.toFixed(4), totalInvested: +totalInvested.toFixed(4), roi, kahnemanScore, avgPnl, bestTrade, worstTrade, trades: trades.sort((a, b) => b.pnlSol - a.pnlSol).slice(0, 20) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ═══════════════════════════════════════
