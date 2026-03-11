@@ -236,7 +236,6 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 {t.description&&<div style={{padding:"8px 14px",fontSize:16,color:T.dm,borderBottom:"1px solid "+T.bd,lineHeight:1.5}}>{t.description.length>200?t.description.slice(0,200)+"…":t.description}</div>}
 {/* Chart — canvas candlestick with OHLC + volume */}
 <CandleChart ca={t.ca} T={T} mb={mb}/>
-<div style={{padding:"5px 14px",borderBottom:"1px solid "+T.bd,display:"flex",gap:6}}><a href={"https://www.gmgn.cc/kline/sol/"+t.ca} target="_blank" rel="noopener" style={{fontSize:13,color:T.dm,textDecoration:"none"}}>open full chart →</a><a href={"https://dexscreener.com/solana/"+t.ca} target="_blank" rel="noopener" style={{fontSize:13,color:T.dm,textDecoration:"none"}}>dexscreener →</a></div>
 {/* CA copy */}
 <div style={{padding:"5px 14px",borderTop:"1px solid "+T.bd,display:"flex",alignItems:"center",gap:4}}>
 <button onClick={()=>{navigator.clipboard?.writeText(t.ca);toast("Copied","success")}} style={{padding:"5px 8px",background:"none",border:"1px solid "+T.bd,borderRadius:4,fontSize:13,color:T.ft,cursor:"pointer",display:"flex",alignItems:"center",gap:4}}><IC.copy s={12}/>{t.ca}</button>
