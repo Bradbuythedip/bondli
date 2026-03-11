@@ -1576,6 +1576,76 @@ app.post("/api/sim/backtest", apiLimiter, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Alias: /api/auto-trade/simulate → same as /api/sim/backtest (used by frontend atsim())
+app.post("/api/auto-trade/simulate", apiLimiter, async (req, res) => {
+  try {
+    const { settings } = req.body;
+    const s = {
+      minScore: settings?.minScore || 28,
+      solPerTrade: settings?.solPerTrade || 0.05,
+      maxPositions: settings?.maxPositions || 5,
+      tp1: settings?.tp1 || 25, tp1Sell: settings?.tp1Sell || 35,
+      tp2: settings?.tp2 || 70, tp2Sell: settings?.tp2Sell || 35,
+      tp3: settings?.tp3 || 150, tp3Sell: settings?.tp3Sell || 50,
+      sl1: settings?.sl1 || 12, sl1Sell: settings?.sl1Sell || 70,
+      sl2: settings?.sl2 || 22,
+    };
+
+    if (!movers) return res.status(503).json({ error: "Radar not ready" });
+    const currentTokens = movers.lastResults || [];
+    let totalTrades = 0, wins = 0, losses = 0;
+    let totalPnlSol = 0, totalInvested = 0;
+    let bestTrade = null, worstTrade = null;
+    const trades = [];
+
+    for (const t of currentTokens) {
+      const spark = t.spark || [];
+      if (spark.length < 6) continue;
+      const score = t.apeScore || 0;
+      if (score < s.minScore) continue;
+
+      const entryIdx = Math.floor(spark.length * 0.3);
+      const entryMc = spark[entryIdx] || 1;
+      const peakMc = Math.max(...spark.slice(entryIdx));
+      const endMc = spark[spark.length - 1] || 1;
+
+      const range = Math.max(80 - s.minScore, 20);
+      let sizeMult = 0.5 + ((score - s.minScore) / range);
+      sizeMult = Math.max(0.4, Math.min(1.6, sizeMult));
+      const tradeSol = Math.round(s.solPerTrade * sizeMult * 1000) / 1000;
+
+      const peakPct = entryMc > 0 ? ((peakMc - entryMc) / entryMc) * 100 : 0;
+      const endPct = entryMc > 0 ? ((endMc - entryMc) / entryMc) * 100 : 0;
+
+      let exitReason = "hold", soldPct = 0, realizedPnl = 0;
+      if (peakPct >= s.tp3) { realizedPnl += tradeSol * (s.tp3 / 100) * (s.tp3Sell / 100); soldPct += s.tp3Sell * ((100 - soldPct) / 100); exitReason = "TP3"; }
+      if (peakPct >= s.tp2) { const r = 100 - soldPct; realizedPnl += tradeSol * (r / 100) * (s.tp2 / 100) * (s.tp2Sell / 100); soldPct += s.tp2Sell * (r / 100); if (exitReason === "hold") exitReason = "TP2"; }
+      if (peakPct >= s.tp1) { const r = 100 - soldPct; realizedPnl += tradeSol * (r / 100) * (s.tp1 / 100) * (s.tp1Sell / 100); soldPct += s.tp1Sell * (r / 100); if (exitReason === "hold") exitReason = "TP1"; }
+      if (endPct <= -s.sl2 && soldPct < 100) { realizedPnl += tradeSol * ((100 - soldPct) / 100) * (endPct / 100); soldPct = 100; exitReason = exitReason === "hold" ? "SL2" : exitReason + "+SL2"; }
+      else if (endPct <= -s.sl1 && soldPct < 100) { const r = 100 - soldPct; realizedPnl += tradeSol * (r / 100) * (s.sl1Sell / 100) * (endPct / 100); soldPct += s.sl1Sell * (r / 100); if (exitReason === "hold") exitReason = "SL1"; }
+      if (soldPct < 100) { realizedPnl += tradeSol * ((100 - soldPct) / 100) * (endPct / 100); }
+
+      const trade = { name: t.name || t.ca?.slice(0, 8), score, sizeMult: +sizeMult.toFixed(2), sol: tradeSol, peakPct: +peakPct.toFixed(1), endPct: +endPct.toFixed(1), pnlSol: +realizedPnl.toFixed(4), exitReason };
+      trades.push(trade); totalTrades++; totalInvested += tradeSol; totalPnlSol += realizedPnl;
+      if (realizedPnl > 0) wins++; else losses++;
+      if (!bestTrade || realizedPnl > bestTrade.pnlSol) bestTrade = trade;
+      if (!worstTrade || realizedPnl < worstTrade.pnlSol) worstTrade = trade;
+    }
+
+    const winRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100) : 0;
+    const roi = totalInvested > 0 ? +((totalPnlSol / totalInvested) * 100).toFixed(1) : 0;
+    const lossAdjPnl = trades.reduce((sum, t) => sum + (t.pnlSol < 0 ? t.pnlSol * 2 : t.pnlSol), 0);
+    const kahnemanScore = totalInvested > 0 ? +((lossAdjPnl / totalInvested) * 100).toFixed(1) : 0;
+
+    res.json({
+      ok: true, totalTrades, wins, losses, winRate,
+      totalPnlSol: +totalPnlSol.toFixed(4), totalInvested: +totalInvested.toFixed(4),
+      roi, kahnemanScore, bestTrade, worstTrade,
+      trades: trades.sort((a, b) => b.pnlSol - a.pnlSol).slice(0, 20),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ═══════════════════════════════════════
 // 404 + Error
 // ═══════════════════════════════════════
