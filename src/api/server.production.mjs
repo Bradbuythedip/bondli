@@ -2446,33 +2446,40 @@ function startAutoTrader(wallet, settings) {
       }
 
       // Look for new tokens to ape
-      if (state.positions.size >= state.settings.maxPositions) return;
+      if (state.positions.size >= state.settings.maxPositions) {
+        if (!state._lastFullLog || Date.now() - state._lastFullLog > 30000) {
+          log(`SCAN: ${state.positions.size}/${state.settings.maxPositions} positions full — skipping entry scan`);
+          state._lastFullLog = Date.now();
+        }
+        return;
+      }
 
       // Clean expired cooldowns (older than 30min)
       const cd = soldCooldowns.get(wallet);
       if (cd) for (const [c, t] of cd) { if (Date.now() - t > 1800000) cd.delete(c); }
 
+      // ── PIPELINE STATS: track why tokens are rejected ──
+      const pipeline = { total: 0, baseFilter: 0, alreadyOwned: 0, cooldown: 0, rugGate: 0, trendReject: 0, scoreLow: 0, passed: 0, nearMisses: [] };
+
       const tokens = [...radar.tokens.values()].filter(t => {
+        pipeline.total++;
         const mc = t.mcapUsd || 0;
         const buys = t.buys || 0;
         const ub = t.uniqueBuyers?.size || 0;
         const ageMin = (Date.now() - t.createdAt) / 60000;
         const sells = t.sells || 0;
-        // Base filters — relaxed for accelerating tokens
-        // Acceleration data lets us enter earlier on tokens with strong score velocity
         const dyn = scoreDynamics.get(t.ca);
         const isAccelerating = dyn && dyn.scores >= 2 && (dyn.trend === "rocket" || dyn.trend === "rising");
-        // Accelerating tokens: lower thresholds (2 buys, 2 UB, 30s old, $2k MC)
-        // Normal tokens: standard thresholds (3 buys, 2 UB, 1min old, $3k MC)
         if (isAccelerating) {
-          return mc > 2000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys;
+          if (!(mc > 2000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys)) { pipeline.baseFilter++; return false; }
+          return true;
         }
-        return mc > 3000 && buys >= 3 && ub >= 2 && ageMin >= 1 && sells <= buys;
+        if (!(mc > 3000 && buys >= 3 && ub >= 2 && ageMin >= 1 && sells <= buys)) { pipeline.baseFilter++; return false; }
+        return true;
       });
       const hot = tokens.filter(t => {
-        if (state.positions.has(t.ca)) return false;
-        // Don't re-buy tokens we recently sold (30min cooldown)
-        if (cd?.has(t.ca)) return false;
+        if (state.positions.has(t.ca)) { pipeline.alreadyOwned++; return false; }
+        if (cd?.has(t.ca)) { pipeline.cooldown++; return false; }
         const buys = t.buys || 0; const ub = t.uniqueBuyers?.size || 0; const vol = t.volumeSol || 0;
         const mc = t.mcapUsd || 0; const sells = t.sells || 0;
         const ageMin = Math.max(0.5, (Date.now() - t.createdAt) / 60000);
@@ -2480,34 +2487,28 @@ function startAutoTrader(wallet, settings) {
 
         // ═══ HARD RUG GATE — reject obvious rugs before scoring ═══
         const qf = extractQuickFeatures(t);
+        let rugRejectReason = null;
         if (qf) {
-          // Dev dumped at all → instant reject (lowered from 0.7)
-          if (qf.rg_devSellSpeed > 0.4) return false;
-          if (qf._rg_devSelfSnipe > 0) return false;
-          // Mcap already crashed 40%+ from peak → dying token (lowered from 60%)
-          if (qf.rg_mcapDropRate > 0.4) return false;
-          // Coordinated dump detected → cabal exit (lowered from 0.6)
-          if (qf.rg_coordDumpScore > 0.35) return false;
-          // Pump-and-dump sparkline pattern (lowered from 0.7)
-          if (qf._rg_pumpDump > 0.5) return false;
-          // Sybil activity (fake buyers) (lowered from 0.6)
-          if (qf._rg_sybilScore > 0.4) return false;
-          // Early dump in first 5 min (lowered from 0.5)
-          if (qf._rg_earlyDump > 0.3 && ageMin < 5) return false;
-          // Quick-flip wallets (lowered from 0.4)
-          if (qf._rg_quickFlipRate > 0.25) return false;
-          // Top 3 wallets own 70%+ of supply (lowered from 0.8)
-          if (qf.rg_holderConcentration > 0.7 && buys > 5) return false;
-          // Sell volume exceeding buy volume (lowered from 0.85)
-          if (qf.rg_liqRemovalSpeed > 0.65) return false;
-          // NEW: Composite rug risk — if multiple moderate signals fire, reject
-          const rugSignals = [
-            qf.rg_devSellSpeed > 0.25, qf.rg_coordDumpScore > 0.2,
-            qf._rg_sybilScore > 0.25, qf._rg_quickFlipRate > 0.15,
-            qf.rg_holderConcentration > 0.6, qf._rg_earlyDump > 0.2,
-            qf.rg_mcapDropRate > 0.25, qf._rg_pumpDump > 0.3,
-          ].filter(Boolean).length;
-          if (rugSignals >= 3) return false; // 3+ moderate rug signals = too risky
+          if (qf.rg_devSellSpeed > 0.4) rugRejectReason = "dev_sell";
+          else if (qf._rg_devSelfSnipe > 0) rugRejectReason = "dev_snipe";
+          else if (qf.rg_mcapDropRate > 0.4) rugRejectReason = "mcap_crash";
+          else if (qf.rg_coordDumpScore > 0.35) rugRejectReason = "coord_dump";
+          else if (qf._rg_pumpDump > 0.5) rugRejectReason = "pump_dump";
+          else if (qf._rg_sybilScore > 0.4) rugRejectReason = "sybil";
+          else if (qf._rg_earlyDump > 0.3 && ageMin < 5) rugRejectReason = "early_dump";
+          else if (qf._rg_quickFlipRate > 0.25) rugRejectReason = "quick_flip";
+          else if (qf.rg_holderConcentration > 0.7 && buys > 5) rugRejectReason = "whale_heavy";
+          else if (qf.rg_liqRemovalSpeed > 0.65) rugRejectReason = "liq_removal";
+          else {
+            const rugSignals = [
+              qf.rg_devSellSpeed > 0.25, qf.rg_coordDumpScore > 0.2,
+              qf._rg_sybilScore > 0.25, qf._rg_quickFlipRate > 0.15,
+              qf.rg_holderConcentration > 0.6, qf._rg_earlyDump > 0.2,
+              qf.rg_mcapDropRate > 0.25, qf._rg_pumpDump > 0.3,
+            ].filter(Boolean).length;
+            if (rugSignals >= 3) rugRejectReason = "multi_rug_" + rugSignals;
+          }
+          if (rugRejectReason) { pipeline.rugGate++; return false; }
         }
 
         // Buy activity (log-scaled to avoid spam bias)
@@ -2574,7 +2575,7 @@ function startAutoTrader(wallet, settings) {
         const dyn = scoreDynamics.get(t.ca);
         if (dyn && dyn.scores >= 2) {
           // Reject tokens with crashing or declining score trend
-          if (dyn.trend === "crashing" || dyn.trend === "declining") return false;
+          if (dyn.trend === "crashing" || dyn.trend === "declining") { pipeline.trendReject++; return false; }
           // Fading momentum = slight warning
           if (dyn.trend === "fading") dynamicsBonus = -5;
           // Rising steadily — meaningful boost
@@ -2606,8 +2607,50 @@ function startAutoTrader(wallet, settings) {
         // Apply learner-recommended min score (if enough data)
         const adj = tradeLearner.getAdjustments();
         const effectiveMin = adj.minScoreShift || state.settings.minScore;
-        return t._apeScore >= Math.min(state.settings.minScore, effectiveMin);
+        const threshold = Math.min(state.settings.minScore, effectiveMin);
+        if (t._apeScore < threshold) {
+          pipeline.scoreLow++;
+          // Track near misses: within 10 pts of threshold
+          if (t._apeScore >= threshold - 10) {
+            pipeline.nearMisses.push({
+              name: t.name || t.ca?.slice(0, 8),
+              ca: t.ca?.slice(0, 8),
+              score: t._apeScore,
+              needed: threshold,
+              mc: Math.round(t.mcapUsd || 0),
+              buys: t.buys || 0,
+              sells: t.sells || 0,
+              trend: dyn?.trend || "new",
+              flags: t._rugFlags || [],
+            });
+          }
+          return false;
+        }
+        pipeline.passed++;
+        return true;
       }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
+
+      // ── PIPELINE DECISION LOG — shows what's happening every cycle ──
+      if (!state._pipelineStats) state._pipelineStats = { lastLog: 0, nearMisses: [], cycles: 0, lastPipeline: null };
+      state._pipelineStats.cycles++;
+      state._pipelineStats.lastPipeline = pipeline;
+      // Keep rolling near misses (last 10, deduplicated by ca)
+      for (const nm of pipeline.nearMisses) {
+        const existing = state._pipelineStats.nearMisses.findIndex(n => n.ca === nm.ca);
+        if (existing >= 0) state._pipelineStats.nearMisses[existing] = { ...nm, time: Date.now() };
+        else state._pipelineStats.nearMisses.push({ ...nm, time: Date.now() });
+      }
+      state._pipelineStats.nearMisses = state._pipelineStats.nearMisses
+        .filter(n => Date.now() - n.time < 300000) // keep 5min
+        .slice(-10);
+
+      // Log pipeline summary every 30s
+      if (Date.now() - state._pipelineStats.lastLog > 30000) {
+        state._pipelineStats.lastLog = Date.now();
+        const p = pipeline;
+        const nmStr = p.nearMisses.length > 0 ? ` | NEAR: ${p.nearMisses.map(n => `${n.name}(${n.score}/${n.needed})`).join(", ")}` : "";
+        log(`SCAN: ${p.total} tokens → ${p.total-p.baseFilter} pass base → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown} new → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate} pass rug → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate-p.trendReject} pass trend → ${p.passed} READY (need ${state.settings.minScore}+)${nmStr}`);
+      }
 
       // Ape into top 2 candidates per cycle — meme tokens move fast
       for (const t of hot.slice(0, 2)) {
@@ -2773,6 +2816,11 @@ app.get("/api/auto-trade/status", (req, res) => {
     recentlyClosed: (state.recentlyClosed || []).filter(p => Date.now() - p.exitTime < 300000),
     learner: tradeLearner.insights,
     learnerAdjustments: tradeLearner.getAdjustments(),
+    pipeline: state._pipelineStats ? {
+      cycles: state._pipelineStats.cycles,
+      last: state._pipelineStats.lastPipeline,
+      nearMisses: state._pipelineStats.nearMisses,
+    } : null,
   });
 });
 

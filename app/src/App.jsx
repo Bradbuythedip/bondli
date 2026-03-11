@@ -915,6 +915,47 @@ return<div key={p.ca+p.exitTime} style={{padding:"5px 0",borderBottom:"1px solid
 :<div style={{fontSize:10,color:T.ft,textAlign:"center",padding:"8px 0"}}>No activity yet</div>}
 </div>
 
+{/* Scan Pipeline — shows decision funnel + near misses */}
+{autoTrade?.pipeline&&<div style={{background:T.bg,border:"1px solid "+T.cy+"18",borderRadius:8,padding:10}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+<span style={{fontSize:11,fontWeight:800,color:T.cy}}>Scan Pipeline</span>
+<span style={{fontSize:8,color:T.ft}}>cycle #{autoTrade.pipeline.cycles}</span>
+</div>
+{autoTrade.pipeline.last&&(()=>{const p=autoTrade.pipeline.last;return<>
+<div style={{display:"flex",gap:3,alignItems:"center",flexWrap:"wrap",marginBottom:6}}>
+<span style={{fontSize:9,padding:"2px 5px",borderRadius:3,background:T.ft+"22",color:T.dm}}>{p.total} tokens</span>
+<span style={{fontSize:10,color:T.ft}}>→</span>
+<span style={{fontSize:9,padding:"2px 5px",borderRadius:3,background:p.total-p.baseFilter>0?T.gn+"22":T.rd+"22",color:p.total-p.baseFilter>0?T.gn:T.rd}}>{p.total-p.baseFilter} base</span>
+<span style={{fontSize:10,color:T.ft}}>→</span>
+<span style={{fontSize:9,padding:"2px 5px",borderRadius:3,background:T.yl+"22",color:T.yl}}>{p.total-p.baseFilter-p.alreadyOwned-p.cooldown} new</span>
+<span style={{fontSize:10,color:T.ft}}>→</span>
+<span style={{fontSize:9,padding:"2px 5px",borderRadius:3,background:T.pu+"22",color:T.pu}}>{p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate} safe</span>
+<span style={{fontSize:10,color:T.ft}}>→</span>
+<span style={{fontSize:9,padding:"2px 5px",borderRadius:3,background:p.passed>0?T.gn+"33":T.rd+"22",color:p.passed>0?T.gn:T.rd,fontWeight:p.passed>0?800:400}}>{p.passed} READY</span>
+</div>
+<div style={{display:"flex",gap:6,flexWrap:"wrap",fontSize:8,color:T.ft}}>
+{p.baseFilter>0&&<span>Base filter: -{p.baseFilter}</span>}
+{p.alreadyOwned>0&&<span>Owned: -{p.alreadyOwned}</span>}
+{p.cooldown>0&&<span>Cooldown: -{p.cooldown}</span>}
+{p.rugGate>0&&<span>Rug gate: -{p.rugGate}</span>}
+{p.trendReject>0&&<span>Trend: -{p.trendReject}</span>}
+{p.scoreLow>0&&<span>Score low: -{p.scoreLow}</span>}
+</div>
+</>})()}
+
+{autoTrade.pipeline.nearMisses?.length>0&&<>
+<div style={{fontSize:9,fontWeight:700,color:T.yl,padding:"6px 0 3px",borderBottom:"1px solid "+T.bd+"22"}}>NEAR MISSES (almost qualified)</div>
+{autoTrade.pipeline.nearMisses.slice().reverse().map(nm=><div key={nm.ca} style={{padding:"4px 0",borderBottom:"1px solid "+T.bd+"11",display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+<span style={{fontSize:10,fontWeight:700,color:T.dm}}>{nm.name}</span>
+<span style={{fontSize:11,fontWeight:900,color:T.yl}}>{nm.score}<span style={{fontSize:8,fontWeight:400,color:T.ft}}>/{nm.needed}</span></span>
+<span style={{fontSize:8,color:T.ft}}>MC:${nm.mc?.toLocaleString()}</span>
+<span style={{fontSize:8,color:T.ft}}>B:{nm.buys} S:{nm.sells}</span>
+{nm.trend&&nm.trend!=="new"&&<span style={{fontSize:7,fontWeight:800,padding:"1px 4px",borderRadius:3,background:nm.trend==="rocket"?T.gn+"22":nm.trend==="rising"?T.cy+"22":T.ft+"22",color:nm.trend==="rocket"?T.gn:nm.trend==="rising"?T.cy:T.ft}}>{nm.trend}</span>}
+{nm.flags?.length>0&&<span style={{fontSize:7,color:T.rd}}>{nm.flags.join(",")}</span>}
+</div>)}
+</>}
+</div>}
+
 {/* Trade Learner Insights */}
 {autoTrade?.learner&&<div style={{background:T.bg,border:"1px solid "+T.pu+"18",borderRadius:8,padding:10}}>
 <div style={{fontSize:11,fontWeight:800,color:T.pu,marginBottom:6}}>Trade Learner</div>
