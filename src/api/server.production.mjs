@@ -687,6 +687,8 @@ function extractQuickFeatures(t) {
 
   // ── Chart shape similarity to stored graduated patterns ──
   let chartHealthScore = 0.5; // neutral default
+  let smoothGrindScore = 0;
+  let dipRatioScore = 0.5;
   if (spark.length >= 5) {
     const start = spark[0] || 1;
     const peak = Math.max(...spark);
@@ -695,12 +697,32 @@ function extractQuickFeatures(t) {
     const peakPct = peakIdx / spark.length;
     const multiple = peak / start;
     const endRatio = current / (peak || 1);
-    // Healthy: steady growth, peak late, holding value
-    if (multiple > 2 && peakPct > 0.5 && endRatio > 0.4) chartHealthScore = Math.min(1, 0.6 + multiple * 0.05);
+
+    // Count dips and consecutive ups for smooth grind detection
+    let sparkDips = 0, sparkUps = 0, maxConsUp = 0, consUp = 0;
+    for (let i = 1; i < spark.length; i++) {
+      if (spark[i] < spark[i - 1]) { sparkDips++; consUp = 0; }
+      else if (spark[i] > spark[i - 1]) { sparkUps++; consUp++; maxConsUp = Math.max(maxConsUp, consUp); }
+    }
+    const totalSparkMoves = sparkDips + sparkUps;
+    const sparkUpPct = totalSparkMoves > 0 ? sparkUps / totalSparkMoves : 0;
+    dipRatioScore = totalSparkMoves > 0 ? Math.min(1, sparkDips / totalSparkMoves * 2) : 0;
+
+    // Smooth grind: gradual up with almost no dips = fake chart / self-bought rug
+    if (spark.length >= 8 && current > start * 1.3 && sparkUpPct > 0.85 && maxConsUp >= 6) {
+      smoothGrindScore = Math.min(1, 0.5 + (sparkUpPct - 0.85) * 3 + (maxConsUp - 6) * 0.05);
+    } else if (spark.length >= 8 && current > start * 1.3 && sparkUpPct > 0.75 && maxConsUp >= 5) {
+      smoothGrindScore = Math.min(0.6, 0.3 + (sparkUpPct - 0.75) * 2);
+    }
+
+    // Healthy: steady growth WITH dips, peak late, holding value
+    if (multiple > 2 && peakPct > 0.5 && endRatio > 0.4 && sparkDips >= 2) chartHealthScore = Math.min(1, 0.6 + multiple * 0.05);
     // Bad: early peak, crashed
     else if (peakPct < 0.3 && endRatio < 0.2) chartHealthScore = Math.max(0, 0.2 - pumpDumpScore * 0.2);
     // Slow grind: still growing
     else if (current > start && multiple < 3) chartHealthScore = 0.6;
+    // Penalize smooth grind — looks healthy but is fake
+    if (smoothGrindScore > 0.5) chartHealthScore = Math.max(0, chartHealthScore - smoothGrindScore * 0.4);
   }
 
   return {
@@ -727,6 +749,8 @@ function extractQuickFeatures(t) {
     // Chart shape analysis
     ch_healthScore: chartHealthScore,
     ch_pumpDump: pumpDumpScore,
+    ch_smoothGrind: smoothGrindScore,
+    ch_dipRatio: dipRatioScore,
     // Extra rug signals (used in buy gate, not in FEATURE_KEYS)
     _rg_devSelfSnipe: devSelfSnipe,
     _rg_earlyDump: earlyDumpScore,
@@ -779,11 +803,31 @@ function classifyChartPattern(spark, outcome) {
   const peakPct = peakIdx / spark.length;
   const multiple = peak / start;
   const endRatio = end / peak;
+
+  // Count dips and consecutive ups for smooth grind detection
+  let dips = 0, ups = 0, maxConsecutiveUp = 0, consecutiveUp = 0;
+  for (let i = 1; i < spark.length; i++) {
+    if (spark[i] < spark[i - 1]) { dips++; consecutiveUp = 0; }
+    else if (spark[i] > spark[i - 1]) { ups++; consecutiveUp++; maxConsecutiveUp = Math.max(maxConsecutiveUp, consecutiveUp); }
+  }
+  const totalMoves = dips + ups;
+  const upPct = totalMoves > 0 ? ups / totalMoves : 0;
+
   if (outcome.rugged || outcome.devDumped) return "rug";
+  // Smooth grind: gradual up with almost no dips — classic fake chart / self-bought rug
+  if (spark.length >= 8 && upPct > 0.82 && maxConsecutiveUp >= 5 && end > start * 1.3 && dips <= 2) return "smooth_grind_rug";
   if (multiple > 8 && peakPct < 0.3) return "sniper_spike";
+  // Staircase: gradual up with periodic small dips — can be legit or manipulated
+  if (spark.length >= 10 && upPct > 0.7 && upPct <= 0.82 && dips >= 2 && dips <= spark.length * 0.2) return "staircase";
   if (multiple > 3 && peakPct > 0.6 && endRatio > 0.4) return "healthy_pump";
   if (multiple < 3 && spark.length > 30 && outcome.graduated) return "slow_grind";
   if (endRatio < 0.2 && multiple > 5) return "pump_dump";
+  // V-shape recovery: crashed then bounced back
+  const midIdx = Math.floor(spark.length / 2);
+  const midVal = spark[midIdx] || 0;
+  if (midVal < start * 0.5 && end > start * 0.8 && end > midVal * 2) return "v_recovery";
+  // Flat/dead: barely moved
+  if (multiple < 1.5 && endRatio > 0.7 && spark.length > 20) return "flat_dead";
   if (outcome.graduated) return "healthy_pump";
   return "unknown";
 }
@@ -2794,12 +2838,16 @@ function startAutoTrader(wallet, settings) {
           else if (qf._rg_quickFlipRate > 0.25) rugRejectReason = "quick_flip";
           else if (qf.rg_holderConcentration > 0.7 && buys > 5) rugRejectReason = "whale_heavy";
           else if (qf.rg_liqRemovalSpeed > 0.65) rugRejectReason = "liq_removal";
+          // NEW: smooth grind detection — fake charts with no natural dips
+          else if (qf.ch_smoothGrind > 0.6) rugRejectReason = "smooth_grind";
+          else if (qf.ch_smoothGrind > 0.4 && qf.ch_dipRatio < 0.1) rugRejectReason = "no_dips";
           else {
             const rugSignals = [
               qf.rg_devSellSpeed > 0.25, qf.rg_coordDumpScore > 0.2,
               qf._rg_sybilScore > 0.25, qf._rg_quickFlipRate > 0.15,
               qf.rg_holderConcentration > 0.6, qf._rg_earlyDump > 0.2,
               qf.rg_mcapDropRate > 0.25, qf._rg_pumpDump > 0.3,
+              qf.ch_smoothGrind > 0.35, qf.ch_dipRatio < 0.1,
             ].filter(Boolean).length;
             if (rugSignals >= 3) rugRejectReason = "multi_rug_" + rugSignals;
           }
@@ -2854,6 +2902,7 @@ function startAutoTrader(wallet, settings) {
           rugPenalty += qf._rg_earlyDump > 0.2 ? 5 : 0;              // early selling
           rugPenalty += sellVol > vol * 0.4 ? 5 : 0;                  // sell pressure
           rugPenalty += qf._rg_pumpDump > 0.3 ? 8 : 0;               // pump-dump pattern
+          rugPenalty += qf.ch_smoothGrind > 0.35 ? Math.round(qf.ch_smoothGrind * 10) : 0; // smooth grind
         } else {
           rugPenalty = (sellVol > vol * 0.5 && sells > 3) ? 15 :
                        (sells > buys * 1.2) ? 10 : 0;
@@ -2885,8 +2934,12 @@ function startAutoTrader(wallet, settings) {
         }
 
         // Chart health bonus: if the sparkline shape matches healthy graduated patterns
-        const chartBonus = qf?.ch_healthScore > 0.6 ? Math.round((qf.ch_healthScore - 0.5) * 16) :
-                           qf?.ch_healthScore < 0.3 ? -8 : 0;
+        // Smooth grind penalty: fake charts with no natural dips should be avoided
+        let chartBonus = qf?.ch_healthScore > 0.6 ? Math.round((qf.ch_healthScore - 0.5) * 16) :
+                         qf?.ch_healthScore < 0.3 ? -8 : 0;
+        if (qf?.ch_smoothGrind > 0.35) chartBonus -= Math.round(qf.ch_smoothGrind * 15);
+        if (qf?.ch_dipRatio < 0.15 && spark.length >= 8) chartBonus -= 6; // no natural dips penalty
+        if (qf?.ch_pumpDump > 0.4) chartBonus -= Math.round(qf.ch_pumpDump * 10);
 
         t._apeScore = Math.max(0, Math.min(99, Math.round(
           buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus - sellPenalty - rugPenalty
@@ -2897,6 +2950,8 @@ function startAutoTrader(wallet, settings) {
           qf._rg_sybilScore > 0.3 && "sybil_bots",
           qf._rg_quickFlipRate > 0.2 && "quick_flips",
           qf.rg_holderConcentration > 0.6 && "whale_heavy",
+          qf.ch_smoothGrind > 0.35 && "smooth_grind",
+          qf.ch_dipRatio < 0.1 && spark.length >= 8 && "no_dips",
         ].filter(Boolean) : [];
         t._scoreTrend = dyn?.trend || "new";
         // Apply learner-recommended min score (if enough data)
@@ -3303,43 +3358,74 @@ app.get("/api/positions/:wallet", async (req, res) => {
 // ═══════════════════════════════════════
 // IMAGE PROXY — fixes OpaqueResponseBlocking for IPFS/pump.fun images
 // ═══════════════════════════════════════
+// In-memory image cache to avoid repeated fetches for the same URL
+const imgCache = new Map(); // url → { buf, ct, ts }
+const IMG_CACHE_MAX = 500;
+const IMG_CACHE_TTL = 3600000; // 1 hour
+
 app.get("/api/img", async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).end();
+
+  // Check cache first
+  const cached = imgCache.get(url);
+  if (cached && Date.now() - cached.ts < IMG_CACHE_TTL) {
+    res.set("Content-Type", cached.ct);
+    res.set("Cache-Control", "public, max-age=86400");
+    res.set("Access-Control-Allow-Origin", "*");
+    return res.send(cached.buf);
+  }
+
   try {
     let fetchUrl = url;
     if (fetchUrl.startsWith("ipfs://")) fetchUrl = fetchUrl.slice(7);
-    
+
     // Extract IPFS hash if present
     const ipfsMatch = fetchUrl.match(/(Qm[a-zA-Z0-9]{44,}|bafkrei[a-zA-Z0-9]{50,}|bafy[a-zA-Z0-9]{50,})/);
     const ipfsHash = ipfsMatch ? ipfsMatch[1] : null;
-    
-    // Build ordered list of URLs to try
+
+    // Build ordered list of URLs to try — more gateways for reliability
     const urls = [];
     if (ipfsHash) {
       urls.push(`https://img.fotofolio.xyz/?url=https%3A%2F%2Fcf-ipfs.com%2Fipfs%2F${ipfsHash}`);
       urls.push(`https://cf-ipfs.com/ipfs/${ipfsHash}`);
       urls.push(`https://gateway.pinata.cloud/ipfs/${ipfsHash}`);
+      urls.push(`https://nftstorage.link/ipfs/${ipfsHash}`);
+      urls.push(`https://dweb.link/ipfs/${ipfsHash}`);
       urls.push(`https://ipfs.io/ipfs/${ipfsHash}`);
+    }
+    // pump.fun image CDN — try directly if the URL is from pump.fun
+    if (fetchUrl.includes("pump.fun") || fetchUrl.includes("cf-ipfs")) {
+      const pumpMatch = fetchUrl.match(/\/ipfs\/([a-zA-Z0-9]+)/);
+      if (pumpMatch) urls.unshift(`https://img.fotofolio.xyz/?url=${encodeURIComponent(fetchUrl)}`);
     }
     // Always try the original URL
     if (!fetchUrl.startsWith("http")) fetchUrl = "https://" + fetchUrl;
     urls.push(fetchUrl);
-    
+
     for (const u of urls) {
       try {
         const r = await fetch(u, {
-          signal: AbortSignal.timeout(6000),
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "image/*,*/*" }
+          signal: AbortSignal.timeout(8000),
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "image/*,*/*" },
+          redirect: "follow",
         });
         if (!r.ok) continue;
         const ct = r.headers.get("content-type") || "image/png";
         if (!ct.includes("image") && !ct.includes("octet")) continue;
+        const buf = Buffer.from(await r.arrayBuffer());
+        if (buf.length < 100) continue; // skip empty/tiny responses
+
+        // Cache the result
+        if (imgCache.size >= IMG_CACHE_MAX) {
+          const oldest = [...imgCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+          if (oldest) imgCache.delete(oldest[0]);
+        }
+        imgCache.set(url, { buf, ct, ts: Date.now() });
+
         res.set("Content-Type", ct);
         res.set("Cache-Control", "public, max-age=86400");
         res.set("Access-Control-Allow-Origin", "*");
-        const buf = Buffer.from(await r.arrayBuffer());
-        if (buf.length < 100) continue; // skip empty/tiny responses
         return res.send(buf);
       } catch { continue; }
     }
