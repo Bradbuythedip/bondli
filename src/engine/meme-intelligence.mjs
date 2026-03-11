@@ -80,6 +80,7 @@ const FEATURE_KEYS = [
   "ch_pumpDump",        // pump-and-dump pattern detection (0=none, 1=classic p&d)
   "ch_smoothGrind",     // gradual up with no dips — likely fake/self-bought chart (0=normal, 1=suspiciously smooth)
   "ch_dipRatio",        // ratio of dip candles vs up candles (0=no dips at all, 1=many dips = healthy)
+  "ch_staircaseScore",  // monotonically increasing with uniform step sizes = dev self-buying (0=normal, 1=perfect staircase)
 
   // Meta
   "mt_hourOfDay",       // 0-23 normalized to 0-1
@@ -353,11 +354,38 @@ function extractFeatures(token) {
     if (f.ch_smoothGrind > 0.5) {
       f.ch_healthScore = Math.max(0, f.ch_healthScore - f.ch_smoothGrind * 0.4);
     }
+    // ── STAIRCASE DETECTION ──
+    // Classic rug: dev buys from fresh wallets at regular intervals → monotonically
+    // increasing chart with uniform step sizes. Real charts have varying steps + pullbacks.
+    f.ch_staircaseScore = 0;
+    if (spark.length >= 6) {
+      const sDeltas = [];
+      let sMonotoneUps = 0;
+      for (let i = 1; i < spark.length; i++) {
+        const d = spark[i] - spark[i - 1];
+        if (d > 0) { sMonotoneUps++; sDeltas.push(d); }
+      }
+      const sMonotoneRatio = sMonotoneUps / (spark.length - 1);
+      if (sDeltas.length >= 4) {
+        const sAvgDelta = sDeltas.reduce((a, b) => a + b, 0) / sDeltas.length;
+        const sVariance = sDeltas.reduce((s, d) => s + (d - sAvgDelta) ** 2, 0) / sDeltas.length;
+        const sCv = sAvgDelta > 0 ? Math.sqrt(sVariance) / sAvgDelta : 1;
+        if (sMonotoneRatio > 0.8 && sCv < 0.4) {
+          f.ch_staircaseScore = Math.min(1, 0.4 + (0.4 - sCv) * 2 + (sMonotoneRatio - 0.8) * 2);
+        } else if (sMonotoneRatio > 0.7 && sCv < 0.35) {
+          f.ch_staircaseScore = Math.min(0.5, 0.2 + (0.35 - sCv) * 1.5);
+        }
+      }
+    }
+    if (f.ch_staircaseScore > 0.4) {
+      f.ch_healthScore = Math.max(0, f.ch_healthScore - f.ch_staircaseScore * 0.5);
+    }
   } else {
     f.ch_healthScore = 0.5;
     f.ch_pumpDump = 0;
     f.ch_smoothGrind = 0;
     f.ch_dipRatio = 0.5;
+    f.ch_staircaseScore = 0;
   }
 
   // ─── Meta ───
@@ -507,6 +535,7 @@ class ScoringEngine {
     if ((features.rg_buyerRetention || 0) < 0.5) rugFlags.push("early_buyers_fled");
     if ((features.ch_smoothGrind || 0) > 0.5) rugFlags.push("fake_chart_smooth_grind");
     if ((features.ch_dipRatio || 0.5) < 0.1 && (features.ch_smoothGrind || 0) > 0.3) rugFlags.push("no_natural_dips");
+    if ((features.ch_staircaseScore || 0) > 0.4) rugFlags.push("staircase_chart");
     if ((features.rg_zeroSellFlag || 0) > 0.5) rugFlags.push("zero_organic_sells");
     if ((features.rg_buySellImbalance || 0) > 0.5) rugFlags.push("extreme_buy_sell_imbalance");
     if ((features.rg_fakeVolumeScore || 0) > 0.4) rugFlags.push("fake_volume_wash_trading");
@@ -527,7 +556,9 @@ class ScoringEngine {
     const hardReject = rugFlags.length >= 3
       || (features.rg_zeroSellFlag || 0) >= 0.8
       || ((features.rg_zeroSellFlag || 0) >= 0.5 && (features.ch_smoothGrind || 0) > 0.3)
-      || ((features.rg_buySellImbalance || 0) >= 0.7 && (features.rg_fakeVolumeScore || 0) > 0.3);
+      || ((features.rg_zeroSellFlag || 0) >= 0.5 && (features.ch_staircaseScore || 0) > 0.3)
+      || ((features.rg_buySellImbalance || 0) >= 0.7 && (features.rg_fakeVolumeScore || 0) > 0.3)
+      || ((features.ch_staircaseScore || 0) >= 0.6 && (features.rg_buySellImbalance || 0) > 0.5);
 
     return {
       score: clamped < 0 ? 0 : clamped > 99 ? 99 : clamped,

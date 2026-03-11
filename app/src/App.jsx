@@ -436,6 +436,8 @@ const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");co
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
 const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);
+// Paper trade sim state — must be declared here, NOT inside IIFEs (React Rules of Hooks / error #310)
+const[simExpanded,sSimExpanded]=useState(true);const[simDetailOpen,sSimDetailOpen]=useState(false);const[simGuideOpen,sSimGuideOpen]=useState(false);const[simRunning,sSimRunning]=useState(false);
 // CA lookup state — must be declared before any early returns to satisfy Rules of Hooks
 const[caLookup,sCaLookup]=useState(null);const[caLoading,sCaLoading]=useState(false);const caLookupRef=useRef(null);
 
@@ -1090,7 +1092,7 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 
 {/* ═══ PAPER TRADE SIMULATOR (Kahneman Premortem + Norman Visibility) ═══ */}
 {/* "The best way to predict the future is to simulate it" — Premortem technique */}
-{(()=>{const[simExpanded,sSimExpanded]=useState(true);const[simDetailOpen,sSimDetailOpen]=useState(false);const[simGuideOpen,sSimGuideOpen]=useState(false);const[simRunning,sSimRunning]=useState(false);const sim=autoTrade?.sim;
+{(()=>{const sim=autoTrade?.sim;
 return<div style={{background:T.bg,borderRadius:6,border:"1px solid "+T.cy+"18",marginBottom:8,overflow:"hidden"}}>
 {/* ── Sim header: title + on/off toggle + collapse ── */}
 <div style={{padding:mb?"8px 10px":"6px 10px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
