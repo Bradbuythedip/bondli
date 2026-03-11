@@ -723,6 +723,7 @@ function extractQuickFeatures(t) {
   let chartHealthScore = 0.5; // neutral default
   let smoothGrindScore = 0;
   let dipRatioScore = 0.5;
+  let staircaseScore = 0;
   if (spark.length >= 5) {
     const start = spark[0] || 1;
     const peak = Math.max(...spark);
@@ -757,7 +758,73 @@ function extractQuickFeatures(t) {
     else if (current > start && multiple < 3) chartHealthScore = 0.6;
     // Penalize smooth grind — looks healthy but is fake
     if (smoothGrindScore > 0.5) chartHealthScore = Math.max(0, chartHealthScore - smoothGrindScore * 0.4);
+
+    // ── STAIRCASE CHART DETECTION ──
+    // Classic rug pattern: dev buys from fresh wallets at regular intervals creating
+    // a monotonically increasing chart with uniform step sizes. Real charts have
+    // varying step sizes and natural pullbacks.
+    if (spark.length >= 6) {
+      const deltas = [];
+      let monotoneUps = 0;
+      for (let i = 1; i < spark.length; i++) {
+        const d = spark[i] - spark[i - 1];
+        if (d > 0) { monotoneUps++; deltas.push(d); }
+      }
+      const monotoneRatio = monotoneUps / (spark.length - 1);
+      // Check step uniformity: low coefficient of variation = suspiciously regular
+      if (deltas.length >= 4) {
+        const avgDelta = deltas.reduce((a, b) => a + b, 0) / deltas.length;
+        const variance = deltas.reduce((s, d) => s + (d - avgDelta) ** 2, 0) / deltas.length;
+        const cv = avgDelta > 0 ? Math.sqrt(variance) / avgDelta : 1; // coefficient of variation
+        // Low CV (uniform steps) + high monotone ratio = staircase
+        // Real charts: CV > 0.5, rugs: CV < 0.3
+        if (monotoneRatio > 0.8 && cv < 0.4) {
+          staircaseScore = Math.min(1, 0.4 + (0.4 - cv) * 2 + (monotoneRatio - 0.8) * 2);
+        } else if (monotoneRatio > 0.7 && cv < 0.35) {
+          staircaseScore = Math.min(0.5, 0.2 + (0.35 - cv) * 1.5);
+        }
+      }
+    }
+    // Staircase penalizes chart health
+    if (staircaseScore > 0.4) chartHealthScore = Math.max(0, chartHealthScore - staircaseScore * 0.5);
   }
+
+  // ── ZERO SELL FLAG — the #1 rug signal ──
+  // A token with many buys and zero/near-zero organic sells is almost always a rug.
+  // Dev buys from fresh wallets to fake activity; nobody is organically selling because
+  // there ARE no organic buyers — just the dev recycling SOL.
+  const organicSells = sells - (devSells.length || 0); // exclude dev sells
+  let zeroSellFlag = 0;
+  if (buys >= 5 && organicSells <= 0) {
+    zeroSellFlag = 1.0; // absolute red flag
+  } else if (buys >= 10 && organicSells <= 1) {
+    zeroSellFlag = 0.8;
+  } else if (buys >= 5 && organicSells <= 1) {
+    zeroSellFlag = 0.5;
+  }
+
+  // ── BUY/SELL IMBALANCE ──
+  const totalTx = buys + sells;
+  let buySellImbalance = 0;
+  if (totalTx >= 5) {
+    const buyPct = buys / totalTx;
+    if (buyPct >= 0.95) buySellImbalance = 1.0;
+    else if (buyPct >= 0.9) buySellImbalance = 0.7;
+    else if (buyPct >= 0.8 && totalTx >= 10) buySellImbalance = 0.4;
+  }
+
+  // ── FRESH WALLET RATIO ──
+  // If most buyers are wallets we've only seen once in this token's trades,
+  // and they all bought but never sold, they're likely dev-controlled fresh wallets.
+  const buyWalletTxCounts = new Map();
+  for (const tr of trades) {
+    if (tr.wallet) buyWalletTxCounts.set(tr.wallet, (buyWalletTxCounts.get(tr.wallet) || 0) + 1);
+  }
+  const uniqueBuyWallets = new Set(buyTrades.map(tr => tr.wallet).filter(Boolean));
+  const singleUseBuyers = [...uniqueBuyWallets].filter(w => buyWalletTxCounts.get(w) === 1).length;
+  const freshWalletRatio = uniqueBuyWallets.size > 2 ? singleUseBuyers / uniqueBuyWallets.size : 0;
+  // Combined: fresh wallets + zero sells = definite rug setup
+  const freshWalletRugSignal = freshWalletRatio > 0.7 && zeroSellFlag > 0.5 ? Math.min(1, freshWalletRatio * zeroSellFlag * 1.5) : freshWalletRatio;
 
   return {
     // On-chain
@@ -785,12 +852,16 @@ function extractQuickFeatures(t) {
     ch_pumpDump: pumpDumpScore,
     ch_smoothGrind: smoothGrindScore,
     ch_dipRatio: dipRatioScore,
+    ch_staircaseScore: staircaseScore,
     // Extra rug signals (used in buy gate, not in FEATURE_KEYS)
     _rg_devSelfSnipe: devSelfSnipe,
     _rg_earlyDump: earlyDumpScore,
     _rg_quickFlipRate: quickFlipRate,
     _rg_pumpDump: pumpDumpScore,
     _rg_sybilScore: sybilScore,
+    _rg_zeroSellFlag: zeroSellFlag,
+    _rg_buySellImbalance: buySellImbalance,
+    _rg_freshWalletRatio: freshWalletRugSignal,
   };
 }
 
@@ -1056,7 +1127,18 @@ setInterval(() => {
     .map(t => {
       const ageMin = Math.max(0.3, (now - t.createdAt) / 60000);
       const ub = t.uniqueBuyers?.size || 0;
-      return { ...t, _heat: (t.buys/ageMin)*10 + ub*8 + t.volumeSol*5 + (t.mcapUsd>5000?10:0) };
+      // Penalize rug patterns in HOT tab too
+      let rugHeatPenalty = 0;
+      try {
+        const qf = extractQuickFeatures(t);
+        if (qf) {
+          if (qf._rg_zeroSellFlag > 0.5) rugHeatPenalty += qf._rg_zeroSellFlag * 30;
+          if (qf._rg_buySellImbalance > 0.5) rugHeatPenalty += qf._rg_buySellImbalance * 20;
+          if (qf.ch_staircaseScore > 0.3) rugHeatPenalty += qf.ch_staircaseScore * 15;
+          if (qf.ch_smoothGrind > 0.35) rugHeatPenalty += qf.ch_smoothGrind * 10;
+        }
+      } catch {}
+      return { ...t, _heat: (t.buys/ageMin)*10 + ub*8 + t.volumeSol*5 + (t.mcapUsd>5000?10:0) - rugHeatPenalty };
     })
     .sort((a, b) => b._heat - a._heat)
     .slice(0, 50).map(serialize);
@@ -1087,7 +1169,28 @@ setInterval(() => {
       const ub = t.uniqueBuyers?.size || 0;
       const mcGrowth = t.spark?.length > 2 ? (t.spark[t.spark.length-1] - t.spark[0]) / Math.max(1, t.spark[0]) : 0;
       if (mcGrowth < -0.3) return null;
-      return { ...t, _momentum: buyRate*12 + pressure*20 + ub*10 + mcGrowth*30 + Math.min(15, t.volumeSol*3) };
+      // ── RUG PENALTY FOR MOMENTUM TAB ──
+      // Tokens with all buys / zero sells look like strong momentum but are actually rugs.
+      // Penalize rug patterns to prevent them from ranking high.
+      let rugMomentumPenalty = 0;
+      try {
+        const qf = extractQuickFeatures(t);
+        if (qf) {
+          // Zero sells: many buys + no organic sells = fake momentum
+          if (qf._rg_zeroSellFlag > 0.5) rugMomentumPenalty += qf._rg_zeroSellFlag * 40;
+          // Buy/sell imbalance: 90%+ buys = suspicious
+          if (qf._rg_buySellImbalance > 0.4) rugMomentumPenalty += qf._rg_buySellImbalance * 25;
+          // Staircase chart: fake chart pattern
+          if (qf.ch_staircaseScore > 0.3) rugMomentumPenalty += qf.ch_staircaseScore * 20;
+          // Smooth grind: no natural dips
+          if (qf.ch_smoothGrind > 0.35) rugMomentumPenalty += qf.ch_smoothGrind * 15;
+          // Fresh wallets buying: dev self-buying
+          if (qf._rg_freshWalletRatio > 0.6) rugMomentumPenalty += qf._rg_freshWalletRatio * 15;
+          // Hard reject: obvious rug = exclude from momentum entirely
+          if (qf._rg_zeroSellFlag >= 0.8 || (qf._rg_zeroSellFlag >= 0.5 && qf.ch_staircaseScore > 0.3)) return null;
+        }
+      } catch {}
+      return { ...t, _momentum: buyRate*12 + pressure*20 + ub*10 + mcGrowth*30 + Math.min(15, t.volumeSol*3) - rugMomentumPenalty };
     })
     .filter(Boolean)
     .sort((a, b) => b._momentum - a._momentum)
@@ -2949,6 +3052,16 @@ function startAutoTrader(wallet, settings) {
           // NEW: smooth grind detection — fake charts with no natural dips
           else if (qf.ch_smoothGrind > 0.6) rugRejectReason = "smooth_grind";
           else if (qf.ch_smoothGrind > 0.4 && qf.ch_dipRatio < 0.1) rugRejectReason = "no_dips";
+          // CRITICAL: zero sells = #1 rug pattern. Many buys + zero organic sells = dev self-buying
+          else if (qf._rg_zeroSellFlag >= 0.8) rugRejectReason = "zero_sells";
+          else if (qf._rg_zeroSellFlag >= 0.5 && (qf.ch_smoothGrind > 0.3 || qf.ch_staircaseScore > 0.3)) rugRejectReason = "zero_sells_fake_chart";
+          // Buy/sell imbalance: 95%+ buys = almost certainly fake activity
+          else if (qf._rg_buySellImbalance >= 0.8 && buys >= 8) rugRejectReason = "all_buys_no_sells";
+          // Staircase chart: monotonic up with uniform steps = dev self-buying pattern
+          else if (qf.ch_staircaseScore > 0.6) rugRejectReason = "staircase_chart";
+          else if (qf.ch_staircaseScore > 0.4 && qf._rg_freshWalletRatio > 0.6) rugRejectReason = "staircase_fresh_wallets";
+          // Fresh wallets + zero sells combo: definitive rug setup
+          else if (qf._rg_freshWalletRatio > 0.8 && qf._rg_zeroSellFlag > 0.4) rugRejectReason = "fresh_wallet_rug";
           // Artwork originality: exact duplicate image = almost certainly copycat scam
           else if (t._artworkFlags?.includes("EXACT_DUPLICATE")) rugRejectReason = "stolen_art";
           else {
@@ -2958,6 +3071,10 @@ function startAutoTrader(wallet, settings) {
               qf.rg_holderConcentration > 0.6, qf._rg_earlyDump > 0.2,
               qf.rg_mcapDropRate > 0.25, qf._rg_pumpDump > 0.3,
               qf.ch_smoothGrind > 0.35, qf.ch_dipRatio < 0.1,
+              qf._rg_zeroSellFlag > 0.4,           // zero/near-zero sells
+              qf._rg_buySellImbalance > 0.5,        // extreme buy imbalance
+              qf.ch_staircaseScore > 0.3,            // staircase chart pattern
+              qf._rg_freshWalletRatio > 0.6,         // fresh wallet buyers
               t._artworkOriginal === false, // copied/stolen artwork
             ].filter(Boolean).length;
             if (rugSignals >= 3) rugRejectReason = "multi_rug_" + rugSignals;
@@ -3018,6 +3135,10 @@ function startAutoTrader(wallet, settings) {
           rugPenalty += sellVol > vol * 0.4 ? 5 : 0;                  // sell pressure
           rugPenalty += qf._rg_pumpDump > 0.3 ? 8 : 0;               // pump-dump pattern
           rugPenalty += qf.ch_smoothGrind > 0.35 ? Math.round(qf.ch_smoothGrind * 10) : 0; // smooth grind
+          rugPenalty += qf._rg_zeroSellFlag > 0.4 ? Math.round(qf._rg_zeroSellFlag * 15) : 0; // zero sells
+          rugPenalty += qf._rg_buySellImbalance > 0.4 ? Math.round(qf._rg_buySellImbalance * 10) : 0; // buy imbalance
+          rugPenalty += qf.ch_staircaseScore > 0.3 ? Math.round(qf.ch_staircaseScore * 12) : 0; // staircase
+          rugPenalty += qf._rg_freshWalletRatio > 0.6 ? Math.round(qf._rg_freshWalletRatio * 8) : 0; // fresh wallets
         } else {
           rugPenalty = (sellVol > vol * 0.5 && sells > 3) ? 15 :
                        (sells > buys * 1.2) ? 10 : 0;
@@ -3067,6 +3188,12 @@ function startAutoTrader(wallet, settings) {
         if (qf?.ch_smoothGrind > 0.35) chartBonus -= Math.round(qf.ch_smoothGrind * 15);
         if (qf?.ch_dipRatio < 0.15 && spark.length >= 8) chartBonus -= 6; // no natural dips penalty
         if (qf?.ch_pumpDump > 0.4) chartBonus -= Math.round(qf.ch_pumpDump * 10);
+        // Staircase chart penalty: monotonic up with uniform steps = dev self-buying
+        if (qf?.ch_staircaseScore > 0.4) chartBonus -= Math.round(qf.ch_staircaseScore * 20);
+        // Zero sell penalty: many buys + zero sells = almost always a rug
+        if (qf?._rg_zeroSellFlag > 0.5) chartBonus -= Math.round(qf._rg_zeroSellFlag * 25);
+        // Fresh wallet penalty: all buyers are brand new wallets
+        if (qf?._rg_freshWalletRatio > 0.7) chartBonus -= Math.round(qf._rg_freshWalletRatio * 15);
 
         // ═══ LOW-VELOCITY POTENTIAL BONUS ═══
         // Core insight: tokens with LOW activity but HEALTHY signals have the highest
@@ -3106,6 +3233,10 @@ function startAutoTrader(wallet, settings) {
             qf.rg_holderConcentration > 0.6 && "whale_heavy",
             qf.ch_smoothGrind > 0.35 && "smooth_grind",
             qf.ch_dipRatio < 0.1 && spark.length >= 8 && "no_dips",
+            qf.ch_staircaseScore > 0.4 && "staircase_chart",
+            qf._rg_zeroSellFlag > 0.5 && "zero_sells",
+            qf._rg_buySellImbalance > 0.5 && "all_buys_no_sells",
+            qf._rg_freshWalletRatio > 0.7 && "fresh_wallets",
           ] : []),
           t._artworkOriginal === false && "stolen_art",
           t._artworkFlags?.includes("SIMILAR_IMAGE") && "similar_art",
