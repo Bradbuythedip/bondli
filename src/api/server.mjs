@@ -922,6 +922,661 @@ app.get("/api/admin/sessions", async (req, res) => {
 });
 
 // ═══════════════════════════════════════
+// LIVE SIM ENGINE — mirrors auto-ape decisions without executing trades
+// Available to ALL tiers. Shows real decisions, tracks P&L, auto-calibrates.
+// After ~1hr of sim, settings can graduate to real auto-ape.
+// ═══════════════════════════════════════
+const liveSims = new Map(); // wallet|"anon_ip" → sim state
+
+function createLiveSim(id, settings) {
+  if (liveSims.has(id)) stopLiveSim(id);
+  const state = {
+    settings: {
+      minScore: settings.minScore || 28,
+      solPerTrade: settings.solPerTrade || 0.05,
+      maxPositions: settings.maxPositions || 5,
+      tp1: settings.tp1 || 25, tp1Sell: settings.tp1Sell || 35,
+      tp2: settings.tp2 || 70, tp2Sell: settings.tp2Sell || 35,
+      tp3: settings.tp3 || 150, tp3Sell: settings.tp3Sell || 50,
+      sl1: settings.sl1 || 12, sl1Sell: settings.sl1Sell || 70,
+      sl2: settings.sl2 || 22,
+      momentumExit: settings.momentumExit !== false,
+    },
+    positions: new Map(),    // ca → simulated position
+    closedTrades: [],        // completed sim trades
+    log: [],                 // decision log
+    decisions: [],           // every buy/sell decision for UI feed
+    startedAt: Date.now(),
+    lastActivity: Date.now(),
+    interval: null,
+    // Auto-calibration state
+    calibration: {
+      predictions: [],       // { ca, predictedAction, actualOutcome, timestamp }
+      accuracy: 0,
+      totalPredictions: 0,
+      correctPredictions: 0,
+      lastCalibrated: Date.now(),
+      adjustments: { tpBias: 0, slBias: 0, scoreBias: 0 },
+    },
+    // Graduation tracking
+    graduation: {
+      ready: false,
+      simDurationMs: 0,
+      totalSimTrades: 0,
+      simWinRate: 0,
+      simRoi: 0,
+      confidence: 0,  // 0-100, needs >70 to graduate
+    },
+    stats: {
+      totalBuys: 0, totalSells: 0,
+      wins: 0, losses: 0,
+      totalPnlSol: 0, totalInvested: 0,
+      bestTrade: null, worstTrade: null,
+      peakPnl: 0, maxDrawdown: 0,
+    },
+    soldCooldowns: new Map(),
+  };
+
+  const log = (msg, type = "info") => {
+    const entry = { msg, type, time: Date.now() };
+    state.log.push(entry);
+    if (state.log.length > 100) state.log.shift();
+    console.log(`[SIM][${id.slice(0, 8)}] ${msg}`);
+  };
+
+  const addDecision = (action, data) => {
+    const d = { action, ...data, time: Date.now() };
+    state.decisions.push(d);
+    if (state.decisions.length > 200) state.decisions.shift();
+    // Broadcast to WS so UI updates live
+    broadcastWS({ event: "sim-decision", data: { simId: id, ...d } });
+  };
+
+  // Helper to broadcast to websocket clients
+  function broadcastWS(msg) {
+    const str = JSON.stringify(msg);
+    wss.clients.forEach(ws => {
+      if (ws.readyState === 1) { try { ws.send(str); } catch {} }
+    });
+  }
+
+  // Score-based position sizing (mirrors auto-ape exactly)
+  function calcPositionSize(score, trend, rugFlagCount) {
+    const minS = state.settings.minScore;
+    const range = Math.max(80 - minS, 20);
+    let mult = 0.5 + ((score - minS) / range);
+    if (trend === "rocket") mult += 0.2;
+    else if (trend === "rising") mult += 0.1;
+    else if (trend === "fading") mult -= 0.15;
+    else if (trend === "declining") mult -= 0.25;
+    mult -= rugFlagCount * 0.1;
+    mult = Math.max(0.4, Math.min(1.6, mult));
+    // Apply calibration bias
+    mult += state.calibration.adjustments.scoreBias * 0.01;
+    mult = Math.max(0.3, Math.min(1.8, mult));
+    return Math.round(state.settings.solPerTrade * mult * 1000) / 1000;
+  }
+
+  state.interval = setInterval(async () => {
+    try {
+      if (!movers) return;
+
+      // Get current radar tokens
+      const currentTokens = movers.lastResults || [];
+      if (currentTokens.length === 0) return;
+      const radarMap = new Map(currentTokens.map(t => [t.ca, t]));
+
+      // ── CHECK EXISTING SIM POSITIONS ──
+      for (const [ca, pos] of state.positions) {
+        const token = radarMap.get(ca);
+        if (!token) {
+          // Token fell off radar — check age, maybe exit
+          if (Date.now() - pos.entryTime > 300000) {
+            const reason = "radar-exit";
+            addDecision("SELL", { ca, name: pos.name, reason, pnlPct: 0, action: "EXIT" });
+            log(`SIM EXIT ${pos.name}: fell off radar after ${Math.round((Date.now() - pos.entryTime) / 60000)}m`);
+            closeTrade(ca, 0, reason);
+          }
+          continue;
+        }
+
+        const currentMcap = token.mcapUsd || 0;
+        if (pos.entryMcap <= 0) continue;
+        const changePct = ((currentMcap - pos.entryMcap) / pos.entryMcap) * 100;
+        pos.peakMcap = Math.max(pos.peakMcap || pos.entryMcap, currentMcap);
+        pos.currentMcap = currentMcap;
+        pos.changePct = +changePct.toFixed(1);
+        const fromPeak = pos.peakMcap > 0 ? ((pos.peakMcap - currentMcap) / pos.peakMcap) * 100 : 0;
+
+        // Apply calibration adjustments to TP/SL
+        const s = { ...state.settings };
+        s.tp1 = Math.round(s.tp1 * (1 + state.calibration.adjustments.tpBias * 0.01));
+        s.tp2 = Math.round(s.tp2 * (1 + state.calibration.adjustments.tpBias * 0.01));
+        s.tp3 = Math.round(s.tp3 * (1 + state.calibration.adjustments.tpBias * 0.01));
+        s.sl1 = Math.round(s.sl1 * (1 + state.calibration.adjustments.slBias * 0.01));
+        s.sl2 = Math.round(s.sl2 * (1 + state.calibration.adjustments.slBias * 0.01));
+
+        // ── MOMENTUM EXIT (score derivative) ──
+        if (s.momentumExit && scoreDynamics) {
+          const liveScore = token.apeScore || 0;
+          if (pos.entryScore && liveScore > 0) {
+            pos.liveScore = liveScore;
+            const scoreDrop = pos.entryScore - liveScore;
+            const dyn = scoreDynamics.get(ca);
+
+            if (dyn?.trend === "crashing" && (dyn.scores || 0) >= 3) {
+              addDecision("SELL", { ca, name: pos.name, reason: "crash-exit", pnlPct: changePct.toFixed(1), velocity: dyn.velocity, action: "CRASH EXIT" });
+              log(`SIM CRASH EXIT ${pos.name}: score crashing v=${dyn.velocity}/s — FULL SELL at ${changePct.toFixed(1)}%`, "sell");
+              closeTrade(ca, changePct, "crash-exit");
+              continue;
+            }
+            if (scoreDrop >= 30) {
+              addDecision("SELL", { ca, name: pos.name, reason: "momentum-exit", pnlPct: changePct.toFixed(1), scoreDrop, action: "MOMENTUM EXIT" });
+              log(`SIM MOMENTUM EXIT ${pos.name}: score ${pos.entryScore}→${liveScore} (−${scoreDrop})`, "sell");
+              closeTrade(ca, changePct, "momentum-exit");
+              continue;
+            }
+            if (scoreDrop >= 20) {
+              s.sl1 = Math.round(s.sl1 * 0.5);
+              s.sl2 = Math.round(s.sl2 * 0.5);
+            }
+          }
+        }
+
+        // ── TAKE PROFIT — 3 tiers ──
+        if (!pos.tpHit) pos.tpHit = 0;
+
+        if (pos.tpHit < 3 && changePct >= s.tp3) {
+          const trailPct = changePct > 400 ? 25 : changePct > 200 ? 20 : 15;
+          if (fromPeak >= trailPct) {
+            addDecision("SELL", { ca, name: pos.name, reason: "TP3", pnlPct: changePct.toFixed(1), sellPct: s.tp3Sell, action: `TP3 +${changePct.toFixed(0)}%` });
+            log(`SIM TP3 ${pos.name}: +${changePct.toFixed(0)}% — would sell ${s.tp3Sell}% (moonbag rest)`, "profit");
+            pos.tpHit = 3;
+            pos.isMoonbag = true;
+          }
+        } else if (pos.tpHit < 2 && changePct >= s.tp2) {
+          addDecision("SELL", { ca, name: pos.name, reason: "TP2", pnlPct: changePct.toFixed(1), sellPct: s.tp2Sell, action: `TP2 +${changePct.toFixed(0)}%` });
+          log(`SIM TP2 ${pos.name}: +${changePct.toFixed(0)}% — would sell ${s.tp2Sell}%`, "profit");
+          pos.tpHit = 2;
+        } else if (pos.tpHit < 1 && changePct >= s.tp1) {
+          addDecision("SELL", { ca, name: pos.name, reason: "TP1", pnlPct: changePct.toFixed(1), sellPct: s.tp1Sell, action: `TP1 +${changePct.toFixed(0)}%` });
+          log(`SIM TP1 ${pos.name}: +${changePct.toFixed(0)}% — would sell ${s.tp1Sell}%`, "profit");
+          pos.tpHit = 1;
+        } else if (fromPeak > 30 && changePct > 10 && pos.tpHit === 0) {
+          addDecision("SELL", { ca, name: pos.name, reason: "trailing", pnlPct: changePct.toFixed(1), sellPct: s.tp1Sell, action: `TRAIL +${changePct.toFixed(0)}%` });
+          log(`SIM TRAIL ${pos.name}: +${changePct.toFixed(0)}% (down ${fromPeak.toFixed(0)}% from peak)`, "profit");
+          pos.tpHit = 1;
+        }
+
+        // ── STOP LOSS — 2 tiers ──
+        if (pos.isMoonbag) {
+          if (changePct <= -80) {
+            addDecision("SELL", { ca, name: pos.name, reason: "moonbag-dead", pnlPct: changePct.toFixed(1), action: "MOONBAG DEAD" });
+            log(`SIM MOONBAG DEAD ${pos.name}: ${changePct.toFixed(0)}%`, "loss");
+            closeTrade(ca, changePct, "moonbag-dead");
+          }
+        } else if (changePct <= -s.sl2) {
+          addDecision("SELL", { ca, name: pos.name, reason: "SL2", pnlPct: changePct.toFixed(1), action: `SL2 ${changePct.toFixed(0)}%` });
+          log(`SIM SL2 ${pos.name}: ${changePct.toFixed(0)}% — full exit`, "loss");
+          closeTrade(ca, changePct, "SL2");
+        } else if (!pos.slHit && changePct <= -s.sl1) {
+          addDecision("SELL", { ca, name: pos.name, reason: "SL1", pnlPct: changePct.toFixed(1), sellPct: s.sl1Sell, action: `SL1 ${changePct.toFixed(0)}%` });
+          log(`SIM SL1 ${pos.name}: ${changePct.toFixed(0)}% — would sell ${s.sl1Sell}%`, "loss");
+          pos.slHit = 1;
+        }
+      }
+
+      // ── LOOK FOR NEW TOKENS TO SIM-BUY ──
+      if (state.positions.size >= state.settings.maxPositions) return;
+
+      // Clean expired cooldowns
+      for (const [c, t] of state.soldCooldowns) {
+        if (Date.now() - t > 1800000) state.soldCooldowns.delete(c);
+      }
+
+      const candidates = currentTokens.filter(t => {
+        const mc = t.mcapUsd || 0;
+        const buys = t.buys || 0;
+        const ub = t.uniqueBuyers || 0;
+        const ageMin = (Date.now() - (t.createdAt || Date.now())) / 60000;
+        const sells = t.sells || 0;
+        if (mc < 2500 || buys < 2 || ub < 2 || ageMin < 0.5) return false;
+        if (sells > buys * 1.2) return false;
+        if (state.positions.has(t.ca)) return false;
+        if (state.soldCooldowns.has(t.ca)) return false;
+        // Use apeScore from radar if available
+        const score = t.apeScore || 0;
+        const effectiveMin = state.settings.minScore + state.calibration.adjustments.scoreBias;
+        if (score < effectiveMin) return false;
+        // Check score dynamics if available
+        if (scoreDynamics) {
+          const dyn = scoreDynamics.get(t.ca);
+          if (dyn?.trend === "crashing") return false;
+          if (!dyn || (dyn.scores || 0) < 2) return false;
+        }
+        return true;
+      }).sort((a, b) => (b.apeScore || 0) - (a.apeScore || 0));
+
+      // Sim-buy top 2 candidates
+      for (const t of candidates.slice(0, 2)) {
+        if (state.positions.size >= state.settings.maxPositions) break;
+        const score = t.apeScore || 0;
+        const dyn = scoreDynamics?.get(t.ca);
+        const trend = dyn?.trend || "new";
+        const rugFlagCount = t.rugFlags?.length || 0;
+        const tradeSol = calcPositionSize(score, trend, rugFlagCount);
+        const sizeMult = +(tradeSol / state.settings.solPerTrade).toFixed(2);
+
+        state.positions.set(t.ca, {
+          name: t.name || t.ca.slice(0, 8),
+          ticker: t.ticker || "",
+          image: t.image || "",
+          entryMcap: t.mcapUsd || 0,
+          currentMcap: t.mcapUsd || 0,
+          peakMcap: t.mcapUsd || 0,
+          entrySol: tradeSol,
+          entryTime: Date.now(),
+          entryScore: score,
+          liveScore: score,
+          sizeMult,
+          changePct: 0,
+          tpHit: 0, slHit: 0,
+          isMoonbag: false,
+          trend,
+        });
+
+        state.stats.totalBuys++;
+        state.stats.totalInvested += tradeSol;
+
+        addDecision("BUY", {
+          ca: t.ca, name: t.name || t.ca.slice(0, 8),
+          score, trend, sizeMult, sol: tradeSol,
+          mcap: t.mcapUsd, rugFlags: t.rugFlags || [],
+          action: `BUY ${t.name || t.ca.slice(0, 6)} @ $${Math.round(t.mcapUsd || 0)} MC`,
+        });
+        log(`SIM BUY ${t.name || t.ca.slice(0, 6)} | score:${score} trend:${trend} | MC:$${Math.round(t.mcapUsd || 0)} | ${tradeSol} SOL (${sizeMult}x)`, "buy");
+
+        // Record prediction for calibration
+        state.calibration.predictions.push({
+          ca: t.ca, entryMcap: t.mcapUsd || 0,
+          predictedAction: "buy", entryScore: score,
+          timestamp: Date.now(), resolved: false,
+        });
+      }
+
+      // ── AUTO-CALIBRATION — compare predictions to outcomes ──
+      if (Date.now() - state.calibration.lastCalibrated > 60000) {
+        calibrateSim(state);
+      }
+
+      // ── UPDATE GRADUATION STATUS ──
+      updateGraduation(state);
+
+    } catch (e) {
+      log(`Sim loop error: ${e.message}`, "error");
+    }
+  }, 5000); // check every 5s
+
+  function closeTrade(ca, changePct, reason) {
+    const pos = state.positions.get(ca);
+    if (!pos) return;
+    const pnlSol = +(pos.entrySol * (changePct / 100)).toFixed(4);
+    const trade = {
+      ca, name: pos.name, entrySol: pos.entrySol,
+      entryMcap: pos.entryMcap, exitMcap: pos.currentMcap || pos.entryMcap,
+      changePct: +changePct.toFixed(1), pnlSol,
+      exitReason: reason, exitTime: Date.now(),
+      entryScore: pos.entryScore, holdTime: Date.now() - pos.entryTime,
+    };
+    state.closedTrades.push(trade);
+    if (state.closedTrades.length > 100) state.closedTrades.shift();
+
+    // Update stats
+    state.stats.totalSells++;
+    state.stats.totalPnlSol = +(state.stats.totalPnlSol + pnlSol).toFixed(4);
+    if (pnlSol > 0) state.stats.wins++;
+    else state.stats.losses++;
+    if (pnlSol > (state.stats.bestTrade?.pnlSol || -Infinity)) state.stats.bestTrade = trade;
+    if (pnlSol < (state.stats.worstTrade?.pnlSol || Infinity)) state.stats.worstTrade = trade;
+    if (state.stats.totalPnlSol > state.stats.peakPnl) state.stats.peakPnl = state.stats.totalPnlSol;
+    const drawdown = state.stats.peakPnl - state.stats.totalPnlSol;
+    if (drawdown > state.stats.maxDrawdown) state.stats.maxDrawdown = drawdown;
+
+    // Resolve calibration prediction
+    const pred = state.calibration.predictions.find(p => p.ca === ca && !p.resolved);
+    if (pred) {
+      pred.resolved = true;
+      pred.actualOutcome = pnlSol > 0 ? "win" : "loss";
+      pred.actualPnl = pnlSol;
+      state.calibration.totalPredictions++;
+      if ((pnlSol > 0 && pred.predictedAction === "buy") || (pnlSol <= 0 && pred.predictedAction === "skip")) {
+        state.calibration.correctPredictions++;
+      }
+    }
+
+    state.positions.delete(ca);
+    state.soldCooldowns.set(ca, Date.now());
+  }
+
+  function calibrateSim(state) {
+    state.calibration.lastCalibrated = Date.now();
+    const resolved = state.calibration.predictions.filter(p => p.resolved);
+    if (resolved.length < 5) return; // need minimum data
+
+    state.calibration.accuracy = state.calibration.totalPredictions > 0
+      ? Math.round((state.calibration.correctPredictions / state.calibration.totalPredictions) * 100) : 0;
+
+    // Analyze recent trades to adjust TP/SL bias
+    const recent = state.closedTrades.slice(-20);
+    if (recent.length < 3) return;
+
+    const avgPnl = recent.reduce((s, t) => s + t.pnlSol, 0) / recent.length;
+    const slExits = recent.filter(t => t.exitReason.includes("SL")).length;
+    const tpExits = recent.filter(t => t.exitReason.includes("TP")).length;
+    const slRate = slExits / recent.length;
+
+    // Auto-adjust: if too many SL exits, tighten entry (raise min score)
+    if (slRate > 0.6 && recent.length >= 5) {
+      state.calibration.adjustments.scoreBias = Math.min(15, state.calibration.adjustments.scoreBias + 2);
+      log(`CALIBRATE: high SL rate (${(slRate * 100).toFixed(0)}%) → raising min score bias to +${state.calibration.adjustments.scoreBias}`, "calibrate");
+    } else if (slRate < 0.3 && avgPnl > 0) {
+      state.calibration.adjustments.scoreBias = Math.max(-10, state.calibration.adjustments.scoreBias - 1);
+    }
+
+    // If TP exits are mostly TP1 (never reaching TP2/TP3), widen TP1
+    const tp1Only = recent.filter(t => t.exitReason === "TP1").length;
+    if (tpExits > 0 && tp1Only / tpExits > 0.8) {
+      state.calibration.adjustments.tpBias = Math.min(20, state.calibration.adjustments.tpBias + 3);
+      log(`CALIBRATE: most exits at TP1 → widening TP triggers (+${state.calibration.adjustments.tpBias}%)`, "calibrate");
+    }
+
+    // If losses are deep (avg loss > 2x SL1), tighten SL
+    const lossAvg = recent.filter(t => t.pnlSol < 0).reduce((s, t) => s + Math.abs(t.changePct), 0) / Math.max(1, slExits);
+    if (lossAvg > state.settings.sl1 * 2 && slExits > 2) {
+      state.calibration.adjustments.slBias = Math.max(-15, state.calibration.adjustments.slBias - 2);
+      log(`CALIBRATE: deep losses (avg -${lossAvg.toFixed(0)}%) → tightening SL (${state.calibration.adjustments.slBias}%)`, "calibrate");
+    }
+
+    // Prune old predictions (keep last 100)
+    state.calibration.predictions = state.calibration.predictions.slice(-100);
+  }
+
+  function updateGraduation(state) {
+    const simDuration = Date.now() - state.startedAt;
+    const totalTrades = state.stats.wins + state.stats.losses;
+    const winRate = totalTrades > 0 ? Math.round((state.stats.wins / totalTrades) * 100) : 0;
+    const roi = state.stats.totalInvested > 0 ? +((state.stats.totalPnlSol / state.stats.totalInvested) * 100).toFixed(1) : 0;
+
+    // Confidence formula:
+    // - Duration: 30pts max (1hr = full)
+    // - Trade count: 25pts max (20 trades = full)
+    // - Win rate: 25pts max (>55% = full)
+    // - Positive ROI: 20pts
+    const durationPts = Math.min(30, (simDuration / 3600000) * 30);
+    const tradePts = Math.min(25, (totalTrades / 20) * 25);
+    const winPts = winRate >= 55 ? 25 : winRate >= 45 ? 15 : 5;
+    const roiPts = roi > 0 ? 20 : roi > -5 ? 10 : 0;
+    const confidence = Math.min(100, Math.round(durationPts + tradePts + winPts + roiPts));
+
+    state.graduation = {
+      ready: confidence >= 70 && simDuration >= 3600000, // min 1hr + 70% confidence
+      simDurationMs: simDuration,
+      totalSimTrades: totalTrades,
+      simWinRate: winRate,
+      simRoi: roi,
+      confidence,
+    };
+  }
+
+  liveSims.set(id, state);
+  log(`Live sim started: minScore=${state.settings.minScore} sol=${state.settings.solPerTrade} TP1=${state.settings.tp1}% SL1=${state.settings.sl1}%`);
+  return state;
+}
+
+function stopLiveSim(id) {
+  const state = liveSims.get(id);
+  if (state) {
+    clearInterval(state.interval);
+  }
+  liveSims.delete(id);
+}
+
+// ── Live Sim Routes — available to ALL tiers ──
+
+// Start live sim (no wallet/trading key required)
+app.post("/api/sim/start", apiLimiter, async (req, res) => {
+  try {
+    const { wallet, settings } = req.body;
+    // Use wallet if available, otherwise use IP
+    const id = wallet || ("anon_" + (req.clientIP || "unknown"));
+    const state = createLiveSim(id, settings || {});
+    res.json({ ok: true, simId: id, settings: state.settings });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Stop/close sim mode
+app.post("/api/sim/stop", apiLimiter, (req, res) => {
+  const { wallet } = req.body;
+  const id = wallet || ("anon_" + (req.clientIP || "unknown"));
+  const state = liveSims.get(id);
+  if (!state) return res.json({ ok: true, message: "No sim running" });
+
+  // Return final stats before closing
+  const finalStats = {
+    duration: Date.now() - state.startedAt,
+    ...state.stats,
+    winRate: (state.stats.wins + state.stats.losses) > 0
+      ? Math.round((state.stats.wins / (state.stats.wins + state.stats.losses)) * 100) : 0,
+    roi: state.stats.totalInvested > 0
+      ? +((state.stats.totalPnlSol / state.stats.totalInvested) * 100).toFixed(1) : 0,
+    calibration: state.calibration,
+    graduation: state.graduation,
+    closedTrades: state.closedTrades.slice(-20),
+  };
+
+  stopLiveSim(id);
+  res.json({ ok: true, finalStats });
+});
+
+// Get live sim status (polled by frontend)
+app.get("/api/sim/status", apiLimiter, (req, res) => {
+  const wallet = req.query.wallet;
+  const id = wallet || ("anon_" + (req.clientIP || "unknown"));
+  const state = liveSims.get(id);
+  if (!state) return res.json({ active: false });
+
+  state.lastActivity = Date.now();
+
+  const totalTrades = state.stats.wins + state.stats.losses;
+  res.json({
+    active: true,
+    settings: state.settings,
+    positions: [...state.positions.entries()].map(([ca, p]) => ({
+      ca, name: p.name, ticker: p.ticker, image: p.image,
+      entryMcap: p.entryMcap, currentMcap: p.currentMcap,
+      peakMcap: p.peakMcap, changePct: p.changePct,
+      entrySol: p.entrySol, sizeMult: p.sizeMult,
+      entryScore: p.entryScore, liveScore: p.liveScore,
+      trend: p.trend, tpHit: p.tpHit || 0, slHit: p.slHit || 0,
+      isMoonbag: !!p.isMoonbag,
+      age: Math.round((Date.now() - p.entryTime) / 60000),
+    })),
+    decisions: state.decisions.slice(-30),
+    log: state.log.slice(-30),
+    stats: {
+      ...state.stats,
+      totalTrades,
+      winRate: totalTrades > 0 ? Math.round((state.stats.wins / totalTrades) * 100) : 0,
+      roi: state.stats.totalInvested > 0
+        ? +((state.stats.totalPnlSol / state.stats.totalInvested) * 100).toFixed(1) : 0,
+    },
+    calibration: {
+      accuracy: state.calibration.accuracy,
+      totalPredictions: state.calibration.totalPredictions,
+      adjustments: state.calibration.adjustments,
+    },
+    graduation: state.graduation,
+    recentlyClosed: state.closedTrades.slice(-10).reverse(),
+    startedAt: state.startedAt,
+    simDuration: Date.now() - state.startedAt,
+  });
+});
+
+// Update sim settings live (mirrors auto-trade/update)
+app.post("/api/sim/update", apiLimiter, (req, res) => {
+  const { wallet, settings } = req.body;
+  const id = wallet || ("anon_" + (req.clientIP || "unknown"));
+  const state = liveSims.get(id);
+  if (!state) return res.status(404).json({ error: "No sim running" });
+  state.lastActivity = Date.now();
+  Object.assign(state.settings, settings);
+  res.json({ ok: true, settings: state.settings });
+});
+
+// Graduate: apply sim settings to real auto-ape (pro+ only)
+app.post("/api/sim/graduate", apiLimiter, walletAuth, async (req, res) => {
+  try {
+    const wallet = req.user.wallet;
+    if (req.user.tier !== "pro" && !req.user.whitelisted) {
+      return res.status(403).json({ error: "Auto-ape requires Pro tier. Sim mode is free for everyone." });
+    }
+    const simState = liveSims.get(wallet);
+    if (!simState) return res.status(404).json({ error: "No sim running" });
+    if (!simState.graduation.ready) {
+      return res.status(400).json({
+        error: `Not ready to graduate. Confidence: ${simState.graduation.confidence}% (need 70%+). Duration: ${Math.round(simState.graduation.simDurationMs / 60000)}m (need 60m+).`,
+      });
+    }
+
+    // Return the calibrated settings for auto-ape
+    const graduatedSettings = {
+      ...simState.settings,
+      // Apply calibration adjustments permanently
+      minScore: Math.max(15, simState.settings.minScore + simState.calibration.adjustments.scoreBias),
+      tp1: Math.max(10, Math.round(simState.settings.tp1 * (1 + simState.calibration.adjustments.tpBias * 0.01))),
+      tp2: Math.max(20, Math.round(simState.settings.tp2 * (1 + simState.calibration.adjustments.tpBias * 0.01))),
+      tp3: Math.max(50, Math.round(simState.settings.tp3 * (1 + simState.calibration.adjustments.tpBias * 0.01))),
+      sl1: Math.max(5, Math.round(simState.settings.sl1 * (1 + simState.calibration.adjustments.slBias * 0.01))),
+      sl2: Math.max(10, Math.round(simState.settings.sl2 * (1 + simState.calibration.adjustments.slBias * 0.01))),
+    };
+
+    // Stop sim
+    stopLiveSim(wallet);
+
+    res.json({
+      ok: true,
+      graduatedSettings,
+      simStats: {
+        duration: simState.graduation.simDurationMs,
+        trades: simState.graduation.totalSimTrades,
+        winRate: simState.graduation.simWinRate,
+        roi: simState.graduation.simRoi,
+        confidence: simState.graduation.confidence,
+        calibrationAccuracy: simState.calibration.accuracy,
+      },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Backtest sim (existing functionality, kept for quick one-shot backtests)
+app.post("/api/sim/backtest", apiLimiter, async (req, res) => {
+  try {
+    const { settings } = req.body;
+    const s = {
+      minScore: settings?.minScore || 28,
+      solPerTrade: settings?.solPerTrade || 0.05,
+      maxPositions: settings?.maxPositions || 5,
+      tp1: settings?.tp1 || 25, tp1Sell: settings?.tp1Sell || 35,
+      tp2: settings?.tp2 || 70, tp2Sell: settings?.tp2Sell || 35,
+      tp3: settings?.tp3 || 150, tp3Sell: settings?.tp3Sell || 50,
+      sl1: settings?.sl1 || 12, sl1Sell: settings?.sl1Sell || 70,
+      sl2: settings?.sl2 || 22,
+    };
+
+    if (!movers) return res.status(503).json({ error: "Radar not ready" });
+    const currentTokens = movers.lastResults || [];
+    let totalTrades = 0, wins = 0, losses = 0;
+    let totalPnlSol = 0, totalInvested = 0;
+    let bestTrade = null, worstTrade = null;
+    const trades = [];
+
+    for (const t of currentTokens) {
+      const spark = t.spark || [];
+      if (spark.length < 6) continue;
+      const score = t.apeScore || 0;
+      if (score < s.minScore) continue;
+
+      const entryIdx = Math.floor(spark.length * 0.3);
+      const entryMc = spark[entryIdx] || 1;
+      const peakMc = Math.max(...spark.slice(entryIdx));
+      const endMc = spark[spark.length - 1] || 1;
+
+      const range = Math.max(80 - s.minScore, 20);
+      let sizeMult = 0.5 + ((score - s.minScore) / range);
+      sizeMult = Math.max(0.4, Math.min(1.6, sizeMult));
+      const tradeSol = Math.round(s.solPerTrade * sizeMult * 1000) / 1000;
+
+      const peakPct = entryMc > 0 ? ((peakMc - entryMc) / entryMc) * 100 : 0;
+      const endPct = entryMc > 0 ? ((endMc - entryMc) / entryMc) * 100 : 0;
+
+      let exitReason = "hold", soldPct = 0, realizedPnl = 0;
+
+      if (peakPct >= s.tp3) {
+        realizedPnl += tradeSol * (s.tp3 / 100) * (s.tp3Sell / 100);
+        soldPct += s.tp3Sell * ((100 - soldPct) / 100);
+        exitReason = "TP3";
+      }
+      if (peakPct >= s.tp2) {
+        const remaining = 100 - soldPct;
+        realizedPnl += tradeSol * (remaining / 100) * (s.tp2 / 100) * (s.tp2Sell / 100);
+        soldPct += s.tp2Sell * (remaining / 100);
+        if (exitReason === "hold") exitReason = "TP2";
+      }
+      if (peakPct >= s.tp1) {
+        const remaining = 100 - soldPct;
+        realizedPnl += tradeSol * (remaining / 100) * (s.tp1 / 100) * (s.tp1Sell / 100);
+        soldPct += s.tp1Sell * (remaining / 100);
+        if (exitReason === "hold") exitReason = "TP1";
+      }
+      if (endPct <= -s.sl2 && soldPct < 100) {
+        const remaining = 100 - soldPct;
+        realizedPnl += tradeSol * (remaining / 100) * (endPct / 100);
+        soldPct = 100;
+        exitReason = exitReason === "hold" ? "SL2" : exitReason + "+SL2";
+      } else if (endPct <= -s.sl1 && soldPct < 100) {
+        const remaining = 100 - soldPct;
+        realizedPnl += tradeSol * (remaining / 100) * (s.sl1Sell / 100) * (endPct / 100);
+        soldPct += s.sl1Sell * (remaining / 100);
+        if (exitReason === "hold") exitReason = "SL1";
+      }
+      if (soldPct < 100) {
+        realizedPnl += tradeSol * ((100 - soldPct) / 100) * (endPct / 100);
+      }
+
+      const trade = { name: t.name || t.ca?.slice(0, 8), score, sizeMult: +sizeMult.toFixed(2), sol: tradeSol, peakPct: +peakPct.toFixed(1), endPct: +endPct.toFixed(1), pnlSol: +realizedPnl.toFixed(4), exitReason };
+      trades.push(trade);
+      totalTrades++; totalInvested += tradeSol; totalPnlSol += realizedPnl;
+      if (realizedPnl > 0) wins++; else losses++;
+      if (!bestTrade || realizedPnl > bestTrade.pnlSol) bestTrade = trade;
+      if (!worstTrade || realizedPnl < worstTrade.pnlSol) worstTrade = trade;
+    }
+
+    const winRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100) : 0;
+    const roi = totalInvested > 0 ? +((totalPnlSol / totalInvested) * 100).toFixed(1) : 0;
+    const lossAdjPnl = trades.reduce((sum, t) => sum + (t.pnlSol < 0 ? t.pnlSol * 2 : t.pnlSol), 0);
+    const kahnemanScore = totalInvested > 0 ? +((lossAdjPnl / totalInvested) * 100).toFixed(1) : 0;
+
+    res.json({
+      ok: true, totalTrades, wins, losses, winRate,
+      totalPnlSol: +totalPnlSol.toFixed(4), totalInvested: +totalInvested.toFixed(4),
+      roi, kahnemanScore,
+      bestTrade, worstTrade,
+      trades: trades.sort((a, b) => b.pnlSol - a.pnlSol).slice(0, 20),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════
 // 404 + Error
 // ═══════════════════════════════════════
 app.use((req, res) => { res.status(404).json({ error: "Not found" }); });

@@ -436,8 +436,9 @@ const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");co
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
 const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);
-// Paper trade sim state — must be declared here, NOT inside IIFEs (React Rules of Hooks / error #310)
+// Live sim state — must be declared here, NOT inside IIFEs (React Rules of Hooks / error #310)
 const[simExpanded,sSimExpanded]=useState(true);const[simDetailOpen,sSimDetailOpen]=useState(false);const[simGuideOpen,sSimGuideOpen]=useState(false);const[simRunning,sSimRunning]=useState(false);
+const[liveSim,sLiveSim]=useState(null);const[simStarting,sSimStarting]=useState(false);
 // CA lookup state — must be declared before any early returns to satisfy Rules of Hooks
 const[caLookup,sCaLookup]=useState(null);const[caLoading,sCaLoading]=useState(false);const caLookupRef=useRef(null);
 
@@ -463,6 +464,8 @@ useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>r.json()).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?3000:10000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
+// Live sim polling — runs for all users when sim is active
+useEffect(()=>{if(tab!=="intel"||!liveSim?.active)return;const poll=()=>a.simst(user?.pubkey||"anon").then(d=>{if(d.active)sLiveSim(p=>({...p,...d}));else sLiveSim(null)}).catch(()=>{});poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab,liveSim?.active,user?.pubkey]);
 useEffect(()=>{if(tab!=="intel")return;a.gcp().then(d=>sChartPatterns(d)).catch(()=>{});const iv=setInterval(()=>a.gcp().then(d=>sChartPatterns(d)).catch(()=>{}),30000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs)sRT(d.tabs);if(d.poolSize!=null)sRP(d.poolSize);if(d.gradMc)sGradMc(d.gradMc);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,5000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
 useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,10000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
@@ -1090,138 +1093,188 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 {/* APPLY button when settings changed while active */}
 {aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);sAutoTrade(p=>({...p,log:[...(p?.log||[]),{msg:"Settings applied",time:Date.now()}]}));toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:4}}>APPLY CHANGES</button>}
 
-{/* ═══ PAPER TRADE SIMULATOR (Kahneman Premortem + Norman Visibility) ═══ */}
-{/* "The best way to predict the future is to simulate it" — Premortem technique */}
-{(()=>{const sim=autoTrade?.sim;
-return<div style={{background:T.bg,borderRadius:6,border:"1px solid "+T.cy+"18",marginBottom:8,overflow:"hidden"}}>
-{/* ── Sim header: title + on/off toggle + collapse ── */}
+{/* ═══ LIVE SIM MODE — mirrors auto-ape decisions in real-time, no real trades ═══ */}
+{/* Available to ALL tiers. Auto-calibrates over time. Graduates to real trading after ~1hr. */}
+{(()=>{const ls=liveSim;const simActive=ls?.active;const st=ls?.stats||{};const grad=ls?.graduation||{};const cal=ls?.calibration||{};
+const simDurMin=ls?.simDuration?Math.round(ls.simDuration/60000):0;
+const pnlColor=(st.totalPnlSol||0)>=0?T.gn:T.rd;
+return<div style={{background:T.bg,borderRadius:6,border:"1px solid "+(simActive?T.cy:T.cy+"18"),marginBottom:8,overflow:"hidden"}}>
+{/* ── Header: title + controls ── */}
 <div style={{padding:mb?"8px 10px":"6px 10px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
 <div onClick={()=>sSimExpanded(!simExpanded)} style={{display:"flex",alignItems:"center",gap:4,cursor:"pointer",flex:1}}>
 <IC.sim s={14} c={T.cy}/>
 <span style={{fontSize:mb?12:10,fontWeight:800,color:T.cy}}>Sim Mode</span>
-{sim&&!simExpanded&&<span style={{fontSize:mb?9:7,color:T.dm}}>{sim.totalTrades} trades · {sim.winRate}% win · {sim.roi>=0?"+":""}{sim.roi}%</span>}
-{simRunning&&<Sp s={10} c={T.cy}/>}
+{simActive&&<span style={{width:5,height:5,borderRadius:"50%",background:T.cy,animation:"gp 2s infinite"}}/>}
+{simActive&&!simExpanded&&<span style={{fontSize:mb?9:7,color:T.dm}}>{st.totalTrades||0} trades · {st.winRate||0}% win · {(st.totalPnlSol||0)>=0?"+":""}{st.totalPnlSol||0} SOL · {simDurMin}m</span>}
+{simStarting&&<Sp s={10} c={T.cy}/>}
 <span style={{fontSize:8,color:T.ft,marginLeft:2}}>{simExpanded?"▾":"▸"}</span>
 </div>
 <div style={{display:"flex",gap:3,alignItems:"center"}}>
-<button onClick={async()=>{sSimRunning(true);try{const r=await a.atsim(S);sAutoTrade(p=>({...p,sim:r}));if(!simExpanded)sSimExpanded(true);toast(`${r.totalTrades} simulated trades`,"success")}catch(e){toast(e.message,"error")}finally{sSimRunning(false)}}} disabled={simRunning} style={{padding:mb?"5px 12px":"3px 10px",borderRadius:5,border:"1px solid "+T.cy+"22",background:simRunning?T.cy+"04":T.cy+"08",color:simRunning?T.cy+"66":T.cy,fontWeight:800,fontSize:mb?11:9,cursor:simRunning?"wait":"pointer",display:"flex",alignItems:"center",gap:3}}>{simRunning?<><Sp s={8} c={T.cy}/>Running</>:"Run Sim"}</button>
+{/* START SIM */}
+{!simActive&&<button onClick={async()=>{sSimStarting(true);try{const r=await a.sims(user?.pubkey||"anon",S);sLiveSim({active:true,...r});if(!simExpanded)sSimExpanded(true);toast("Live sim started — watching radar","success")}catch(e){toast(e.message,"error")}finally{sSimStarting(false)}}} disabled={simStarting} style={{padding:mb?"5px 12px":"3px 10px",borderRadius:5,border:"none",background:T.cy,color:"#000",fontWeight:800,fontSize:mb?11:9,cursor:simStarting?"wait":"pointer",display:"flex",alignItems:"center",gap:3}}>{simStarting?<><Sp s={8} c="#000"/>Starting</>:<><IC.sim s={10} c="#000"/>Start Sim</>}</button>}
+{/* BACKTEST */}
+{!simActive&&<button onClick={async()=>{sSimRunning(true);try{const r=await a.simbt(S);sAutoTrade(p=>({...p,sim:r}));toast(`${r.totalTrades} backtested`,"success")}catch(e){toast(e.message,"error")}finally{sSimRunning(false)}}} disabled={simRunning} style={{padding:mb?"5px 10px":"3px 8px",borderRadius:5,border:"1px solid "+T.cy+"22",background:T.cy+"08",color:T.cy,fontWeight:800,fontSize:mb?10:8,cursor:simRunning?"wait":"pointer"}}>{simRunning?<Sp s={8} c={T.cy}/>:"Backtest"}</button>}
+{/* EXIT SIM */}
+{simActive&&<button onClick={async()=>{try{const r=await a.simx(user?.pubkey||"anon");sLiveSim(null);toast(`Sim ended — ${r.finalStats?.totalBuys||0} buys, ${r.finalStats?.roi||0}% ROI`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"5px 12px":"3px 10px",borderRadius:5,border:"none",background:T.rd,color:"#fff",fontWeight:800,fontSize:mb?11:9,cursor:"pointer",display:"flex",alignItems:"center",gap:3}}><IC.stop s={8} c="#fff"/>Exit Sim</button>}
 </div>
 </div>
 {simExpanded&&<>
-{/* Description */}
-<div style={{padding:"0 10px 6px",fontSize:mb?8:7,color:T.dm,lineHeight:1.4}}>Backtests your current settings against live radar tokens. Each run simulates entry, hold, and exit for every token that would trigger. <span style={{color:T.cy,fontWeight:700}}>Run 3-5 times</span> to see consistency across different market snapshots.</div>
-{sim&&(()=>{const pnlColor=sim.totalPnlSol>=0?T.gn:T.rd;const kahColor=sim.kahnemanScore>=0?T.gn:sim.kahnemanScore>=-10?T.yl:T.rd;return<>
-{/* Primary stats */}
+{/* Status bar */}
+<div style={{padding:"0 10px 6px",fontSize:mb?8:7,color:T.dm,lineHeight:1.4}}>
+{simActive?<>Watching radar in real-time. Every decision auto-ape would make shows here — <span style={{color:T.cy,fontWeight:700}}>no real trades</span>. Auto-calibrates settings over time. {grad.ready&&<span style={{color:T.gn,fontWeight:700}}>Ready to graduate to live trading!</span>}</>
+:<>Set your params then hit <span style={{color:T.cy,fontWeight:700}}>Start Sim</span> to watch live decisions, or <span style={{color:T.cy}}>Backtest</span> for a quick snapshot. Available to everyone — no wallet needed.</>}
+</div>
+{/* ── LIVE STATS (when sim is running) ── */}
+{simActive&&<>
 <div style={{padding:"0 10px 6px"}}>
-<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3,marginBottom:6}}>
+{/* Primary stats row */}
+<div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:3,marginBottom:6}}>
 {[
-{l:"TRADES",v:sim.totalTrades,c:T.tx},
-{l:"WIN RATE",v:sim.winRate+"%",c:sim.winRate>=50?T.gn:T.rd},
-{l:"PnL",v:(sim.totalPnlSol>=0?"+":"")+sim.totalPnlSol+" SOL",c:pnlColor},
-{l:"ROI",v:(sim.roi>=0?"+":"")+sim.roi+"%",c:pnlColor},
-].map(s=><div key={s.l} style={{textAlign:"center",padding:"4px 2px",background:T.sf,borderRadius:4}}>
-<div style={{fontSize:mb?13:11,fontWeight:900,color:s.c}}>{s.v}</div>
-<div style={{fontSize:mb?7:6,color:T.ft,fontWeight:700}}>{s.l}</div>
+{l:"TRADES",v:st.totalTrades||0,c:T.tx},
+{l:"WIN RATE",v:(st.winRate||0)+"%",c:(st.winRate||0)>=50?T.gn:T.rd},
+{l:"PnL",v:((st.totalPnlSol||0)>=0?"+":"")+(st.totalPnlSol||0)+" SOL",c:pnlColor},
+{l:"ROI",v:((st.roi||0)>=0?"+":"")+(st.roi||0)+"%",c:pnlColor},
+{l:"OPEN",v:ls?.positions?.length||0,c:T.cy},
+{l:"TIME",v:simDurMin+"m",c:simDurMin>=60?T.gn:T.tx},
+].map(s=><div key={s.l} style={{textAlign:"center",padding:"3px 2px",background:T.sf,borderRadius:4}}>
+<div style={{fontSize:mb?11:10,fontWeight:900,color:s.c}}>{s.v}</div>
+<div style={{fontSize:mb?6:5,color:T.ft,fontWeight:700}}>{s.l}</div>
 </div>)}
 </div>
-{/* Kahneman Loss-Aversion Score */}
-<div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 6px",background:kahColor+"0a",borderRadius:4,border:"1px solid "+kahColor+"18",marginBottom:4}}>
-<div style={{flex:1}}>
-<div style={{fontSize:mb?8:7,fontWeight:700,color:kahColor}}>Loss-Aversion Score</div>
-<div style={{fontSize:mb?7:6,color:T.dm}}>Losses weighted 2x (Kahneman). Negative = settings too risky.</div>
-</div>
-<div style={{fontSize:mb?14:12,fontWeight:900,color:kahColor}}>{sim.kahnemanScore>=0?"+":""}{sim.kahnemanScore}%</div>
-</div>
 {/* Best/worst trade */}
-<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3,marginBottom:4}}>
-{sim.bestTrade&&<div style={{padding:"3px 6px",background:T.gn+"06",borderRadius:4,border:"1px solid "+T.gn+"18"}}>
+{(st.bestTrade||st.worstTrade)&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3,marginBottom:4}}>
+{st.bestTrade&&<div style={{padding:"3px 6px",background:T.gn+"06",borderRadius:4,border:"1px solid "+T.gn+"18"}}>
 <div style={{fontSize:mb?7:6,color:T.gn,fontWeight:700}}>BEST</div>
-<div style={{fontSize:mb?10:9,fontWeight:800,color:T.gn}}>+{sim.bestTrade.pnlSol} SOL</div>
-<div style={{fontSize:mb?8:7,color:T.dm}}>{sim.bestTrade.name} ({sim.bestTrade.exitReason})</div>
+<div style={{fontSize:mb?10:9,fontWeight:800,color:T.gn}}>+{st.bestTrade.pnlSol} SOL</div>
+<div style={{fontSize:mb?8:7,color:T.dm}}>{st.bestTrade.name} ({st.bestTrade.exitReason})</div>
 </div>}
-{sim.worstTrade&&<div style={{padding:"3px 6px",background:T.rd+"06",borderRadius:4,border:"1px solid "+T.rd+"18"}}>
+{st.worstTrade&&<div style={{padding:"3px 6px",background:T.rd+"06",borderRadius:4,border:"1px solid "+T.rd+"18"}}>
 <div style={{fontSize:mb?7:6,color:T.rd,fontWeight:700}}>WORST</div>
-<div style={{fontSize:mb?10:9,fontWeight:800,color:T.rd}}>{sim.worstTrade.pnlSol} SOL</div>
-<div style={{fontSize:mb?8:7,color:T.dm}}>{sim.worstTrade.name} ({sim.worstTrade.exitReason})</div>
+<div style={{fontSize:mb?10:9,fontWeight:800,color:T.rd}}>{st.worstTrade.pnlSol} SOL</div>
+<div style={{fontSize:mb?8:7,color:T.dm}}>{st.worstTrade.name} ({st.worstTrade.exitReason})</div>
 </div>}
+</div>}
+{/* Auto-calibration status */}
+<div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 6px",background:T.pu+"0a",borderRadius:4,border:"1px solid "+T.pu+"18",marginBottom:4}}>
+<div style={{flex:1}}>
+<div style={{fontSize:mb?8:7,fontWeight:700,color:T.pu}}>Auto-Calibration</div>
+<div style={{fontSize:mb?7:6,color:T.dm}}>
+{cal.totalPredictions>0?`${cal.accuracy}% accuracy over ${cal.totalPredictions} predictions`:"Collecting data..."}
+{cal.adjustments?.scoreBias?` · Score bias: ${cal.adjustments.scoreBias>0?"+":""}${cal.adjustments.scoreBias}`:""}
+{cal.adjustments?.tpBias?` · TP bias: ${cal.adjustments.tpBias>0?"+":""}${cal.adjustments.tpBias}%`:""}
+{cal.adjustments?.slBias?` · SL bias: ${cal.adjustments.slBias>0?"+":""}${cal.adjustments.slBias}%`:""}
 </div>
 </div>
-{/* ── Detailed trade breakdown (collapsible) ── */}
+<div style={{fontSize:mb?12:10,fontWeight:900,color:cal.accuracy>=60?T.gn:cal.accuracy>=40?T.yl:T.rd}}>{cal.accuracy||0}%</div>
+</div>
+{/* Graduation readiness */}
+<div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 6px",background:(grad.ready?T.gn:T.yl)+"0a",borderRadius:4,border:"1px solid "+(grad.ready?T.gn:T.yl)+"18",marginBottom:4}}>
+<div style={{flex:1}}>
+<div style={{fontSize:mb?8:7,fontWeight:700,color:grad.ready?T.gn:T.yl}}>Graduation {grad.ready?"Ready":"Progress"}</div>
+<div style={{fontSize:mb?7:6,color:T.dm}}>{grad.ready?"Settings calibrated and tested. Graduate to use these settings for real trading (Pro+).":"Run sim for ~1hr with 20+ trades and >45% win rate to unlock graduation."}</div>
+</div>
+<div style={{textAlign:"center"}}>
+<div style={{fontSize:mb?12:10,fontWeight:900,color:grad.confidence>=70?T.gn:grad.confidence>=40?T.yl:T.rd}}>{grad.confidence||0}%</div>
+<div style={{fontSize:6,color:T.ft}}>CONFIDENCE</div>
+</div>
+</div>
+{/* Graduate button */}
+{grad.ready&&(user?.tier==="pro"||user?.whitelisted)&&<button onClick={async()=>{try{const r=await a.simg(user.pubkey);sLiveSim(null);sAutoTrade(p=>({...p,open:true,settings:r.graduatedSettings}));toast(`Graduated! ${r.simStats.trades} trades, ${r.simStats.winRate}% win rate. Settings applied to Auto-Ape.`,"success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn,color:"#000",fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:4}}>GRADUATE TO LIVE AUTO-APE</button>}
+{grad.ready&&user?.tier==="free"&&<div style={{padding:"4px 6px",background:T.yl+"0a",borderRadius:4,border:"1px solid "+T.yl+"18",fontSize:mb?8:7,color:T.yl,marginBottom:4,textAlign:"center"}}>Auto-ape requires Pro tier. Sim is free for everyone.</div>}
+</div>
+{/* ── LIVE DECISIONS FEED ── */}
 <div style={{borderTop:"1px solid "+T.bd}}>
 <div onClick={()=>sSimDetailOpen(!simDetailOpen)} style={{padding:"4px 10px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-<span style={{fontSize:mb?9:8,fontWeight:700,color:T.cy}}>Trade Breakdown</span>
+<span style={{fontSize:mb?9:8,fontWeight:700,color:T.cy}}>Live Decisions ({ls?.decisions?.length||0})</span>
 <span style={{fontSize:8,color:T.ft}}>{simDetailOpen?"▾":"▸"}</span>
 </div>
-{simDetailOpen&&<div style={{padding:"0 10px 6px"}}>
-{/* Exit reason distribution */}
-{sim.trades?.length>0&&(()=>{const reasons={};sim.trades.forEach(t=>{reasons[t.exitReason]=(reasons[t.exitReason]||0)+1});
-return<div style={{marginBottom:6}}>
-<div style={{fontSize:mb?8:7,fontWeight:700,color:T.ft,marginBottom:2}}>Exit Reasons</div>
-<div style={{display:"flex",gap:1,height:6,borderRadius:3,overflow:"hidden",marginBottom:2}}>
-{Object.entries(reasons).map(([k,v])=>{const pct=(v/sim.totalTrades)*100;const c=k.includes("TP")?T.gn:k.includes("SL")?T.rd:k.includes("momentum")?T.or:T.pu;return<div key={k} style={{width:pct+"%",background:c,minWidth:pct>0?2:0}} title={k+": "+v}/>})}
+{simDetailOpen&&<div style={{padding:"0 10px 6px",maxHeight:mb?160:200,overflowY:"auto"}}>
+{ls?.decisions?.length>0?ls.decisions.slice().reverse().slice(0,20).map((d,i)=>{
+const isBuy=d.action==="BUY"||d.action?.includes("BUY");
+const isSell=!isBuy;
+const c=isBuy?T.gn:d.reason?.includes("TP")?T.gn:d.reason?.includes("SL")?T.rd:d.reason?.includes("crash")||d.reason?.includes("momentum")?T.or:T.rd;
+const age=Math.round((Date.now()-d.time)/1000);
+return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"3px 0",borderBottom:"1px solid "+T.bd+"22",fontSize:mb?9:8}}>
+<span style={{width:mb?38:32,fontWeight:900,color:c,fontSize:mb?8:7,flexShrink:0}}>{isBuy?"BUY":"SELL"}</span>
+<span style={{fontWeight:700,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{d.name||d.ca?.slice(0,8)}</span>
+{d.score!=null&&<span style={{fontSize:mb?8:7,color:T.ft}}>s:{d.score}</span>}
+{d.sizeMult!=null&&<span style={{fontSize:mb?8:7,color:T.ft}}>{d.sizeMult}x</span>}
+{d.pnlPct!=null&&<span style={{fontWeight:800,color:parseFloat(d.pnlPct)>=0?T.gn:T.rd}}>{parseFloat(d.pnlPct)>=0?"+":""}{d.pnlPct}%</span>}
+{d.reason&&<span style={{fontSize:mb?7:6,color:T.ft,flexShrink:0}}>{d.reason}</span>}
+<span style={{fontSize:6,color:T.ft,flexShrink:0}}>{age}s</span>
+</div>})
+:<div style={{fontSize:mb?9:8,color:T.ft,textAlign:"center",padding:8}}>Waiting for first decision...</div>}
+</div>}
 </div>
-<div style={{display:"flex",gap:6,fontSize:6,color:T.dm,flexWrap:"wrap"}}>
-{Object.entries(reasons).map(([k,v])=>{const c=k.includes("TP")?T.gn:k.includes("SL")?T.rd:k.includes("momentum")?T.or:T.pu;return<span key={k} style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:4,height:4,borderRadius:1,background:c}}/>{k} ({v})</span>})}
+{/* ── OPEN SIM POSITIONS ── */}
+{ls?.positions?.length>0&&<div style={{borderTop:"1px solid "+T.bd,padding:"4px 10px 6px"}}>
+<div style={{fontSize:mb?9:8,fontWeight:700,color:T.cy,marginBottom:4}}>Sim Positions ({ls.positions.length})</div>
+{ls.positions.map(p=>{const pnlC=p.changePct>=0?T.gn:T.rd;return<div key={p.ca} style={{display:"flex",alignItems:"center",gap:4,padding:"3px 0",borderBottom:"1px solid "+T.bd+"22",fontSize:mb?9:8}}>
+<span style={{fontWeight:700,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{p.name}</span>
+<span style={{fontSize:mb?8:7,color:T.ft}}>s:{p.entryScore}</span>
+<span style={{fontSize:mb?8:7,color:T.ft}}>{p.sizeMult}x</span>
+<span style={{fontWeight:800,color:pnlC}}>{p.changePct>=0?"+":""}{p.changePct}%</span>
+<span style={{fontSize:mb?7:6,color:T.ft}}>{p.age}m</span>
+{p.tpHit>0&&<span style={{fontSize:6,fontWeight:800,color:T.gn,background:T.gn+"18",padding:"0 3px",borderRadius:2}}>TP{p.tpHit}</span>}
+{p.isMoonbag&&<span style={{fontSize:6,fontWeight:800,color:T.yl,background:T.yl+"18",padding:"0 3px",borderRadius:2}}>MOON</span>}
+</div>})}
+</div>}
+{/* ── RECENTLY CLOSED ── */}
+{ls?.recentlyClosed?.length>0&&<div style={{borderTop:"1px solid "+T.bd,padding:"4px 10px 6px"}}>
+<div style={{fontSize:mb?9:8,fontWeight:700,color:T.ft,marginBottom:4}}>Recently Closed</div>
+{ls.recentlyClosed.slice(0,8).map((t,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px 0",borderBottom:"1px solid "+T.bd+"22",fontSize:mb?8:7}}>
+<span style={{fontWeight:700,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t.name}</span>
+<span style={{fontWeight:800,color:t.pnlSol>=0?T.gn:T.rd}}>{t.pnlSol>=0?"+":""}{t.pnlSol} SOL</span>
+<span style={{fontSize:mb?7:6,color:T.ft}}>{t.exitReason}</span>
+</div>)}
+</div>}
+</>}
+{/* ── BACKTEST RESULTS (one-shot, from old sim) ── */}
+{!simActive&&autoTrade?.sim&&(()=>{const sim=autoTrade.sim;const pC=sim.totalPnlSol>=0?T.gn:T.rd;const kahC=sim.kahnemanScore>=0?T.gn:sim.kahnemanScore>=-10?T.yl:T.rd;return<div style={{borderTop:"1px solid "+T.bd,padding:"4px 10px 6px"}}>
+<div style={{fontSize:mb?9:8,fontWeight:700,color:T.cy,marginBottom:4}}>Backtest Results</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3,marginBottom:4}}>
+{[{l:"TRADES",v:sim.totalTrades,c:T.tx},{l:"WIN RATE",v:sim.winRate+"%",c:sim.winRate>=50?T.gn:T.rd},{l:"PnL",v:(sim.totalPnlSol>=0?"+":"")+sim.totalPnlSol+" SOL",c:pC},{l:"Kahneman",v:(sim.kahnemanScore>=0?"+":"")+sim.kahnemanScore+"%",c:kahC}].map(s=><div key={s.l} style={{textAlign:"center",padding:"3px 2px",background:T.sf,borderRadius:4}}>
+<div style={{fontSize:mb?11:10,fontWeight:900,color:s.c}}>{s.v}</div>
+<div style={{fontSize:mb?6:5,color:T.ft,fontWeight:700}}>{s.l}</div>
+</div>)}
 </div>
-</div>})()}
-{/* Score distribution of entered trades */}
-{sim.trades?.length>0&&(()=>{const scores=sim.trades.map(t=>t.score).sort((a,b)=>a-b);const avgScore=Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);const minScore=scores[0];const maxScore=scores[scores.length-1];
-return<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:3,marginBottom:4}}>
-<div style={{textAlign:"center",padding:"3px 2px",background:T.sf,borderRadius:4}}>
-<div style={{fontSize:mb?10:9,fontWeight:800,color:T.tx}}>{avgScore}</div>
-<div style={{fontSize:6,color:T.ft}}>AVG SCORE</div>
-</div>
-<div style={{textAlign:"center",padding:"3px 2px",background:T.sf,borderRadius:4}}>
-<div style={{fontSize:mb?10:9,fontWeight:800,color:T.rd}}>{minScore}</div>
-<div style={{fontSize:6,color:T.ft}}>MIN SCORE</div>
-</div>
-<div style={{textAlign:"center",padding:"3px 2px",background:T.sf,borderRadius:4}}>
-<div style={{fontSize:mb?10:9,fontWeight:800,color:T.gn}}>{maxScore}</div>
-<div style={{fontSize:6,color:T.ft}}>MAX SCORE</div>
-</div>
-</div>})()}
-{/* Trade list */}
-{sim.trades?.length>0&&<div style={{maxHeight:mb?100:120,overflowY:"auto",fontSize:mb?8:7,color:T.dm}}>
-{sim.trades.slice(0,12).map((t,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px 0",borderBottom:"1px solid "+T.bd+"22"}}>
+{sim.trades?.length>0&&<div style={{maxHeight:mb?80:100,overflowY:"auto",fontSize:mb?8:7,color:T.dm}}>
+{sim.trades.slice(0,10).map((t,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px 0",borderBottom:"1px solid "+T.bd+"22"}}>
 <span style={{fontWeight:700,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t.name}</span>
 <span style={{fontSize:mb?8:7,color:T.ft}}>s:{t.score}</span>
-<span style={{fontSize:mb?8:7,color:T.ft}}>{t.sizeMult}x</span>
 <span style={{fontWeight:800,color:t.pnlSol>=0?T.gn:T.rd}}>{t.pnlSol>=0?"+":""}{t.pnlSol}</span>
 <span style={{fontSize:mb?7:6,color:T.ft}}>{t.exitReason}</span>
 </div>)}
 </div>}
-</div>}
-</div>
-</>})()}
+</div>})()}
 {/* ── Sim guidelines (collapsible) ── */}
 <div style={{borderTop:"1px solid "+T.bd}}>
 <div onClick={()=>sSimGuideOpen(!simGuideOpen)} style={{padding:"4px 10px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-<span style={{fontSize:mb?9:8,fontWeight:700,color:T.yl}}>How to Use Sim Mode</span>
+<span style={{fontSize:mb?9:8,fontWeight:700,color:T.yl}}>How Sim Mode Works</span>
 <span style={{fontSize:8,color:T.ft}}>{simGuideOpen?"▾":"▸"}</span>
 </div>
 {simGuideOpen&&<div style={{padding:"0 10px 8px",fontSize:mb?8:7,color:T.dm,lineHeight:1.6}}>
 <div style={{marginBottom:4}}>
-<span style={{fontWeight:800,color:T.yl}}>Dialing in your settings:</span>
+<span style={{fontWeight:800,color:T.yl}}>Live Sim (everyone):</span>
 <div>1. Set your params (score threshold, SOL per trade, TP/SL levels)</div>
-<div>2. Hit <span style={{color:T.cy,fontWeight:700}}>Run Sim</span> to backtest against current radar</div>
-<div>3. Check win rate, PnL, and exit reason distribution</div>
-<div>4. Adjust and re-run — repeat 3-5 times per config change</div>
+<div>2. Hit <span style={{color:T.cy,fontWeight:700}}>Start Sim</span> — watches radar in real-time</div>
+<div>3. Every buy/sell decision auto-ape would make shows in the feed</div>
+<div>4. Settings <span style={{color:T.pu,fontWeight:700}}>auto-calibrate</span> as trades complete</div>
+<div>5. After ~1hr with good results, you can <span style={{color:T.gn,fontWeight:700}}>graduate</span> to real trading (Pro+)</div>
 </div>
 <div style={{marginBottom:4}}>
 <span style={{fontWeight:800,color:T.yl}}>Reading the results:</span>
 <div style={{display:"grid",gridTemplateColumns:"auto 1fr",gap:"1px 6px",marginTop:2}}>
 <span style={{color:T.gn}}>Win Rate {">"} 55%</span><span>Settings are profitable on average</span>
-<span style={{color:T.gn}}>Kahneman {">"} 0</span><span>Risk-adjusted return is positive</span>
-<span style={{color:T.or}}>Kahneman -10 to 0</span><span>Borderline — tighten SL or raise min score</span>
-<span style={{color:T.rd}}>Kahneman {"<"} -10</span><span>Too risky — losses will dominate</span>
-<span style={{color:T.cy}}>Exit reasons</span><span>Mostly TP exits = healthy. Mostly SL = too loose entry</span>
+<span style={{color:T.pu}}>Calibration {">"} 60%</span><span>Auto-adjustments are improving accuracy</span>
+<span style={{color:T.gn}}>Confidence {">"} 70%</span><span>Ready to graduate to live trading</span>
+<span style={{color:T.rd}}>High SL exits</span><span>Raise min score or tighten entry criteria</span>
 </div>
 </div>
 <div>
-<span style={{fontWeight:800,color:T.yl}}>Quick tuning guide:</span>
-<div>Low win rate → raise min score threshold (stricter entry)</div>
-<div>Small wins, big losses → tighten SL or widen TP1 sell %</div>
-<div>High win rate but low PnL → lower TP1 sell % to let winners run</div>
+<span style={{fontWeight:800,color:T.yl}}>Sim vs Auto-Ape:</span>
+<div><span style={{color:T.cy}}>Sim</span> = free, everyone, no real money, learns over time</div>
+<div><span style={{color:T.gn}}>Auto-Ape</span> = Pro+, real trades, real P&L</div>
 </div>
 </div>}
 </div>
