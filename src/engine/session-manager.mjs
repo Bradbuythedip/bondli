@@ -31,7 +31,10 @@ import CONFIG from "./config.mjs";
 export function calculateDevBuy(totalSol) {
   let pct, min, max;
 
-  if (totalSol < 1) {
+  if (totalSol < 0.4) {
+    // Deploy-only mode: tiny budget, just creation fee + minimal dev buy
+    pct = 0.60; min = 0.05; max = 0.2;
+  } else if (totalSol < 1) {
     pct = 0.50; min = 0.1; max = 0.5;
   } else if (totalSol < 5) {
     pct = 0.40; min = 0.3; max = 2.0;

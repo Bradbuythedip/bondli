@@ -1505,58 +1505,126 @@ app.post("/api/session/sell-sweep", async (req, res) => {
     if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
 
     let closeResult = {};
+    // Try to close active fleet session (may not exist if server restarted)
     if (session.tokenCA && fleetTrader.sessions.has(session.tokenCA)) {
-      closeResult = await fleetTrader.close(session.tokenCA);
+      try {
+        closeResult = await fleetTrader.close(session.tokenCA);
+      } catch (e) {
+        console.warn(`[SWEEP] Fleet close failed (continuing): ${e.message}`);
+      }
     }
 
-    // FIX: Update session status in Redis
+    // Update session status
     await sessionManager.update(sessionId, { status: "closed", closedAt: new Date().toISOString() });
 
-    // FIX: Sweep master wallet → user's trading wallet
-    let masterSwept = 0;
+    const tw = await getTradingWallet(wallet);
+    const destPubkey = tw?.pubkey || wallet;
+    let totalSwept = closeResult.solRecovered || 0;
+
+    // Sweep dev wallet → trading wallet
     try {
-      const tw = await getTradingWallet(wallet);
-      if (session.devSecret && tw?.pubkey) {
-        const masterKp = Keypair.fromSecretKey(bs58.decode(session.devSecret));
-        const masterBal = await connection.getBalance(masterKp.publicKey);
-        if (masterBal > 6000) {
+      if (session.devSecret) {
+        const devKp = Keypair.fromSecretKey(bs58.decode(session.devSecret));
+        // First sell any tokens the dev wallet holds
+        if (session.tokenCA) {
+          try {
+            const tokenAccounts = await connection.getParsedTokenAccountsByOwner(devKp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+            const tokenAccount = tokenAccounts.value.find(ta => ta.account.data.parsed.info.mint === session.tokenCA);
+            if (tokenAccount) {
+              const tokenBal = parseFloat(tokenAccount.account.data.parsed.info.tokenAmount.uiAmountString || "0");
+              if (tokenBal > 0) {
+                console.log(`[SWEEP] Dev holds ${tokenBal} tokens — selling via PumpPortal...`);
+                try {
+                  const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ publicKey: devKp.publicKey.toBase58(), action: "sell", mint: session.tokenCA, amount: "100%", denominatedInSol: "false", slippage: 50, priorityFee: 0.01, pool: "auto" }),
+                    signal: AbortSignal.timeout(15000),
+                  });
+                  if (sellResp.ok) {
+                    const txBytes = await sellResp.arrayBuffer();
+                    if (txBytes.byteLength > 100) {
+                      const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+                      tx.sign([devKp]);
+                      const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                      console.log(`[SWEEP] Dev token sell: ${sig.slice(0, 12)}`);
+                      await new Promise(r => setTimeout(r, 3000)); // wait for confirmation
+                    }
+                  }
+                } catch (e) { console.warn(`[SWEEP] Dev token sell failed: ${e.message}`); }
+              }
+            }
+          } catch {}
+        }
+        // Transfer remaining SOL
+        const devBal = await connection.getBalance(devKp.publicKey);
+        if (devBal > 6000) {
           const tx = new Transaction().add(
             ComputeBudgetProgram.setComputeUnitLimit({ units: 50000 }),
             ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50000 }),
-            SystemProgram.transfer({
-              fromPubkey: masterKp.publicKey,
-              toPubkey: new PublicKey(tw.pubkey),
-              lamports: masterBal - 5000,
-            })
+            SystemProgram.transfer({ fromPubkey: devKp.publicKey, toPubkey: new PublicKey(destPubkey), lamports: devBal - 5000 })
           );
-          await sendAndConfirmTransaction(connection, tx, [masterKp], { skipPreflight: true, commitment: "confirmed" });
-          masterSwept = (masterBal - 5000) / LAMPORTS_PER_SOL;
-          console.log(`[SWEEP] Master → Trading: ${masterSwept.toFixed(4)} SOL`);
+          await sendAndConfirmTransaction(connection, tx, [devKp], { skipPreflight: true, commitment: "confirmed" });
+          const swept = (devBal - 5000) / LAMPORTS_PER_SOL;
+          totalSwept += swept;
+          console.log(`[SWEEP] Dev → Trading: ${swept.toFixed(4)} SOL`);
         }
       }
-    } catch (e) {
-      console.error(`[SWEEP] Master→Trading failed:`, e.message);
-    }
+    } catch (e) { console.error(`[SWEEP] Dev sweep failed:`, e.message); }
 
-    // Get fleet keys for response
-    let keys = [];
+    // Sweep fleet wallets → trading wallet
+    let fleetKeys = [];
     try {
-      if (session.devSecret) {
-        keys.push({ role: "dev", pubkey: session.devWallet, secret: session.devSecret });
-      }
       if (redis) {
         const fkRaw = await redis.get("fleetkeys:" + sessionId);
-        if (fkRaw) keys = keys.concat(JSON.parse(fkRaw));
+        if (fkRaw) fleetKeys = JSON.parse(fkRaw);
       }
     } catch {}
 
-    res.json({
-      ok: true,
-      ...closeResult,
-      totalSwept: (closeResult.solRecovered || 0) + masterSwept,
-      masterSwept,
-      keys,
-    });
+    for (const fk of fleetKeys) {
+      try {
+        const fkKp = Keypair.fromSecretKey(bs58.decode(fk.secret));
+        // Sell any tokens first
+        if (session.tokenCA) {
+          try {
+            const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ publicKey: fkKp.publicKey.toBase58(), action: "sell", mint: session.tokenCA, amount: "100%", denominatedInSol: "false", slippage: 50, priorityFee: 0.01, pool: "auto" }),
+              signal: AbortSignal.timeout(10000),
+            });
+            if (sellResp.ok) {
+              const txBytes = await sellResp.arrayBuffer();
+              if (txBytes.byteLength > 100) {
+                const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+                tx.sign([fkKp]);
+                await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+              }
+            }
+          } catch {}
+        }
+        // Transfer SOL
+        const bal = await connection.getBalance(fkKp.publicKey);
+        if (bal > 6000) {
+          const tx = new Transaction().add(
+            ComputeBudgetProgram.setComputeUnitLimit({ units: 50000 }),
+            ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50000 }),
+            SystemProgram.transfer({ fromPubkey: fkKp.publicKey, toPubkey: new PublicKey(destPubkey), lamports: bal - 5000 })
+          );
+          await sendAndConfirmTransaction(connection, tx, [fkKp], { skipPreflight: true, commitment: "confirmed" });
+          const swept = (bal - 5000) / LAMPORTS_PER_SOL;
+          totalSwept += swept;
+          console.log(`[SWEEP] ${fk.role} → Trading: ${swept.toFixed(4)} SOL`);
+        }
+      } catch (e) { console.warn(`[SWEEP] Fleet wallet sweep failed: ${e.message}`); }
+    }
+
+    // Get keys for response
+    let keys = [];
+    if (session.devSecret) keys.push({ role: "dev", pubkey: session.devWallet, secret: session.devSecret });
+    keys = keys.concat(fleetKeys);
+
+    console.log(`[SWEEP] Total swept: ${totalSwept.toFixed(4)} SOL from ${1 + fleetKeys.length} wallets`);
+
+    res.json({ ok: true, ...closeResult, totalSwept: +totalSwept.toFixed(4), keys });
   } catch (e) {
     console.error("[SELL-SWEEP] Error:", e.message);
     res.status(500).json({ error: e.message });
@@ -1564,7 +1632,7 @@ app.post("/api/session/sell-sweep", async (req, res) => {
 });
 
 // ── FORCE-RECOVER ──
-// FIX: Pass null as profitConfig — recovery should NEVER skim
+// Sells any remaining tokens + sweeps all SOL back to trading wallet
 app.post("/api/session/force-recover", async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
@@ -1575,26 +1643,74 @@ app.post("/api/session/force-recover", async (req, res) => {
     const tw = await getTradingWallet(wallet);
     const destPubkey = tw?.pubkey || wallet;
 
-    // Get fleet wallet secrets
-    let secrets = [];
-    if (session.devSecret) secrets.push(session.devSecret);
+    // Collect all wallet secrets (dev + fleet)
+    let allKeys = [];
+    if (session.devSecret) allKeys.push({ role: "dev", secret: session.devSecret });
     if (redis) {
       try {
         const fkRaw = await redis.get("fleetkeys:" + sessionId);
-        if (fkRaw) {
-          const fk = JSON.parse(fkRaw);
-          secrets = secrets.concat(fk.map(k => k.secret));
-        }
+        if (fkRaw) allKeys = allKeys.concat(JSON.parse(fkRaw));
       } catch {}
     }
 
-    // FIX: null profitConfig — recovery never skims
-    const result = await fleetTrader.recover(secrets, destPubkey, null);
+    if (allKeys.length === 0) {
+      return res.status(400).json({ error: "No wallet keys found. Keys may have expired (48h TTL)." });
+    }
 
-    // FIX: Update session status
+    let totalRecovered = 0;
+    const results = [];
+
+    for (const wk of allKeys) {
+      try {
+        const kp = Keypair.fromSecretKey(bs58.decode(wk.secret));
+        const pub = kp.publicKey.toBase58().slice(0, 8);
+
+        // Sell any tokens this wallet holds
+        if (session.tokenCA) {
+          try {
+            const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ publicKey: kp.publicKey.toBase58(), action: "sell", mint: session.tokenCA, amount: "100%", denominatedInSol: "false", slippage: 50, priorityFee: 0.01, pool: "auto" }),
+              signal: AbortSignal.timeout(10000),
+            });
+            if (sellResp.ok) {
+              const txBytes = await sellResp.arrayBuffer();
+              if (txBytes.byteLength > 100) {
+                const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+                tx.sign([kp]);
+                await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                console.log(`[RECOVER] ${wk.role}(${pub}) tokens sold`);
+                await new Promise(r => setTimeout(r, 2000));
+              }
+            }
+          } catch (e) { console.warn(`[RECOVER] ${wk.role}(${pub}) token sell failed: ${e.message}`); }
+        }
+
+        // Transfer SOL to destination
+        const bal = await connection.getBalance(kp.publicKey);
+        if (bal > 6000) {
+          const tx = new Transaction().add(
+            ComputeBudgetProgram.setComputeUnitLimit({ units: 50000 }),
+            ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 50000 }),
+            SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: new PublicKey(destPubkey), lamports: bal - 5000 })
+          );
+          await sendAndConfirmTransaction(connection, tx, [kp], { skipPreflight: true, commitment: "confirmed" });
+          const swept = (bal - 5000) / LAMPORTS_PER_SOL;
+          totalRecovered += swept;
+          results.push({ pubkey: pub, role: wk.role, swept: +swept.toFixed(4), status: "ok" });
+          console.log(`[RECOVER] ${wk.role}(${pub}) → ${swept.toFixed(4)} SOL`);
+        } else {
+          results.push({ pubkey: pub, role: wk.role, swept: 0, status: "empty" });
+        }
+      } catch (e) {
+        results.push({ pubkey: "?", role: wk.role, error: e.message, status: "failed" });
+      }
+    }
+
     await sessionManager.update(sessionId, { status: "recovered", recoveredAt: new Date().toISOString() });
 
-    res.json({ ok: true, ...result });
+    console.log(`[RECOVER] Total: ${totalRecovered.toFixed(4)} SOL from ${results.filter(r => r.status === "ok").length}/${allKeys.length} wallets`);
+    res.json({ ok: true, totalRecovered: +totalRecovered.toFixed(4), wallets: results });
   } catch (e) {
     console.error("[FORCE-RECOVER] Error:", e.message);
     res.status(500).json({ error: e.message });
