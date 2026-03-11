@@ -892,8 +892,8 @@ class FleetTrader extends EventEmitter {
     console.log(`[FLEET] APE: Phase 1 — rapid snipe on ${ca.slice(0, 8)}...`);
 
     const buyPromises = fleetWallets.filter(w => w.funded).map(async (wallet, idx) => {
-      // Tight stagger: 1-3 seconds between each wallet (looks like multiple users aping)
-      const delay = (1 + idx * 1.5 + Math.random() * 2) * 1000;
+      // Tight stagger: 0.5-2 seconds between each wallet (looks like multiple users aping)
+      const delay = (0.5 + idx * 1 + Math.random() * 1.5) * 1000;
       await sleep(delay);
       if (!session.running) return;
 
@@ -973,8 +973,8 @@ class FleetTrader extends EventEmitter {
     try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
 
     const exitPromises = fleetWallets.filter(w => w.funded).map(async (wallet, idx) => {
-      // Exit stagger: 3-10 seconds between wallets
-      await sleep((3 + idx * 2 + Math.random() * 5) * 1000);
+      // Exit stagger: 1.5-5 seconds between wallets
+      await sleep((1.5 + idx * 1.5 + Math.random() * 2) * 1000);
       if (!session.running) return;
       // Sell 90-95% in one shot
       try {
@@ -1124,9 +1124,9 @@ class FleetTrader extends EventEmitter {
         }
       }
 
-      // Gap between trades: 1-3 seconds (fast enough to paint chart, slow enough to look organic)
-      const baseGap = 1000 + (1 - intensity) * 2000; // 1s at peak, 3s at edges
-      const jitter = Math.random() * 1000;
+      // Gap between trades: 0.6-2s (fast enough to paint chart, slow enough to look organic)
+      const baseGap = 600 + (1 - intensity) * 1400; // 0.6s at peak, 2s at edges
+      const jitter = Math.random() * 600;
       await sleep(baseGap + jitter);
     }
 
