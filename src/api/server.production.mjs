@@ -3064,11 +3064,12 @@ function startAutoTrader(wallet, settings) {
           earlyApeBonus = Math.min(18, Math.round(qualitySignal * velocityInverse * 8));
         }
 
+        // Artwork penalty: non-original art = rug signal
+        const artPenalty = t._artworkOriginal === false ? Math.max(5, Math.round((100 - (t._artworkScore || 50)) / 5)) : 0;
+
         t._apeScore = Math.max(0, Math.min(99, Math.round(
           buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus - sellPenalty - rugPenalty - artPenalty
         )));
-        // Artwork penalty: non-original art = rug signal
-        const artPenalty = t._artworkOriginal === false ? Math.max(5, Math.round((100 - (t._artworkScore || 50)) / 5)) : 0;
 
         t._rugFlags = [
           ...(qf ? [
