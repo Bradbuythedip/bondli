@@ -53,5 +53,6 @@ atu(w,s){return this.f("/api/auto-trade/update",{method:"POST",body:{wallet:w,se
 atst(w){return this.f(`/api/auto-trade/status?wallet=${w}`)}
 gcp(){return this.f("/api/chart-patterns")}
 gcpr(l){return this.f(`/api/chart-patterns/recent?limit=${l||20}`)}
+atsim(s){return this.f("/api/auto-trade/simulate",{method:"POST",body:{settings:s}})}
 }
 export const a=new A();export default a;

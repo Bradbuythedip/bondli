@@ -891,13 +891,13 @@ const adjSL=(step)=>{
   const nv=Math.max(10,Math.min(90,+(S.sl1Sell||50)+step));
   sAutoTrade(p=>({...p,settings:{...p.settings,sl1Sell:nv}}));
 };
-const StepBtn=({k,step,mn,mx,c,fmt,onAdj})=>{const v=S[k]??0;return<div style={{display:"flex",alignItems:"center",gap:0,background:T.bg,borderRadius:6,overflow:"hidden",border:"1px solid "+(c||T.bd)+"22"}}>
-<button onClick={()=>onAdj?onAdj(-Math.abs(step)):adj(k,-Math.abs(step),mn,mx)} style={{padding:mb?"10px 12px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?18:14,fontWeight:800,cursor:"pointer",lineHeight:1}}>-</button>
-<div style={{flex:1,textAlign:"center",fontSize:mb?15:13,fontWeight:800,color:c||T.tx,padding:"4px 0",minWidth:mb?44:36}}>{fmt?fmt(v):v}</div>
-<button onClick={()=>onAdj?onAdj(Math.abs(step)):adj(k,Math.abs(step),mn,mx)} style={{padding:mb?"10px 12px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?18:14,fontWeight:800,cursor:"pointer",lineHeight:1}}>+</button>
+const StepBtn=({k,step,mn,mx,c,fmt,onAdj})=>{const v=S[k]??0;return<div style={{display:"flex",alignItems:"center",gap:0,background:T.bg,borderRadius:6,overflow:"hidden",border:"1px solid "+(c||T.bd)+"22",width:"100%",boxSizing:"border-box"}}>
+<button onClick={()=>onAdj?onAdj(-Math.abs(step)):adj(k,-Math.abs(step),mn,mx)} style={{padding:mb?"8px 8px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?16:14,fontWeight:800,cursor:"pointer",lineHeight:1,flexShrink:0}}>-</button>
+<div style={{flex:1,textAlign:"center",fontSize:mb?13:13,fontWeight:800,color:c||T.tx,padding:"4px 0",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{fmt?fmt(v):v}</div>
+<button onClick={()=>onAdj?onAdj(Math.abs(step)):adj(k,Math.abs(step),mn,mx)} style={{padding:mb?"8px 8px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?16:14,fontWeight:800,cursor:"pointer",lineHeight:1,flexShrink:0}}>+</button>
 </div>};
 const tpTotal=(S.tp1Sell||0)+(S.tp2Sell||0)+(S.tp3Sell||0);
-return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),borderRadius:10,padding:mb?10:16,marginTop:6,overflow:"hidden"}}>
+return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),borderRadius:10,padding:mb?8:16,marginTop:6,overflow:"hidden",width:"100%",maxWidth:"100%",boxSizing:"border-box"}}>
 {/* Header + buttons */}
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:aaOpen?8:0,flexWrap:"wrap",gap:4}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}><IC.trend s={16} c={aaActive?T.gn:T.ft}/><span style={{fontSize:15,fontWeight:800}}>Auto-Ape</span>{aaActive&&<span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}</div>
@@ -916,8 +916,8 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 </div>
 {!aaOpen&&<div style={{fontSize:11,color:T.dm,marginTop:4}}>Walk away mode: auto-buys green tokens, sells at 3 TP / 2 SL tiers.</div>}
 {/* Expanded panel */}
-{aaOpen&&<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:mb?6:12,width:"100%",boxSizing:"border-box"}}>
-<div>{/* LEFT: Config */}
+{aaOpen&&<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:mb?6:12,width:"100%",boxSizing:"border-box",overflow:"hidden"}}>
+<div style={{minWidth:0,overflow:"hidden"}}>{/* LEFT: Config */}
 <div style={{fontSize:11,color:T.dm,marginBottom:8}}>Configure targets, then hit START. Uses +/- to adjust.</div>
 {/* Core settings */}
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
@@ -935,7 +935,7 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 <div style={{width:(S.tp3Sell||0)+"%",background:T.gn+"44",transition:"width .2s"}}/>
 </div>
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
-{[{l:"TP1",k:"tp1",sk:"tp1Sell",st:10,sst:5,desc:"Secure"},{l:"TP2",k:"tp2",sk:"tp2Sell",st:10,sst:5,desc:"Scale out"},{l:"TP3 Runner",k:"tp3",sk:"tp3Sell",st:25,sst:5,desc:"Moonbag"}].map(t=><div key={t.k} style={{background:T.bg,borderRadius:6,padding:mb?8:6,border:"1px solid "+T.gn+"22"}}>
+{[{l:"TP1",k:"tp1",sk:"tp1Sell",st:10,sst:5,desc:"Secure"},{l:"TP2",k:"tp2",sk:"tp2Sell",st:10,sst:5,desc:"Scale out"},{l:"TP3 Runner",k:"tp3",sk:"tp3Sell",st:25,sst:5,desc:"Moonbag"}].map(t=><div key={t.k} style={{background:T.bg,borderRadius:6,padding:mb?6:6,border:"1px solid "+T.gn+"22",minWidth:0,overflow:"hidden"}}>
 <div style={{fontSize:mb?10:8,color:T.gn,fontWeight:800,marginBottom:4,textAlign:"center"}}>{t.l}</div>
 <div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>Trigger</div>
 <StepBtn k={t.k} step={t.st} mn={10} mx={1000} c={T.gn} fmt={v=>"+"+v+"%"}/>
@@ -950,7 +950,7 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 <div style={{fontSize:mb?9:8,color:T.dm}}>SL1: {S.sl1Sell||50}% → SL2: 100% exit</div>
 </div>
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginBottom:8}}>
-<div style={{background:T.bg,borderRadius:6,padding:mb?8:6,border:"1px solid "+T.rd+"22"}}>
+<div style={{background:T.bg,borderRadius:6,padding:mb?6:6,border:"1px solid "+T.rd+"22",minWidth:0,overflow:"hidden"}}>
 <div style={{fontSize:mb?10:8,color:T.rd,fontWeight:800,marginBottom:4,textAlign:"center"}}>SL1 Reduce</div>
 <div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>Trigger</div>
 <StepBtn k="sl1" step={5} mn={5} mx={80} c={T.rd} fmt={v=>"-"+v+"%"}/>
@@ -958,7 +958,7 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 <StepBtn k="sl1Sell" step={5} mn={10} mx={90} c={T.rd} fmt={v=>v+"%"} onAdj={s=>adjSL(s)}/>
 <div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:3}}>Cut {S.sl1Sell||50}%, keep {100-(S.sl1Sell||50)}%</div>
 </div>
-<div style={{background:T.bg,borderRadius:6,padding:mb?8:6,border:"1px solid "+T.rd+"22"}}>
+<div style={{background:T.bg,borderRadius:6,padding:mb?6:6,border:"1px solid "+T.rd+"22",minWidth:0,overflow:"hidden"}}>
 <div style={{fontSize:mb?10:8,color:T.rd,fontWeight:800,marginBottom:4,textAlign:"center"}}>SL2 Full Exit</div>
 <div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>Trigger</div>
 <StepBtn k="sl2" step={5} mn={10} mx={90} c={T.rd} fmt={v=>"-"+v+"%"}/>
@@ -978,12 +978,90 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 </div>
 {/* APPLY button when settings changed while active */}
 {aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);sAutoTrade(p=>({...p,log:[...(p?.log||[]),{msg:"Settings applied",time:Date.now()}]}));toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:4}}>APPLY CHANGES</button>}
+
+{/* ═══ PAPER TRADE SIMULATOR (Kahneman Premortem + Norman Visibility) ═══ */}
+{/* "The best way to predict the future is to simulate it" — Premortem technique */}
+<div style={{background:T.bg,borderRadius:6,padding:mb?8:8,border:"1px solid "+T.cy+"18",marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+<div style={{display:"flex",alignItems:"center",gap:4}}>
+<span style={{fontSize:mb?11:10,fontWeight:800,color:T.cy}}>Simulate</span>
+<span style={{fontSize:mb?8:7,color:T.dm}}>Backtest settings vs live radar</span>
+</div>
+<button onClick={async()=>{try{const r=await a.atsim(S);sAutoTrade(p=>({...p,sim:r}));toast(`${r.totalTrades} simulated trades`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"6px 12px":"4px 10px",borderRadius:5,border:"1px solid "+T.cy+"22",background:T.cy+"08",color:T.cy,fontWeight:800,fontSize:mb?11:9,cursor:"pointer"}}>RUN</button>
+</div>
+{autoTrade?.sim&&(()=>{const sim=autoTrade.sim;const pnlColor=sim.totalPnlSol>=0?T.gn:T.rd;const kahColor=sim.kahnemanScore>=0?T.gn:sim.kahnemanScore>=-10?T.yl:T.rd;return<>
+<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3,marginBottom:6}}>
+{[
+{l:"TRADES",v:sim.totalTrades,c:T.tx},
+{l:"WIN RATE",v:sim.winRate+"%",c:sim.winRate>=50?T.gn:T.rd},
+{l:"PnL",v:(sim.totalPnlSol>=0?"+":"")+sim.totalPnlSol+" SOL",c:pnlColor},
+{l:"ROI",v:(sim.roi>=0?"+":"")+sim.roi+"%",c:pnlColor},
+].map(s=><div key={s.l} style={{textAlign:"center",padding:"4px 2px",background:T.sf,borderRadius:4}}>
+<div style={{fontSize:mb?13:11,fontWeight:900,color:s.c}}>{s.v}</div>
+<div style={{fontSize:mb?7:6,color:T.ft,fontWeight:700}}>{s.l}</div>
+</div>)}
+</div>
+{/* Kahneman Loss-Aversion Score — losses weighted 2x */}
+<div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 6px",background:kahColor+"0a",borderRadius:4,border:"1px solid "+kahColor+"18",marginBottom:4}}>
+<div style={{flex:1}}>
+<div style={{fontSize:mb?8:7,fontWeight:700,color:kahColor}}>Loss-Aversion Score</div>
+<div style={{fontSize:mb?7:6,color:T.dm}}>Losses weighted 2x (Kahneman). Negative = settings too risky.</div>
+</div>
+<div style={{fontSize:mb?14:12,fontWeight:900,color:kahColor}}>{sim.kahnemanScore>=0?"+":""}{sim.kahnemanScore}%</div>
+</div>
+{/* Best/worst trade */}
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3,marginBottom:4}}>
+{sim.bestTrade&&<div style={{padding:"3px 6px",background:T.gn+"06",borderRadius:4,border:"1px solid "+T.gn+"18"}}>
+<div style={{fontSize:mb?7:6,color:T.gn,fontWeight:700}}>BEST</div>
+<div style={{fontSize:mb?10:9,fontWeight:800,color:T.gn}}>+{sim.bestTrade.pnlSol} SOL</div>
+<div style={{fontSize:mb?8:7,color:T.dm}}>{sim.bestTrade.name} ({sim.bestTrade.exitReason})</div>
+</div>}
+{sim.worstTrade&&<div style={{padding:"3px 6px",background:T.rd+"06",borderRadius:4,border:"1px solid "+T.rd+"18"}}>
+<div style={{fontSize:mb?7:6,color:T.rd,fontWeight:700}}>WORST</div>
+<div style={{fontSize:mb?10:9,fontWeight:800,color:T.rd}}>{sim.worstTrade.pnlSol} SOL</div>
+<div style={{fontSize:mb?8:7,color:T.dm}}>{sim.worstTrade.name} ({sim.worstTrade.exitReason})</div>
+</div>}
+</div>
+{/* Top simulated trades */}
+{sim.trades?.length>0&&<div style={{maxHeight:mb?80:100,overflowY:"auto",fontSize:mb?8:7,color:T.dm}}>
+{sim.trades.slice(0,8).map((t,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px 0",borderBottom:"1px solid "+T.bd+"22"}}>
+<span style={{fontWeight:700,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t.name}</span>
+<span style={{fontSize:mb?8:7,color:T.ft}}>s:{t.score}</span>
+<span style={{fontSize:mb?8:7,color:T.ft}}>{t.sizeMult}x</span>
+<span style={{fontWeight:800,color:t.pnlSol>=0?T.gn:T.rd}}>{t.pnlSol>=0?"+":""}{t.pnlSol}</span>
+<span style={{fontSize:mb?7:6,color:T.ft}}>{t.exitReason}</span>
+</div>)}
+</div>}
+</>})()}
+</div>
+
+{/* ═══ RISK DASHBOARD (Norman: Make system state visible) ═══ */}
+{/* Shows current settings in terms of REAL RISK, not abstract numbers */}
+<div style={{background:T.bg,borderRadius:6,padding:mb?6:6,border:"1px solid "+T.yl+"18",marginBottom:6}}>
+<div style={{fontSize:mb?9:8,fontWeight:700,color:T.yl,marginBottom:4}}>Risk at a Glance</div>
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:3}}>
+<div style={{textAlign:"center",padding:"3px 2px"}}>
+<div style={{fontSize:mb?12:10,fontWeight:900,color:T.rd}}>{(S.solPerTrade*(S.sl2/100)*S.maxPositions).toFixed(3)}</div>
+<div style={{fontSize:mb?7:6,color:T.dm}}>Max Loss (SOL)</div>
+</div>
+<div style={{textAlign:"center",padding:"3px 2px"}}>
+<div style={{fontSize:mb?12:10,fontWeight:900,color:T.gn}}>{(S.solPerTrade*(S.tp1/100)*S.maxPositions*(S.tp1Sell/100)).toFixed(3)}</div>
+<div style={{fontSize:mb?7:6,color:T.dm}}>TP1 Take (SOL)</div>
+</div>
+<div style={{textAlign:"center",padding:"3px 2px"}}>
+<div style={{fontSize:mb?12:10,fontWeight:900,color:T.tx}}>{(S.maxPositions*S.solPerTrade).toFixed(3)}</div>
+<div style={{fontSize:mb?7:6,color:T.dm}}>Max Exposure</div>
+</div>
+</div>
+{/* Loss aversion warning — Kahneman: people feel losses 2x more than gains */}
+{S.sl2>S.tp1&&<div style={{fontSize:mb?8:7,color:T.yl,marginTop:4,textAlign:"center"}}>SL2 ({S.sl2}%) {">"} TP1 ({S.tp1}%): Losses will feel {(S.sl2/S.tp1*2).toFixed(1)}x worse than gains (loss aversion)</div>}
+</div>
 {/* ═══ POSITION ANALYTICS — live score+price charts ═══ */}
 <PositionAnalytics positions={autoTrade?.positions||[]} settings={S} T={T} mb={mb}/>
 </div>{/* END LEFT */}
 
 {/* RIGHT: Live Positions + Log + Chart Patterns */}
-<div style={{display:"flex",flexDirection:"column",gap:6}}>
+<div style={{display:"flex",flexDirection:"column",gap:6,minWidth:0,overflow:"hidden"}}>
 {/* Live Positions */}
 <div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:8,padding:10,minHeight:mb?0:180}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
