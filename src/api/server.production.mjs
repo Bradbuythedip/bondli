@@ -2502,20 +2502,21 @@ function startAutoTrader(wallet, settings) {
   if (!soldCooldowns.has(wallet)) soldCooldowns.set(wallet, new Map());
   const state = {
     settings: {
-      minScore: settings.minScore || 25,
+      minScore: settings.minScore || 28,
       solPerTrade: settings.solPerTrade || 0.05,
-      maxPositions: settings.maxPositions || 3,
+      maxPositions: settings.maxPositions || 5,
       // 3 Take Profit tiers: sell % of remaining at each level
-      tp1: settings.tp1 || 35,         // TP1 trigger: +35% (take profit earlier)
-      tp1Sell: settings.tp1Sell || 50,  // sell 50% at TP1
-      tp2: settings.tp2 || 80,         // TP2 trigger: +80%
-      tp2Sell: settings.tp2Sell || 30,  // sell 30% of remaining at TP2
+      // Optimized: take profit earlier + sell less → secure gains while letting runners fly
+      tp1: settings.tp1 || 25,         // TP1 trigger: +25% (lock gains early — most pumps peak fast)
+      tp1Sell: settings.tp1Sell || 35,  // sell 35% at TP1 (keep 65% for bigger move)
+      tp2: settings.tp2 || 70,         // TP2 trigger: +70%
+      tp2Sell: settings.tp2Sell || 35,  // sell 35% of remaining at TP2
       tp3: settings.tp3 || 150,        // TP3 trigger: +150% (runner)
       tp3Sell: settings.tp3Sell || 50,  // sell 50% of remaining, rest = moonbag
-      // 2 Stop Loss tiers — TIGHTER defaults to cut losses faster
-      sl1: settings.sl1 || 15,         // SL1 trigger: -15% (was -25%)
-      sl1Sell: settings.sl1Sell || 60,  // sell 60% to reduce exposure (was 50%)
-      sl2: settings.sl2 || 30,         // SL2 trigger: -30% full exit (was -50%)
+      // 2 Stop Loss tiers — TIGHT defaults to cut losses fast
+      sl1: settings.sl1 || 12,         // SL1 trigger: -12% (cut early before dump accelerates)
+      sl1Sell: settings.sl1Sell || 70,  // sell 70% to reduce exposure fast
+      sl2: settings.sl2 || 22,         // SL2 trigger: -22% full exit
       requireBoosted: settings.requireBoosted || false,
       momentumExit: settings.momentumExit !== false, // default ON — auto-tighten stops on score drop
       enabled: true,
@@ -2661,10 +2662,25 @@ function startAutoTrader(wallet, settings) {
               const liveScore = memeIntel.scorer.score(features);
               const currentScore = liveScore?.score || 0;
               // Guard: if score suddenly drops to near-0 but we had a real score before,
-              // the token likely lost radar data — skip this cycle entirely
+              // the token likely lost radar data — skip this cycle (but not forever).
+              // After 3 consecutive data-loss cycles, accept the score as real.
               if (currentScore < 5 && pos.entryScore > 20 && (pos.liveScore == null || pos.liveScore > 20)) {
-                log(`MOMENTUM SKIP ${ca.slice(0,6)}: score=${currentScore} looks like data loss (entry=${pos.entryScore}, last=${pos.liveScore})`);
-              } else {
+                pos._dataLossStreak = (pos._dataLossStreak || 0) + 1;
+                if (pos._dataLossStreak <= 3) {
+                  log(`MOMENTUM SKIP ${ca.slice(0,6)}: score=${currentScore} looks like data loss (entry=${pos.entryScore}, last=${pos.liveScore}, streak=${pos._dataLossStreak}/3)`);
+                  // Still record dynamics so vel/acc are available for the UI
+                  const dyn = scoreDynamics.record(ca, currentScore);
+                  pos.scoreVelocity = dyn.velocity;
+                  pos.scoreAcceleration = dyn.acceleration;
+                  pos.scoreTrend = dyn.trend;
+                } else {
+                  // 3+ cycles with score=0 — this is real, not transient data loss
+                  log(`MOMENTUM ACCEPT ${ca.slice(0,6)}: score=${currentScore} persisted ${pos._dataLossStreak} cycles — treating as real`);
+                  // Fall through to normal scoring below
+                }
+              }
+              // Normal scoring path (also reached when data loss streak expires)
+              if (pos._dataLossStreak === undefined || pos._dataLossStreak === 0 || pos._dataLossStreak > 3) {
               if (!pos.entryScore) pos.entryScore = currentScore;
               pos.liveScore = currentScore;
               const scoreDrop = pos.entryScore - currentScore;
@@ -2730,7 +2746,7 @@ function startAutoTrader(wallet, settings) {
                 s.tp2 = Math.round(state.settings.tp2 * 1.25);
                 s.tp3 = Math.round(state.settings.tp3 * 1.25);
               }
-              } // end else (score is real, not data loss)
+              } // end normal scoring path
             }
           } catch (e) { log(`Momentum score error ${ca.slice(0,6)}: ${e.message}`); }
         }
