@@ -3161,22 +3161,59 @@ function startAutoTrader(wallet, settings) {
         log(`SCAN: ${p.total} tokens → ${p.total-p.baseFilter} pass base → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown} new → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate} pass rug → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate-p.trendReject} pass trend → ${p.passed} READY (need ${state.settings.minScore}+)${nmStr}`);
       }
 
+      // ═══ SCORE-BASED POSITION SIZING (Kelly Criterion + Kahneman Loss Aversion) ═══
+      // Axiomatic reasoning:
+      //   Axiom 1 (Kahneman): Losses hurt ~2x more than equivalent gains feel good.
+      //     → Size positions so worst-case loss (SL2) is psychologically bearable.
+      //   Axiom 2 (Kelly): Optimal bet size = edge / odds. Higher score = bigger edge.
+      //     → Scale SOL linearly from 0.5x at minScore to 1.5x at score 80+.
+      //   Axiom 3 (Norman): Make the system state visible — log the sizing rationale.
+      //     → Show WHY each position is sized the way it is.
+      //   Axiom 4 (Prospect Theory): People are risk-seeking in losses, risk-averse in gains.
+      //     → Counter this bias: bet MORE on high-conviction, LESS on marginal signals.
+      //
+      // Formula: sizeMult = 0.5 + (score - minScore) / (80 - minScore)
+      //   score=minScore → 0.5x (half size, marginal conviction)
+      //   score=80       → 1.5x (full conviction, max edge)
+      //   Capped at [0.4x, 1.6x] to prevent extremes.
+      //   Trend bonus: rocket/rising adds +0.15x (momentum confirms conviction)
+      //   Rug flags: each flag reduces by 0.1x (uncertainty penalty)
+      function calcPositionSize(score, trend, rugFlagCount, baseSol) {
+        const minS = state.settings.minScore;
+        const range = Math.max(80 - minS, 20); // prevent div/0
+        let mult = 0.5 + ((score - minS) / range);
+        // Trend adjustment (Kahneman System 1: momentum = intuitive confidence)
+        if (trend === "rocket") mult += 0.2;
+        else if (trend === "rising") mult += 0.1;
+        else if (trend === "fading") mult -= 0.15;
+        else if (trend === "declining") mult -= 0.25;
+        // Rug flag penalty (Norman: error prevention — reduce exposure to uncertainty)
+        mult -= rugFlagCount * 0.1;
+        // Clamp to safe range
+        mult = Math.max(0.4, Math.min(1.6, mult));
+        return Math.round(baseSol * mult * 1000) / 1000;
+      }
+
       // Ape into top 2 candidates per cycle — meme tokens move fast
       for (const t of hot.slice(0, 2)) {
         if (state.positions.size >= state.settings.maxPositions) break;
+        // Score-based sizing
+        const rugFlagCount = t._rugFlags?.length || 0;
+        const tradeSol = calcPositionSize(t._apeScore || 0, t._scoreTrend, rugFlagCount, state.settings.solPerTrade);
         // Check balance
         let balance = 0;
         try { balance = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL; } catch { continue; }
-        if (balance < state.settings.solPerTrade + 0.01) { log("Low balance: " + balance.toFixed(4)); break; }
+        if (balance < tradeSol + 0.01) { log("Low balance: " + balance.toFixed(4)); break; }
 
+        const sizeMult = (tradeSol / state.settings.solPerTrade).toFixed(2);
         const rugFlags = t._rugFlags?.length > 0 ? ` [WARN: ${t._rugFlags.join(",")}]` : "";
         const trendTag = t._scoreTrend && t._scoreTrend !== "new" && t._scoreTrend !== "stable" ? ` trend:${t._scoreTrend}` : "";
         const earlyTag = t._earlyApe ? " [EARLY-APE]" : "";
-        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag}${earlyTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${state.settings.solPerTrade} SOL${rugFlags}`);
+        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag}${earlyTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}`);
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: t.ca, amount: state.settings.solPerTrade, denominatedInSol: "true", slippage: 25, priorityFee: 0.005, pool: "auto" }),
+            body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: t.ca, amount: tradeSol, denominatedInSol: "true", slippage: 25, priorityFee: 0.005, pool: "auto" }),
           });
           if (buyResp.ok) {
             const txBytes = await buyResp.arrayBuffer();
@@ -3184,10 +3221,10 @@ function startAutoTrader(wallet, settings) {
               const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
               tx.sign([kp]);
               const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: state.settings.solPerTrade, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0 });
-              trackBuy(wallet, t.ca, state.settings.solPerTrade); // instant bags visibility
+              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: tradeSol, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2) });
+              trackBuy(wallet, t.ca, tradeSol); // instant bags visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
-              broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: state.settings.solPerTrade, mcap: t.mcapUsd, wallet, score: t._apeScore } });
+              broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: tradeSol, mcap: t.mcapUsd, wallet, score: t._apeScore, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2) } });
             }
           }
         } catch (e) { log(`Buy error: ${e.message}`); }
@@ -3398,6 +3435,144 @@ app.get("/api/auto-trade/status", (req, res) => {
       nearMisses: state._pipelineStats.nearMisses,
     } : null,
   });
+});
+
+// ═══════════════════════════════════════
+// PAPER TRADE SIMULATION — backtest settings against recent radar data
+// Applies Kahneman's "premortem" technique: simulate the WORST case
+// before committing real capital. Norman: make errors visible BEFORE they cost you.
+// ═══════════════════════════════════════
+app.post("/api/auto-trade/simulate", (req, res) => {
+  try {
+    const { settings } = req.body;
+    const s = {
+      minScore: settings?.minScore || 28,
+      solPerTrade: settings?.solPerTrade || 0.05,
+      maxPositions: settings?.maxPositions || 5,
+      tp1: settings?.tp1 || 25, tp1Sell: settings?.tp1Sell || 35,
+      tp2: settings?.tp2 || 70, tp2Sell: settings?.tp2Sell || 35,
+      tp3: settings?.tp3 || 150, tp3Sell: settings?.tp3Sell || 50,
+      sl1: settings?.sl1 || 12, sl1Sell: settings?.sl1Sell || 70,
+      sl2: settings?.sl2 || 22,
+    };
+
+    // Simulate against all tokens currently in radar + recently seen
+    const tokens = [...radar.tokens.values()];
+    let totalTrades = 0, wins = 0, losses = 0;
+    let totalPnlSol = 0, totalInvested = 0;
+    let bestTrade = null, worstTrade = null;
+    const trades = [];
+
+    for (const t of tokens) {
+      const spark = t.spark || [];
+      if (spark.length < 6) continue;
+
+      // Score this token
+      const features = typeof extractQuickFeatures === "function" ? extractQuickFeatures(t) : null;
+      const scoreResult = features && memeIntel?.scorer ? memeIntel.scorer.score(features) : null;
+      const score = scoreResult?.score || t._apeScore || 0;
+      if (score < s.minScore) continue;
+
+      // Simulate entry at spark midpoint, exit at end
+      const entryIdx = Math.floor(spark.length * 0.3);
+      const entryMc = spark[entryIdx] || 1;
+      const peakMc = Math.max(...spark.slice(entryIdx));
+      const endMc = spark[spark.length - 1] || 1;
+
+      // Score-based sizing
+      const range = Math.max(80 - s.minScore, 20);
+      let sizeMult = 0.5 + ((score - s.minScore) / range);
+      sizeMult = Math.max(0.4, Math.min(1.6, sizeMult));
+      const tradeSol = Math.round(s.solPerTrade * sizeMult * 1000) / 1000;
+
+      const peakPct = entryMc > 0 ? ((peakMc - entryMc) / entryMc) * 100 : 0;
+      const endPct = entryMc > 0 ? ((endMc - entryMc) / entryMc) * 100 : 0;
+
+      // Simulate tiered TP/SL
+      let exitPct = endPct;
+      let exitReason = "hold";
+      let soldPct = 0;
+      let realizedPnl = 0;
+
+      // TP3
+      if (peakPct >= s.tp3) {
+        realizedPnl += tradeSol * (s.tp3 / 100) * (s.tp3Sell / 100);
+        soldPct += s.tp3Sell * ((100 - soldPct) / 100);
+        exitReason = "TP3";
+      }
+      // TP2
+      if (peakPct >= s.tp2) {
+        const remaining = 100 - soldPct;
+        realizedPnl += tradeSol * (remaining / 100) * (s.tp2 / 100) * (s.tp2Sell / 100);
+        soldPct += s.tp2Sell * (remaining / 100);
+        if (exitReason === "hold") exitReason = "TP2";
+      }
+      // TP1
+      if (peakPct >= s.tp1) {
+        const remaining = 100 - soldPct;
+        realizedPnl += tradeSol * (remaining / 100) * (s.tp1 / 100) * (s.tp1Sell / 100);
+        soldPct += s.tp1Sell * (remaining / 100);
+        if (exitReason === "hold") exitReason = "TP1";
+      }
+      // SL check on remaining
+      if (endPct <= -s.sl2 && soldPct < 100) {
+        const remaining = 100 - soldPct;
+        realizedPnl += tradeSol * (remaining / 100) * (endPct / 100);
+        soldPct = 100;
+        exitReason = exitReason === "hold" ? "SL2" : exitReason + "+SL2";
+      } else if (endPct <= -s.sl1 && soldPct < 100) {
+        const remaining = 100 - soldPct;
+        const slSold = s.sl1Sell;
+        realizedPnl += tradeSol * (remaining / 100) * (slSold / 100) * (endPct / 100);
+        soldPct += slSold * (remaining / 100);
+        if (exitReason === "hold") exitReason = "SL1";
+      }
+      // Remaining unsold position at current price
+      if (soldPct < 100) {
+        const remaining = (100 - soldPct) / 100;
+        realizedPnl += tradeSol * remaining * (endPct / 100);
+      }
+
+      const trade = {
+        name: t.name || t.ca?.slice(0, 8),
+        score,
+        sizeMult: +sizeMult.toFixed(2),
+        sol: tradeSol,
+        peakPct: +peakPct.toFixed(1),
+        endPct: +endPct.toFixed(1),
+        pnlSol: +realizedPnl.toFixed(4),
+        exitReason,
+      };
+      trades.push(trade);
+      totalTrades++;
+      totalInvested += tradeSol;
+      totalPnlSol += realizedPnl;
+      if (realizedPnl > 0) wins++;
+      else losses++;
+      if (!bestTrade || realizedPnl > bestTrade.pnlSol) bestTrade = trade;
+      if (!worstTrade || realizedPnl < worstTrade.pnlSol) worstTrade = trade;
+    }
+
+    const winRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100) : 0;
+    const avgPnl = totalTrades > 0 ? +(totalPnlSol / totalTrades).toFixed(4) : 0;
+    const roi = totalInvested > 0 ? +((totalPnlSol / totalInvested) * 100).toFixed(1) : 0;
+    // Kahneman loss-aversion adjusted score: losses count 2x
+    const lossAdjPnl = trades.reduce((sum, t) => sum + (t.pnlSol < 0 ? t.pnlSol * 2 : t.pnlSol), 0);
+    const kahnemanScore = totalInvested > 0 ? +((lossAdjPnl / totalInvested) * 100).toFixed(1) : 0;
+
+    res.json({
+      ok: true,
+      totalTrades, wins, losses, winRate,
+      totalPnlSol: +totalPnlSol.toFixed(4),
+      totalInvested: +totalInvested.toFixed(4),
+      roi,
+      kahnemanScore, // Loss-aversion adjusted ROI
+      avgPnl,
+      bestTrade,
+      worstTrade,
+      trades: trades.sort((a, b) => b.pnlSol - a.pnlSol).slice(0, 20),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ═══════════════════════════════════════
