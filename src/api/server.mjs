@@ -143,6 +143,8 @@ async function initServices() {
 
   // Intelligence engine — thinking fast (score dynamics) and slow (ML + RAG)
   intel = new MemeIntelligence(redis);
+  // Share intel engine with orchestrator so pre-buy safety gate uses same trained model
+  orch.intel = intel;
   scoreDynamics = new ScoreDynamics(5000);
   artworkScanner = new ArtworkScanner(5000);
 
@@ -667,13 +669,23 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
       // Set the CA in config so orchestrator trades it
       CONFIG.TOKEN_CA = tokenCA;
       
+      // Find token data from radar if available (for intel scoring)
+      let radarTokenData = null;
+      if (existingCA) {
+        // Look up this token in the current radar data for recent trades
+        const radarTokens = movers?.lastResults || [];
+        radarTokenData = radarTokens.find(t => t.ca === tokenCA) || { ca: tokenCA };
+      }
+
       const launchConfig = {
         totalSol: session.fleetBudget,
         devBuy: existingCA ? session.devBuy : 0, // already bought in create tx
         devKeypair,
         tokenConfig: session.tokenConfig,
         sessionId: session.id,
-        force: true,
+        force: !existingCA, // Only force-bypass rug scan for our OWN tokens (we created them)
+                            // For existing CAs, rug scan must pass
+        tokenData: radarTokenData, // Pass token data for intel safety gate scoring
       };
 
       console.log(`[LAUNCH] Starting fleet with ${session.fleetBudget} SOL on ${tokenCA}`);
@@ -780,6 +792,8 @@ app.post("/api/launch", launchLimiter, walletAuth, launchSchema, async (req, res
     const { ca, totalSol, force } = req.body;
     const sol = Math.min(totalSol || CONFIG.TOTAL_SOL, 100);
     if (sessionStore) await sessionStore.recordLaunch(req.user.wallet, ca, sol);
+    // Note: force only bypasses basic rug scan, NOT the intel safety gate
+    // Intel gate always runs and blocks tokens with zero sells, fake volume, etc.
     const result = await orch.launch(ca, { totalSol: sol, force });
     res.json(result);
   } catch (e) { res.status(500).json({ error: IS_PROD ? "Server error. Check logs." : e.message }); }
