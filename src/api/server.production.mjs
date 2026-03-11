@@ -479,6 +479,10 @@ function processRadarMessage(data) {
       console.log(`[RADAR] Token graduated: ${token.name || mint.slice(0, 8)} — MC: $${token.mcapUsd}`);
       // Fetch live MC from DexScreener since PumpPortal stops sending data after graduation
       refreshGraduatedMcap(mint).catch(() => {});
+      // Add to graduated watchlist for 24h follow
+      const wEntry = { name: token.name || "", ticker: token.ticker || "", gradMcap: token.mcapUsd || 0, gradTime: Date.now(), spark: [...(token.spark || [])], peakMcap: token.mcapUsd || 0, lastMcap: token.mcapUsd || 0, lastRefresh: Date.now() };
+      gradWatchlist.set(mint, wEntry);
+      if (redis) { redis.hSet("grad:watchlist", mint, JSON.stringify(wEntry)).catch(() => {}); }
     }
     broadcastWS({ event: "graduation", data: { ca: mint } });
   }
@@ -505,6 +509,11 @@ async function refreshGraduatedMcap(mint) {
   } catch {}
 }
 
+// ═══ GRADUATED WATCHLIST — follows tokens beyond radar TTL ═══
+// Tokens that graduate get tracked here for up to 24h for learning
+const gradWatchlist = new Map(); // ca → { name, ticker, gradMcap, gradTime, spark, peakMcap, lastMcap, lastRefresh }
+const GRAD_WATCH_TTL = 86400000; // 24h
+
 // Periodically refresh MC for all graduated tokens (every 30s)
 setInterval(async () => {
   const graduated = [...radar.tokens.entries()].filter(([, t]) => t.graduated);
@@ -512,7 +521,58 @@ setInterval(async () => {
     await refreshGraduatedMcap(ca);
     await new Promise(r => setTimeout(r, 500)); // rate limit spacing
   }
+  // Also refresh watchlist tokens via DexScreener
+  const now = Date.now();
+  const stale = [...gradWatchlist.entries()]
+    .filter(([, w]) => now - w.lastRefresh > 60000 && now - w.gradTime < GRAD_WATCH_TTL)
+    .slice(0, 5);
+  for (const [ca, w] of stale) {
+    try {
+      const d = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${ca}`, { signal: AbortSignal.timeout(8000) }).then(r => r.json()).catch(() => null);
+      if (d?.pairs?.[0]) {
+        const mc = d.pairs[0].fdv || 0;
+        w.lastMcap = mc;
+        if (mc > w.peakMcap) w.peakMcap = mc;
+        w.spark.push(mc);
+        if (w.spark.length > 100) w.spark = w.spark.slice(-100);
+        w.lastRefresh = now;
+        // Store updated learning data
+        if (redis) {
+          try { await redis.hSet("grad:watchlist", ca, JSON.stringify(w)); } catch {}
+        }
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, 500));
+  }
+  // Evict expired watchlist entries — label outcome before removing
+  for (const [ca, w] of gradWatchlist) {
+    if (now - w.gradTime > GRAD_WATCH_TTL) {
+      const peak = w.peakMcap || w.gradMcap;
+      const current = w.lastMcap || 0;
+      const dropPct = peak > 0 ? ((peak - current) / peak) * 100 : 0;
+      const rugged = dropPct > 80;
+      const outcome = { graduated: true, peakMcx: peak > 0 && w.gradMcap > 0 ? peak / w.gradMcap : 1, rugged, mcapDropPct: dropPct, devDumped: false, alive: current > 5000 };
+      // Re-learn from 24h outcome data — more accurate than the 4h eviction label
+      const features = { isGradWatchlist: true, gradMcap: w.gradMcap, peakMcap: peak, finalMcap: current, age24h: true };
+      try { memeIntel.learn(features, outcome); } catch {}
+      try { await storeChartSnapshot(ca, { name: w.name, ticker: w.ticker, spark: w.spark, mcapUsd: current, createdAt: w.gradTime, buys: 0, sells: 0 }, outcome); } catch {}
+      gradWatchlist.delete(ca);
+      if (redis) { try { await redis.hDel("grad:watchlist", ca); } catch {} }
+    }
+  }
 }, 30000);
+
+// Load watchlist from Redis on startup
+(async () => {
+  if (!redis) return;
+  try {
+    const all = await redis.hGetAll("grad:watchlist");
+    for (const [ca, json] of Object.entries(all || {})) {
+      try { gradWatchlist.set(ca, JSON.parse(json)); } catch {}
+    }
+    console.log(`[GRAD-WATCH] Loaded ${gradWatchlist.size} tokens from Redis`);
+  } catch {}
+})();
 
 // ═══ QUICK FEATURE EXTRACTION — for memeIntel learning ═══
 function extractQuickFeatures(t) {
@@ -797,6 +857,12 @@ setInterval(() => {
         if (t.spark?.length >= 5) {
           storeChartSnapshot(ca, t, outcome).catch(() => {});
         }
+        // Persist rug patterns to Redis for long-term learning
+        if (rugged && redis) {
+          const rugData = { ca, name: t.name, ticker: t.ticker, mcapPeak: peakMc, mcapEnd: currentMc, dropPct: mcapDropPct, devDumped, buys: t.buys || 0, sells: t.sells || 0, age: Math.round((now - t.createdAt) / 60000), ts: now };
+          redis.lPush("rug:patterns", JSON.stringify(rugData)).catch(() => {});
+          redis.lTrim("rug:patterns", 0, 999).catch(() => {});
+        }
       } catch {}
       radar.tokens.delete(ca);
     }
@@ -1045,24 +1111,55 @@ app.get("/api/sol-price", (req, res) => {
 // ═══════════════════════════════════════
 // ROUTES: ACCESS / TIER
 // ═══════════════════════════════════════
+// ── Token-gated tiers: hold BONDLI token = auto-upgrade ──
+const BONDLI_TOKEN_MINT = process.env.BONDLI_TOKEN_MINT || ""; // Set to BONDLI token CA when launched
+const PRO_TOKEN_THRESHOLD = parseInt(process.env.PRO_TOKEN_THRESHOLD || "10000"); // tokens for Pro
+const VIP_TOKEN_THRESHOLD = parseInt(process.env.VIP_TOKEN_THRESHOLD || "100000"); // tokens for VIP
+
+async function checkTokenGatedTier(wallet) {
+  if (!BONDLI_TOKEN_MINT) return null; // not configured yet
+  try {
+    const owner = new PublicKey(wallet);
+    const mint = new PublicKey(BONDLI_TOKEN_MINT);
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(owner, { mint });
+    let totalBalance = 0;
+    for (const ta of tokenAccounts.value) {
+      totalBalance += ta.account.data.parsed?.info?.tokenAmount?.uiAmount || 0;
+    }
+    if (totalBalance >= VIP_TOKEN_THRESHOLD) return "vip";
+    if (totalBalance >= PRO_TOKEN_THRESHOLD) return "pro";
+    return null;
+  } catch { return null; }
+}
+
 app.get("/api/access/check", async (req, res) => {
   const wallet = req.query.wallet;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const user = await getUser(wallet);
   // Even if Redis is down, check env whitelist first — VIPs should never be locked out
-  const tierInfo = resolveTier(wallet, user._redisError ? {} : user);
+  let tierInfo = resolveTier(wallet, user._redisError ? {} : user);
   if (user._redisError && tierInfo.tier === "free") {
     return res.status(503).json({ error: "Service temporarily unavailable" });
+  }
+  // Token-gated tier override — holding BONDLI token upgrades tier
+  if (tierInfo.tier === "free" || tierInfo.tier === "pro") {
+    const tokenTier = await checkTokenGatedTier(wallet);
+    if (tokenTier) {
+      const tierRank = { vip: 3, pro: 2, free: 1 };
+      if ((tierRank[tokenTier] || 0) > (tierRank[tierInfo.tier] || 0)) {
+        tierInfo = { ...tierInfo, tier: tokenTier, tokenGated: true };
+      }
+    }
   }
   // Only save if tier upgraded or not yet stored — never downgrade a stored VIP/pro to free
   if (!user._redisError) {
     const storedTier = user?.tier;
     const tierRank = { vip: 3, pro: 2, free: 1 };
     if (!storedTier || (tierRank[tierInfo.tier] || 0) >= (tierRank[storedTier] || 0)) {
-      await saveUser(wallet, { tier: tierInfo.tier, whitelisted: tierInfo.whitelisted });
+      await saveUser(wallet, { tier: tierInfo.tier, whitelisted: tierInfo.whitelisted, tokenGated: tierInfo.tokenGated || false });
     }
   }
-  res.json({ tier: tierInfo.tier, whitelisted: tierInfo.whitelisted, paid: user.paid || false });
+  res.json({ tier: tierInfo.tier, whitelisted: tierInfo.whitelisted, paid: user.paid || false, tokenGated: tierInfo.tokenGated || false, tokenThresholds: BONDLI_TOKEN_MINT ? { pro: PRO_TOKEN_THRESHOLD, vip: VIP_TOKEN_THRESHOLD, mint: BONDLI_TOKEN_MINT } : null });
 });
 
 app.post("/api/access/activate-free", async (req, res) => {
@@ -3113,6 +3210,16 @@ app.get("/api/intel/stats", (req, res) => {
     })),
     solPrice: solUsdPrice,
     gradMc: gradMcUsd(),
+    gradWatch: {
+      count: gradWatchlist.size,
+      tokens: [...gradWatchlist.entries()].slice(0, 10).map(([ca, w]) => ({
+        ca, name: w.name, ticker: w.ticker,
+        gradMcap: w.gradMcap, currentMcap: w.lastMcap,
+        peakMcap: w.peakMcap,
+        changePct: w.gradMcap > 0 ? +((w.lastMcap - w.gradMcap) / w.gradMcap * 100).toFixed(1) : 0,
+        age: Math.round((Date.now() - w.gradTime) / 3600000),
+      })),
+    },
   });
 });
 
