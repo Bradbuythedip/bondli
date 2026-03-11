@@ -849,7 +849,10 @@ return<div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
 <span style={{fontSize:7,color:T.gn,width:12,fontWeight:700}}>{s.v}</span>
 </div>)}
 </div>
-{(user?.tier==="pro"||user?.whitelisted)&&<button onClick={()=>{if(top.ca){sTab("radar");sRExp(top.ca);toast(top.name||"Opening...","success")}}} style={{marginTop:6,padding:"6px 0",background:T.gn+"0a",border:"1px solid "+T.gn+"22",borderRadius:5,fontSize:10,fontWeight:800,color:T.gn,cursor:"pointer",width:"100%"}}>Ape {top.name?.slice(0,14)||"Token"}</button>}
+{(user?.tier==="pro"||user?.whitelisted)&&trW&&<div style={{display:"flex",gap:3,marginTop:6}}>
+{[0.05,0.1,0.25].map(amt=><button key={amt} onClick={async(ev)=>{ev.stopPropagation();if(!top.ca||top.ca.length<20){toast("No CA","error");return}try{hp([6,15,6]);toast(`Aping ${top.name||"token"} ${amt} SOL...`,"info");await quickBuy(top.ca,amt)}catch(e){toast(e.message,"error")}}} style={{flex:1,padding:"6px 0",background:T.gn+"0a",border:"1px solid "+T.gn+"22",borderRadius:5,fontSize:10,fontWeight:800,color:T.gn,cursor:"pointer"}}>{amt} SOL</button>)}
+<button onClick={()=>{if(top.ca){sTab("radar");sRS(top.ca);sRExp(top.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{padding:"6px 8px",background:T.sf,border:"1px solid "+T.bd,borderRadius:5,fontSize:9,fontWeight:700,color:T.dm,cursor:"pointer"}}>Details</button>
+</div>}
 </div>})()}
 </div>
 
@@ -858,7 +861,7 @@ return<div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
 <span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>
-<span style={{fontSize:13,fontWeight:800,color:T.tx}}>Live Radar Pulse</span>{(user?.tier==="pro"||user?.whitelisted)&&<span style={{fontSize:8,color:T.gn,marginLeft:4}}>click to ape</span>}
+<span style={{fontSize:13,fontWeight:800,color:T.tx}}>Live Radar Pulse</span>
 </div>
 <div style={{display:"flex",gap:8,fontSize:10,color:T.ft}}>
 <span><span style={{display:"inline-block",width:6,height:6,borderRadius:1,background:T.gn,marginRight:3,verticalAlign:"middle"}}/>APE</span>
@@ -874,29 +877,33 @@ const isRug=rugScore>50||rugFlags.length>=2;
 const sc=isRug?"#ff1744":score>=50?T.gn:score>=25?T.yl:T.pu;
 const mcap=e.data?.mcap||0;const mcapStr=mcap>=1000?(mcap/1000).toFixed(1)+"K":mcap>0?mcap.toString():"—";
 const fullCA=e.data?.ca||"";
-return<div key={i} onClick={()=>{if(!fullCA||fullCA.length<20)return;if(!user?.whitelisted&&user?.tier==="free"){toast("Pro/VIP only","error");return}sTab("radar");sRExp(fullCA);sRS("");setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150);toast(name,"success")}} style={{display:"grid",gridTemplateColumns:"16px 110px 1fr 28px 58px 32px",alignItems:"center",padding:"3px 0",borderBottom:i<11?"1px solid "+T.bd+"44":"none",gap:0,cursor:"pointer"}}>
-{/* Rank — fixed col */}
+const canApe=(user?.tier==="pro"||user?.whitelisted)&&trW&&fullCA.length>=20&&score>=50&&!isRug;
+return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16px 90px 1fr 28px 48px 56px":"16px 110px 1fr 28px 58px 32px",alignItems:"center",padding:"3px 0",borderBottom:i<11?"1px solid "+T.bd+"44":"none",gap:0}}>
+{/* Rank */}
 <span style={{fontSize:8,color:T.ft,textAlign:"center"}}>{i+1}</span>
-{/* Name — fixed col */}
-<div style={{paddingLeft:2,paddingRight:4,overflow:"hidden"}}>
-<span style={{fontSize:10,color:T.tx,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"flex",alignItems:"center",gap:2}}>{name.slice(0,14)}{e.data?.dexBoosted&&<span style={{fontSize:6,fontWeight:800,color:"#ffd600",background:"#ffd60015",padding:"0 2px",borderRadius:2}} title={"DexScreener boosted: $"+e.data.boostAmount}>BOOST</span>}</span>
+{/* Name — click opens details in radar */}
+<div onClick={()=>{if(!fullCA||fullCA.length<20)return;sTab("radar");sRS(fullCA);sRExp(fullCA);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}} style={{paddingLeft:2,paddingRight:4,overflow:"hidden",cursor:"pointer"}}>
+<span style={{fontSize:10,color:T.tx,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"flex",alignItems:"center",gap:2}}>{name.slice(0,14)}{e.data?.dexBoosted&&<span style={{fontSize:6,fontWeight:800,color:"#ffd600",background:"#ffd60015",padding:"0 2px",borderRadius:2}}>BOOST</span>}{bp>=100&&<span style={{fontSize:6,fontWeight:800,color:T.gn,background:T.gn+"15",padding:"0 2px",borderRadius:2}}>GRAD</span>}</span>
 </div>
-{/* Score bar — fills remaining space */}
+{/* Score bar */}
 <div style={{height:16,borderRadius:4,background:T.sf,overflow:"hidden",position:"relative",marginRight:4}}>
 <div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,score)+"%",borderRadius:4,background:`linear-gradient(90deg,${sc}66,${sc})`,transition:"width 0.6s ease"}}/>
 <div style={{position:"absolute",left:Math.min(98,bp)+"%",top:2,width:2,height:12,borderRadius:1,background:"rgba(255,255,255,0.5)",transition:"left 0.6s ease"}}/>
 {isRug&&<div style={{position:"absolute",right:0,top:0,height:"100%",width:"30%",background:"repeating-linear-gradient(45deg,transparent,transparent 2px,#ff174422 2px,#ff174422 4px)"}}/>}
 </div>
-{/* Score — fixed col */}
+{/* Score */}
 <span style={{fontSize:12,color:sc,fontWeight:900,textAlign:"right"}}>{score}</span>
-{/* Bond + MC — fixed col */}
+{/* Bond + MC */}
 <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",paddingLeft:4}}>
-<span style={{fontSize:7,color:T.yl,fontWeight:700}}>{bp}% bond</span>
+<span style={{fontSize:7,color:bp>=100?T.gn:T.yl,fontWeight:700}}>{bp}%</span>
 <span style={{fontSize:9,color:T.ft}}>${mcapStr}</span>
 </div>
-{/* Rug badge — fixed col (always present, empty if no rug) */}
-<div style={{textAlign:"center"}}>
-{isRug&&<span style={{fontSize:7,color:"#ff1744",fontWeight:800,padding:"1px 4px",borderRadius:3,background:"#ff174415"}} title={rugFlags.join(", ")}>RUG</span>}
+{/* Action col: Ape button for high-score tokens, Rug badge for risky ones */}
+<div style={{textAlign:"center",display:"flex",justifyContent:"center",gap:2}}>
+{canApe?<button onClick={async(ev)=>{ev.stopPropagation();try{hp([6,15,6]);toast(`Aping ${name} 0.05 SOL...`,"info");await quickBuy(fullCA,0.05)}catch(err){toast(err.message,"error")}}} style={{fontSize:7,fontWeight:800,color:"#0a0a0f",background:T.gn,border:"none",borderRadius:3,padding:"2px 6px",cursor:"pointer",lineHeight:1.2}}>APE</button>
+:isRug?<span style={{fontSize:7,color:"#ff1744",fontWeight:800,padding:"1px 4px",borderRadius:3,background:"#ff174415"}} title={rugFlags.join(", ")}>RUG</span>
+:score>=25?<span style={{fontSize:7,color:T.yl,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.yl+"15"}}>WATCH</span>
+:null}
 </div>
 </div>})}
 </div>
