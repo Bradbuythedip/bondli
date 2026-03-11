@@ -1111,10 +1111,14 @@ app.get("/api/sol-price", (req, res) => {
 // ═══════════════════════════════════════
 // ROUTES: ACCESS / TIER
 // ═══════════════════════════════════════
-// ── Token-gated tiers: hold BONDLI token = auto-upgrade ──
+// ── Token-gated tiers: hold BONDLI token at bonding curve ratio = auto-upgrade ──
 const BONDLI_TOKEN_MINT = process.env.BONDLI_TOKEN_MINT || ""; // Set to BONDLI token CA when launched
-const PRO_TOKEN_THRESHOLD = parseInt(process.env.PRO_TOKEN_THRESHOLD || "10000"); // tokens for Pro
-const VIP_TOKEN_THRESHOLD = parseInt(process.env.VIP_TOKEN_THRESHOLD || "100000"); // tokens for VIP
+// Ratio of total supply the user must hold for Pro (e.g. 0.001 = 0.1%)
+// VIP = 10x the Pro ratio
+const TIER_PRO_RATIO = parseFloat(process.env.TIER_PRO_RATIO || "0.001");
+const TIER_VIP_RATIO = TIER_PRO_RATIO * 10;
+// Total supply for pump.fun tokens (default 1B)
+const TIER_TOKEN_SUPPLY = parseFloat(process.env.TIER_TOKEN_SUPPLY || "1000000000");
 
 async function checkTokenGatedTier(wallet) {
   if (!BONDLI_TOKEN_MINT) return null; // not configured yet
@@ -1126,8 +1130,9 @@ async function checkTokenGatedTier(wallet) {
     for (const ta of tokenAccounts.value) {
       totalBalance += ta.account.data.parsed?.info?.tokenAmount?.uiAmount || 0;
     }
-    if (totalBalance >= VIP_TOKEN_THRESHOLD) return "vip";
-    if (totalBalance >= PRO_TOKEN_THRESHOLD) return "pro";
+    const holdRatio = totalBalance / TIER_TOKEN_SUPPLY;
+    if (holdRatio >= TIER_VIP_RATIO) return "vip";
+    if (holdRatio >= TIER_PRO_RATIO) return "pro";
     return null;
   } catch { return null; }
 }
@@ -1159,7 +1164,7 @@ app.get("/api/access/check", async (req, res) => {
       await saveUser(wallet, { tier: tierInfo.tier, whitelisted: tierInfo.whitelisted, tokenGated: tierInfo.tokenGated || false });
     }
   }
-  res.json({ tier: tierInfo.tier, whitelisted: tierInfo.whitelisted, paid: user.paid || false, tokenGated: tierInfo.tokenGated || false, tokenThresholds: BONDLI_TOKEN_MINT ? { pro: PRO_TOKEN_THRESHOLD, vip: VIP_TOKEN_THRESHOLD, mint: BONDLI_TOKEN_MINT } : null });
+  res.json({ tier: tierInfo.tier, whitelisted: tierInfo.whitelisted, paid: user.paid || false, tokenGated: tierInfo.tokenGated || false, tokenThresholds: BONDLI_TOKEN_MINT ? { proRatio: TIER_PRO_RATIO, vipRatio: TIER_VIP_RATIO, proTokens: Math.ceil(TIER_PRO_RATIO * TIER_TOKEN_SUPPLY), vipTokens: Math.ceil(TIER_VIP_RATIO * TIER_TOKEN_SUPPLY), mint: BONDLI_TOKEN_MINT } : null });
 });
 
 app.post("/api/access/activate-free", async (req, res) => {
@@ -2618,14 +2623,18 @@ app.get("/api/positions/:wallet", async (req, res) => {
     const userWallet = req.params.wallet;
     const tw = await getTradingWallet(userWallet);
 
-    // Collect all wallet pubkeys to scan: connected wallet + trading wallet + extras
+    // Collect Bondli wallet pubkeys to scan: trading wallet + extras (NOT Phantom)
     const pubkeysToScan = [];
-    // Always scan the user's connected Phantom wallet — catches external buys
-    try { pubkeysToScan.push(new PublicKey(userWallet)); } catch {}
-    // Scan trading wallet if different from connected wallet
     if (tw) {
-      const twPubkey = new PublicKey(tw.pubkey || Keypair.fromSecretKey(bs58.decode(tw.secret)).publicKey.toBase58());
-      if (twPubkey.toBase58() !== userWallet) pubkeysToScan.push(twPubkey);
+      try {
+        const twPubkey = new PublicKey(tw.pubkey || Keypair.fromSecretKey(bs58.decode(tw.secret)).publicKey.toBase58());
+        pubkeysToScan.push(twPubkey);
+        console.log(`[POSITIONS] Trading wallet: ${twPubkey.toBase58()}`);
+      } catch (e) {
+        console.warn(`[POSITIONS] Failed to resolve trading wallet for ${userWallet.slice(0,8)}: ${e.message}`);
+      }
+    } else {
+      console.warn(`[POSITIONS] No trading wallet found for ${userWallet.slice(0,8)}`);
     }
     // Scan extra wallets (Pro/VIP fleet)
     if (redis) {
@@ -2642,7 +2651,7 @@ app.get("/api/positions/:wallet", async (req, res) => {
 
     if (pubkeysToScan.length === 0) return res.json({ positions: [] });
 
-    // Scan all wallets for token accounts (Phantom + trading + extras)
+    // Scan all Bondli wallets for token accounts (trading + extras)
     const allTokenAccounts = [];
     const scannedPubkeys = new Set(); // deduplicate
     for (const pk of pubkeysToScan) {
