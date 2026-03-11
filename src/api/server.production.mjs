@@ -2625,7 +2625,7 @@ function startAutoTrader(wallet, settings) {
               const currentScore = liveScore?.score || 0;
               // Guard: if score suddenly drops to near-0 but we had a real score before,
               // the token likely lost radar data — skip this cycle entirely
-              if (currentScore < 5 && pos.entryScore > 20 && pos.liveScore > 20) {
+              if (currentScore < 5 && pos.entryScore > 20 && (pos.liveScore == null || pos.liveScore > 20)) {
                 log(`MOMENTUM SKIP ${ca.slice(0,6)}: score=${currentScore} looks like data loss (entry=${pos.entryScore}, last=${pos.liveScore})`);
               } else {
               if (!pos.entryScore) pos.entryScore = currentScore;
@@ -3109,7 +3109,7 @@ function startAutoTrader(wallet, settings) {
               const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
               tx.sign([kp]);
               const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: state.settings.solPerTrade, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0 });
+              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: state.settings.solPerTrade, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0 });
               trackBuy(wallet, t.ca, state.settings.solPerTrade); // instant bags visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
               broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: state.settings.solPerTrade, mcap: t.mcapUsd, wallet, score: t._apeScore } });
