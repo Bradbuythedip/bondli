@@ -152,7 +152,6 @@ s.buys.forEach(b=>mark(b.f,"#00e676",3));s.sells.forEach(b=>mark(b.f,"#ff1744",3
 };const iv=setInterval(doTick,35/speed);return()=>clearInterval(iv)},[running,budget,speed,mb]);
 const s=st.current;const pnl=s.back-s.spent;
 const[simOpen,sSimOpen]=useState(false);
-const[gradsOpen,sGradsOpen]=useState(false);
 return<div style={{background:T.sf,border:"1px solid "+T.pu+"18",borderRadius:10,overflow:"hidden",animation:"si .2s ease"}}>
 <div onClick={()=>sSimOpen(!simOpen)} style={{padding:"8px 12px",cursor:"pointer",borderBottom:simOpen?"1px solid "+T.bd:"none"}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -198,7 +197,7 @@ const[rEnabled,sRE]=useState(true);const[autoTrade,sAutoTrade]=useState(null);co
 const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");const[refMsg,sRefMsg]=useState("");
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
-const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);
+const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);
 
 const toast=useCallback((m,t="info")=>{const id=Date.now()+Math.random();sToasts(x=>[...x,{id,msg:m,type:t}]);setTimeout(()=>sToasts(x=>x.filter(y=>y.id!==id)),5000)},[]);
 const hasAccess=user&&(user.demo||user.tier==="free"||user.tier==="pro"||user.tier==="vip");
