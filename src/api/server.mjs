@@ -27,6 +27,10 @@ import SessionStore from "../db/session-store.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
 import { scoreToken } from "../engine/velocity-scorer.mjs";
 
+// Intelligence — meme scoring, score dynamics, artwork originality
+import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
+import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
+
 // Launch Sessions (dev wallet generation + funding)
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
 import { createToken } from "../engine/token-creator.mjs";
@@ -125,6 +129,7 @@ app.use((req, res, next) => {
 // SERVICES
 // ═══════════════════════════════════════
 let sessionStore, paymentVerifier, sessionManager, movers;
+let intel, scoreDynamics, artworkScanner;
 const orch = new Orchestrator();
 
 async function initServices() {
@@ -135,7 +140,42 @@ async function initServices() {
   const connection = new Connection(CONFIG.RPC_URL, "confirmed");
   paymentVerifier = new PaymentVerifier(connection);
   await paymentVerifier.init();
-  console.log("[INIT] All services ready");
+
+  // Intelligence engine — thinking fast (score dynamics) and slow (ML + RAG)
+  intel = new MemeIntelligence(redis);
+  scoreDynamics = new ScoreDynamics(5000);
+  artworkScanner = new ArtworkScanner(5000);
+
+  // Restore artwork scanner state from Redis
+  if (redis) {
+    try {
+      const artData = await redis.get("intel:artwork");
+      if (artData) artworkScanner.import(JSON.parse(artData));
+    } catch {}
+  }
+
+  // Outcome feedback loop — check every 5 min, auto-label + learn
+  setInterval(async () => {
+    try {
+      if (!movers) return;
+      const currentTokens = await movers.getCurrentTokens?.() || [];
+      if (currentTokens.length === 0) return;
+      const outcomes = await intel.checkOutcomes(currentTokens);
+      if (outcomes.length > 0) {
+        console.log(`[INTEL] Auto-labeled ${outcomes.length} outcomes | model v${intel.scorer.trainCount}`);
+      }
+      // Prune stale score dynamics entries
+      scoreDynamics.prune();
+      // Persist artwork scanner
+      if (redis) {
+        try { await redis.set("intel:artwork", JSON.stringify(artworkScanner.export()), "EX", 604800); } catch {}
+      }
+    } catch (e) {
+      console.error("[INTEL] Feedback loop error:", e.message);
+    }
+  }, 5 * 60 * 1000);
+
+  console.log("[INIT] All services ready (intel + artwork scanner active)");
 }
 
 // Simple wallet auth — checks X-Wallet header + tier access
@@ -342,7 +382,7 @@ app.get("/api/ape-targets", apiLimiter, async (req, res) => {
   }
 });
 
-// Score a specific token
+// Score a specific token (enhanced with dynamics + intel)
 app.get("/api/score/:ca", apiLimiter, async (req, res) => {
   try {
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(req.params.ca)) {
@@ -351,6 +391,24 @@ app.get("/api/score/:ca", apiLimiter, async (req, res) => {
     if (!movers) return res.status(503).json({ error: "Still initializing" });
     const scored = await movers.scoreToken(req.params.ca);
     if (!scored) return res.status(404).json({ error: "Token not found" });
+
+    // Enrich with score dynamics (velocity/acceleration)
+    if (scoreDynamics && scored.apeScore !== undefined) {
+      scored.dynamics = scoreDynamics.record(req.params.ca, scored.apeScore);
+    }
+
+    // Enrich with intel deep score if available
+    if (intel && scored.ca) {
+      try {
+        const intelScore = await intel.score(scored);
+        scored.intelScore = intelScore.score;
+        scored.bondProb = intelScore.bondProb;
+        scored.rugScore = intelScore.rugScore;
+        scored.rugFlags = intelScore.rugFlags;
+        scored.chartPenalty = intelScore.chartPenalty;
+      } catch {}
+    }
+
     res.json(scored);
   } catch (e) {
     console.error("[SCORE]", e.message);
@@ -364,6 +422,129 @@ app.get("/api/fees", apiLimiter, (req, res) => {
   const wallet = req.query.wallet || "";
   const owner = wallet ? isOwnerWallet(wallet) : false;
   res.json({ ...tier, isOwner: owner });
+});
+
+// ═══════════════════════════════════════
+// ROUTES — Intelligence (thinking fast + slow)
+// ═══════════════════════════════════════
+
+// Deep score a token — MemeIntelligence (System 1/2 + Tipping Point + RAG)
+app.get("/api/intel/score/:ca", apiLimiter, async (req, res) => {
+  try {
+    if (!intel) return res.status(503).json({ error: "Intel engine initializing" });
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(req.params.ca)) {
+      return res.status(400).json({ error: "Invalid contract address" });
+    }
+
+    // Get token data from movers if available
+    let tokenData = { ca: req.params.ca };
+    if (movers?.getCurrentTokens) {
+      const tokens = await movers.getCurrentTokens();
+      const found = tokens.find(t => t.ca === req.params.ca);
+      if (found) tokenData = found;
+    }
+
+    const scoreResult = await intel.score(tokenData);
+
+    // Record in score dynamics for velocity/acceleration tracking
+    const dynamics = scoreDynamics.record(req.params.ca, scoreResult.score);
+
+    res.json({
+      ...scoreResult,
+      dynamics,
+    });
+  } catch (e) {
+    console.error("[INTEL/SCORE]", e.message);
+    res.status(500).json({ error: "Intel scoring failed" });
+  }
+});
+
+// Get score dynamics (velocity + acceleration) for a token
+app.get("/api/intel/dynamics/:ca", apiLimiter, (req, res) => {
+  if (!scoreDynamics) return res.status(503).json({ error: "Not ready" });
+  const dynamics = scoreDynamics.get(req.params.ca);
+  if (!dynamics) return res.status(404).json({ error: "No dynamics data for this token" });
+  res.json(dynamics);
+});
+
+// Bulk score dynamics — for the radar dashboard
+app.post("/api/intel/dynamics/bulk", apiLimiter, express.json(), (req, res) => {
+  if (!scoreDynamics) return res.status(503).json({ error: "Not ready" });
+  const { tokens } = req.body || {};
+  if (!Array.isArray(tokens)) return res.status(400).json({ error: "tokens array required" });
+
+  const results = {};
+  for (const t of tokens.slice(0, 200)) {
+    const ca = t.ca || t;
+    const score = typeof t === "object" ? t.score : null;
+
+    // Record new score if provided
+    if (score !== null && score !== undefined) {
+      results[ca] = scoreDynamics.record(ca, score);
+    } else {
+      const existing = scoreDynamics.get(ca);
+      if (existing) results[ca] = existing;
+    }
+  }
+  res.json(results);
+});
+
+// Scan artwork for originality
+app.post("/api/intel/artwork", apiLimiter, async (req, res) => {
+  try {
+    if (!artworkScanner) return res.status(503).json({ error: "Artwork scanner initializing" });
+    const { ca, imageUrl, name } = req.body || {};
+    if (!ca || !imageUrl) return res.status(400).json({ error: "ca and imageUrl required" });
+
+    const result = await artworkScanner.scan(ca, imageUrl, name || "unknown");
+    res.json(result);
+  } catch (e) {
+    console.error("[INTEL/ARTWORK]", e.message);
+    res.status(500).json({ error: "Artwork scan failed" });
+  }
+});
+
+// Bulk artwork scan (for radar pipeline)
+app.post("/api/intel/artwork/bulk", apiLimiter, async (req, res) => {
+  try {
+    if (!artworkScanner) return res.status(503).json({ error: "Not ready" });
+    const { tokens } = req.body || {};
+    if (!Array.isArray(tokens)) return res.status(400).json({ error: "tokens array required" });
+
+    const results = [];
+    for (const t of tokens.slice(0, 50)) {
+      if (!t.ca || !t.imageUrl) continue;
+      const result = await artworkScanner.scan(t.ca, t.imageUrl, t.name || "unknown");
+      results.push(result);
+    }
+    res.json({ results, scanned: results.length });
+  } catch (e) {
+    console.error("[INTEL/ARTWORK/BULK]", e.message);
+    res.status(500).json({ error: "Bulk artwork scan failed" });
+  }
+});
+
+// Intel stats — model accuracy, memory, artwork scanner stats
+app.get("/api/intel/stats", apiLimiter, (req, res) => {
+  const stats = {
+    intel: intel ? intel.getStats() : null,
+    dynamics: scoreDynamics ? { tracked: scoreDynamics.history.size } : null,
+    artwork: artworkScanner ? artworkScanner.getStats() : null,
+  };
+  res.json(stats);
+});
+
+// Manual outcome label (for admin/testing)
+app.post("/api/intel/label", apiLimiter, async (req, res) => {
+  const secret = req.headers["x-api-secret"];
+  if (secret !== CONFIG.API_SECRET) return res.status(403).json({ error: "forbidden" });
+  if (!intel) return res.status(503).json({ error: "Not ready" });
+
+  const { ca, outcome } = req.body || {};
+  if (!ca || !outcome) return res.status(400).json({ error: "ca and outcome required" });
+
+  const result = await intel.labelOutcome(ca, outcome);
+  res.json({ ok: true, result });
 });
 
 // ═══════════════════════════════════════
@@ -504,11 +685,6 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
       // Fleet failed but token was created — still a partial success
       console.warn("[LAUNCH] Fleet start failed:", orchErr.message);
       console.warn("[LAUNCH] Fleet error stack:", orchErr.stack?.split("\n").slice(0, 3).join("\n"));
-      orchResult = { ok: true, fleetError: orchErr.message };
-    }
-    } catch (orchErr) {
-      // Fleet failed but token was created — still a partial success
-      console.warn("[LAUNCH] Fleet start failed:", orchErr.message);
       orchResult = { ok: true, fleetError: orchErr.message };
     }
 
