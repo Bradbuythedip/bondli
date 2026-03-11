@@ -200,6 +200,8 @@ const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");co
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
 const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);
+// CA lookup state — must be declared before any early returns to satisfy Rules of Hooks
+const[caLookup,sCaLookup]=useState(null);const[caLoading,sCaLoading]=useState(false);const caLookupRef=useRef(null);
 
 const toast=useCallback((m,t="info")=>{const id=Date.now()+Math.random();sToasts(x=>[...x,{id,msg:m,type:t}]);setTimeout(()=>sToasts(x=>x.filter(y=>y.id!==id)),5000)},[]);
 const hasAccess=user&&(user.demo||user.tier==="free"||user.tier==="pro"||user.tier==="vip");
@@ -228,6 +230,9 @@ useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=awa
 useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,10000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.grf(user.pubkey).then(d=>sRefData(d)).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{if(rTab!=="movers")return;sMoversLoad(true);a.gm(moversTf).then(d=>{sMovers(d);sMoversLoad(false)}).catch(()=>sMoversLoad(false))},[rTab,moversTf]);
+// CA lookup effect — must be before early return to satisfy Rules of Hooks
+const allRadarPre=(()=>{const seen=new Set();return[...(rt.momentum||[]),...(rt.hot||[]),...(rt.new||[]),...(rt.graduating||[])].filter(t=>{if(seen.has(t.ca))return false;seen.add(t.ca);return true})})();
+useEffect(()=>{const q=rSearch.trim();const isCA=/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q);if(!isCA||q.length<32){sCaLookup(null);return}const local=allRadarPre.find(t=>t.ca===q);if(local){sCaLookup(null);return}sCaLoading(true);clearTimeout(caLookupRef.current);caLookupRef.current=setTimeout(()=>{fetch(API+"/api/radar/token/"+q).then(r=>r.ok?r.json():null).then(d=>{if(d&&d.ca){sCaLookup(d);sCaLoading(false)}else{fetch("https://api.dexscreener.com/latest/dex/tokens/"+q,{signal:AbortSignal.timeout(6000)}).then(r=>r.ok?r.json():null).then(dx=>{const p=dx?.pairs?.[0];if(p){sCaLookup({ca:q,name:p.baseToken?.name||q.slice(0,8),ticker:p.baseToken?.symbol||"",mcapUsd:p.fdv||p.marketCap||0,mcapSol:0,image:p.info?.imageUrl||"",graduated:true,spark:[],dexUrl:p.url});sCaLoading(false)}else{sCaLookup(null);sCaLoading(false)}}).catch(()=>{sCaLookup(null);sCaLoading(false)})}}).catch(()=>{sCaLookup(null);sCaLoading(false)})},400)},[rSearch]);
 
 const disconnect=async()=>{try{const p=window?.phantom?.solana||window?.solana;await p?.disconnect()}catch{}sU(null)};
 const resetHome=()=>{sLd(false);sLCA("");sAsid("");sFl(null)};
@@ -319,11 +324,7 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 </div>
 </div></TC.Provider>;
 
-const rTokens=rt[rTab]||[];const allRadar=(()=>{const seen=new Set();return[...(rt.momentum||[]),...(rt.hot||[]),...(rt.new||[]),...(rt.graduating||[])].filter(t=>{if(seen.has(t.ca))return false;seen.add(t.ca);return true})})();
-// CA lookup: if search looks like a Solana address, try fetching from API
-const[caLookup,sCaLookup]=useState(null);const[caLoading,sCaLoading]=useState(false);
-const caLookupRef=useRef(null);
-useEffect(()=>{const q=rSearch.trim();const isCA=/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q);if(!isCA||q.length<32){sCaLookup(null);return}const local=allRadar.find(t=>t.ca===q);if(local){sCaLookup(null);return}sCaLoading(true);clearTimeout(caLookupRef.current);caLookupRef.current=setTimeout(()=>{fetch(API+"/api/radar/token/"+q).then(r=>r.ok?r.json():null).then(d=>{if(d&&d.ca){sCaLookup(d);sCaLoading(false)}else{fetch("https://api.dexscreener.com/latest/dex/tokens/"+q,{signal:AbortSignal.timeout(6000)}).then(r=>r.ok?r.json():null).then(dx=>{const p=dx?.pairs?.[0];if(p){sCaLookup({ca:q,name:p.baseToken?.name||q.slice(0,8),ticker:p.baseToken?.symbol||"",mcapUsd:p.fdv||p.marketCap||0,mcapSol:0,image:p.info?.imageUrl||"",graduated:true,spark:[],dexUrl:p.url});sCaLoading(false)}else{sCaLookup(null);sCaLoading(false)}}).catch(()=>{sCaLookup(null);sCaLoading(false)})}}).catch(()=>{sCaLookup(null);sCaLoading(false)})},400)},[rSearch]);
+const rTokens=rt[rTab]||[];const allRadar=allRadarPre;
 const rFiltered=(()=>{if(!rSearch)return rTokens;const q=rSearch.toLowerCase();const local=allRadar.filter(t=>(t.name||"").toLowerCase().includes(q)||(tk(t.ticker)||"").toLowerCase().includes(q)||t.ca?.includes(rSearch)||t.ca?.startsWith(rSearch));if(caLookup&&!local.find(t=>t.ca===caLookup.ca))return[caLookup,...local];return local})();
 const expToken=rExp?rFiltered.find(t=>t.ca===rExp)||rTokens.find(t=>t.ca===rExp)||allRadar.find(t=>t.ca===rExp)||(caLookup?.ca===rExp?caLookup:null):null;
 
