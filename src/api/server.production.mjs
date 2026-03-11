@@ -1969,7 +1969,7 @@ function startAutoTrader(wallet, settings) {
   if (!soldCooldowns.has(wallet)) soldCooldowns.set(wallet, new Map());
   const state = {
     settings: {
-      minScore: settings.minScore || 70,
+      minScore: settings.minScore || 25,
       solPerTrade: settings.solPerTrade || 0.05,
       maxPositions: settings.maxPositions || 3,
       // 3 Take Profit tiers: sell % of remaining at each level
@@ -2278,12 +2278,12 @@ function startAutoTrader(wallet, settings) {
         // Acceleration data lets us enter earlier on tokens with strong score velocity
         const dyn = scoreDynamics.get(t.ca);
         const isAccelerating = dyn && dyn.scores >= 2 && (dyn.trend === "rocket" || dyn.trend === "rising");
-        // Accelerating tokens: lower thresholds (3 buys, 2 UB, 1min old, $3k MC)
-        // Normal tokens: standard thresholds (5 buys, 3 UB, 2min old, $5k MC)
+        // Accelerating tokens: lower thresholds (2 buys, 2 UB, 30s old, $2k MC)
+        // Normal tokens: standard thresholds (3 buys, 2 UB, 1min old, $3k MC)
         if (isAccelerating) {
-          return mc > 3000 && buys >= 3 && ub >= 2 && ageMin >= 1 && sells <= buys;
+          return mc > 2000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys;
         }
-        return mc > 5000 && buys >= 5 && ub >= 3 && ageMin >= 2 && sells <= buys * 0.8;
+        return mc > 3000 && buys >= 3 && ub >= 2 && ageMin >= 1 && sells <= buys;
       });
       const hot = tokens.filter(t => {
         if (state.positions.has(t.ca)) return false;
@@ -2326,19 +2326,19 @@ function startAutoTrader(wallet, settings) {
           if (rugSignals >= 3) return false; // 3+ moderate rug signals = too risky
         }
 
-        // Buy activity (log-scaled to avoid spam bias) — require more conviction
-        const buyScore = Math.min(12, Math.log2(buys + 1) * 2);
-        const ubScore = Math.min(12, Math.log2(ub + 1) * 2);
-        const volScore = Math.min(10, Math.log10(vol * 100 + 1) * 3);
+        // Buy activity (log-scaled to avoid spam bias)
+        const buyScore = Math.min(15, Math.log2(buys + 1) * 3);
+        const ubScore = Math.min(15, Math.log2(ub + 1) * 3);
+        const volScore = Math.min(12, Math.log10(vol * 100 + 1) * 4);
 
-        // MC scoring: Sweet spot is $15k-$50k (survived initial dump, still has room)
-        // Tokens under $10k are highest rug risk — most rugs die here
+        // MC scoring: Sweet spot is $8k-$30k — early enough for upside, past initial dump
         const mcScore = mc >= gradMcUsd() ? 3 :
                         mc >= 50000 ? 5 :
                         mc >= 30000 ? 8 :
-                        mc >= 15000 ? 10 :
-                        mc >= 8000  ? 6 :
-                        mc >= 5000  ? 3 : 0;
+                        mc >= 15000 ? 12 :
+                        mc >= 8000  ? 10 :
+                        mc >= 5000  ? 7 :
+                        mc >= 3000  ? 4 : 0;
 
         // GREEN detection: is MC growing? (sparkline trend)
         const spark = t.spark || [];
@@ -2350,33 +2350,33 @@ function startAutoTrader(wallet, settings) {
             const avgRecent = recent.reduce((a, b) => a + b, 0) / recent.length;
             const avgEarlier = earlier.reduce((a, b) => a + b, 0) / earlier.length;
             const growth = avgEarlier > 0 ? (avgRecent - avgEarlier) / avgEarlier : 0;
-            if (growth > 0) greenScore = Math.min(15, growth * 50);
+            if (growth > 0) greenScore = Math.min(20, growth * 60);
           }
         }
 
         // Buy pressure: more buys than sells = bullish
-        const pressureScore = buys > 3 ? Math.min(8, (buys / Math.max(1, buys + sells)) * 8) : 0;
+        const pressureScore = buys > 2 ? Math.min(10, (buys / Math.max(1, buys + sells)) * 10) : 0;
 
         // Buy velocity: fast buys = hype
-        const velocityScore = Math.min(8, (buys / ageMin) * 2);
+        const velocityScore = Math.min(10, (buys / ageMin) * 3);
 
-        // Penalties (aggressive — better to miss a play than to get rugged)
-        const sellPenalty = sells > buys * 0.5 ? Math.min(20, (sells - buys * 0.3) * 3) : 0;
-        // Graduated rug penalty: scale with severity — all thresholds lowered
+        // Penalties — lighter touch since hard rug gate already blocks obvious rugs
+        const sellPenalty = sells > buys * 0.6 ? Math.min(12, (sells - buys * 0.4) * 2) : 0;
+        // Graduated rug penalty: only penalize significant signals (hard gate catches the rest)
         let rugPenalty = 0;
         if (qf) {
-          rugPenalty += qf.rg_devSellSpeed > 0.15 ? 15 : 0;          // any dev selling is bad
-          rugPenalty += qf.rg_coordDumpScore > 0.15 ? 12 : 0;        // coordinated sells
-          rugPenalty += qf.rg_mcapDropRate > 0.2 ? 10 : 0;           // mcap declining
-          rugPenalty += qf._rg_quickFlipRate > 0.1 ? 10 : 0;         // quick flippers
-          rugPenalty += qf._rg_sybilScore > 0.2 ? 10 : 0;            // sybil bots
-          rugPenalty += qf.rg_holderConcentration > 0.5 ? 8 : 0;     // whale-heavy
-          rugPenalty += qf._rg_earlyDump > 0.15 ? 8 : 0;             // early selling
-          rugPenalty += sellVol > vol * 0.3 ? 8 : 0;                  // sell pressure
-          rugPenalty += qf._rg_pumpDump > 0.2 ? 10 : 0;              // pump-dump pattern
+          rugPenalty += qf.rg_devSellSpeed > 0.25 ? 10 : 0;          // significant dev selling
+          rugPenalty += qf.rg_coordDumpScore > 0.25 ? 8 : 0;         // coordinated sells
+          rugPenalty += qf.rg_mcapDropRate > 0.3 ? 8 : 0;            // mcap declining hard
+          rugPenalty += qf._rg_quickFlipRate > 0.15 ? 6 : 0;         // quick flippers
+          rugPenalty += qf._rg_sybilScore > 0.3 ? 6 : 0;             // sybil bots
+          rugPenalty += qf.rg_holderConcentration > 0.6 ? 5 : 0;     // whale-heavy
+          rugPenalty += qf._rg_earlyDump > 0.2 ? 5 : 0;              // early selling
+          rugPenalty += sellVol > vol * 0.4 ? 5 : 0;                  // sell pressure
+          rugPenalty += qf._rg_pumpDump > 0.3 ? 8 : 0;               // pump-dump pattern
         } else {
-          rugPenalty = (sellVol > vol * 0.5 && sells > 3) ? 25 :
-                       (sells > buys * 1.2) ? 20 : 0;
+          rugPenalty = (sellVol > vol * 0.5 && sells > 3) ? 15 :
+                       (sells > buys * 1.2) ? 10 : 0;
         }
 
         const dexBoost = radar.dexBoosted.get(t.ca);
@@ -2391,17 +2391,17 @@ function startAutoTrader(wallet, settings) {
         if (dyn && dyn.scores >= 2) {
           // Reject tokens with crashing or declining score trend
           if (dyn.trend === "crashing" || dyn.trend === "declining") return false;
-          // Fading momentum = deceleration warning
-          if (dyn.trend === "fading") dynamicsBonus = -10;
+          // Fading momentum = slight warning
+          if (dyn.trend === "fading") dynamicsBonus = -5;
           // Rising steadily — meaningful boost
-          else if (dyn.trend === "rising") dynamicsBonus = 10;
+          else if (dyn.trend === "rising") dynamicsBonus = 12;
           // Rocket: accelerating score = STRONG signal — this is what catches early movers
-          else if (dyn.trend === "rocket") dynamicsBonus = 20;
+          else if (dyn.trend === "rocket") dynamicsBonus = 25;
 
           // Additional velocity bonus: faster acceleration = more conviction
-          if (dyn.velocity > 0.5) dynamicsBonus += Math.min(8, Math.round(dyn.velocity * 5));
+          if (dyn.velocity > 0.3) dynamicsBonus += Math.min(10, Math.round(dyn.velocity * 6));
           // Acceleration bonus: positive 2nd derivative = momentum building
-          if (dyn.acceleration > 0.02) dynamicsBonus += Math.min(5, Math.round(dyn.acceleration * 100));
+          if (dyn.acceleration > 0.01) dynamicsBonus += Math.min(8, Math.round(dyn.acceleration * 120));
         }
 
         // Chart health bonus: if the sparkline shape matches healthy graduated patterns
@@ -2422,8 +2422,8 @@ function startAutoTrader(wallet, settings) {
         return t._apeScore >= state.settings.minScore;
       }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
 
-      // Only ape into the single best candidate per cycle (was 3 — too aggressive)
-      for (const t of hot.slice(0, 1)) {
+      // Ape into top 2 candidates per cycle — meme tokens move fast
+      for (const t of hot.slice(0, 2)) {
         if (state.positions.size >= state.settings.maxPositions) break;
         // Check balance
         let balance = 0;
@@ -2460,7 +2460,7 @@ function startAutoTrader(wallet, settings) {
         broadcastWS({ event: "auto-paused", data: { wallet, reason: "inactivity" } });
       }
     } catch (e) { log(`Loop error: ${e.message}`); }
-  }, 15000); // check every 15s
+  }, 8000); // check every 8s — meme tokens move fast
 
   autoTraders.set(wallet, state);
   log("Auto-ape started: minScore=" + state.settings.minScore + " sol=" + state.settings.solPerTrade + " TP1=" + state.settings.tp1 + "% SL1=" + state.settings.sl1 + "% SL2=" + state.settings.sl2 + "% maxPos=" + state.settings.maxPositions);
