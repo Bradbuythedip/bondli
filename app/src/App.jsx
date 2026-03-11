@@ -249,51 +249,71 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 
 // ═══ SIMULATION — pump.fun bonding curve simulator ═══
 function SimMode({mb,budget:extBudget,sniperCount,gradMc:gMc}){const T=uT();const cvRef=useRef(null);const frame=useRef(0);
-const st=useRef({p:.00001,pts:[],buys:[],sells:[],noise:[],mc:0,sig:"WAIT",ph:"idle",spent:0,back:0,bonded:false,bondProb:0,peakMc:0,roi:0});
+const st=useRef({p:.00001,pts:[],buys:[],sells:[],noise:[],mc:0,sig:"WAIT",ph:"idle",spent:0,back:0,bonded:false,bondProb:0,peakMc:0,roi:0,avgEntry:0,avgExit:0,maxDraw:0,phaseTime:{scan:0,accumulate:0,hold:0,distribute:0,sweep:0},runCount:0,history:[]});
 const[running,sR]=useState(false);const budget=extBudget||2;const[speed,sSpeed]=useState(1);const[tick,sTick]=useState(0);const snprs=sniperCount||2;const gradMc=gMc||34000;
+const[simOpen,sSimOpen]=useState(false);const[detailOpen,sDetailOpen]=useState(false);const[guideOpen,sGuideOpen]=useState(false);
 const PHASES={scan:"Scanning for entry — analyzing first trades",accumulate:"Fleet buying in — staggered Gaussian timing",hold:"Holding position — monitoring opponent behavior",distribute:"Selling into demand — taking profit",sweep:"Final sweep — recovering all SOL from fleet wallets",complete:"Session complete — all funds returned"};
+const SIM_DURATION={scan:40,accumulate:100,hold:80,distribute:130,sweep:70};const TOTAL_FRAMES=420;
+const estTime=()=>{const secs=Math.round(TOTAL_FRAMES*35/(speed*1000));return secs<60?secs+"s":Math.round(secs/60)+"m "+secs%60+"s"};
 const calcBondProb=(mc,mom,bp)=>{if(mc>=gradMc)return 100;const base=Math.min(80,(mc/gradMc)*100);const m=mom>0?Math.min(15,mom*500):Math.max(-20,mom*300);const b=bp>0.5?10:bp>0.3?5:0;return Math.max(0,Math.min(99,Math.round(base+m+b)))};
-useEffect(()=>{if(!running)return;const s=st.current;s.p=.000006+Math.random()*.000008;s.pts=[];s.buys=[];s.sells=[];s.noise=[];s.mc=0;s.spent=0;s.back=0;s.bonded=false;s.bondProb=0;s.peakMc=0;s.roi=0;s.ph="scan";s.sig="SCAN";frame.current=0;
+useEffect(()=>{if(!running)return;const s=st.current;s.p=.000006+Math.random()*.000008;s.pts=[];s.buys=[];s.sells=[];s.noise=[];s.mc=0;s.spent=0;s.back=0;s.bonded=false;s.bondProb=0;s.peakMc=0;s.roi=0;s.avgEntry=0;s.avgExit=0;s.maxDraw=0;s.phaseTime={scan:0,accumulate:0,hold:0,distribute:0,sweep:0};s.ph="scan";s.sig="SCAN";frame.current=0;
 const doTick=()=>{const f=++frame.current;const pr=s.p;
 const phase=f<40?"scan":f<140?"accumulate":f<220?"hold":f<350?"distribute":f<420?"sweep":"complete";
 const buyP=phase==="accumulate"?.6:phase==="hold"?.3:phase==="scan"?.1:0;
 const sellP=phase==="distribute"?.5:phase==="sweep"?.7:0;
 s.p=Math.max(.000001,pr+(Math.random()-.48)*pr*.05+buyP*pr*.004-sellP*pr*.003+(Math.random()>.7?1:-1)*pr*.002);
 s.mc=s.p*1e9;if(s.mc>s.peakMc)s.peakMc=s.mc;s.pts.push(s.p);if(s.pts.length>600)s.pts.shift();
+if(phase!=="complete"&&s.phaseTime[phase]!=null)s.phaseTime[phase]++;
 const mom=s.pts.length>10?(s.pts[s.pts.length-1]-s.pts[s.pts.length-10])/(s.pts[s.pts.length-10]||1):0;
 s.bondProb=calcBondProb(s.mc,mom,buyP);s.ph=phase;
-if(phase==="accumulate"&&f%6===0&&s.spent<budget*.6){s.buys.push({f,p:s.p,amt:budget*.02+Math.random()*budget*.025});s.spent+=budget*.03;s.sig="BUY"}
+if(phase==="accumulate"&&f%6===0&&s.spent<budget*.6){const amt=budget*.02+Math.random()*budget*.025;s.buys.push({f,p:s.p,amt});s.spent+=budget*.03;s.sig="BUY"}
 else if(phase==="hold"){s.sig="HOLD";if(f%18===0)s.noise.push({f,sell:Math.random()>.45})}
 else if(phase==="distribute"&&f%8===0){s.sells.push({f,p:s.p,amt:budget*.04});s.back+=budget*.04*(1.1+Math.random()*.5);s.sig=f>300?"EXIT":"SELL"}
 else if(phase==="sweep"){s.sig="SWEEP";if(f%4===0&&s.back<s.spent*1.3){s.sells.push({f,p:s.p,amt:budget*.05});s.back+=budget*.05*.7}}
-else if(phase==="complete"){s.sig="DONE";s.bonded=s.mc>=gradMc}
+else if(phase==="complete"){s.sig="DONE";s.bonded=s.mc>=gradMc;
+// Compute final analytics
+if(s.buys.length>0)s.avgEntry=s.buys.reduce((a,b)=>a+b.p,0)/s.buys.length;
+if(s.sells.length>0)s.avgExit=s.sells.reduce((a,b)=>a+b.p,0)/s.sells.length;
+const peaks=s.pts.map((_,i)=>Math.max(...s.pts.slice(0,i+1)));s.maxDraw=0;for(let i=1;i<s.pts.length;i++){const dd=(peaks[i]-s.pts[i])/peaks[i]*100;if(dd>s.maxDraw)s.maxDraw=dd}
+s.runCount++;s.history.push({roi:s.roi,pnl:s.back-s.spent,peak:s.peakMc,bonded:s.bonded,bondProb:s.bondProb});if(s.history.length>20)s.history.shift();
+sR(false)}
 else if(phase==="scan"){s.sig="SCAN";if(f%12===0)s.noise.push({f,sell:Math.random()>.5})}
 s.roi=s.spent>0?((s.back-s.spent)/s.spent*100):0;sTick(f);
 const cv=cvRef.current;if(!cv)return;const ctx=cv.getContext("2d");const dpr=window.devicePixelRatio||2;const w=cv.width=cv.offsetWidth*dpr;const h=cv.height=(mb?180:240)*dpr;ctx.clearRect(0,0,w,h);
 const pts=s.pts;if(pts.length<2)return;const mn=Math.min(...pts),mx=Math.max(...pts),rng=mx-mn||1;
 ctx.strokeStyle=T.bd;ctx.lineWidth=.5;for(let i=0;i<5;i++){const y=8+h*.85*(i/4);ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}
+// Phase background bands
+const phaseColors={scan:T.cy+"08",accumulate:T.gn+"08",hold:T.pu+"06",distribute:T.or+"08",sweep:T.rd+"08"};
+const phaseRanges=[{s:0,e:40,k:"scan"},{s:40,e:140,k:"accumulate"},{s:140,e:220,k:"hold"},{s:220,e:350,k:"distribute"},{s:350,e:420,k:"sweep"}];
+phaseRanges.forEach(pr=>{const x1=Math.max(0,(pr.s/f)*w);const x2=Math.min(w,(pr.e/f)*w);if(x2>x1){ctx.fillStyle=phaseColors[pr.k]||"transparent";ctx.fillRect(x1,0,x2-x1,h)}});
 const bondP=gradMc/1e9;if(bondP>=mn*.5&&bondP<=mx*1.5){const by=h-8-((Math.min(bondP,mx)-mn)/rng)*(h-16);if(by>0&&by<h){ctx.setLineDash([8,4]);ctx.strokeStyle=T.yl+"55";ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(0,by);ctx.lineTo(w,by);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle=T.yl;ctx.font=`${Math.round(5*dpr)}px monospace`;ctx.fillText("BOND $"+(gradMc/1000).toFixed(0)+"K",w-Math.round(40*dpr),by-4)}}
 ctx.beginPath();ctx.strokeStyle=T.gn;ctx.lineWidth=2;ctx.lineJoin="round";
 for(let i=0;i<pts.length;i++){const x=(i/(pts.length-1))*(w-4)+2;const y=h-8-((pts[i]-mn)/rng)*(h-16);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)}ctx.stroke();
 const gf=ctx.createLinearGradient(0,0,0,h);gf.addColorStop(0,T.gn+"18");gf.addColorStop(1,T.gn+"01");ctx.lineTo(w-2,h);ctx.lineTo(2,h);ctx.closePath();ctx.fillStyle=gf;ctx.fill();
 const mark=(fi,color,sz)=>{const bi=Math.round((fi/f)*pts.length);if(bi<0||bi>=pts.length)return;const x=(bi/(pts.length-1))*(w-4)+2;const y=h-8-((pts[bi]-mn)/rng)*(h-16);ctx.beginPath();ctx.arc(x,y,sz*2,0,Math.PI*2);ctx.fillStyle=color+"33";ctx.fill();ctx.beginPath();ctx.arc(x,y,sz,0,Math.PI*2);ctx.fillStyle=color;ctx.fill()};
 s.buys.forEach(b=>mark(b.f,"#00e676",3));s.sells.forEach(b=>mark(b.f,"#ff1744",3));s.noise.forEach(n=>mark(n.f,n.sell?"#ff174444":"#00e67644",2));
+// Phase labels on chart
+const curPhaseIdx=phaseRanges.findIndex(pr=>f>=pr.s&&f<pr.e);if(curPhaseIdx>=0){const cp=phaseRanges[curPhaseIdx];const cx=(((cp.s+Math.min(f,cp.e))/2)/f)*w;ctx.fillStyle=T.tx+"66";ctx.font=`bold ${Math.round(4.5*dpr)}px monospace`;ctx.textAlign="center";ctx.fillText(cp.k.toUpperCase(),cx,h-4*dpr)}
 };const iv=setInterval(doTick,35/speed);return()=>clearInterval(iv)},[running,budget,speed,mb]);
-const s=st.current;const pnl=s.back-s.spent;
-const[simOpen,sSimOpen]=useState(false);
+const s=st.current;const pnl=s.back-s.spent;const progress=Math.min(100,Math.round((frame.current/TOTAL_FRAMES)*100));
 return<div style={{background:T.sf,border:"1px solid "+T.pu+"18",borderRadius:10,overflow:"hidden",animation:"si .2s ease"}}>
-<div onClick={()=>sSimOpen(!simOpen)} style={{padding:"8px 12px",cursor:"pointer",borderBottom:simOpen?"1px solid "+T.bd:"none"}}>
+{/* ── Header: toggle on/off + collapse ── */}
+<div style={{padding:"8px 12px",cursor:"pointer",borderBottom:simOpen?"1px solid "+T.bd:"none"}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-<div style={{display:"flex",alignItems:"center",gap:5}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:12,fontWeight:800}}>Launch Preview</span>{running&&<span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}{!simOpen&&s.ph!=="idle"&&<span style={{fontSize:9,color:T.dm}}>{s.bondProb}% bond • ${fm(s.mc)} MC • {s.ph}</span>}</div>
-<div style={{display:"flex",gap:2,alignItems:"center"}} onClick={e=>e.stopPropagation()}>
-{simOpen&&<><button onClick={()=>sSpeed(speed>=4?1:speed*2)} style={{background:"none",border:"1px solid "+T.bd,borderRadius:4,padding:"1px 7px",fontSize:11,color:T.dm,cursor:"pointer"}}>{speed}x</button><button onClick={()=>sR(!running)} style={{background:running?T.rd+"0c":T.gn+"0c",border:"1px solid "+(running?T.rd:T.gn)+"18",borderRadius:4,padding:"1px 8px",fontSize:8,fontWeight:700,color:running?T.rd:T.gn,cursor:"pointer"}}>{running?"Stop":"Preview"}</button></>}
-<span style={{fontSize:10,color:T.ft,marginLeft:4}}>{simOpen?"▾":"▸"}</span>
+<div onClick={()=>sSimOpen(!simOpen)} style={{display:"flex",alignItems:"center",gap:5,flex:1,cursor:"pointer"}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:12,fontWeight:800}}>Sim Mode</span>{running&&<span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}{!simOpen&&s.ph!=="idle"&&<span style={{fontSize:9,color:T.dm}}>{s.bondProb}% bond · ${fm(s.mc)} MC · {s.ph}</span>}{!simOpen&&s.runCount>0&&s.ph==="idle"&&<span style={{fontSize:9,color:T.ft}}>ran {s.runCount}x · avg ROI {s.history.length>0?(s.history.reduce((a,h)=>a+h.roi,0)/s.history.length).toFixed(0)+"%":"—"}</span>}<span style={{fontSize:10,color:T.ft,marginLeft:4}}>{simOpen?"▾":"▸"}</span></div>
+<div style={{display:"flex",gap:3,alignItems:"center"}} onClick={e=>e.stopPropagation()}>
+<button onClick={()=>sSpeed(speed>=4?1:speed*2)} style={{background:"none",border:"1px solid "+T.bd,borderRadius:4,padding:"1px 7px",fontSize:11,color:T.dm,cursor:"pointer"}}>{speed}x</button>
+<button onClick={()=>{if(running){sR(false)}else{if(!simOpen)sSimOpen(true);sR(true)}}} style={{background:running?T.rd+"0c":T.gn+"0c",border:"1px solid "+(running?T.rd:T.gn)+"18",borderRadius:4,padding:"2px 10px",fontSize:9,fontWeight:700,color:running?T.rd:T.gn,cursor:"pointer",display:"flex",alignItems:"center",gap:3}}>{running?<><IC.stop s={8} c={T.rd}/>Stop</>:<><IC.sim s={10} c={T.gn}/>Run</>}</button>
 </div></div>
-{simOpen&&<div style={{fontSize:8,color:T.dm,lineHeight:1.4,marginTop:4}}>Preview how your {budget} SOL fleet with {snprs} snipers trades the bonding curve. Dev buys first, snipers enter staggered, fleet holds through volatility, exits into demand. Bond target: ~${(gradMc/1000).toFixed(0)}K MC.</div>}</div>
+{/* Progress bar when running */}
+{running&&<div style={{marginTop:4,height:2,borderRadius:1,background:T.bd}}><div style={{width:progress+"%",height:2,borderRadius:1,background:T.gn,transition:"width .3s"}}/></div>}
+{simOpen&&<div style={{fontSize:8,color:T.dm,lineHeight:1.4,marginTop:4}}>Preview how your {budget} SOL fleet with {snprs} snipers trades the bonding curve. Dev buys first, snipers enter staggered, fleet holds through volatility, exits into demand. Bond target: ~${(gradMc/1000).toFixed(0)}K MC. <span style={{color:T.cy}}>~{estTime()} at {speed}x</span></div>}</div>
 {simOpen&&<><canvas ref={cvRef} style={{width:"100%",height:mb?180:240,display:"block",background:T.bg}}/>
+{/* ── Phase + Bond Prob row ── */}
 <div style={{padding:"6px 12px",borderTop:"1px solid "+T.bd,display:"flex",alignItems:"center",gap:8}}>
 <div style={{flex:1}}><div style={{display:"flex",alignItems:"center",gap:4,marginBottom:2}}><span style={{fontSize:10,fontWeight:800,color:s.ph==="accumulate"?T.gn:s.ph==="distribute"||s.ph==="sweep"?T.rd:s.ph==="complete"?T.yl:T.md,textTransform:"uppercase"}}>{s.ph}</span><span style={{fontSize:10,fontWeight:800,color:s.sig==="BUY"?T.gn:s.sig==="SELL"||s.sig==="EXIT"?T.rd:s.sig==="DONE"?T.yl:T.dm}}>{s.sig}</span></div><div style={{fontSize:7,color:T.ft,lineHeight:1.3}}>{PHASES[s.ph]||""}</div></div>
 <div style={{textAlign:"center",minWidth:70}}><div style={{fontSize:18,fontWeight:900,color:s.bondProb>=80?T.gn:s.bondProb>=50?T.yl:s.bondProb>=20?T.or:T.rd}}>{s.bondProb}%</div><div style={{fontSize:7,color:T.ft,fontWeight:700}}>BOND PROB</div><div style={{width:60,height:3,borderRadius:2,background:T.bd,marginTop:2}}><div style={{width:(s.bondProb/100)*60,height:3,borderRadius:2,background:s.bondProb>=80?T.gn:s.bondProb>=50?T.yl:s.bondProb>=20?T.or:T.rd,transition:"width .3s"}}/></div></div></div>
+{/* ── Primary stats grid ── */}
 <div style={{padding:"4px 12px",borderTop:"1px solid "+T.bd,display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:1,fontSize:8}}>
 <div style={{textAlign:"center"}}><div style={{color:s.mc>=60000?"#ffaa00":T.tx,fontWeight:800,fontSize:10}}>${fm(s.mc)}</div><div style={{color:T.ft,fontSize:6}}>MC</div></div>
 <div style={{textAlign:"center"}}><div style={{color:T.tx,fontWeight:800,fontSize:10}}>${fm(s.peakMc)}</div><div style={{color:T.ft,fontSize:6}}>PEAK</div></div>
@@ -301,7 +321,96 @@ return<div style={{background:T.sf,border:"1px solid "+T.pu+"18",borderRadius:10
 <div style={{textAlign:"center"}}><div style={{color:T.gn,fontWeight:800,fontSize:10}}>{s.back.toFixed(1)}</div><div style={{color:T.ft,fontSize:6}}>BACK</div></div>
 <div style={{textAlign:"center"}}><div style={{color:pnl>=0?T.gn:T.rd,fontWeight:800,fontSize:10}}>{pnl>=0?"+":""}{pnl.toFixed(1)}</div><div style={{color:T.ft,fontSize:6}}>PnL</div></div>
 <div style={{textAlign:"center"}}><div style={{color:s.roi>=0?T.gn:T.rd,fontWeight:800,fontSize:10}}>{s.roi>=0?"+":""}{s.roi.toFixed(0)}%</div><div style={{color:T.ft,fontSize:6}}>ROI</div></div></div>
-<div style={{padding:"4px 12px 6px",display:"flex",gap:8,fontSize:7,color:T.ft,alignItems:"center"}}><span style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:"#00e676"}}/>fleet buy</span><span style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:"#ff1744"}}/>fleet sell</span><span style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:T.dm+"44"}}/>opponent</span><span style={{marginLeft:"auto",fontWeight:700,color:T.gn}}>{budget} SOL · {snprs} snipers</span><span style={{color:T.yl+"88",fontSize:6}}>━ bond line</span></div>
+{/* ── Detailed metrics (collapsible) ── */}
+<div style={{borderTop:"1px solid "+T.bd}}>
+<div onClick={()=>sDetailOpen(!detailOpen)} style={{padding:"3px 12px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+<span style={{fontSize:8,fontWeight:700,color:T.cy}}>Detailed Metrics</span>
+<span style={{fontSize:8,color:T.ft}}>{detailOpen?"▾":"▸"}</span>
+</div>
+{detailOpen&&<div style={{padding:"2px 12px 6px"}}>
+<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3,marginBottom:4}}>
+<div style={{textAlign:"center",padding:"3px 2px",background:T.bg,borderRadius:4}}>
+<div style={{fontSize:9,fontWeight:800,color:T.tx}}>{s.buys.length}</div>
+<div style={{fontSize:6,color:T.ft}}>BUYS</div>
+</div>
+<div style={{textAlign:"center",padding:"3px 2px",background:T.bg,borderRadius:4}}>
+<div style={{fontSize:9,fontWeight:800,color:T.tx}}>{s.sells.length}</div>
+<div style={{fontSize:6,color:T.ft}}>SELLS</div>
+</div>
+<div style={{textAlign:"center",padding:"3px 2px",background:T.bg,borderRadius:4}}>
+<div style={{fontSize:9,fontWeight:800,color:T.gn}}>{s.avgEntry>0?(s.avgEntry*1e6).toFixed(2):"—"}</div>
+<div style={{fontSize:6,color:T.ft}}>AVG ENTRY (μ)</div>
+</div>
+<div style={{textAlign:"center",padding:"3px 2px",background:T.bg,borderRadius:4}}>
+<div style={{fontSize:9,fontWeight:800,color:T.rd}}>{s.avgExit>0?(s.avgExit*1e6).toFixed(2):"—"}</div>
+<div style={{fontSize:6,color:T.ft}}>AVG EXIT (μ)</div>
+</div>
+</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:3,marginBottom:4}}>
+<div style={{textAlign:"center",padding:"3px 2px",background:T.bg,borderRadius:4}}>
+<div style={{fontSize:9,fontWeight:800,color:T.or}}>{s.maxDraw>0?s.maxDraw.toFixed(1)+"%":"—"}</div>
+<div style={{fontSize:6,color:T.ft}}>MAX DRAWDOWN</div>
+</div>
+<div style={{textAlign:"center",padding:"3px 2px",background:T.bg,borderRadius:4}}>
+<div style={{fontSize:9,fontWeight:800,color:s.avgExit>s.avgEntry?T.gn:T.rd}}>{s.avgEntry>0&&s.avgExit>0?((s.avgExit/s.avgEntry-1)*100).toFixed(1)+"%":"—"}</div>
+<div style={{fontSize:6,color:T.ft}}>PRICE SPREAD</div>
+</div>
+<div style={{textAlign:"center",padding:"3px 2px",background:T.bg,borderRadius:4}}>
+<div style={{fontSize:9,fontWeight:800,color:T.tx}}>{s.noise.length}</div>
+<div style={{fontSize:6,color:T.ft}}>OPP TRADES</div>
+</div>
+</div>
+{/* Phase duration breakdown */}
+<div style={{fontSize:7,color:T.ft,marginBottom:2,fontWeight:700}}>Phase Duration</div>
+<div style={{display:"flex",gap:1,height:6,borderRadius:3,overflow:"hidden",marginBottom:2}}>
+{Object.entries(s.phaseTime).map(([k,v])=>{const total=Object.values(s.phaseTime).reduce((a,b)=>a+b,0)||1;const pct=(v/total)*100;const colors={scan:T.cy,accumulate:T.gn,hold:T.pu,distribute:T.or,sweep:T.rd};return<div key={k} style={{width:pct+"%",background:colors[k]||T.bd,minWidth:pct>0?2:0}} title={k+": "+Math.round(v*35/1000)+"s"}/>})}
+</div>
+<div style={{display:"flex",gap:6,fontSize:6,color:T.dm,flexWrap:"wrap"}}>
+{Object.entries(s.phaseTime).filter(([,v])=>v>0).map(([k,v])=>{const colors={scan:T.cy,accumulate:T.gn,hold:T.pu,distribute:T.or,sweep:T.rd};return<span key={k} style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:4,height:4,borderRadius:1,background:colors[k]||T.bd}}/>{k} {Math.round(v*35/1000)}s</span>})}
+</div>
+{/* Multi-run history */}
+{s.history.length>1&&<div style={{marginTop:6}}>
+<div style={{fontSize:7,color:T.ft,fontWeight:700,marginBottom:2}}>Run History ({s.history.length} runs)</div>
+<div style={{display:"flex",gap:2,alignItems:"end",height:24}}>
+{s.history.map((h,i)=>{const maxRoi=Math.max(...s.history.map(x=>Math.abs(x.roi)),1);const barH=Math.max(2,Math.abs(h.roi)/maxRoi*22);return<div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center"}}><div style={{width:"100%",height:barH,borderRadius:1,background:h.roi>=0?T.gn:T.rd,opacity:i===s.history.length-1?1:.5}}/></div>})}
+</div>
+<div style={{display:"flex",justifyContent:"space-between",fontSize:6,color:T.dm,marginTop:2}}>
+<span>avg ROI: {(s.history.reduce((a,h)=>a+h.roi,0)/s.history.length).toFixed(0)}%</span>
+<span>bonded: {s.history.filter(h=>h.bonded).length}/{s.history.length}</span>
+<span>avg PnL: {(s.history.reduce((a,h)=>a+h.pnl,0)/s.history.length).toFixed(2)} SOL</span>
+</div>
+</div>}
+</div>}
+</div>
+{/* ── Legend ── */}
+<div style={{padding:"4px 12px 4px",display:"flex",gap:8,fontSize:7,color:T.ft,alignItems:"center",borderTop:"1px solid "+T.bd}}><span style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:"#00e676"}}/>fleet buy</span><span style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:"#ff1744"}}/>fleet sell</span><span style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:5,height:5,borderRadius:"50%",background:T.dm+"44"}}/>opponent</span><span style={{marginLeft:"auto",fontWeight:700,color:T.gn}}>{budget} SOL · {snprs} snipers</span><span style={{color:T.yl+"88",fontSize:6}}>━ bond line</span></div>
+{/* ── Simulation guidelines (collapsible) ── */}
+<div style={{borderTop:"1px solid "+T.bd}}>
+<div onClick={()=>sGuideOpen(!guideOpen)} style={{padding:"3px 12px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+<span style={{fontSize:8,fontWeight:700,color:T.yl}}>Sim Guidelines</span>
+<span style={{fontSize:8,color:T.ft}}>{guideOpen?"▾":"▸"}</span>
+</div>
+{guideOpen&&<div style={{padding:"2px 12px 8px",fontSize:7,color:T.dm,lineHeight:1.6}}>
+<div style={{marginBottom:4}}>
+<span style={{fontWeight:800,color:T.yl}}>How long to simulate?</span>
+<div>Run <span style={{color:T.tx,fontWeight:700}}>3-5 sims</span> at 1x speed to get a realistic spread. Use the run history to see consistency.</div>
+</div>
+<div style={{marginBottom:4}}>
+<span style={{fontWeight:800,color:T.yl}}>What to look for:</span>
+<div style={{display:"grid",gridTemplateColumns:"auto 1fr",gap:"1px 6px",marginTop:2}}>
+<span style={{color:T.gn}}>Bond Prob {">"} 60%</span><span>Your budget can push MC close to graduation</span>
+<span style={{color:T.or}}>Max Drawdown {"<"} 40%</span><span>Price doesn't crater before fleet exits</span>
+<span style={{color:T.gn}}>ROI consistently +</span><span>Fleet reliably recovers more than it spends</span>
+<span style={{color:T.cy}}>Avg Entry {"<"} Avg Exit</span><span>Fleet buys low, sells higher — as designed</span>
+</div>
+</div>
+<div>
+<span style={{fontWeight:800,color:T.yl}}>Speed tips:</span>
+<div><span style={{color:T.tx}}>1x</span> = most realistic timing · <span style={{color:T.tx}}>2x</span> = quick check · <span style={{color:T.tx}}>4x</span> = rapid iteration</div>
+<div style={{marginTop:2}}>If ROI is negative across 3+ runs, consider: more budget, fewer snipers, or shorter duration.</div>
+</div>
+</div>}
+</div>
 </>}</div>}
 
 // ═══ MAIN APP ═══
@@ -981,15 +1090,27 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 
 {/* ═══ PAPER TRADE SIMULATOR (Kahneman Premortem + Norman Visibility) ═══ */}
 {/* "The best way to predict the future is to simulate it" — Premortem technique */}
-<div style={{background:T.bg,borderRadius:6,padding:mb?8:8,border:"1px solid "+T.cy+"18",marginBottom:8}}>
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
-<div style={{display:"flex",alignItems:"center",gap:4}}>
-<span style={{fontSize:mb?11:10,fontWeight:800,color:T.cy}}>Simulate</span>
-<span style={{fontSize:mb?8:7,color:T.dm}}>Backtest settings vs live radar</span>
+{(()=>{const[simExpanded,sSimExpanded]=useState(true);const[simDetailOpen,sSimDetailOpen]=useState(false);const[simGuideOpen,sSimGuideOpen]=useState(false);const[simRunning,sSimRunning]=useState(false);const sim=autoTrade?.sim;
+return<div style={{background:T.bg,borderRadius:6,border:"1px solid "+T.cy+"18",marginBottom:8,overflow:"hidden"}}>
+{/* ── Sim header: title + on/off toggle + collapse ── */}
+<div style={{padding:mb?"8px 10px":"6px 10px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+<div onClick={()=>sSimExpanded(!simExpanded)} style={{display:"flex",alignItems:"center",gap:4,cursor:"pointer",flex:1}}>
+<IC.sim s={14} c={T.cy}/>
+<span style={{fontSize:mb?12:10,fontWeight:800,color:T.cy}}>Sim Mode</span>
+{sim&&!simExpanded&&<span style={{fontSize:mb?9:7,color:T.dm}}>{sim.totalTrades} trades · {sim.winRate}% win · {sim.roi>=0?"+":""}{sim.roi}%</span>}
+{simRunning&&<Sp s={10} c={T.cy}/>}
+<span style={{fontSize:8,color:T.ft,marginLeft:2}}>{simExpanded?"▾":"▸"}</span>
 </div>
-<button onClick={async()=>{try{const r=await a.atsim(S);sAutoTrade(p=>({...p,sim:r}));toast(`${r.totalTrades} simulated trades`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"6px 12px":"4px 10px",borderRadius:5,border:"1px solid "+T.cy+"22",background:T.cy+"08",color:T.cy,fontWeight:800,fontSize:mb?11:9,cursor:"pointer"}}>RUN</button>
+<div style={{display:"flex",gap:3,alignItems:"center"}}>
+<button onClick={async()=>{sSimRunning(true);try{const r=await a.atsim(S);sAutoTrade(p=>({...p,sim:r}));if(!simExpanded)sSimExpanded(true);toast(`${r.totalTrades} simulated trades`,"success")}catch(e){toast(e.message,"error")}finally{sSimRunning(false)}}} disabled={simRunning} style={{padding:mb?"5px 12px":"3px 10px",borderRadius:5,border:"1px solid "+T.cy+"22",background:simRunning?T.cy+"04":T.cy+"08",color:simRunning?T.cy+"66":T.cy,fontWeight:800,fontSize:mb?11:9,cursor:simRunning?"wait":"pointer",display:"flex",alignItems:"center",gap:3}}>{simRunning?<><Sp s={8} c={T.cy}/>Running</>:"Run Sim"}</button>
 </div>
-{autoTrade?.sim&&(()=>{const sim=autoTrade.sim;const pnlColor=sim.totalPnlSol>=0?T.gn:T.rd;const kahColor=sim.kahnemanScore>=0?T.gn:sim.kahnemanScore>=-10?T.yl:T.rd;return<>
+</div>
+{simExpanded&&<>
+{/* Description */}
+<div style={{padding:"0 10px 6px",fontSize:mb?8:7,color:T.dm,lineHeight:1.4}}>Backtests your current settings against live radar tokens. Each run simulates entry, hold, and exit for every token that would trigger. <span style={{color:T.cy,fontWeight:700}}>Run 3-5 times</span> to see consistency across different market snapshots.</div>
+{sim&&(()=>{const pnlColor=sim.totalPnlSol>=0?T.gn:T.rd;const kahColor=sim.kahnemanScore>=0?T.gn:sim.kahnemanScore>=-10?T.yl:T.rd;return<>
+{/* Primary stats */}
+<div style={{padding:"0 10px 6px"}}>
 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3,marginBottom:6}}>
 {[
 {l:"TRADES",v:sim.totalTrades,c:T.tx},
@@ -1001,7 +1122,7 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 <div style={{fontSize:mb?7:6,color:T.ft,fontWeight:700}}>{s.l}</div>
 </div>)}
 </div>
-{/* Kahneman Loss-Aversion Score — losses weighted 2x */}
+{/* Kahneman Loss-Aversion Score */}
 <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 6px",background:kahColor+"0a",borderRadius:4,border:"1px solid "+kahColor+"18",marginBottom:4}}>
 <div style={{flex:1}}>
 <div style={{fontSize:mb?8:7,fontWeight:700,color:kahColor}}>Loss-Aversion Score</div>
@@ -1022,9 +1143,44 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 <div style={{fontSize:mb?8:7,color:T.dm}}>{sim.worstTrade.name} ({sim.worstTrade.exitReason})</div>
 </div>}
 </div>
-{/* Top simulated trades */}
-{sim.trades?.length>0&&<div style={{maxHeight:mb?80:100,overflowY:"auto",fontSize:mb?8:7,color:T.dm}}>
-{sim.trades.slice(0,8).map((t,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px 0",borderBottom:"1px solid "+T.bd+"22"}}>
+</div>
+{/* ── Detailed trade breakdown (collapsible) ── */}
+<div style={{borderTop:"1px solid "+T.bd}}>
+<div onClick={()=>sSimDetailOpen(!simDetailOpen)} style={{padding:"4px 10px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+<span style={{fontSize:mb?9:8,fontWeight:700,color:T.cy}}>Trade Breakdown</span>
+<span style={{fontSize:8,color:T.ft}}>{simDetailOpen?"▾":"▸"}</span>
+</div>
+{simDetailOpen&&<div style={{padding:"0 10px 6px"}}>
+{/* Exit reason distribution */}
+{sim.trades?.length>0&&(()=>{const reasons={};sim.trades.forEach(t=>{reasons[t.exitReason]=(reasons[t.exitReason]||0)+1});
+return<div style={{marginBottom:6}}>
+<div style={{fontSize:mb?8:7,fontWeight:700,color:T.ft,marginBottom:2}}>Exit Reasons</div>
+<div style={{display:"flex",gap:1,height:6,borderRadius:3,overflow:"hidden",marginBottom:2}}>
+{Object.entries(reasons).map(([k,v])=>{const pct=(v/sim.totalTrades)*100;const c=k.includes("TP")?T.gn:k.includes("SL")?T.rd:k.includes("momentum")?T.or:T.pu;return<div key={k} style={{width:pct+"%",background:c,minWidth:pct>0?2:0}} title={k+": "+v}/>})}
+</div>
+<div style={{display:"flex",gap:6,fontSize:6,color:T.dm,flexWrap:"wrap"}}>
+{Object.entries(reasons).map(([k,v])=>{const c=k.includes("TP")?T.gn:k.includes("SL")?T.rd:k.includes("momentum")?T.or:T.pu;return<span key={k} style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:4,height:4,borderRadius:1,background:c}}/>{k} ({v})</span>})}
+</div>
+</div>})()}
+{/* Score distribution of entered trades */}
+{sim.trades?.length>0&&(()=>{const scores=sim.trades.map(t=>t.score).sort((a,b)=>a-b);const avgScore=Math.round(scores.reduce((a,b)=>a+b,0)/scores.length);const minScore=scores[0];const maxScore=scores[scores.length-1];
+return<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:3,marginBottom:4}}>
+<div style={{textAlign:"center",padding:"3px 2px",background:T.sf,borderRadius:4}}>
+<div style={{fontSize:mb?10:9,fontWeight:800,color:T.tx}}>{avgScore}</div>
+<div style={{fontSize:6,color:T.ft}}>AVG SCORE</div>
+</div>
+<div style={{textAlign:"center",padding:"3px 2px",background:T.sf,borderRadius:4}}>
+<div style={{fontSize:mb?10:9,fontWeight:800,color:T.rd}}>{minScore}</div>
+<div style={{fontSize:6,color:T.ft}}>MIN SCORE</div>
+</div>
+<div style={{textAlign:"center",padding:"3px 2px",background:T.sf,borderRadius:4}}>
+<div style={{fontSize:mb?10:9,fontWeight:800,color:T.gn}}>{maxScore}</div>
+<div style={{fontSize:6,color:T.ft}}>MAX SCORE</div>
+</div>
+</div>})()}
+{/* Trade list */}
+{sim.trades?.length>0&&<div style={{maxHeight:mb?100:120,overflowY:"auto",fontSize:mb?8:7,color:T.dm}}>
+{sim.trades.slice(0,12).map((t,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px 0",borderBottom:"1px solid "+T.bd+"22"}}>
 <span style={{fontWeight:700,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t.name}</span>
 <span style={{fontSize:mb?8:7,color:T.ft}}>s:{t.score}</span>
 <span style={{fontSize:mb?8:7,color:T.ft}}>{t.sizeMult}x</span>
@@ -1032,8 +1188,43 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 <span style={{fontSize:mb?7:6,color:T.ft}}>{t.exitReason}</span>
 </div>)}
 </div>}
-</>})()}
+</div>}
 </div>
+</>})()}
+{/* ── Sim guidelines (collapsible) ── */}
+<div style={{borderTop:"1px solid "+T.bd}}>
+<div onClick={()=>sSimGuideOpen(!simGuideOpen)} style={{padding:"4px 10px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+<span style={{fontSize:mb?9:8,fontWeight:700,color:T.yl}}>How to Use Sim Mode</span>
+<span style={{fontSize:8,color:T.ft}}>{simGuideOpen?"▾":"▸"}</span>
+</div>
+{simGuideOpen&&<div style={{padding:"0 10px 8px",fontSize:mb?8:7,color:T.dm,lineHeight:1.6}}>
+<div style={{marginBottom:4}}>
+<span style={{fontWeight:800,color:T.yl}}>Dialing in your settings:</span>
+<div>1. Set your params (score threshold, SOL per trade, TP/SL levels)</div>
+<div>2. Hit <span style={{color:T.cy,fontWeight:700}}>Run Sim</span> to backtest against current radar</div>
+<div>3. Check win rate, PnL, and exit reason distribution</div>
+<div>4. Adjust and re-run — repeat 3-5 times per config change</div>
+</div>
+<div style={{marginBottom:4}}>
+<span style={{fontWeight:800,color:T.yl}}>Reading the results:</span>
+<div style={{display:"grid",gridTemplateColumns:"auto 1fr",gap:"1px 6px",marginTop:2}}>
+<span style={{color:T.gn}}>Win Rate {">"} 55%</span><span>Settings are profitable on average</span>
+<span style={{color:T.gn}}>Kahneman {">"} 0</span><span>Risk-adjusted return is positive</span>
+<span style={{color:T.or}}>Kahneman -10 to 0</span><span>Borderline — tighten SL or raise min score</span>
+<span style={{color:T.rd}}>Kahneman {"<"} -10</span><span>Too risky — losses will dominate</span>
+<span style={{color:T.cy}}>Exit reasons</span><span>Mostly TP exits = healthy. Mostly SL = too loose entry</span>
+</div>
+</div>
+<div>
+<span style={{fontWeight:800,color:T.yl}}>Quick tuning guide:</span>
+<div>Low win rate → raise min score threshold (stricter entry)</div>
+<div>Small wins, big losses → tighten SL or widen TP1 sell %</div>
+<div>High win rate but low PnL → lower TP1 sell % to let winners run</div>
+</div>
+</div>}
+</div>
+</>}
+</div>})()}
 
 {/* ═══ RISK DASHBOARD (Norman: Make system state visible) ═══ */}
 {/* Shows current settings in terms of REAL RISK, not abstract numbers */}
