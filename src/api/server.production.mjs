@@ -3199,6 +3199,72 @@ app.post("/api/auto-trade/close", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Manual exit single auto-trade position (user sees rug / dry vol)
+app.post("/api/auto-trade/exit-position", async (req, res) => {
+  try {
+    const { wallet, ca } = req.body;
+    if (!wallet || !ca) return res.status(400).json({ error: "wallet and ca required" });
+    const state = autoTraders.get(wallet);
+    if (!state) return res.status(404).json({ error: "No auto-trader running" });
+    const pos = state.positions.get(ca);
+    if (!pos) return res.status(404).json({ error: "Position not found" });
+    const tw = await getTradingWallet(wallet);
+    if (!tw) return res.status(400).json({ error: "No trading wallet" });
+    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+    // Sell 100% via PumpPortal auto-route
+    const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ publicKey: tw.pubkey, action: "sell", mint: ca, amount: "100%", denominatedInSol: "false", slippage: 30, priorityFee: 0.005, pool: "auto" }),
+    });
+    let sig = null;
+    if (sellResp.ok) {
+      const txBytes = await sellResp.arrayBuffer();
+      if (txBytes.byteLength > 100) {
+        const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+        tx.sign([kp]);
+        sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+      }
+    }
+    // Move to recently closed with manual-exit reason
+    const token = radar.tokens.get(ca);
+    const currentMcap = token?.mcapUsd || 0;
+    const changePct = pos.entryMcap > 0 ? ((currentMcap - pos.entryMcap) / pos.entryMcap) * 100 : 0;
+    if (!state.recentlyClosed) state.recentlyClosed = [];
+    state.recentlyClosed.push({
+      ca, name: token?.name || ca.slice(0, 8),
+      entrySol: pos.entrySol, entryMcap: pos.entryMcap, exitMcap: currentMcap,
+      changePct: +changePct.toFixed(1),
+      pnlSol: +(pos.entrySol * (changePct / 100)).toFixed(4),
+      exitReason: "manual-exit",
+      exitTime: Date.now(),
+      age: Math.round((Date.now() - pos.entryTime) / 60000),
+      entryScore: pos.entryScore || 0,
+      exitScore: pos.liveScore || pos.entryScore || 0,
+    });
+    state.recentlyClosed = state.recentlyClosed.filter(p => Date.now() - p.exitTime < 300000).slice(-20);
+    // Record in trade learner
+    const peakPct = pos.entryMcap > 0 ? ((pos.peakMcap - pos.entryMcap) / pos.entryMcap) * 100 : 0;
+    tradeLearner.record({
+      ca, entryScore: pos.entryScore || 0, entryMcap: pos.entryMcap, exitMcap: currentMcap,
+      pnlPct: +changePct.toFixed(1), pnlSol: +(pos.entrySol * (changePct / 100)).toFixed(4),
+      entryBuys: pos.entryBuys || 0, entrySells: pos.entrySells || 0, entryUB: pos.entryUB || 0,
+      entryAge: +(pos.entryAge || 0).toFixed(1), entryTrend: pos.entryTrend || "new",
+      entryBondPct: pos.entryBondPct || 0, exitReason: "manual-exit",
+      holdTime: Date.now() - pos.entryTime, peakPct: +peakPct.toFixed(1),
+    });
+    // Remove position, add cooldown
+    state.positions.delete(ca);
+    const cd = soldCooldowns.get(wallet) || new Map();
+    cd.set(ca, Date.now());
+    soldCooldowns.set(wallet, cd);
+    trackSell(wallet, ca);
+    state.log.push({ msg: `MANUAL EXIT ${token?.name || ca.slice(0, 6)} (${changePct >= 0 ? "+" : ""}${changePct.toFixed(1)}%)`, time: Date.now() });
+    if (state.log.length > 50) state.log.shift();
+    broadcastWS({ event: "auto-sell", data: { ca, wallet, reason: "manual-exit" } });
+    res.json({ ok: true, sig: sig?.slice(0, 12) || null, pnlPct: +changePct.toFixed(1) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post("/api/auto-trade/update", async (req, res) => {
   const { wallet, settings } = req.body;
   const state = autoTraders.get(wallet);

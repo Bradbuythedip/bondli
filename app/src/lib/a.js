@@ -48,6 +48,7 @@ gmt(c){return this.f(`/api/movers/token/${c}`)}
 ats(w,s){return this.f("/api/auto-trade/start",{method:"POST",body:{wallet:w,settings:s}})}
 atp(w){return this.f("/api/auto-trade/stop",{method:"POST",body:{wallet:w}})}
 atc(w){return this.f("/api/auto-trade/close",{method:"POST",body:{wallet:w}})}
+atx(w,c){return this.f("/api/auto-trade/exit-position",{method:"POST",body:{wallet:w,ca:c}})}
 atu(w,s){return this.f("/api/auto-trade/update",{method:"POST",body:{wallet:w,settings:s}})}
 atst(w){return this.f(`/api/auto-trade/status?wallet=${w}`)}
 gcp(){return this.f("/api/chart-patterns")}

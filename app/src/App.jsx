@@ -886,6 +886,7 @@ return<div key={p.ca} style={{padding:"6px 0",borderBottom:"1px solid "+T.bd+"44
 <span style={{fontSize:14,fontWeight:900,color:pnlColor}}>{p.changePct>=0?"+":""}{p.changePct}%</span>
 {p.entrySol>0&&<span style={{fontSize:10,fontWeight:800,color:pnlColor}}>{pnlSol>=0?"+":""}{pnlSol.toFixed(4)} SOL</span>}
 </div>
+<button title="Exit this position" onClick={async(e)=>{e.stopPropagation();if(!confirm(`Sell ${p.name} now?`))return;try{const r=await a.atx(user.pubkey,p.ca);toast(`Exited ${p.name} (${r.pnlPct>=0?"+":""}${r.pnlPct}%)`,"success")}catch(err){toast(err.message,"error")}}} style={{padding:mb?"6px 8px":"4px 6px",borderRadius:4,border:"1px solid "+T.rd+"44",background:T.rd+"18",color:T.rd,fontWeight:900,fontSize:mb?11:9,cursor:"pointer",lineHeight:1,flexShrink:0}}>EXIT</button>
 </div>
 {p.entrySol>0&&<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,padding:"3px 6px",background:pnlColor+"0a",borderRadius:4,border:"1px solid "+pnlColor+"18"}}>
 <div style={{flex:1,display:"flex",justifyContent:"space-between",fontSize:9,color:T.ft}}>
