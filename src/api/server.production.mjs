@@ -3027,28 +3027,38 @@ function startAutoTrader(wallet, settings) {
         const boostScore = dexBoost ? Math.min(8, 3 + Math.log2(dexBoost.amount + 1)) : 0;
         if (state.settings.requireBoosted && !dexBoost) return false;
 
-        // Score dynamics: use velocity/acceleration to boost or penalize
-        // This is the KEY signal for early movers — rocket trend means the token's
-        // score is accelerating (buy velocity increasing, MC climbing, new buyers flooding in)
-        let dynamicsBonus = 0;
+        // ═══ VELOCITY/ACCELERATION GATE ═══
+        // Core principle: NEVER buy a token we haven't observed long enough to measure
+        // momentum. Score alone is a snapshot — velocity/acceleration show the TREND.
+        // Require 3+ observations (~15s) so v and a have real data before we risk SOL.
         const dyn = scoreDynamics.get(t.ca);
-        if (dyn && dyn.scores >= 2) {
-          // Only reject tokens that are actively crashing — declining is a potential dip buy
-          if (dyn.trend === "crashing") { pipeline.trendReject++; return false; }
-          // Declining = dip opportunity — penalize but don't reject
-          if (dyn.trend === "declining") dynamicsBonus = -10;
-          // Fading momentum = slight warning
-          else if (dyn.trend === "fading") dynamicsBonus = -5;
-          // Rising steadily — meaningful boost
-          else if (dyn.trend === "rising") dynamicsBonus = 12;
-          // Rocket: accelerating score = STRONG signal — this is what catches early movers
-          else if (dyn.trend === "rocket") dynamicsBonus = 25;
+        let dynamicsBonus = 0;
 
-          // Additional velocity bonus: faster acceleration = more conviction
-          if (dyn.velocity > 0.3) dynamicsBonus += Math.min(10, Math.round(dyn.velocity * 6));
-          // Acceleration bonus: positive 2nd derivative = momentum building
-          if (dyn.acceleration > 0.01) dynamicsBonus += Math.min(8, Math.round(dyn.acceleration * 120));
+        if (!dyn || dyn.scores < 3) {
+          // Not enough data yet — skip this cycle, let it cook
+          pipeline.scoreLow++;
+          return false;
         }
+
+        // Hard reject: actively crashing tokens
+        if (dyn.trend === "crashing") { pipeline.trendReject++; return false; }
+
+        // Velocity/acceleration are now PRIMARY signals, not just bonuses
+        // Declining = dip opportunity — penalize but don't reject
+        if (dyn.trend === "declining") dynamicsBonus = -15;
+        // Fading momentum = warning
+        else if (dyn.trend === "fading") dynamicsBonus = -8;
+        // Stable with no movement = not interesting enough
+        else if (dyn.trend === "stable" && dyn.velocity <= 0) dynamicsBonus = -12;
+        // Rising steadily — strong signal
+        else if (dyn.trend === "rising") dynamicsBonus = 18;
+        // Rocket: accelerating score = STRONGEST signal
+        else if (dyn.trend === "rocket") dynamicsBonus = 30;
+
+        // Velocity bonus: scaled more aggressively — this IS the buy signal
+        if (dyn.velocity > 0.1) dynamicsBonus += Math.min(15, Math.round(dyn.velocity * 10));
+        // Acceleration bonus: positive 2nd derivative = momentum building
+        if (dyn.acceleration > 0.005) dynamicsBonus += Math.min(12, Math.round(dyn.acceleration * 200));
 
         // Chart health bonus: if the sparkline shape matches healthy graduated patterns
         // Smooth grind penalty: fake charts with no natural dips should be avoided
