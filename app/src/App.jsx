@@ -361,6 +361,23 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <iframe src={"https://www.gmgn.cc/kline/sol/"+lCA} style={{width:"100%",height:mb?240:360,border:"none",display:"block"}} title="chart" loading="lazy"/>
 </div>
 
+{/* ═══ FLEET CONTROLS ═══ */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:"8px 10px",marginBottom:6}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+<span style={{fontSize:13,fontWeight:800}}>Fleet Controls</span>
+{fleet?.gameState?.manualOverride&&<span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:T.yl+"12",color:T.yl,fontWeight:800}}>MANUAL: {fleet.gameState.manualOverride} ({fleet.gameState.manualExpiry||0}s)</span>}
+</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:4}}>
+{[
+{cmd:"accumulate",label:"ACCUMULATE",desc:"Buy heavy, suppress sells",color:T.gn,bg:T.gn},
+{cmd:"hold",label:"DIAMOND",desc:"Pause sells, ride wave",color:T.cy||"#00bcd4",bg:T.cy||"#00bcd4"},
+{cmd:"boost",label:"VOLUME",desc:"Paint extra trades",color:T.pu||"#9c27b0",bg:T.pu||"#9c27b0"},
+{cmd:"distribute",label:"DISTRIBUTE",desc:"Take profit, sell faster",color:T.rd||"#ff4444",bg:T.rd||"#ff4444"},
+{cmd:"auto",label:"AUTO",desc:"Back to game theory",color:T.ft,bg:T.ft},
+].map(b=>{const active=fleet?.gameState?.manualOverride===(b.cmd==="hold"?"RIDE":b.cmd==="boost"?"HOLD":b.cmd==="auto"?null:b.cmd.toUpperCase());return<button key={b.cmd} onClick={async()=>{try{const r=await a.fc(asid,user.pubkey,b.cmd,{duration:b.cmd==="boost"?30:60});toast(r.signal||b.label,"success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"10px 2px":"12px 4px",background:active?b.bg+"18":b.bg+"06",border:"1px solid "+(active?b.bg+"44":b.bg+"18"),borderRadius:8,fontSize:mb?10:12,fontWeight:900,color:b.color,cursor:"pointer",textAlign:"center",lineHeight:1.2}}><div>{b.label}</div><div style={{fontSize:9,fontWeight:500,color:T.ft,marginTop:2}}>{b.desc}</div></button>})}
+</div>
+</div>
+
 {/* ═══ TRADE FEED + WALLETS (side by side on desktop) ═══ */}
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:6,marginBottom:6}}>
 {/* Trade feed */}
@@ -400,12 +417,22 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 </div></div>
 </div>
 
+{/* ═══ QUICK TRADE ═══ */}
+<div style={{display:"grid",gridTemplateColumns:"auto 1fr",gap:4,marginBottom:6,alignItems:"center"}}>
+<span style={{fontSize:13,color:T.gn,fontWeight:700,paddingLeft:4}}>BUY</span>
+<div style={{display:"flex",gap:3}}>{[0.1,0.25,0.5,1].map(amt=>{const ok=(trB||0)>=amt;const ld=buying===lCA+amt;return<button key={amt} disabled={!ok||ld} onClick={async()=>{sBuy(lCA+amt);try{await quickBuy(lCA,amt);toast(`+${amt} SOL`,"success")}catch(er){toast(er.message,"error")}sBuy(null)}} style={{flex:1,padding:"8px 0",background:ok?T.gn+"06":"transparent",border:"1px solid "+(ok?T.gn+"22":T.bd),borderRadius:5,fontSize:13,fontWeight:800,color:ok?T.gn:T.ft,cursor:ok&&!ld?"pointer":"default",opacity:ok?1:.2}}>{ld?<Sp s={8}/>:amt}</button>})}</div>
+<span style={{fontSize:13,color:"#ff4444",fontWeight:700,paddingLeft:4}}>SELL</span>
+<div style={{display:"flex",gap:3}}>{[25,50,100].map(pct=>{const ld=selling===lCA+pct;return<button key={pct} disabled={ld} onClick={async()=>{sSell(lCA+pct);try{await quickSell(lCA,pct);toast(`Sold ${pct}%`,"success")}catch(er){toast(er.message,"error")}sSell(null)}} style={{flex:1,padding:"8px 0",background:"#ff444406",border:"1px solid #ff444418",borderRadius:5,fontSize:13,fontWeight:800,color:"#ff4444",cursor:ld?"default":"pointer"}}>{ld?<Sp s={8} c="#ff4444"/>:pct===100?"ALL":pct+"%"}</button>})}</div>
+</div>
+
 {/* ═══ ACTION BAR ═══ */}
 <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
 <button onClick={()=>{navigator.clipboard?.writeText(lCA);toast("CA copied","success")}} style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:12,color:T.ft,cursor:"pointer",fontFamily:M}}>{lCA.slice(0,12)}…</button>
 <a href={"https://pump.fun/coin/"+lCA} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:6,fontSize:12,color:T.gn,textDecoration:"none",fontWeight:700}}>pump.fun ↗</a>
 <a href={"https://www.gmgn.cc/sol/token/"+lCA} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:12,color:T.dm,textDecoration:"none"}}>gmgn ↗</a>
 <a href={"https://dexscreener.com/solana/"+lCA} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:12,color:T.dm,textDecoration:"none"}}>dexscreener ↗</a>
+<a href={"https://birdeye.so/token/"+lCA+"?chain=solana"} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:12,color:T.dm,textDecoration:"none"}}>birdeye ↗</a>
+<a href={"https://photon-sol.tinyastro.io/en/lp/"+lCA} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:12,color:T.dm,textDecoration:"none"}}>photon ↗</a>
 <button onClick={async()=>{try{const r=await a.fr(asid,user.pubkey);toast(`Swept ${(r.totalRecovered||0).toFixed(4)} SOL`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:"5px 10px",background:T.yl+"08",border:"1px solid "+T.yl+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.yl,cursor:"pointer"}}>Force Sweep</button>
 </div>
 </div></EB>
