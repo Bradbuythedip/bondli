@@ -75,6 +75,8 @@ const FEATURE_KEYS = [
   // Chart shape analysis
   "ch_healthScore",     // overall chart health (0=crash, 0.5=neutral, 1=healthy growth)
   "ch_pumpDump",        // pump-and-dump pattern detection (0=none, 1=classic p&d)
+  "ch_smoothGrind",     // gradual up with no dips — likely fake/self-bought chart (0=normal, 1=suspiciously smooth)
+  "ch_dipRatio",        // ratio of dip candles vs up candles (0=no dips at all, 1=many dips = healthy)
 
   // Meta
   "mt_hourOfDay",       // 0-23 normalized to 0-1
@@ -234,6 +236,78 @@ function extractFeatures(token) {
   const earlyBuyerSells = sells.filter(s => earlyBuyers.has(s.wallet)).length;
   f.rg_buyerRetention = earlyBuyers.size > 0 ? Math.max(0, 1 - earlyBuyerSells / earlyBuyers.size) : 0.5;
 
+  // ─── Chart shape analysis: gradual-up-no-dips detection ───
+  const spark = t.spark || [];
+  if (spark.length >= 5) {
+    // Count dips: a "dip" is when spark[i] < spark[i-1]
+    let dips = 0;
+    let ups = 0;
+    let maxConsecutiveUp = 0;
+    let consecutiveUp = 0;
+    let totalDelta = 0;
+    for (let i = 1; i < spark.length; i++) {
+      const delta = spark[i] - spark[i - 1];
+      totalDelta += Math.abs(delta);
+      if (delta < 0) {
+        dips++;
+        consecutiveUp = 0;
+      } else if (delta > 0) {
+        ups++;
+        consecutiveUp++;
+        maxConsecutiveUp = Math.max(maxConsecutiveUp, consecutiveUp);
+      }
+    }
+    const totalMoves = dips + ups;
+    // dipRatio: healthy charts have 30-50% dips. 0 dips = suspicious.
+    f.ch_dipRatio = totalMoves > 0 ? Math.min(1, dips / totalMoves * 2) : 0;
+    // smoothGrind: detects fake charts — long consecutive uptrends + very few dips
+    // Real charts ALWAYS have dips. A chart with 80%+ up candles is almost certainly self-bought.
+    const upPct = totalMoves > 0 ? ups / totalMoves : 0;
+    const isLong = spark.length >= 8;
+    const isGrowing = spark[spark.length - 1] > spark[0] * 1.3;
+    // High smoothGrind = suspicious: many consecutive ups, very few dips, growing
+    if (isLong && isGrowing && upPct > 0.85 && maxConsecutiveUp >= 6) {
+      f.ch_smoothGrind = Math.min(1, 0.5 + (upPct - 0.85) * 3 + (maxConsecutiveUp - 6) * 0.05);
+    } else if (isLong && isGrowing && upPct > 0.75 && maxConsecutiveUp >= 5) {
+      f.ch_smoothGrind = Math.min(0.6, 0.3 + (upPct - 0.75) * 2);
+    } else {
+      f.ch_smoothGrind = 0;
+    }
+    // Chart health from meme-intelligence
+    const start = spark[0] || 1;
+    const peakVal = Math.max(...spark);
+    const current = spark[spark.length - 1] || 0;
+    const peakIdx = spark.indexOf(peakVal);
+    const peakPct = peakIdx / spark.length;
+    const multiple = peakVal / start;
+    const endRatio = current / (peakVal || 1);
+    // Healthy: steady growth with dips, peak late, holding value
+    if (multiple > 2 && peakPct > 0.5 && endRatio > 0.4 && dips >= 2) {
+      f.ch_healthScore = Math.min(1, 0.6 + multiple * 0.05);
+    } else if (peakPct < 0.3 && endRatio < 0.2) {
+      f.ch_healthScore = Math.max(0, 0.2);
+    } else if (current > start && multiple < 3) {
+      f.ch_healthScore = 0.6;
+    } else {
+      f.ch_healthScore = 0.5;
+    }
+    // Pump-dump: sharp peak early then crash
+    if (multiple > 5 && peakPct < 0.35 && endRatio < 0.25) {
+      f.ch_pumpDump = Math.min(1, 0.5 + (1 - endRatio) * 0.3 + (1 - peakPct) * 0.2);
+    } else {
+      f.ch_pumpDump = 0;
+    }
+    // penalize smooth grinds in health score — they look good but are fake
+    if (f.ch_smoothGrind > 0.5) {
+      f.ch_healthScore = Math.max(0, f.ch_healthScore - f.ch_smoothGrind * 0.4);
+    }
+  } else {
+    f.ch_healthScore = 0.5;
+    f.ch_pumpDump = 0;
+    f.ch_smoothGrind = 0;
+    f.ch_dipRatio = 0.5;
+  }
+
   // ─── Meta ───
   const now = new Date();
   f.mt_hourOfDay = now.getUTCHours() / 23;
@@ -274,6 +348,7 @@ class ScoringEngine {
       k: 1.0,   // Kahneman
       oc: 1.5,  // On-chain velocity important
       rg: 3.0,  // Rug detection — HIGHEST weight (losing money > missing plays)
+      ch: 2.0,  // Chart pattern analysis — catches fake charts and pump-dumps
       so: 0.6,  // Social is noisy
       mt: 0.3,  // Time-of-day is minor
     };
@@ -310,20 +385,19 @@ class ScoringEngine {
     // ── Single pass: weighted sum + per-group sums ──
     // Zero-alloc: reuse pre-allocated group accumulators
     let weightedSum = 0;
-    let gs_tp = 0, gs_k = 0, gs_oc = 0, gs_rg = 0, gs_so = 0, gs_mt = 0;
+    let gs_tp = 0, gs_k = 0, gs_oc = 0, gs_rg = 0, gs_ch = 0, gs_so = 0, gs_mt = 0;
     const mc = this._mCache;
 
     for (let i = 0; i < FEATURE_KEYS.length; i++) {
       const val = features[FEATURE_KEYS[i]] || 0;
       const wv = val * mc[i];
       weightedSum += wv;
-      // Branch-free group accumulation via switch on first char + length
-      // tp(2), k(1), oc(2), rg(2), so(2), mt(2)
       switch (GROUP_FOR_KEY[FEATURE_KEYS[i]]) {
         case "tp": gs_tp += wv; break;
         case "k":  gs_k  += wv; break;
         case "oc": gs_oc += wv; break;
         case "rg": gs_rg += wv; break;
+        case "ch": gs_ch += wv; break;
         case "so": gs_so += wv; break;
         case "mt": gs_mt += wv; break;
       }
@@ -338,6 +412,7 @@ class ScoringEngine {
     const s_k  = gws.k  > 0 ? gs_k  / gws.k  : 0;
     const s_oc = gws.oc > 0 ? gs_oc / gws.oc : 0;
     const s_rg = gws.rg > 0 ? gs_rg / gws.rg : 0;
+    const s_ch = gws.ch > 0 ? gs_ch / gws.ch : 0;
     const s_so = gws.so > 0 ? gs_so / gws.so : 0;
     const s_mt = gws.mt > 0 ? gs_mt / gws.mt : 0;
 
@@ -349,6 +424,14 @@ class ScoringEngine {
         ? (15 + (rugRisk - 0.2) * 100 + 0.5) | 0
         : (35 + (rugRisk - 0.4) * 67 + 0.5) | 0;
 
+    // ── Chart pattern penalty ──
+    // smoothGrind is a STRONG rug signal — fake charts with no natural dips
+    const chartPenalty = (features.ch_smoothGrind || 0) > 0.5
+      ? Math.round((features.ch_smoothGrind - 0.3) * 40)
+      : (features.ch_pumpDump || 0) > 0.5
+        ? Math.round((features.ch_pumpDump - 0.3) * 25)
+        : 0;
+
     // ── Tipping Point composite ──
     const tippingScore = s_tp * 0.4 + s_k * 0.3 + s_oc * 0.2 + s_so * 0.1;
 
@@ -357,7 +440,8 @@ class ScoringEngine {
       + (features.oc_buyVelocity5m || 0) * 25
       + (features.oc_uniqueBuyers5m || 0) * 20
       + (features.k_herdSignal || 0) * 15
-      - rugPenalty * 0.8;
+      - rugPenalty * 0.8
+      - chartPenalty * 0.6;
     const bondProb = bpRaw < 1 ? 1 : bpRaw > 99 ? 99 : (bpRaw + 0.5) | 0;
 
     // ── Rug flags — direct reads, no array iteration ──
@@ -369,9 +453,11 @@ class ScoringEngine {
     if ((features.rg_sellWaveDetect || 0) > 0.3) rugFlags.push("sell_wave");
     if ((features.rg_mcapDropRate || 0) > 0.25) rugFlags.push("mcap_crashing");
     if ((features.rg_buyerRetention || 0) < 0.5) rugFlags.push("early_buyers_fled");
+    if ((features.ch_smoothGrind || 0) > 0.5) rugFlags.push("fake_chart_smooth_grind");
+    if ((features.ch_dipRatio || 0.5) < 0.1 && (features.ch_smoothGrind || 0) > 0.3) rugFlags.push("no_natural_dips");
 
     const finalScore = (rawScore * 100 + 0.5) | 0;
-    const clamped = finalScore - rugPenalty;
+    const clamped = finalScore - rugPenalty - chartPenalty;
 
     return {
       score: clamped < 0 ? 0 : clamped > 99 ? 99 : clamped,
@@ -384,9 +470,11 @@ class ScoringEngine {
         kahneman: (s_k * 100 + 0.5) | 0,
         onChain: (s_oc * 100 + 0.5) | 0,
         rugDetection: (s_rg * 100 + 0.5) | 0,
+        chartPattern: (s_ch * 100 + 0.5) | 0,
         social: (s_so * 100 + 0.5) | 0,
         timing: (s_mt * 100 + 0.5) | 0,
       },
+      chartPenalty,
       confidence: Math.min(99, 40 + ((this.trainCount / 10 + 0.5) | 0)),
       modelVersion: this.trainCount,
     };
