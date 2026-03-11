@@ -71,6 +71,134 @@ function TImg({src,ticker,size,style:sx={}}){const[ok,sOk]=useState(true);const[
 const fixMc=(t,solPrice)=>{if(t.mcapSol&&solPrice)return Math.round(t.mcapSol*solPrice);if(t.marketCapSol&&solPrice)return Math.round(t.marketCapSol*solPrice);return t.mcapUsd||0};
 const PRESETS=[{name:"Quick",sol:.3,snc:0,slip:25,dur:15,jt:.001,desc:"Deploy only — add vol later"},{name:"Scout",sol:1,snc:1,slip:20,dur:30,jt:.001,desc:"1 SOL + 1 sniper"},{name:"Standard",sol:2,snc:2,slip:25,dur:60,jt:.001,desc:"2 SOL + fleet"},{name:"Swarm",sol:10,snc:3,slip:30,dur:120,jt:.002,desc:"Full fleet"}];
 
+// ═══ POSITION ANALYTICS — dual-axis score+price chart with TP/SL zones ═══
+function PositionAnalytics({positions,settings,T,mb}){
+const histRef=useRef({});// {ca: [{t,score,pct}]}
+const canvasRefs=useRef({});
+// Accumulate data points from position snapshots
+useEffect(()=>{if(!positions?.length)return;const h=histRef.current;const now=Date.now();positions.forEach(p=>{if(!p.ca||p.liveScore==null)return;if(!h[p.ca])h[p.ca]=[];const pts=h[p.ca];// Dedupe: skip if last point was <2s ago
+if(pts.length>0&&now-pts[pts.length-1].t<2000)return;pts.push({t:now,score:p.liveScore??p.entryScore??0,pct:p.changePct??0,mcap:p.currentMcap??0});if(pts.length>120)pts.splice(0,pts.length-120)});// Clean stale CAs
+const activeCAs=new Set(positions.map(p=>p.ca));Object.keys(h).forEach(ca=>{if(!activeCAs.has(ca))delete h[ca]})},[positions]);
+// Draw charts
+useEffect(()=>{if(!positions?.length)return;const S=settings||{};positions.forEach(p=>{if(!p.ca)return;const cv=canvasRefs.current[p.ca];if(!cv)return;const pts=histRef.current[p.ca];if(!pts||pts.length<2)return;const ctx=cv.getContext("2d");const dpr=window.devicePixelRatio||2;const W=cv.offsetWidth*dpr;const H=cv.offsetHeight*dpr;cv.width=W;cv.height=H;ctx.clearRect(0,0,W,H);
+const pad={l:28*dpr,r:28*dpr,t:6*dpr,b:14*dpr};const cW=W-pad.l-pad.r;const cH=H-pad.t-pad.b;
+// Data ranges
+const scores=pts.map(d=>d.score);const pcts=pts.map(d=>d.pct);
+const sMin=Math.min(0,...scores);const sMax=Math.max(100,...scores);
+const pMin=Math.min(-(S.sl2||30),...pcts,-5);const pMax=Math.max(S.tp3||150,...pcts,20);
+const sRng=sMax-sMin||1;const pRng=pMax-pMin||1;
+const xOf=i=>(pad.l+(i/(pts.length-1))*cW);
+const sY=v=>(pad.t+((sMax-v)/sRng)*cH);
+const pY=v=>(pad.t+((pMax-v)/pRng)*cH);
+// Grid lines
+ctx.strokeStyle=T.bd+"44";ctx.lineWidth=1;
+[0,25,50,75,100].forEach(v=>{if(v>=sMin&&v<=sMax){const y=sY(v);ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke()}});
+// TP zones (green dashed)
+ctx.setLineDash([4*dpr,3*dpr]);
+const tpLevels=[{v:S.tp1||35,l:"TP1"},{v:S.tp2||80,l:"TP2"},{v:S.tp3||150,l:"TP3"}];
+tpLevels.forEach(tp=>{if(tp.v<=pMax){const y=pY(tp.v);ctx.strokeStyle="#00e676"+(tp.l==="TP3"?"44":"66");ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();ctx.fillStyle="#00e67688";ctx.font=`${7*dpr}px monospace`;ctx.textAlign="right";ctx.fillText(tp.l+" +"+tp.v+"%",W-pad.r-2*dpr,y-2*dpr)}});
+// SL zones (red dashed)
+const slLevels=[{v:-(S.sl1||15),l:"SL1"},{v:-(S.sl2||30),l:"SL2"}];
+slLevels.forEach(sl=>{if(sl.v>=pMin){const y=pY(sl.v);ctx.strokeStyle="#ff174466";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();ctx.fillStyle="#ff174488";ctx.font=`${7*dpr}px monospace`;ctx.textAlign="right";ctx.fillText(sl.l+" "+sl.v+"%",W-pad.r-2*dpr,y+9*dpr)}});
+ctx.setLineDash([]);
+// Zero line for price
+const zeroY=pY(0);ctx.strokeStyle=T.dm+"44";ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(pad.l,zeroY);ctx.lineTo(W-pad.r,zeroY);ctx.stroke();
+// Price change area fill
+const lastPct=pcts[pcts.length-1];const pColor=lastPct>=0?"#00e676":"#ff1744";
+ctx.beginPath();ctx.moveTo(xOf(0),pY(0));
+for(let i=0;i<pts.length;i++)ctx.lineTo(xOf(i),pY(pts[i].pct));
+ctx.lineTo(xOf(pts.length-1),pY(0));ctx.closePath();
+const gf=ctx.createLinearGradient(0,pad.t,0,H-pad.b);gf.addColorStop(0,pColor+"22");gf.addColorStop(1,pColor+"04");ctx.fillStyle=gf;ctx.fill();
+// Price line
+ctx.beginPath();ctx.strokeStyle=pColor;ctx.lineWidth=1.5*dpr;ctx.lineJoin="round";
+for(let i=0;i<pts.length;i++){const x=xOf(i),y=pY(pts[i].pct);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)}ctx.stroke();
+// Score line (purple, thinner)
+ctx.beginPath();ctx.strokeStyle=T.pu||"#b388ff";ctx.lineWidth=1.2*dpr;ctx.lineJoin="round";
+for(let i=0;i<pts.length;i++){const x=xOf(i),y=sY(pts[i].score);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y)}ctx.stroke();
+// Score endpoint glow
+const lastScore=scores[scores.length-1];const lastSY=sY(lastScore);const lastX=xOf(pts.length-1);
+ctx.beginPath();ctx.arc(lastX,lastSY,3*dpr,0,Math.PI*2);ctx.fillStyle=T.pu||"#b388ff";ctx.fill();
+ctx.beginPath();ctx.arc(lastX,lastSY,6*dpr,0,Math.PI*2);ctx.fillStyle=(T.pu||"#b388ff")+"33";ctx.fill();
+// Price endpoint
+const lastPY=pY(lastPct);ctx.beginPath();ctx.arc(lastX,lastPY,3*dpr,0,Math.PI*2);ctx.fillStyle=pColor;ctx.fill();
+// Y-axis labels — score (left)
+ctx.font=`${7*dpr}px monospace`;ctx.textAlign="right";ctx.fillStyle=(T.pu||"#b388ff")+"88";
+[0,50,100].forEach(v=>{if(v>=sMin&&v<=sMax)ctx.fillText(v+"",pad.l-3*dpr,sY(v)+3*dpr)});
+// Y-axis labels — price (right)
+ctx.textAlign="left";ctx.fillStyle=T.dm+"88";
+[pMin,0,pMax].forEach(v=>{const lbl=(v>=0?"+":"")+Math.round(v)+"%";ctx.fillText(lbl,W-pad.r+3*dpr,pY(v)+3*dpr)});
+// Time labels (bottom)
+ctx.textAlign="center";ctx.fillStyle=T.ft+"88";ctx.font=`${6*dpr}px monospace`;
+const first=pts[0].t;const last=pts[pts.length-1].t;
+if(last-first>5000){[0,Math.floor(pts.length/2),pts.length-1].forEach(i=>{const ago=Math.round((last-pts[i].t)/1000);const lbl=ago>0?ago+"s ago":"now";ctx.fillText(lbl,xOf(i),H-2*dpr)})}
+})},[positions,settings]);
+// Momentum exit threshold line at -30 score drop
+const S=settings||{};
+if(!positions?.length)return null;
+const posWithScore=positions.filter(p=>p.liveScore!=null||p.entryScore!=null);
+if(!posWithScore.length)return null;
+return<div style={{background:T.bg,borderRadius:8,border:"1px solid "+(T.pu||"#b388ff")+"22",padding:mb?8:10,marginTop:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+<IC.chart s={14} c={T.pu||"#b388ff"}/>
+<span style={{fontSize:11,fontWeight:800,color:T.pu||"#b388ff"}}>Position Analytics</span>
+<span style={{fontSize:8,color:T.ft}}>live</span>
+<span style={{marginLeft:"auto",display:"flex",gap:6,fontSize:7,color:T.ft}}>
+<span style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:8,height:2,background:T.pu||"#b388ff",borderRadius:1,display:"inline-block"}}/>score</span>
+<span style={{display:"flex",alignItems:"center",gap:2}}><span style={{width:8,height:2,background:"#00e676",borderRadius:1,display:"inline-block"}}/>P&L</span>
+</span>
+</div>
+{posWithScore.map(p=>{const pts=histRef.current[p.ca]||[];const trend=p.scoreTrend;const vel=p.scoreVelocity;const acc=p.scoreAcceleration;
+const trendColor=trend==="rocket"||trend==="rising"?T.gn:trend==="fading"||trend==="crashing"?T.rd:T.ft;
+const trendIcon=trend==="rocket"?"🚀":trend==="rising"?"↑":trend==="crashing"?"💥":trend==="fading"?"↓":"—";
+const scoreDrop=(p.entryScore||0)-(p.liveScore||0);
+const exitZone=scoreDrop>=20;
+return<div key={p.ca} style={{marginBottom:posWithScore.length>1?8:0}}>
+{/* Position header */}
+<div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}>
+<span style={{fontSize:10,fontWeight:800,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{p.name||p.ca?.slice(0,8)}</span>
+<span style={{fontSize:9,fontWeight:800,color:(p.changePct||0)>=0?T.gn:T.rd}}>{(p.changePct||0)>=0?"+":""}{(p.changePct||0).toFixed(1)}%</span>
+</div>
+{/* Score gauges row */}
+<div style={{display:"flex",gap:4,marginBottom:4}}>
+{/* Live Score */}
+<div style={{flex:1,background:T.sf,borderRadius:4,padding:"3px 6px",border:"1px solid "+(exitZone?T.rd:T.bd)+"33"}}>
+<div style={{fontSize:6,color:T.ft,fontWeight:700}}>SCORE</div>
+<div style={{display:"flex",alignItems:"baseline",gap:2}}>
+<span style={{fontSize:14,fontWeight:900,color:exitZone?T.rd:(p.liveScore||0)>=50?T.gn:(p.liveScore||0)>=25?T.yl:T.ft}}>{p.liveScore??p.entryScore??0}</span>
+<span style={{fontSize:7,color:T.ft}}>/{p.entryScore||0}</span>
+</div>
+{scoreDrop>0&&<div style={{fontSize:7,color:scoreDrop>=30?T.rd:scoreDrop>=20?T.yl:T.ft,fontWeight:700}}>−{scoreDrop}{scoreDrop>=30?" EXIT":scoreDrop>=20?" TIGHT":""}</div>}
+</div>
+{/* Velocity */}
+<div style={{flex:1,background:T.sf,borderRadius:4,padding:"3px 6px"}}>
+<div style={{fontSize:6,color:T.ft,fontWeight:700}}>VELOCITY</div>
+<div style={{fontSize:12,fontWeight:900,color:vel>0?T.gn:vel<-0.1?T.rd:T.ft}}>{vel!=null?(vel>0?"+":"")+vel.toFixed(2)+"/s":"—"}</div>
+{/* Velocity bar */}
+{vel!=null&&<div style={{height:3,borderRadius:2,background:T.bd,marginTop:2,overflow:"hidden"}}>
+<div style={{width:Math.min(100,Math.abs(vel)*100)+"%",height:"100%",borderRadius:2,marginLeft:vel<0?"auto":0,background:vel>0?T.gn:T.rd,transition:"width .3s"}}/>
+</div>}
+</div>
+{/* Acceleration */}
+<div style={{flex:1,background:T.sf,borderRadius:4,padding:"3px 6px"}}>
+<div style={{fontSize:6,color:T.ft,fontWeight:700}}>ACCEL</div>
+<div style={{fontSize:12,fontWeight:900,color:acc>0?T.gn:acc<-0.01?T.rd:T.ft}}>{acc!=null?(acc>0?"+":"")+acc.toFixed(3):"—"}</div>
+</div>
+{/* Trend */}
+<div style={{background:trendColor+"12",borderRadius:4,padding:"3px 6px",border:"1px solid "+trendColor+"22",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minWidth:40}}>
+<div style={{fontSize:12}}>{trendIcon}</div>
+<div style={{fontSize:7,fontWeight:800,color:trendColor,textTransform:"uppercase"}}>{trend||"—"}</div>
+</div>
+</div>
+{/* Canvas chart */}
+<canvas ref={el=>{if(el)canvasRefs.current[p.ca]=el}} style={{width:"100%",height:mb?100:130,display:"block",borderRadius:4,background:T.sf}}/>
+{/* Time + data points */}
+<div style={{display:"flex",justifyContent:"space-between",marginTop:2}}>
+<span style={{fontSize:7,color:T.ft}}>{pts.length} samples</span>
+<span style={{fontSize:7,color:T.ft}}>{p.age||0}m old</span>
+</div>
+</div>})}
+</div>}
+
 // ═══ CANDLESTICK CHART — OHLC + volume + crosshair ═══
 function CandleChart({ca,T,mb}){
 return<div style={{width:"100%",borderRadius:6,overflow:"hidden",background:T.bg}}>
@@ -851,6 +979,8 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 </div>
 {/* APPLY button when settings changed while active */}
 {aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);sAutoTrade(p=>({...p,log:[...(p?.log||[]),{msg:"Settings applied",time:Date.now()}]}));toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:4}}>APPLY CHANGES</button>}
+{/* ═══ POSITION ANALYTICS — live score+price charts ═══ */}
+<PositionAnalytics positions={autoTrade?.positions||[]} settings={S} T={T} mb={mb}/>
 </div>{/* END LEFT */}
 
 {/* RIGHT: Live Positions + Log + Chart Patterns */}
