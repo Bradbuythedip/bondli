@@ -4726,10 +4726,68 @@ function createLiveSim(id, settings) {
     state.graduation = { ready: Math.round(dPts + tPts + wPts + rPts) >= 70 && dur >= 3600000, simDurationMs: dur, totalSimTrades: total, simWinRate: wr, simRoi: roi, confidence: Math.min(100, Math.round(dPts + tPts + wPts + rPts)) };
   }
 
+  // Simplified scoring for sim mode when auto-ape isn't running
+  function simScoreToken(t) {
+    const mc = t.mcapUsd || 0;
+    const buys = t.buys || 0;
+    const sells = t.sells || 0;
+    const ub = t.uniqueBuyers?.size || t.uniqueBuyers || 0;
+    const ageMin = (Date.now() - (t.createdAt || Date.now())) / 60000;
+    const vol = t.volumeSol || 0;
+    // Basic filters
+    if (mc < 2500 || buys < 2 || ub < 2 || ageMin < 0.5) return 0;
+    if (sells > buys * 1.2) return 0;
+    // Score components (simplified version of auto-ape scoring)
+    const buyScore = Math.min(15, Math.log2(buys + 1) * 3);
+    const ubScore = Math.min(15, Math.log2(ub + 1) * 3);
+    const volScore = Math.min(12, Math.log10(vol * 100 + 1) * 4);
+    const mcScore = mc >= 50000 ? 5 : mc >= 30000 ? 7 : mc >= 15000 ? 10 : mc >= 8000 ? 12 : mc >= 5000 ? 11 : mc >= 3000 ? 9 : mc >= 2000 ? 6 : 0;
+    const spark = t.spark || [];
+    let greenScore = 0;
+    if (spark.length >= 3) {
+      const recent = spark.slice(-3), earlier = spark.slice(-6, -3);
+      if (earlier.length > 0) {
+        const growth = (recent.reduce((a, b) => a + b, 0) / recent.length - earlier.reduce((a, b) => a + b, 0) / earlier.length) / (earlier.reduce((a, b) => a + b, 0) / earlier.length || 1);
+        if (growth > 0) greenScore = Math.min(20, growth * 60);
+      }
+    }
+    const pressureScore = buys > 2 ? Math.min(10, (buys / Math.max(1, buys + sells)) * 10) : 0;
+    const velocityScore = Math.min(10, (buys / Math.max(ageMin, 0.5)) * 3);
+    const sellPenalty = sells > buys * 0.6 ? Math.min(12, (sells - buys * 0.4) * 2) : 0;
+    const dyn = scoreDynamics.get(t.ca);
+    let dynamicsBonus = 0;
+    if (!dyn || dyn.scores < 2) return 0; // need dynamics data
+    if (dyn.trend === "crashing") return 0;
+    if (dyn.trend === "declining") dynamicsBonus = -15;
+    else if (dyn.trend === "fading") dynamicsBonus = -8;
+    else if (dyn.trend === "stable" && dyn.velocity <= 0) dynamicsBonus = -12;
+    else if (dyn.trend === "rising") dynamicsBonus = 18;
+    else if (dyn.trend === "rocket") dynamicsBonus = 30;
+    if (dyn.velocity > 0.1) dynamicsBonus += Math.min(15, Math.round(dyn.velocity * 10));
+    return Math.max(0, Math.min(99, Math.round(buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + dynamicsBonus - sellPenalty)));
+  }
+
+  let _simCycle = 0;
   state.interval = setInterval(async () => {
     try {
+      _simCycle++;
       const tokens = [...radar.tokens.values()];
-      if (tokens.length === 0) return;
+      if (tokens.length === 0) {
+        if (_simCycle % 5 === 1) simLog(`Waiting for radar data... (${radar.tokens.size} tokens in pool)`, "scan");
+        return;
+      }
+      // Score tokens when auto-ape isn't actively scoring them
+      // Auto-ape scores tokens in its scan loop, but if no auto-ape is running,
+      // sim needs to score them itself so it can find candidates
+      const anyAutoApeActive = autoTraders.size > 0;
+      if (!anyAutoApeActive || _simCycle % 3 === 0) {
+        for (const t of tokens) {
+          if (!anyAutoApeActive || !t._apeScore) {
+            const simScore = simScoreToken(t);
+            if (simScore > 0) t._apeScore = simScore;
+          }
+        }
+      }
       const tokenMap = new Map(tokens.map(t => [t.ca, t]));
 
       // Check existing positions
@@ -4738,6 +4796,7 @@ function createLiveSim(id, settings) {
         if (!token) {
           if (Date.now() - pos.entryTime > 300000) {
             addDecision("SELL", { ca, name: pos.name, reason: "radar-exit", pnlPct: 0 });
+            simLog(`SIM EXIT ${pos.name}: fell off radar after ${Math.round((Date.now() - pos.entryTime) / 60000)}m`, "sell");
             closeTrade(ca, 0, "radar-exit");
           }
           continue;
@@ -4752,16 +4811,28 @@ function createLiveSim(id, settings) {
         pos.liveScore = token._apeScore || 0;
 
         const s = state.settings;
-        if (changePct >= s.tp1 && !pos.tp1Hit) { pos.tp1Hit = true; addDecision("TP1", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); }
-        if (changePct >= s.tp2 && !pos.tp2Hit) { pos.tp2Hit = true; addDecision("TP2", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); }
-        if (changePct >= s.tp3 && !pos.tp3Hit) { pos.tp3Hit = true; addDecision("TP3", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); }
-        if (changePct <= -s.sl2) { addDecision("SELL", { ca, name: pos.name, reason: "SL2", pnlPct: +changePct.toFixed(1) }); closeTrade(ca, changePct, "SL2"); continue; }
-        if (changePct <= -s.sl1 && !pos.sl1Hit) { pos.sl1Hit = true; addDecision("SL1", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); }
-        if (s.momentumExit && dyn?.trend === "crashing" && changePct < -5) { addDecision("SELL", { ca, name: pos.name, reason: "momentum-crash", pnlPct: +changePct.toFixed(1) }); closeTrade(ca, changePct, "momentum-crash"); }
+        if (changePct >= s.tp1 && !pos.tp1Hit) { pos.tp1Hit = true; addDecision("TP1", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); simLog(`SIM TP1 ${pos.name}: +${changePct.toFixed(0)}%`, "profit"); }
+        if (changePct >= s.tp2 && !pos.tp2Hit) { pos.tp2Hit = true; addDecision("TP2", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); simLog(`SIM TP2 ${pos.name}: +${changePct.toFixed(0)}%`, "profit"); }
+        if (changePct >= s.tp3 && !pos.tp3Hit) { pos.tp3Hit = true; addDecision("TP3", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); simLog(`SIM TP3 ${pos.name}: +${changePct.toFixed(0)}%`, "profit"); }
+        if (changePct <= -s.sl2) { addDecision("SELL", { ca, name: pos.name, reason: "SL2", pnlPct: +changePct.toFixed(1) }); simLog(`SIM SL2 ${pos.name}: ${changePct.toFixed(0)}% — full exit`, "loss"); closeTrade(ca, changePct, "SL2"); continue; }
+        if (changePct <= -s.sl1 && !pos.sl1Hit) { pos.sl1Hit = true; addDecision("SL1", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); simLog(`SIM SL1 ${pos.name}: ${changePct.toFixed(0)}%`, "loss"); }
+        if (s.momentumExit && dyn?.trend === "crashing" && changePct < -5) { addDecision("SELL", { ca, name: pos.name, reason: "momentum-crash", pnlPct: +changePct.toFixed(1) }); simLog(`SIM CRASH EXIT ${pos.name}: score crashing at ${changePct.toFixed(0)}%`, "sell"); closeTrade(ca, changePct, "momentum-crash"); }
       }
 
       // Look for new entries
-      if (state.positions.size >= state.settings.maxPositions) return;
+      if (state.positions.size >= state.settings.maxPositions) {
+        if (_simCycle % 8 === 1) simLog(`Max positions (${state.settings.maxPositions}) filled — watching for exits`, "scan");
+        updateGraduation();
+        return;
+      }
+
+      // Clean expired cooldowns
+      for (const [c, t] of state.soldCooldowns) {
+        if (Date.now() - t > 1800000) state.soldCooldowns.delete(c);
+      }
+
+      const effectiveMin = state.settings.minScore + state.calibration.adjustments.scoreBias;
+      const scored = tokens.filter(t => (t._apeScore || 0) > 0);
       const candidates = tokens.filter(t => {
         if (state.positions.has(t.ca)) return false;
         if (state.soldCooldowns.has(t.ca)) {
@@ -4772,9 +4843,22 @@ function createLiveSim(id, settings) {
           state.soldCooldowns.delete(t.ca);
         }
         const score = t._apeScore || 0;
-        const effectiveMin = state.settings.minScore + state.calibration.adjustments.scoreBias;
         return score >= effectiveMin;
       }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
+
+      // Log scan activity periodically so user sees sim is working
+      if (_simCycle % 5 === 1) {
+        const topScore = scored.length > 0 ? Math.max(...scored.map(t => t._apeScore || 0)) : 0;
+        simLog(`Scan: ${tokens.length} tokens, ${scored.length} scored, ${candidates.length} candidates (min:${effectiveMin}, top:${topScore})`, "scan");
+      }
+
+      // Log near misses for visibility
+      if (candidates.length === 0 && _simCycle % 10 === 1) {
+        const nearMisses = tokens.filter(t => !state.positions.has(t.ca) && (t._apeScore || 0) >= effectiveMin - 10 && (t._apeScore || 0) < effectiveMin).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0)).slice(0, 3);
+        if (nearMisses.length > 0) {
+          simLog(`Near misses: ${nearMisses.map(t => `${t.name||t.ca.slice(0,6)} s:${t._apeScore}`).join(", ")} (need ≥${effectiveMin})`, "scan");
+        }
+      }
 
       for (const t of candidates.slice(0, 2)) {
         if (state.positions.size >= state.settings.maxPositions) break;
@@ -4793,7 +4877,7 @@ function createLiveSim(id, settings) {
         state.stats.totalBuys++;
         state.stats.totalInvested += sizeSol;
         addDecision("BUY", { ca: t.ca, name: t.name, score, trend, sol: sizeSol, rugFlags });
-        simLog(`SIM BUY ${t.name} score=${score} trend=${trend} sol=${sizeSol}`);
+        simLog(`SIM BUY ${t.name} score=${score} trend=${trend} MC:$${Math.round(t.mcapUsd||0)} sol=${sizeSol}`, "buy");
       }
 
       updateGraduation();
