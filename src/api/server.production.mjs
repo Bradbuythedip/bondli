@@ -2615,31 +2615,45 @@ function trackSell(wallet, ca) {
 // ═══════════════════════════════════════
 app.get("/api/positions/:wallet", async (req, res) => {
   try {
-    const tw = await getTradingWallet(req.params.wallet);
-    if (!tw) return res.json({ positions: [] });
+    const userWallet = req.params.wallet;
+    const tw = await getTradingWallet(userWallet);
 
-    // Collect all wallet keypairs (primary + extras)
-    const allKeypairs = [Keypair.fromSecretKey(bs58.decode(tw.secret))];
+    // Collect all wallet pubkeys to scan: connected wallet + trading wallet + extras
+    const pubkeysToScan = [];
+    // Always scan the user's connected Phantom wallet — catches external buys
+    try { pubkeysToScan.push(new PublicKey(userWallet)); } catch {}
+    // Scan trading wallet if different from connected wallet
+    if (tw) {
+      const twPubkey = new PublicKey(tw.pubkey || Keypair.fromSecretKey(bs58.decode(tw.secret)).publicKey.toBase58());
+      if (twPubkey.toBase58() !== userWallet) pubkeysToScan.push(twPubkey);
+    }
+    // Scan extra wallets (Pro/VIP fleet)
     if (redis) {
       try {
-        const raw = await redis.get("extra_wallets:" + req.params.wallet);
+        const raw = await redis.get("extra_wallets:" + userWallet);
         if (raw) {
           const extras = JSON.parse(raw);
           for (const ew of extras) {
-            try { allKeypairs.push(Keypair.fromSecretKey(bs58.decode(ew.secret))); } catch {}
+            try { pubkeysToScan.push(Keypair.fromSecretKey(bs58.decode(ew.secret)).publicKey); } catch {}
           }
         }
       } catch {}
     }
 
-    // Scan all wallets for token accounts
+    if (pubkeysToScan.length === 0) return res.json({ positions: [] });
+
+    // Scan all wallets for token accounts (Phantom + trading + extras)
     const allTokenAccounts = [];
-    for (const kp of allKeypairs) {
+    const scannedPubkeys = new Set(); // deduplicate
+    for (const pk of pubkeysToScan) {
+      const pkStr = pk.toBase58();
+      if (scannedPubkeys.has(pkStr)) continue;
+      scannedPubkeys.add(pkStr);
       try {
-        const accts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+        const accts = await connection.getParsedTokenAccountsByOwner(pk, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
         allTokenAccounts.push(...accts.value);
       } catch (e) {
-        console.warn(`[POSITIONS] RPC error for ${kp.publicKey.toBase58().slice(0,8)}: ${e.message}`);
+        console.warn(`[POSITIONS] RPC error for ${pkStr.slice(0,8)}: ${e.message}`);
       }
     }
 
@@ -2704,7 +2718,7 @@ app.get("/api/positions/:wallet", async (req, res) => {
     }
     
     // Merge pending positions (recent buys not yet indexed by RPC)
-    const pending = pendingPositions.get(req.params.wallet);
+    const pending = pendingPositions.get(userWallet);
     if (pending) {
       const existingMints = new Set(positions.map(p => p.mint));
       for (const [ca, p] of pending) {

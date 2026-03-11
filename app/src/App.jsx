@@ -298,8 +298,8 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:14}}>
 {[
 {tier:"Free",price:"0 SOL",color:T.ft,features:["Radar + ML scoring","Auto-Ape + momentum exits","2 positions","25% profit share"]},
-{tier:"Pro",price:"1 SOL",color:T.pu,features:["+ Fleet multi-wallet","+ Batch deploy (20)","+ 0% profit share","+ Export keys","+ 50 launches/hr"]},
-{tier:"VIP",price:"10 SOL",color:T.yl,features:["+ 200 launches/hr","+ Priority queue","+ Early access","+ Direct to dev"]},
+{tier:"Pro",price:"1 SOL",color:T.pu,features:["Fleet multi-wallet","Batch deploy (20)","0% profit share","Export keys","50 launches/hr"]},
+{tier:"VIP",price:"10 SOL",color:T.yl,features:["200 launches/hr","Priority queue","Early access","Direct to dev"]},
 ].map((t,i)=><div key={i} onClick={connect} style={{background:T.sf,border:"1px solid "+(t.color)+"33",borderRadius:12,padding:mb?"16px 14px":"22px 18px",position:"relative",cursor:"pointer",transition:"all .15s ease"}} onMouseEnter={e=>{e.currentTarget.style.borderColor=t.color+"88";e.currentTarget.style.transform="translateY(-2px)"}} onMouseLeave={e=>{e.currentTarget.style.borderColor=t.color+"33";e.currentTarget.style.transform="none"}}>
 {i===1&&<div style={{position:"absolute",top:-8,right:12,fontSize:9,fontWeight:900,padding:"2px 8px",borderRadius:4,background:T.pu,color:"#fff",letterSpacing:".05em"}}>POPULAR</div>}
 <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:8}}><span style={{fontSize:mb?20:26,fontWeight:900,color:t.color}}>{t.tier}</span><span style={{fontSize:mb?13:15,color:T.tx,fontWeight:800}}>{t.price}</span></div>
@@ -692,8 +692,8 @@ return<div key={i} style={{display:"grid",gridTemplateColumns:"16px 110px 1fr 28
 </div>
 </>}
 
-{/* Live ML Behavior — scoring distribution + feature weights */}
-{intelData?.scorer?.topFeatures?.length>0&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?8:12,marginTop:6}}>
+{/* Live ML Behavior — Pro/VIP only */}
+{(user?.tier==="pro"||user?.tier==="vip"||user?.whitelisted)&&intelData?.scorer?.topFeatures?.length>0&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?8:12,marginTop:6}}>
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:11,fontWeight:800}}>Model Behavior</span><span style={{fontSize:7,color:T.dm}}>live feature weights</span></div>
 {/* Feature weight bars */}
 <div style={{display:"grid",gap:4}}>
