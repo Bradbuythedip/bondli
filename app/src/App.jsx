@@ -152,6 +152,7 @@ s.buys.forEach(b=>mark(b.f,"#00e676",3));s.sells.forEach(b=>mark(b.f,"#ff1744",3
 };const iv=setInterval(doTick,35/speed);return()=>clearInterval(iv)},[running,budget,speed,mb]);
 const s=st.current;const pnl=s.back-s.spent;
 const[simOpen,sSimOpen]=useState(false);
+const[gradsOpen,sGradsOpen]=useState(false);
 return<div style={{background:T.sf,border:"1px solid "+T.pu+"18",borderRadius:10,overflow:"hidden",animation:"si .2s ease"}}>
 <div onClick={()=>sSimOpen(!simOpen)} style={{padding:"8px 12px",cursor:"pointer",borderBottom:simOpen?"1px solid "+T.bd:"none"}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -649,11 +650,11 @@ return<div key={i} style={{display:"grid",gridTemplateColumns:"16px 110px 1fr 28
 </div>}
 {/* Graduated Watchlist — 24h follow */}
 {intelData?.gradWatch?.count>0&&<div style={{marginTop:6,paddingTop:6,borderTop:"1px solid "+T.bd}}>
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+<div onClick={()=>sGradsOpen(!gradsOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
 <span style={{fontSize:10,fontWeight:800,color:T.yl}}>Following Grads</span>
-<span style={{fontSize:8,color:T.ft}}>{intelData.gradWatch.count} tracked 24h</span>
+<span style={{fontSize:8,color:T.ft}}>{intelData.gradWatch.count} tracked 24h {gradsOpen?"▾":"▸"}</span>
 </div>
-{intelData.gradWatch.tokens?.map(g=>{const c=g.changePct>=0?T.gn:T.rd;return<div key={g.ca} style={{display:"flex",alignItems:"center",gap:6,padding:"2px 0",fontSize:9}}>
+{gradsOpen&&intelData.gradWatch.tokens?.map(g=>{const c=g.changePct>=0?T.gn:T.rd;return<div key={g.ca} style={{display:"flex",alignItems:"center",gap:6,padding:"2px 0",fontSize:9}}>
 <span style={{color:T.tx,fontWeight:700,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{g.name||g.ca?.slice(0,6)}</span>
 <span style={{color:T.ft}}>${fm(g.currentMcap)}</span>
 <span style={{color:c,fontWeight:800}}>{g.changePct>=0?"+":""}{g.changePct}%</span>
