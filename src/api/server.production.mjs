@@ -1837,6 +1837,7 @@ app.post("/api/quick-sell", async (req, res) => {
     // Pre-flight: check token balance + get decimals
     let tokenBalance = 0;
     let tokenDecimals = 6;
+    let balanceCheckFailed = false;
     try {
       const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
       const account = tokenAccounts.value.find(ta => ta.account.data.parsed.info.mint === ca);
@@ -1846,21 +1847,29 @@ app.post("/api/quick-sell", async (req, res) => {
       }
     } catch (e) {
       console.log(`[SELL] Token balance check failed: ${e.message}`);
+      balanceCheckFailed = true;
       // Don't block — PumpPortal handles balance internally
     }
 
-    if (tokenBalance <= 0) {
-      return res.status(400).json({ error: "No token balance found. You may not hold this token, or RPC hasn't synced yet. Try again in a few seconds." });
-    }
+    // If RPC says no balance AND it didn't fail, token likely not held
+    // But still try PumpPortal as a fallback (RPC can lag behind)
+    const skipBalanceGate = balanceCheckFailed;
 
     const radarToken = radar.tokens.get(ca);
-    const isGraduated = radarToken?.graduated || radarToken?.raydiumPool;
+    let isGraduated = radarToken?.graduated || radarToken?.raydiumPool;
+    // If not in radar, check DexScreener (token may have graduated and fallen off radar)
+    if (!radarToken) {
+      try {
+        const dr = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${ca}`, { signal: AbortSignal.timeout(5000) });
+        if (dr.ok) { const dd = await dr.json(); if (dd?.pairs?.length > 0) isGraduated = true; }
+      } catch {}
+    }
 
     let sig = null;
     let method = "";
     let errors = []; // collect all errors for debugging
 
-    // Strategy 1: PumpPortal (try multiple pools)
+    // Strategy 1: PumpPortal (try multiple pools — always try even if balance check failed)
     const pools = isGraduated ? ["auto", "raydium", "pump"] : ["pump", "auto", "raydium"];
     for (const pool of pools) {
       const reqBody = {
