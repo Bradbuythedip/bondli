@@ -815,20 +815,13 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 {tab==="intel"&&<EB l="Intel"><div style={{animation:"si .2s ease"}}>
 <div style={{background:T.sf,border:"1px solid "+T.pu+"18",borderRadius:10,padding:mb?8:12,marginBottom:6}}>
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}><IC.sim s={16} c={T.pu}/><span style={{fontSize:15,fontWeight:800}}>Meme Intelligence</span><span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/></div>
-<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3,marginBottom:6}}>
-{[{l:"TOKENS",v:intelData?.memory?.total||"—",c:T.pu},{l:"ACCURACY",v:intelData?.scorer?.accuracy||"—",c:T.gn},{l:"GRAD RATE",v:intelData?.memory?.graduationRate||"—",c:T.yl},{l:"TRACKING",v:intelData?.monitor?.tracking||"—",c:T.or}].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 4px",textAlign:"center"}}><div style={{fontSize:18,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:9,color:T.ft,fontWeight:700,marginTop:1}}>{s.l}</div></div>)}
+<div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:3,marginBottom:6}}>
+{[{l:"TOKENS",v:intelData?.memory?.total||"—",c:T.pu},{l:"ACCURACY",v:intelData?.scorer?.accuracy||"—",c:T.gn},{l:"GRAD RATE",v:intelData?.memory?.graduationRate||"—",c:T.yl},{l:"TRACKING",v:intelData?.monitor?.tracking||"—",c:T.or},{l:"RUG RISK",v:(intelData?.recentEvents||[]).filter(e=>(e.data?.rugScore||0)>50||(e.data?.rugFlags||[]).length>=2).length,c:"#ff1744"}].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 4px",textAlign:"center"}}><div style={{fontSize:18,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:9,color:T.ft,fontWeight:700,marginTop:1}}>{s.l}</div></div>)}
 </div>
 <div style={{fontSize:11,color:T.ft,textAlign:"center"}}>{intelData?`${intelData.scorer?.trainCount||0} tokens scored · SOL $${intelData.solPrice?.toFixed(0)||"?"} · uptime ${intelData.uptime||"—"}`:"Connecting to intel engine..."}</div>
 
 {/* ═══ LIVE INTEL: Scores + Spotlight + Pulse (3 columns) ═══ */}
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:4,marginTop:6}}>
-
-{/* Recent Scores */}
-<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,maxHeight:280,overflowY:"auto"}}><div style={{fontSize:13,fontWeight:700,color:T.dm,marginBottom:6}}>Recent Scores {(user?.tier==="pro"||user?.whitelisted)&&<span style={{color:T.gn,fontSize:8}}>· click to ape</span>}</div>{(intelData?.recentEvents||[]).slice(0,8).map((e,i)=>{const fullCA=e.data?.ca||"";const name=e.data?.name||fullCA.slice(0,6);return<div key={i} onClick={()=>{if(!user?.whitelisted&&user?.tier==="free"){toast("Pro/VIP only","error");return}
-if(!fullCA||fullCA.length<20){toast("No CA available","error");return}
-sTab("radar");sRExp(fullCA);sRS("");
-setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150);
-toast(name,"success")}} style={{display:"flex",alignItems:"center",gap:4,padding:"4px 2px",fontSize:10,color:T.dm,cursor:"pointer",borderRadius:4}}><span style={{width:6,height:6,borderRadius:"50%",background:e.data?.score>=50?T.gn:e.data?.score>=25?T.yl:T.ft,flexShrink:0}}/><span style={{color:T.tx,fontWeight:700,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontSize:11}}>{name}</span><span style={{color:e.data?.score>=50?T.gn:e.data?.score>=25?T.yl:T.ft,fontWeight:800,fontSize:11,flexShrink:0}}>{e.data?.score}pts</span><span style={{color:T.yl,fontSize:9,flexShrink:0}}>{e.data?.bondProb}%</span>{e.data?.score>=50&&<span style={{fontSize:7,padding:"1px 4px",borderRadius:2,background:T.gn+"18",color:T.gn,fontWeight:800,flexShrink:0}}>APE</span>}{e.data?.score>=25&&e.data?.score<50&&<span style={{fontSize:7,padding:"1px 4px",borderRadius:2,background:T.yl+"18",color:T.yl,fontWeight:800,flexShrink:0}}>WATCH</span>}</div>})}</div>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginTop:6}}>
 
 {/* Token Spotlight — top scoring token with image */}
 <div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,display:"flex",flexDirection:"column",maxHeight:280}}>
@@ -865,7 +858,7 @@ return<div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
 <span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>
-<span style={{fontSize:13,fontWeight:800,color:T.tx}}>Live Radar Pulse</span>
+<span style={{fontSize:13,fontWeight:800,color:T.tx}}>Live Radar Pulse</span>{(user?.tier==="pro"||user?.whitelisted)&&<span style={{fontSize:8,color:T.gn,marginLeft:4}}>click to ape</span>}
 </div>
 <div style={{display:"flex",gap:8,fontSize:10,color:T.ft}}>
 <span><span style={{display:"inline-block",width:6,height:6,borderRadius:1,background:T.gn,marginRight:3,verticalAlign:"middle"}}/>APE</span>
@@ -880,7 +873,8 @@ const rugScore=e.data?.rugScore||0;const rugFlags=e.data?.rugFlags||[];
 const isRug=rugScore>50||rugFlags.length>=2;
 const sc=isRug?"#ff1744":score>=50?T.gn:score>=25?T.yl:T.pu;
 const mcap=e.data?.mcap||0;const mcapStr=mcap>=1000?(mcap/1000).toFixed(1)+"K":mcap>0?mcap.toString():"—";
-return<div key={i} style={{display:"grid",gridTemplateColumns:"16px 110px 1fr 28px 58px 32px",alignItems:"center",padding:"3px 0",borderBottom:i<11?"1px solid "+T.bd+"44":"none",gap:0}}>
+const fullCA=e.data?.ca||"";
+return<div key={i} onClick={()=>{if(!fullCA||fullCA.length<20)return;if(!user?.whitelisted&&user?.tier==="free"){toast("Pro/VIP only","error");return}sTab("radar");sRExp(fullCA);sRS("");setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150);toast(name,"success")}} style={{display:"grid",gridTemplateColumns:"16px 110px 1fr 28px 58px 32px",alignItems:"center",padding:"3px 0",borderBottom:i<11?"1px solid "+T.bd+"44":"none",gap:0,cursor:"pointer"}}>
 {/* Rank — fixed col */}
 <span style={{fontSize:8,color:T.ft,textAlign:"center"}}>{i+1}</span>
 {/* Name — fixed col */}
@@ -906,13 +900,6 @@ return<div key={i} style={{display:"grid",gridTemplateColumns:"16px 110px 1fr 28
 </div>
 </div>})}
 </div>
-{/* Stats footer */}
-{intelData&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3,marginTop:8,paddingTop:6,borderTop:"1px solid "+T.bd}}>
-<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.pu}}>{intelData.memory?.total||0}</div><div style={{fontSize:10,color:T.ft}}>TRACKED</div></div>
-<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.gn}}>{intelData.monitor?.tracking||0}</div><div style={{fontSize:10,color:T.ft}}>ACTIVE</div></div>
-<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.yl}}>{intelData.memory?.graduated||0}</div><div style={{fontSize:10,color:T.ft}}>GRADS</div></div>
-<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:"#ff1744"}}>{(intelData?.recentEvents||[]).filter(e=>(e.data?.rugScore||0)>50||(e.data?.rugFlags||[]).length>=2).length}</div><div style={{fontSize:10,color:T.ft}}>RUG RISK</div></div>
-</div>}
 {/* Graduated Watchlist — 24h follow */}
 {intelData?.gradWatch?.count>0&&<div style={{marginTop:6,paddingTop:6,borderTop:"1px solid "+T.bd}}>
 <div onClick={()=>sGradsOpen(!gradsOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>

@@ -4726,7 +4726,8 @@ function createLiveSim(id, settings) {
     state.graduation = { ready: Math.round(dPts + tPts + wPts + rPts) >= 70 && dur >= 3600000, simDurationMs: dur, totalSimTrades: total, simWinRate: wr, simRoi: roi, confidence: Math.min(100, Math.round(dPts + tPts + wPts + rPts)) };
   }
 
-  // Simplified scoring for sim mode when auto-ape isn't running
+  // Sim scoring mirrors auto-ape's FULL pipeline: hard rug gate + comprehensive scoring
+  // This ensures sim decisions match what auto-ape would actually do with real SOL.
   function simScoreToken(t) {
     const mc = t.mcapUsd || 0;
     const buys = t.buys || 0;
@@ -4734,37 +4735,180 @@ function createLiveSim(id, settings) {
     const ub = t.uniqueBuyers?.size || t.uniqueBuyers || 0;
     const ageMin = (Date.now() - (t.createdAt || Date.now())) / 60000;
     const vol = t.volumeSol || 0;
-    // Basic filters
-    if (mc < 2500 || buys < 2 || ub < 2 || ageMin < 0.5) return 0;
-    if (sells > buys * 1.2) return 0;
-    // Score components (simplified version of auto-ape scoring)
+    const sellVol = t.sellVolumeSol || 0;
+    const dyn = scoreDynamics.get(t.ca);
+    const isAccelerating = dyn && dyn.scores >= 2 && (dyn.trend === "rocket" || dyn.trend === "rising");
+    const isLowVelocity = mc >= 2000 && mc <= 15000 && buys >= 1 && sells <= buys && ub >= 1 && ageMin >= 0.3 && ageMin <= 30;
+
+    // ── BASE FILTER (matches auto-ape) ──
+    if (isAccelerating) {
+      if (!(mc > 1500 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) return 0;
+    } else if (!isLowVelocity) {
+      if (!(mc > 2500 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) return 0;
+    }
+
+    // ── HARD RUG GATE (matches auto-ape exactly) ──
+    const qf = extractQuickFeatures(t);
+    if (qf) {
+      let rugRejectReason = null;
+      if (qf.rg_devSellSpeed > 0.4) rugRejectReason = "dev_sell";
+      else if (qf._rg_devSelfSnipe > 0) rugRejectReason = "dev_snipe";
+      else if (qf.rg_mcapDropRate > 0.4) rugRejectReason = "mcap_crash";
+      else if (qf.rg_coordDumpScore > 0.35) rugRejectReason = "coord_dump";
+      else if (qf._rg_pumpDump > 0.5) rugRejectReason = "pump_dump";
+      else if (qf._rg_sybilScore > 0.4) rugRejectReason = "sybil";
+      else if (qf._rg_earlyDump > 0.3 && ageMin < 5) rugRejectReason = "early_dump";
+      else if (qf._rg_quickFlipRate > 0.25) rugRejectReason = "quick_flip";
+      else if (qf.rg_holderConcentration > 0.7 && buys > 5 && !(qf._whaleBullish > 0.3)) rugRejectReason = "whale_heavy";
+      else if (qf.rg_liqRemovalSpeed > 0.65) rugRejectReason = "liq_removal";
+      else if (qf.ch_smoothGrind > 0.6) rugRejectReason = "smooth_grind";
+      else if (qf.ch_smoothGrind > 0.4 && qf.ch_dipRatio < 0.1) rugRejectReason = "no_dips";
+      else if (qf._rg_zeroSellFlag >= 0.8) rugRejectReason = "zero_sells";
+      else if (qf._rg_zeroSellFlag >= 0.5 && (qf.ch_smoothGrind > 0.3 || qf.ch_staircaseScore > 0.3)) rugRejectReason = "zero_sells_fake_chart";
+      else if (qf._rg_buySellImbalance >= 0.8 && buys >= 8) rugRejectReason = "all_buys_no_sells";
+      else if (qf.ch_staircaseScore > 0.6) rugRejectReason = "staircase_chart";
+      else if (qf.ch_staircaseScore > 0.4 && qf._rg_freshWalletRatio > 0.6) rugRejectReason = "staircase_fresh_wallets";
+      else if (qf._rg_freshWalletRatio > 0.8 && qf._rg_zeroSellFlag > 0.4) rugRejectReason = "fresh_wallet_rug";
+      else if (t._artworkFlags?.includes("EXACT_DUPLICATE")) rugRejectReason = "stolen_art";
+      else {
+        const rugSignals = [
+          qf.rg_devSellSpeed > 0.25, qf.rg_coordDumpScore > 0.2,
+          qf._rg_sybilScore > 0.25, qf._rg_quickFlipRate > 0.15,
+          qf.rg_holderConcentration > 0.6, qf._rg_earlyDump > 0.2,
+          qf.rg_mcapDropRate > 0.25, qf._rg_pumpDump > 0.3,
+          qf.ch_smoothGrind > 0.35, qf.ch_dipRatio < 0.1,
+          qf._rg_zeroSellFlag > 0.4, qf._rg_buySellImbalance > 0.5,
+          qf.ch_staircaseScore > 0.3, qf._rg_freshWalletRatio > 0.6,
+          t._artworkOriginal === false,
+        ].filter(Boolean).length;
+        if (rugSignals >= 3) rugRejectReason = "multi_rug_" + rugSignals;
+      }
+      if (rugRejectReason) {
+        t._simRugReject = rugRejectReason;
+        return 0;
+      }
+    }
+
+    // ── VELOCITY/ACCELERATION GATE ──
+    if (!dyn || dyn.scores < 2) return 0;
+    if (dyn.trend === "crashing") return 0;
+
+    // ── SCORE COMPONENTS (matches auto-ape) ──
     const buyScore = Math.min(15, Math.log2(buys + 1) * 3);
     const ubScore = Math.min(15, Math.log2(ub + 1) * 3);
     const volScore = Math.min(12, Math.log10(vol * 100 + 1) * 4);
-    const mcScore = mc >= 50000 ? 5 : mc >= 30000 ? 7 : mc >= 15000 ? 10 : mc >= 8000 ? 12 : mc >= 5000 ? 11 : mc >= 3000 ? 9 : mc >= 2000 ? 6 : 0;
+    const mcScore = mc >= gradMcUsd() ? 3 : mc >= 50000 ? 5 : mc >= 30000 ? 7 : mc >= 15000 ? 10 : mc >= 8000 ? 12 : mc >= 5000 ? 11 : mc >= 3000 ? 9 : mc >= 2000 ? 6 : 0;
+
     const spark = t.spark || [];
     let greenScore = 0;
     if (spark.length >= 3) {
       const recent = spark.slice(-3), earlier = spark.slice(-6, -3);
       if (earlier.length > 0) {
-        const growth = (recent.reduce((a, b) => a + b, 0) / recent.length - earlier.reduce((a, b) => a + b, 0) / earlier.length) / (earlier.reduce((a, b) => a + b, 0) / earlier.length || 1);
+        const avgRecent = recent.reduce((a, b) => a + b, 0) / recent.length;
+        const avgEarlier = earlier.reduce((a, b) => a + b, 0) / earlier.length;
+        const growth = avgEarlier > 0 ? (avgRecent - avgEarlier) / avgEarlier : 0;
         if (growth > 0) greenScore = Math.min(20, growth * 60);
       }
     }
+
     const pressureScore = buys > 2 ? Math.min(10, (buys / Math.max(1, buys + sells)) * 10) : 0;
     const velocityScore = Math.min(10, (buys / Math.max(ageMin, 0.5)) * 3);
     const sellPenalty = sells > buys * 0.6 ? Math.min(12, (sells - buys * 0.4) * 2) : 0;
-    const dyn = scoreDynamics.get(t.ca);
+
+    // ── RUG PENALTY (graduated, matches auto-ape) ──
+    let rugPenalty = 0;
+    if (qf) {
+      rugPenalty += qf.rg_devSellSpeed > 0.25 ? 10 : 0;
+      rugPenalty += qf.rg_coordDumpScore > 0.25 ? 8 : 0;
+      rugPenalty += qf.rg_mcapDropRate > 0.3 ? 8 : 0;
+      rugPenalty += qf._rg_quickFlipRate > 0.15 ? 6 : 0;
+      rugPenalty += qf._rg_sybilScore > 0.3 ? 6 : 0;
+      rugPenalty += qf.rg_holderConcentration > 0.6 ? 5 : 0;
+      rugPenalty += qf._rg_earlyDump > 0.2 ? 5 : 0;
+      rugPenalty += sellVol > vol * 0.4 ? 5 : 0;
+      rugPenalty += qf._rg_pumpDump > 0.3 ? 8 : 0;
+      rugPenalty += qf.ch_smoothGrind > 0.35 ? Math.round(qf.ch_smoothGrind * 10) : 0;
+      rugPenalty += qf._rg_zeroSellFlag > 0.4 ? Math.round(qf._rg_zeroSellFlag * 15) : 0;
+      rugPenalty += qf._rg_buySellImbalance > 0.4 ? Math.round(qf._rg_buySellImbalance * 10) : 0;
+      rugPenalty += qf.ch_staircaseScore > 0.3 ? Math.round(qf.ch_staircaseScore * 12) : 0;
+      rugPenalty += qf._rg_freshWalletRatio > 0.6 ? Math.round(qf._rg_freshWalletRatio * 8) : 0;
+    } else {
+      rugPenalty = (sellVol > vol * 0.5 && sells > 3) ? 15 : (sells > buys * 1.2) ? 10 : 0;
+    }
+
+    // ── DYNAMICS BONUS ──
     let dynamicsBonus = 0;
-    if (!dyn || dyn.scores < 2) return 0; // need dynamics data
-    if (dyn.trend === "crashing") return 0;
     if (dyn.trend === "declining") dynamicsBonus = -15;
     else if (dyn.trend === "fading") dynamicsBonus = -8;
     else if (dyn.trend === "stable" && dyn.velocity <= 0) dynamicsBonus = -12;
     else if (dyn.trend === "rising") dynamicsBonus = 18;
     else if (dyn.trend === "rocket") dynamicsBonus = 30;
     if (dyn.velocity > 0.1) dynamicsBonus += Math.min(15, Math.round(dyn.velocity * 10));
-    return Math.max(0, Math.min(99, Math.round(buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + dynamicsBonus - sellPenalty)));
+    if (dyn.acceleration > 0.005) dynamicsBonus += Math.min(12, Math.round(dyn.acceleration * 200));
+
+    // ── CHART BONUS (matches auto-ape) ──
+    let chartBonus = qf?.ch_healthScore > 0.6 ? Math.round((qf.ch_healthScore - 0.5) * 16) :
+                     qf?.ch_healthScore < 0.3 ? -8 : 0;
+    if (qf?.ch_smoothGrind > 0.35) chartBonus -= Math.round(qf.ch_smoothGrind * 15);
+    if (qf?.ch_dipRatio < 0.15 && spark.length >= 8) chartBonus -= 6;
+    if (qf?.ch_pumpDump > 0.4) chartBonus -= Math.round(qf.ch_pumpDump * 10);
+    if (qf?.ch_staircaseScore > 0.4) chartBonus -= Math.round(qf.ch_staircaseScore * 20);
+    if (qf?._rg_zeroSellFlag > 0.5) chartBonus -= Math.round(qf._rg_zeroSellFlag * 25);
+    if (qf?._rg_freshWalletRatio > 0.7) chartBonus -= Math.round(qf._rg_freshWalletRatio * 15);
+
+    // ── EARLY APE BONUS ──
+    let earlyApeBonus = 0;
+    const buysPerMin = buys / Math.max(ageMin, 0.5);
+    const isEarlyMcap = mc >= 2000 && mc <= 12000;
+    const healthyRatio = buys > 0 && sells <= buys * 0.5;
+    const noRugFlags = !t._rugFlags || t._rugFlags.length === 0;
+    if (isEarlyMcap && healthyRatio && noRugFlags && buysPerMin < 3) {
+      const qualitySignal = Math.min(1, (buys > 0 ? 1 - (sells / Math.max(buys, 1)) : 0.5) + (ub >= 2 ? 0.3 : 0));
+      const velocityInverse = 1 / (buysPerMin + 0.3);
+      earlyApeBonus = Math.min(18, Math.round(qualitySignal * velocityInverse * 8));
+    }
+
+    // ── WHALE BULLISH BONUS ──
+    let whaleBullishBonus = 0;
+    if (qf?._whaleBullish > 0.3) whaleBullishBonus = Math.min(15, Math.round(qf._whaleBullish * 20));
+    let walletAgePenalty = 0;
+    if (qf?._walletAgeFresh > 0.7) walletAgePenalty = Math.round(qf._walletAgeFresh * 12);
+
+    // ── DEXSCREENER BOOST ──
+    const dexBoost = radar.dexBoosted.get(t.ca);
+    const boostScore = dexBoost ? Math.min(8, 3 + Math.log2(dexBoost.amount + 1)) : 0;
+
+    // ── ARTWORK PENALTY ──
+    const artPenalty = t._artworkOriginal === false ? Math.max(5, Math.round((100 - (t._artworkScore || 50)) / 5)) : 0;
+
+    // ── COMPUTE RUG FLAGS (for UI display) ──
+    t._rugFlags = [
+      ...(qf ? [
+        qf.rg_devSellSpeed > 0.3 && "dev_selling",
+        qf.rg_coordDumpScore > 0.3 && "coord_sells",
+        qf._rg_sybilScore > 0.3 && "sybil_bots",
+        qf._rg_quickFlipRate > 0.2 && "quick_flips",
+        qf.rg_holderConcentration > 0.6 && "whale_heavy",
+        qf.ch_smoothGrind > 0.35 && "smooth_grind",
+        qf.ch_dipRatio < 0.1 && spark.length >= 8 && "no_dips",
+        qf.ch_staircaseScore > 0.4 && "staircase_chart",
+        qf._rg_zeroSellFlag > 0.5 && "zero_sells",
+        qf._rg_buySellImbalance > 0.5 && "all_buys_no_sells",
+        qf._rg_freshWalletRatio > 0.7 && "fresh_wallets",
+        qf._walletAgeFresh > 0.7 && "fresh_wallets_onchain",
+      ] : []),
+      t._artworkOriginal === false && "stolen_art",
+      t._artworkFlags?.includes("SIMILAR_IMAGE") && "similar_art",
+      t._artworkFlags?.includes("LOW_EFFORT_ART") && "low_effort_art",
+    ].filter(Boolean);
+
+    const total = Math.max(0, Math.min(99, Math.round(
+      buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore +
+      boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus -
+      sellPenalty - rugPenalty - artPenalty - walletAgePenalty
+    )));
+
+    return total;
   }
 
   let _simCycle = 0;
@@ -4831,7 +4975,10 @@ function createLiveSim(id, settings) {
         if (Date.now() - t > 1800000) state.soldCooldowns.delete(c);
       }
 
-      const effectiveMin = state.settings.minScore + state.calibration.adjustments.scoreBias;
+      // Apply learner-recommended min score (matches auto-ape)
+      const adj = tradeLearner.getAdjustments();
+      const learnerMin = adj.minScoreShift || state.settings.minScore;
+      const effectiveMin = Math.min(state.settings.minScore + state.calibration.adjustments.scoreBias, learnerMin);
       const scored = tokens.filter(t => (t._apeScore || 0) > 0);
       const candidates = tokens.filter(t => {
         if (state.positions.has(t.ca)) return false;
