@@ -361,6 +361,23 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <iframe src={"https://www.gmgn.cc/kline/sol/"+lCA} style={{width:"100%",height:mb?240:360,border:"none",display:"block"}} title="chart" loading="lazy"/>
 </div>
 
+{/* ═══ FLEET CONTROLS ═══ */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:"8px 10px",marginBottom:6}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+<span style={{fontSize:13,fontWeight:800}}>Fleet Controls</span>
+{fleet?.gameState?.manualOverride&&<span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:T.yl+"12",color:T.yl,fontWeight:800}}>MANUAL: {fleet.gameState.manualOverride} ({fleet.gameState.manualExpiry||0}s)</span>}
+</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:4}}>
+{[
+{cmd:"accumulate",label:"ACCUMULATE",desc:"Buy heavy, suppress sells",color:T.gn,bg:T.gn},
+{cmd:"hold",label:"DIAMOND",desc:"Pause sells, ride wave",color:T.cy||"#00bcd4",bg:T.cy||"#00bcd4"},
+{cmd:"boost",label:"VOLUME",desc:"Paint extra trades",color:T.pu||"#9c27b0",bg:T.pu||"#9c27b0"},
+{cmd:"distribute",label:"DISTRIBUTE",desc:"Take profit, sell faster",color:T.rd||"#ff4444",bg:T.rd||"#ff4444"},
+{cmd:"auto",label:"AUTO",desc:"Back to game theory",color:T.ft,bg:T.ft},
+].map(b=>{const active=fleet?.gameState?.manualOverride===(b.cmd==="hold"?"RIDE":b.cmd==="boost"?"HOLD":b.cmd==="auto"?null:b.cmd.toUpperCase());return<button key={b.cmd} onClick={async()=>{try{const r=await a.fc(asid,user.pubkey,b.cmd,{duration:b.cmd==="boost"?30:60});toast(r.signal||b.label,"success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"10px 2px":"12px 4px",background:active?b.bg+"18":b.bg+"06",border:"1px solid "+(active?b.bg+"44":b.bg+"18"),borderRadius:8,fontSize:mb?10:12,fontWeight:900,color:b.color,cursor:"pointer",textAlign:"center",lineHeight:1.2}}><div>{b.label}</div><div style={{fontSize:9,fontWeight:500,color:T.ft,marginTop:2}}>{b.desc}</div></button>})}
+</div>
+</div>
+
 {/* ═══ TRADE FEED + WALLETS (side by side on desktop) ═══ */}
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:6,marginBottom:6}}>
 {/* Trade feed */}

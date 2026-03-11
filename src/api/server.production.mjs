@@ -1495,6 +1495,24 @@ app.post("/api/session/resume", async (req, res) => {
   res.json({ ok: false, error: "Resume not yet implemented" });
 });
 
+// ── FLEET COMMAND (War Room controls) ──
+app.post("/api/session/command", async (req, res) => {
+  try {
+    const { sessionId, wallet, command, params } = req.body || {};
+    if (!sessionId || !wallet || !command) return res.status(400).json({ error: "sessionId, wallet, command required" });
+    const session = await sessionManager.get(sessionId);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (session.userWallet !== wallet) return res.status(403).json({ error: "Not your session" });
+    if (!session.tokenCA) return res.status(400).json({ error: "No token CA" });
+    const result = fleetTrader.command(session.tokenCA, command, params || {});
+    if (!result.ok) return res.status(400).json(result);
+    console.log(`[CMD] ${wallet.slice(0, 8)} → ${command} on ${session.tokenCA.slice(0, 8)} (${result.duration || 0}s)`);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── SELL-SWEEP (Close session) ──
 // FIX: Updates session status + sweeps master → trading wallet + NO skim on recovery
 app.post("/api/session/sell-sweep", async (req, res) => {

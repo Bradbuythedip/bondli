@@ -44,6 +44,12 @@ class GameState {
     this.sellMultiplier = 1.0;    // <1 = delay sells, >1 = accelerate sells
     this.holdExtension = 0;       // seconds to extend hold phase
 
+    // ── Manual override (from war room controls) ──
+    this.manualSignal = null;     // null = auto, or "ACCUMULATE" | "RIDE" | "SELL_NOW" | "HOLD"
+    this.manualSellMult = null;
+    this.manualHoldExt = null;
+    this.manualExpiry = 0;        // auto-clear after this timestamp
+
     // WS connection
     this.ws = null;
     this.alive = false;
@@ -259,9 +265,45 @@ class GameState {
       if (this.buyPressure < 0.4) sellMult = 1.3;  // slightly accelerate
     }
 
+    // ── Manual override from war room takes priority (except SELL_NOW from dev selling) ──
+    if (this.manualSignal && Date.now() < this.manualExpiry) {
+      // Only allow auto SELL_NOW to override manual if dev is actually selling
+      if (!(signal === "SELL_NOW" && this.devSelling)) {
+        signal = this.manualSignal;
+        if (this.manualSellMult != null) sellMult = this.manualSellMult;
+        if (this.manualHoldExt != null) holdExt = this.manualHoldExt;
+      }
+    } else if (this.manualSignal && Date.now() >= this.manualExpiry) {
+      this.manualSignal = null; // expired
+    }
+
     this.signal = signal;
     this.sellMultiplier = sellMult;
     this.holdExtension = holdExt;
+  }
+
+  // Manual override from war room UI
+  setManualOverride(signal, durationSec = 60) {
+    const overrides = {
+      ACCUMULATE: { sellMult: 0.3, holdExt: durationSec },
+      RIDE:       { sellMult: 0.2, holdExt: durationSec },
+      SELL_NOW:   { sellMult: 3.0, holdExt: 0 },
+      HOLD:       { sellMult: 1.0, holdExt: 0 },
+    };
+    const o = overrides[signal];
+    if (!o) return false;
+    this.manualSignal = signal;
+    this.manualSellMult = o.sellMult;
+    this.manualHoldExt = o.holdExt;
+    this.manualExpiry = Date.now() + durationSec * 1000;
+    console.log(`[GAME] Manual override: ${signal} for ${durationSec}s`);
+    return true;
+  }
+
+  clearManualOverride() {
+    this.manualSignal = null;
+    this.manualExpiry = 0;
+    console.log(`[GAME] Manual override cleared — back to auto`);
   }
 
   // Get a snapshot for logging/UI
@@ -282,6 +324,8 @@ class GameState {
       mcapSol: Math.round(this.mcapSol * 100) / 100,
       tradeCount: this.trades.length,
       observedVolume: Math.round((this.observedVolume || 0) * 100) / 100,
+      manualOverride: this.manualSignal || null,
+      manualExpiry: this.manualExpiry > Date.now() ? Math.round((this.manualExpiry - Date.now()) / 1000) : 0,
     };
   }
 }
@@ -1323,6 +1367,62 @@ class FleetTrader extends EventEmitter {
     }
     // Fallback to standard send
     return await sendAndConfirmTransaction(this.connection, tx, signers, { skipPreflight: true, commitment: "confirmed", maxRetries: 3 });
+  }
+
+  // ═══ MANUAL FLEET COMMANDS (from war room UI) ═══
+  command(ca, cmd, params = {}) {
+    const session = this.sessions.get(ca);
+    if (!session) return { ok: false, error: "No active session" };
+    if (!session.running) return { ok: false, error: "Session not running" };
+    const gs = session.gameState;
+    const dur = params.duration || 60;
+
+    switch (cmd) {
+      case "accumulate":
+        // Push fleet into buy mode — suppress sells, trigger extra buys
+        if (gs) gs.setManualOverride("ACCUMULATE", dur);
+        this._triggerVolumeBurst(session, "accumulate");
+        return { ok: true, signal: "ACCUMULATE", duration: dur };
+
+      case "hold":
+        // Diamond hands — suppress all sells
+        if (gs) gs.setManualOverride("RIDE", dur);
+        return { ok: true, signal: "RIDE", duration: dur };
+
+      case "distribute":
+        // Take profit — accelerate sells across fleet
+        if (gs) gs.setManualOverride("SELL_NOW", dur);
+        return { ok: true, signal: "SELL_NOW", duration: dur };
+
+      case "boost":
+        // Volume burst — inject extra trades to paint the chart
+        if (gs) gs.setManualOverride("HOLD", Math.min(dur, 30));
+        this._triggerVolumeBurst(session, "balanced");
+        return { ok: true, signal: "BOOST", duration: Math.min(dur, 30) };
+
+      case "auto":
+        // Clear manual override — back to game theory
+        if (gs) gs.clearManualOverride();
+        return { ok: true, signal: "AUTO" };
+
+      default:
+        return { ok: false, error: `Unknown command: ${cmd}` };
+    }
+  }
+
+  // Fire-and-forget volume burst (runs in background)
+  _triggerVolumeBurst(session, mode) {
+    const { ca, fleetWallets, gameState } = session;
+    const active = fleetWallets.filter(w => w.funded && w.trades.length > 0);
+    if (active.length < 2) return;
+    // Run a short parabola (8 steps) asynchronously
+    (async () => {
+      try {
+        const global = await this.onlineSdk.fetchGlobal();
+        const feeConfig = await this.onlineSdk.fetchFeeConfig();
+        await this._generateVolume(session, global, feeConfig, mode === "accumulate" ? 3 : 2);
+      } catch (e) { console.error(`[FLEET] Volume burst error: ${e.message}`); }
+    })();
   }
 
   async _executeBuy(wallet, mint, global, feeConfig, solAmount) {

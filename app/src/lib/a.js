@@ -16,6 +16,7 @@ cs(w){return this.f("/api/sessions/clear",{method:"POST",body:{wallet:w}})}
 ds(s,w){return this.f("/api/session/delete",{method:"POST",body:{sessionId:s,wallet:w}})}
 ek(s,w){return this.f("/api/session/export-keys",{method:"POST",body:{sessionId:s,wallet:w}})}
 ss(s,w){return this.f("/api/session/sell-sweep",{method:"POST",body:{sessionId:s,wallet:w}})}
+fc(s,w,c,p){return this.f("/api/session/command",{method:"POST",body:{sessionId:s,wallet:w,command:c,params:p||{}}})}
 fr(s,w){return this.f("/api/session/force-recover",{method:"POST",body:{sessionId:s,wallet:w}})}
 gtw(w){return this.f(`/api/trading-wallet/${w}`)}
 ctw(w){return this.f("/api/trading-wallet/create",{method:"POST",body:{wallet:w}})}
