@@ -718,7 +718,7 @@ return<div key={i} style={{display:"grid",gridTemplateColumns:"16px 110px 1fr 28
 {user?.pubkey&&!user.demo&&trW&&(()=>{
 const aaOpen=autoTrade?.open||autoTrade?.active;
 const aaActive=autoTrade?.active;
-const S=autoTrade?.settings||{minScore:70,solPerTrade:0.05,maxPositions:3,tp1:35,tp1Sell:50,tp2:80,tp2Sell:30,tp3:150,tp3Sell:50,sl1:15,sl1Sell:60,sl2:30,momentumExit:true};
+const S=autoTrade?.settings||{minScore:25,solPerTrade:0.05,maxPositions:3,tp1:35,tp1Sell:50,tp2:80,tp2Sell:30,tp3:150,tp3Sell:50,sl1:15,sl1Sell:60,sl2:30,momentumExit:true};
 const adj=(k,step,mn,mx)=>{const cur=S[k]??0;const nv=Math.max(mn,Math.min(mx,+(cur+step).toFixed(4)));sAutoTrade(p=>({...p,settings:{...p.settings,[k]:nv}}))};
 /* Auto-balance TP sell %s to always total 100%.
    When one changes, the others shrink/grow proportionally.
@@ -769,7 +769,7 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 <div style={{fontSize:11,color:T.dm,marginBottom:8}}>Configure targets, then hit START. Uses +/- to adjust.</div>
 {/* Core settings */}
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
-{[{l:"Min Score",k:"minScore",st:5,mn:40,mx:90},{l:"SOL/Trade",k:"solPerTrade",st:0.01,mn:0.01,mx:1,fmt:v=>v.toFixed(2)},{l:"Max Pos",k:"maxPositions",st:1,mn:1,mx:15}].map(s=><div key={s.k} style={{textAlign:"center"}}><div style={{fontSize:mb?9:8,color:T.ft,fontWeight:700,marginBottom:3}}>{s.l}</div><StepBtn k={s.k} step={s.st} mn={s.mn} mx={s.mx} fmt={s.fmt}/></div>)}
+{[{l:"Min Score",k:"minScore",st:5,mn:15,mx:90},{l:"SOL/Trade",k:"solPerTrade",st:0.01,mn:0.01,mx:1,fmt:v=>v.toFixed(2)},{l:"Max Pos",k:"maxPositions",st:1,mn:1,mx:15}].map(s=><div key={s.k} style={{textAlign:"center"}}><div style={{fontSize:mb?9:8,color:T.ft,fontWeight:700,marginBottom:3}}>{s.l}</div><StepBtn k={s.k} step={s.st} mn={s.mn} mx={s.mx} fmt={s.fmt}/></div>)}
 </div>
 {/* TP tiers — sell %s auto-balance to 100% */}
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
@@ -914,6 +914,28 @@ return<div key={p.ca+p.exitTime} style={{padding:"5px 0",borderBottom:"1px solid
 </div>
 :<div style={{fontSize:10,color:T.ft,textAlign:"center",padding:"8px 0"}}>No activity yet</div>}
 </div>
+
+{/* Trade Learner Insights */}
+{autoTrade?.learner&&<div style={{background:T.bg,border:"1px solid "+T.pu+"18",borderRadius:8,padding:10}}>
+<div style={{fontSize:11,fontWeight:800,color:T.pu,marginBottom:6}}>Trade Learner</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:6}}>
+<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.pu}}>{autoTrade.learner.totalTrades}</div><div style={{fontSize:8,color:T.ft}}>TRADES</div></div>
+<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:autoTrade.learner.winRate>=50?T.gn:T.rd}}>{autoTrade.learner.winRate}%</div><div style={{fontSize:8,color:T.ft}}>WIN RATE</div></div>
+<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.gn}}>+{autoTrade.learner.avgWin}%</div><div style={{fontSize:8,color:T.ft}}>AVG WIN</div></div>
+<div style={{textAlign:"center"}}><div style={{fontSize:14,fontWeight:900,color:T.rd}}>{autoTrade.learner.avgLoss}%</div><div style={{fontSize:8,color:T.ft}}>AVG LOSS</div></div>
+</div>
+<div style={{display:"flex",gap:6,flexWrap:"wrap",fontSize:8,color:T.ft}}>
+<span>Best score: {autoTrade.learner.bestScoreBucket}+ ({autoTrade.learner.bestScoreAvgPnl>0?"+":""}{autoTrade.learner.bestScoreAvgPnl}%)</span>
+<span>Win hold: {autoTrade.learner.avgHoldWin}m</span>
+<span>Loss hold: {autoTrade.learner.avgHoldLoss}m</span>
+</div>
+{autoTrade.learnerAdjustments&&Object.keys(autoTrade.learnerAdjustments).length>0&&<div style={{marginTop:4,fontSize:8,color:T.yl}}>
+Active: {autoTrade.learnerAdjustments.holdBias==="patient"?"Patient mode":""}
+{autoTrade.learnerAdjustments.tpMultiplier?" TP×"+autoTrade.learnerAdjustments.tpMultiplier:""}
+{autoTrade.learnerAdjustments.slMultiplier?" SL×"+autoTrade.learnerAdjustments.slMultiplier:""}
+{autoTrade.learnerAdjustments.minScoreShift?" MinScore→"+autoTrade.learnerAdjustments.minScoreShift:""}
+</div>}
+</div>}
 
 {/* Graduated Chart Patterns — live data from stored snapshots */}
 <div style={{background:T.bg,border:"1px solid "+T.yl+"18",borderRadius:8,padding:10}}>

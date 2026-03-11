@@ -1958,6 +1958,161 @@ app.post("/api/sell-all", async (req, res) => {
 });
 
 // ═══════════════════════════════════════
+// TRADE LEARNER — learns from trade outcomes to optimize entry/exit
+// Records every trade's entry features + exit result, then aggregates
+// patterns to dynamically shift thresholds and TP/SL levels.
+// ═══════════════════════════════════════
+const tradeLearner = {
+  history: [],       // in-memory ring buffer (last 200 trades)
+  insights: null,    // computed every 60s from history
+  lastCompute: 0,
+
+  // Record a completed trade
+  async record(trade) {
+    // trade: { ca, entryScore, entryMcap, exitMcap, pnlPct, pnlSol, entryBuys, entrySells, entryUB, entryAge, entryTrend, exitReason, holdTime, entryBondPct, peakPct }
+    this.history.push({ ...trade, time: Date.now() });
+    if (this.history.length > 200) this.history.shift();
+    // Persist to Redis (last 200)
+    if (redis) {
+      try { await redis.lpush("trade:history", JSON.stringify(trade)); await redis.ltrim("trade:history", 0, 199); } catch {}
+    }
+  },
+
+  // Load history from Redis on startup
+  async load() {
+    if (!redis) return;
+    try {
+      const raw = await redis.lrange("trade:history", 0, 199);
+      this.history = raw.map(r => { try { return JSON.parse(r); } catch { return null; } }).filter(Boolean);
+      console.log(`[LEARNER] Loaded ${this.history.length} trade records`);
+      this.compute();
+    } catch {}
+  },
+
+  // Compute insights from trade history
+  compute() {
+    if (this.history.length < 5) { this.insights = null; return; }
+    this.lastCompute = Date.now();
+
+    const wins = this.history.filter(t => t.pnlPct > 0);
+    const losses = this.history.filter(t => t.pnlPct <= 0);
+    const winRate = wins.length / this.history.length;
+    const avgWin = wins.length > 0 ? wins.reduce((s, t) => s + t.pnlPct, 0) / wins.length : 0;
+    const avgLoss = losses.length > 0 ? losses.reduce((s, t) => s + t.pnlPct, 0) / losses.length : 0;
+    const avgHoldWin = wins.length > 0 ? wins.reduce((s, t) => s + (t.holdTime || 0), 0) / wins.length : 0;
+    const avgHoldLoss = losses.length > 0 ? losses.reduce((s, t) => s + (t.holdTime || 0), 0) / losses.length : 0;
+
+    // Best entry score range: which scores produce the best P&L?
+    const byScore = {};
+    for (const t of this.history) {
+      const bucket = Math.floor((t.entryScore || 0) / 5) * 5; // 0,5,10,15,...
+      if (!byScore[bucket]) byScore[bucket] = { trades: 0, totalPnl: 0, wins: 0 };
+      byScore[bucket].trades++;
+      byScore[bucket].totalPnl += t.pnlPct || 0;
+      if (t.pnlPct > 0) byScore[bucket].wins++;
+    }
+    // Find the score bucket with best avg P&L (min 3 trades)
+    let bestScoreBucket = 25;
+    let bestAvgPnl = -Infinity;
+    for (const [bucket, data] of Object.entries(byScore)) {
+      if (data.trades >= 3) {
+        const avg = data.totalPnl / data.trades;
+        if (avg > bestAvgPnl) { bestAvgPnl = avg; bestScoreBucket = +bucket; }
+      }
+    }
+
+    // Best entry mcap range
+    const byMcap = { low: [], mid: [], high: [] };
+    for (const t of this.history) {
+      const mc = t.entryMcap || 0;
+      if (mc < 10000) byMcap.low.push(t);
+      else if (mc < 30000) byMcap.mid.push(t);
+      else byMcap.high.push(t);
+    }
+    const mcapWinRates = {};
+    for (const [range, trades] of Object.entries(byMcap)) {
+      if (trades.length >= 3) mcapWinRates[range] = trades.filter(t => t.pnlPct > 0).length / trades.length;
+    }
+
+    // Best exit reason analysis — which exits leave money on the table?
+    const byExit = {};
+    for (const t of this.history) {
+      const r = t.exitReason || "unknown";
+      if (!byExit[r]) byExit[r] = { count: 0, totalPnl: 0, peakMissed: 0 };
+      byExit[r].count++;
+      byExit[r].totalPnl += t.pnlPct || 0;
+      byExit[r].peakMissed += (t.peakPct || 0) - (t.pnlPct || 0); // how much more we could have made
+    }
+
+    // Best entry trends
+    const byTrend = {};
+    for (const t of this.history) {
+      const tr = t.entryTrend || "new";
+      if (!byTrend[tr]) byTrend[tr] = { trades: 0, wins: 0, totalPnl: 0 };
+      byTrend[tr].trades++;
+      byTrend[tr].totalPnl += t.pnlPct || 0;
+      if (t.pnlPct > 0) byTrend[tr].wins++;
+    }
+
+    this.insights = {
+      totalTrades: this.history.length,
+      winRate: +(winRate * 100).toFixed(1),
+      avgWin: +avgWin.toFixed(1),
+      avgLoss: +avgLoss.toFixed(1),
+      avgHoldWin: Math.round(avgHoldWin / 60000),  // in minutes
+      avgHoldLoss: Math.round(avgHoldLoss / 60000),
+      bestScoreBucket,
+      bestScoreAvgPnl: +bestAvgPnl.toFixed(1),
+      scoreBreakdown: byScore,
+      mcapWinRates,
+      exitAnalysis: byExit,
+      trendAnalysis: byTrend,
+      // Dynamic threshold recommendations
+      recommendedMinScore: Math.max(15, bestScoreBucket - 5), // enter slightly below the sweet spot
+      // If early exits (momentum-exit, crash-exit) have high peakMissed, widen the exit thresholds
+      shouldWidenExits: byExit["momentum-exit"]?.peakMissed > (byExit["momentum-exit"]?.count || 1) * 20,
+      // If SL2 hits often, losses avg is bad → tighten SL
+      shouldTightenSL: (byExit["SL2"]?.count || 0) > this.history.length * 0.3 && avgLoss < -20,
+    };
+
+    console.log(`[LEARNER] Computed: ${this.history.length} trades, ${this.insights.winRate}% WR, best score bucket: ${bestScoreBucket} (avg PnL: ${bestAvgPnl.toFixed(1)}%)`);
+  },
+
+  // Get dynamic adjustments for the auto-trader
+  getAdjustments() {
+    if (!this.insights || this.insights.totalTrades < 10) return {};
+    const adj = {};
+
+    // Dynamic minScore: shift toward best-performing score bucket
+    adj.minScoreShift = this.insights.recommendedMinScore;
+
+    // If momentum exits are leaving big gains on the table, relax the exit
+    if (this.insights.shouldWidenExits) {
+      adj.momentumDropThreshold = 35; // widen from 30 to 35 (let winners run longer)
+      adj.tpMultiplier = 1.3; // push TPs 30% higher
+    }
+
+    // If too many SL2 hits, tighten entry or SL
+    if (this.insights.shouldTightenSL) {
+      adj.minScoreShift = Math.min(40, (adj.minScoreShift || 25) + 5);
+      adj.slMultiplier = 0.8; // tighten SLs 20%
+    }
+
+    // If winning trades hold longer, extend the hold bias
+    if (this.insights.avgHoldWin > this.insights.avgHoldLoss * 2) {
+      adj.holdBias = "patient"; // let winners run, cut losers fast
+    }
+
+    return adj;
+  }
+};
+
+// Load trade history on startup
+tradeLearner.load();
+// Recompute insights every 60s
+setInterval(() => { if (tradeLearner.history.length >= 5) tradeLearner.compute(); }, 60000);
+
+// ═══════════════════════════════════════
 // AUTO-APE ENGINE — walk-away auto-trading
 // Monitors intel scores, auto-buys green tokens, auto-sells on profit/loss
 // ═══════════════════════════════════════
@@ -2033,6 +2188,7 @@ function startAutoTrader(wallet, settings) {
           const token = radar.tokens.get(ca);
           const currentMcap = token?.mcapUsd || 0;
           const changePct = pos.entryMcap > 0 ? ((currentMcap - pos.entryMcap) / pos.entryMcap) * 100 : 0;
+          const peakPct = pos.entryMcap > 0 ? ((pos.peakMcap - pos.entryMcap) / pos.entryMcap) * 100 : 0;
           if (!state.recentlyClosed) state.recentlyClosed = [];
           state.recentlyClosed.push({
             ca, name: token?.name || ca.slice(0, 8),
@@ -2047,6 +2203,27 @@ function startAutoTrader(wallet, settings) {
           });
           // Keep only last 20 closed positions, remove entries older than 5 min
           state.recentlyClosed = state.recentlyClosed.filter(p => Date.now() - p.exitTime < 300000).slice(-20);
+
+          // ── TRADE LEARNER: record this trade's outcome for future optimization ──
+          if (exitPct >= 100) { // full exit = complete trade record
+            tradeLearner.record({
+              ca,
+              entryScore: pos.entryScore || 0,
+              entryMcap: pos.entryMcap,
+              exitMcap: currentMcap,
+              pnlPct: +changePct.toFixed(1),
+              pnlSol: +(pos.entrySol * (changePct / 100)).toFixed(4),
+              entryBuys: pos.entryBuys || 0,
+              entrySells: pos.entrySells || 0,
+              entryUB: pos.entryUB || 0,
+              entryAge: +(pos.entryAge || 0).toFixed(1),
+              entryTrend: pos.entryTrend || "new",
+              entryBondPct: pos.entryBondPct || 0,
+              exitReason: exitReason || "unknown",
+              holdTime: Date.now() - pos.entryTime,
+              peakPct: +peakPct.toFixed(1),
+            });
+          }
         }
         state.positions.delete(ca);
         const cd = soldCooldowns.get(wallet) || new Map();
@@ -2085,6 +2262,13 @@ function startAutoTrader(wallet, settings) {
         if (!pos.slHit) pos.slHit = 0;
 
         const s = { ...state.settings };
+
+        // ── Apply learner-driven TP/SL adjustments ──
+        const adj = tradeLearner.getAdjustments();
+        if (adj.tpMultiplier) { s.tp1 = Math.round(s.tp1 * adj.tpMultiplier); s.tp2 = Math.round(s.tp2 * adj.tpMultiplier); s.tp3 = Math.round(s.tp3 * adj.tpMultiplier); }
+        if (adj.slMultiplier) { s.sl1 = Math.round(s.sl1 * adj.slMultiplier); s.sl2 = Math.round(s.sl2 * adj.slMultiplier); }
+        // Patient hold bias: widen SL1 slightly so winners aren't cut prematurely
+        if (adj.holdBias === "patient") { s.sl1 = Math.round(s.sl1 * 1.2); }
 
         // ═══ MOMENTUM EXIT — score derivatives detect rugs BEFORE the score drops ═══
         // The score is a lagging indicator. Its velocity and acceleration are leading ones.
@@ -2419,7 +2603,10 @@ function startAutoTrader(wallet, settings) {
           qf.rg_holderConcentration > 0.6 && "whale_heavy",
         ].filter(Boolean) : [];
         t._scoreTrend = dyn?.trend || "new";
-        return t._apeScore >= state.settings.minScore;
+        // Apply learner-recommended min score (if enough data)
+        const adj = tradeLearner.getAdjustments();
+        const effectiveMin = adj.minScoreShift || state.settings.minScore;
+        return t._apeScore >= Math.min(state.settings.minScore, effectiveMin);
       }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
 
       // Ape into top 2 candidates per cycle — meme tokens move fast
@@ -2444,7 +2631,7 @@ function startAutoTrader(wallet, settings) {
               const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
               tx.sign([kp]);
               const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: state.settings.solPerTrade, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0 });
+              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: state.settings.solPerTrade, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0 });
               trackBuy(wallet, t.ca, state.settings.solPerTrade); // instant bags visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
               broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: state.settings.solPerTrade, mcap: t.mcapUsd, wallet, score: t._apeScore } });
@@ -2584,6 +2771,8 @@ app.get("/api/auto-trade/status", (req, res) => {
     }),
     log: state.log.slice(-20),
     recentlyClosed: (state.recentlyClosed || []).filter(p => Date.now() - p.exitTime < 300000),
+    learner: tradeLearner.insights,
+    learnerAdjustments: tradeLearner.getAdjustments(),
   });
 });
 
