@@ -826,33 +826,56 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 {engineState&&(()=>{
 const d=engineState.decisions||{ape:0,watch:0,skip:0,rug:0};
 const total=d.ape+d.watch+d.skip+d.rug||1;
-const topSignal=(engineState.signals||[])[0]?.signal||"SKIP";
 const fh=engineState.featureHeat||{};
-/* Which output wires are "hot" (have flow) */
 const hot={ape:d.ape>0,watch:d.watch>0,skip:d.skip>0,rug:d.rug>0};
-/* Wire colors per output */
 const wc={ape:T.gn,watch:T.yl,skip:T.ft,rug:T.rd};
-/* Determine which path is most active right now for the main pulse */
 const dominant=d.ape>=d.watch&&d.ape>=d.skip?"ape":d.watch>=d.skip?"watch":d.skip>d.rug?"skip":"rug";
 const domC=wc[dominant];
-/* Module activity levels 0-1 for glow intensity */
 const mods=engineState.modules||[];
 const modActive=id=>{const m=mods.find(x=>x.id===id);return m?.status==="active"?1:m?.status==="reconnecting"?.4:0};
-/* SVG dimensions */
-const W=mb?340:520;const H=mb?260:220;
-/* Node positions — layout: left-to-right circuit */
-const nx={pump:mb?30:40,scan:mb?105:155,score:mb?180:270,rugd:mb?180:270,social:mb?105:155,hub:mb?235:350,ape:mb?300:460,watch:mb?300:460,skip:mb?300:460,rug:mb?300:460};
-const ny={pump:mb?50:55,scan:mb?50:55,score:mb?50:55,rugd:mb?140:140,social:mb?140:140,hub:mb?95:98,ape:mb?30:28,watch:mb?75:68,skip:mb?140:128,rug:mb?185:168};
-const nw=mb?48:60;const nh=mb?24:22;
+const hasLearner=(autoTrade?.learner?.totalTrades||0)>0;
+const hasGradWatch=(intelData?.gradWatch?.count||0)>0;
+const hasPatterns=(chartPatterns?.total||0)>0;
+/* SVG dimensions — taller to fit feedback row */
+const W=mb?320:480;const H=mb?280:270;
+/* Centered node positions — 4 tiers */
+const nw=mb?50:58;const nh=mb?24:22;
+const cx=W/2;/* center x */
+/* Tier 1: inputs (top) */
+const pump={x:cx-nw/2-mb?60:80,y:10};
+const scan={x:cx-nw/2,y:10};
+const score={x:cx-nw/2+(mb?60:80),y:10};
+/* Tier 2: decision hub + side feeds */
+const social={x:cx-nw/2-(mb?75:100),y:mb?55:52};
+const hub={x:cx-nw/2,y:mb?55:52};
+const rugd={x:cx-nw/2+(mb?75:100),y:mb?55:52};
+/* Tier 3: outputs (spread horizontally) */
+const outY=mb?105:100;
+const outSpacing=mb?55:70;
+const outStart=cx-(outSpacing*1.5);
+const ape={x:outStart,y:outY};
+const watch={x:outStart+outSpacing,y:outY};
+const skip={x:outStart+outSpacing*2,y:outY};
+const rug={x:outStart+outSpacing*3,y:outY};
+/* Tier 4: feedback nodes (bottom) */
+const fbY=mb?155:150;
+const learner={x:cx-nw/2-(mb?60:80),y:fbY};
+const gradW={x:cx-nw/2,y:fbY};
+const patterns={x:cx-nw/2+(mb?60:80),y:fbY};
+/* Helper: node center */
+const nc=(n)=>({x:n.x+nw/2,y:n.y+nh/2});
+const nr=(n)=>({x:n.x+nw,y:n.y+nh/2});
+const nl=(n)=>({x:n.x,y:n.y+nh/2});
+const nb=(n)=>({x:n.x+nw/2,y:n.y+nh});
+const nt=(n)=>({x:n.x+nw/2,y:n.y});
 return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T.sf}66,${T.bg})`,border:"1px solid "+T.pu+"22",borderRadius:10,padding:mb?"8px 4px":"12px 10px",position:"relative",overflow:"hidden"}}>
-{/* PCB background pattern */}
+{/* PCB dot pattern */}
 <div style={{position:"absolute",inset:0,opacity:.03,backgroundImage:`radial-gradient(${T.cy} 1px,transparent 1px)`,backgroundSize:"16px 16px"}}/>
-{/* Corner glows */}
-<div style={{position:"absolute",top:-30,left:-30,width:100,height:100,borderRadius:"50%",background:`radial-gradient(circle,${domC}12,transparent 70%)`,filter:"blur(20px)",transition:"background 2s"}}/>
-<div style={{position:"absolute",bottom:-20,right:-20,width:80,height:80,borderRadius:"50%",background:`radial-gradient(circle,${T.pu}10,transparent 70%)`,filter:"blur(15px)"}}/>
+<div style={{position:"absolute",top:-30,left:"30%",width:120,height:120,borderRadius:"50%",background:`radial-gradient(circle,${domC}10,transparent 70%)`,filter:"blur(25px)",transition:"background 2s"}}/>
+<div style={{position:"absolute",bottom:-20,right:"30%",width:100,height:100,borderRadius:"50%",background:`radial-gradient(circle,${T.pu}08,transparent 70%)`,filter:"blur(20px)"}}/>
 
 {/* Header */}
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6,position:"relative",zIndex:2}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4,position:"relative",zIndex:2}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
 <div style={{width:7,height:7,borderRadius:"50%",background:T.cy,boxShadow:`0 0 8px ${T.cy}66`,animation:"gp 1.5s infinite"}}/>
 <span style={{fontSize:10,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:`linear-gradient(90deg,${T.cy},${T.pu})`,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Oracle Engine</span>
@@ -866,105 +889,158 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 </div>
 </div>
 
-{/* ═══ THE WIRE DIAGRAM ═══ */}
+{/* ═══ WIRE DIAGRAM ═══ */}
 <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{position:"relative",zIndex:1,display:"block"}}>
 <defs>
-{/* Electricity pulse animation — a bright dot that travels along a path */}
-{["ape","watch","skip","rug"].map(k=>hot[k]&&<g key={k+"defs"}>
-<linearGradient id={"wg_"+k} x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stopColor={wc[k]} stopOpacity="0"/><stop offset="50%" stopColor={wc[k]} stopOpacity="1"/><stop offset="100%" stopColor={wc[k]} stopOpacity="0"/></linearGradient>
-</g>)}
-{/* Glow filter */}
 <filter id="wglow"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
 <filter id="nglow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<filter id="fbglow"><feGaussianBlur stdDeviation="1.5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
 </defs>
 
-{/* ── WIRE PATHS (background dim wires) ── */}
-{/* Pump → Scanner */}
-<path d={`M${nx.pump+nw} ${ny.pump+nh/2} L${nx.scan} ${ny.scan+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>
-{/* Scanner → Scorer */}
-<path d={`M${nx.scan+nw} ${ny.scan+nh/2} L${nx.score} ${ny.score+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>
-{/* Social → Hub */}
-<path d={`M${nx.social+nw} ${ny.social+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>
-{/* Rug Detector → Hub */}
-<path d={`M${nx.rugd+nw} ${ny.rugd+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>
-{/* Scorer → Hub */}
-<path d={`M${nx.score+nw} ${ny.score+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>
-{/* Hub → outputs */}
-{["ape","watch","skip","rug"].map(k=><path key={"w_"+k} d={`M${nx.hub+nw} ${ny.hub+nh/2} L${nx[k]} ${ny[k]+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>)}
+{/* ── TIER LABELS ── */}
+<text x="6" y={pump.y+nh/2+1} fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".5">INPUT</text>
+<text x="6" y={hub.y+nh/2+1} fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".5">PROCESS</text>
+<text x="6" y={outY+nh/2+1} fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".5">OUTPUT</text>
+<text x="6" y={fbY+nh/2+1} fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".5">LEARN</text>
+{/* Tier separator lines */}
+<line x1="0" y1={pump.y+nh+4} x2={W} y2={pump.y+nh+4} stroke={T.ft} strokeWidth=".5" opacity=".06" strokeDasharray="4 4"/>
+<line x1="0" y1={outY-4} x2={W} y2={outY-4} stroke={T.ft} strokeWidth=".5" opacity=".06" strokeDasharray="4 4"/>
+<line x1="0" y1={fbY-4} x2={W} y2={fbY-4} stroke={T.ft} strokeWidth=".5" opacity=".06" strokeDasharray="4 4"/>
 
-{/* ── LIT WIRES (active paths with electricity) ── */}
-{/* Input wires — always lit when online */}
+{/* ── DIM WIRES (all possible paths) ── */}
+{/* Forward flow: Pump→Scan→Score */}
+<path d={`M${nr(pump).x} ${nr(pump).y} L${nl(scan).x} ${nl(scan).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={`M${nr(scan).x} ${nr(scan).y} L${nl(score).x} ${nl(score).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+{/* Down to hub: Score→Hub, Social→Hub, Rug→Hub */}
+<path d={`M${nb(scan).x} ${nb(scan).y} L${nt(hub).x} ${nt(hub).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={`M${nr(social).x} ${nr(social).y} L${nl(hub).x} ${nl(hub).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={`M${nl(rugd).x} ${nl(rugd).y} L${nr(hub).x} ${nr(hub).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+{/* Hub → outputs */}
+{[ape,watch,skip,rug].map((n,i)=><path key={"dw"+i} d={`M${nb(hub).x} ${nb(hub).y} L${nt(n).x} ${nt(n).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>)}
+{/* Feedback wires (curved) */}
+<path d={`M${nt(learner).x} ${nt(learner).y} C${nt(learner).x} ${nt(learner).y-20},${nb(score).x-20} ${nb(score).y+20},${nb(score).x} ${nb(score).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+<path d={`M${nt(gradW).x} ${nt(gradW).y} L${nb(hub).x} ${nb(hub).y+8}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+<path d={`M${nt(patterns).x} ${nt(patterns).y} C${nt(patterns).x} ${nt(patterns).y-20},${nb(rugd).x+20} ${nb(rugd).y+20},${nb(rugd).x} ${nb(rugd).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+{/* Outputs → feedback nodes */}
+<path d={`M${nb(ape).x} ${nb(ape).y} C${nb(ape).x} ${nb(ape).y+15},${nt(learner).x} ${nt(learner).y-15},${nt(learner).x} ${nt(learner).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+<path d={`M${nb(watch).x} ${nb(watch).y} L${nt(gradW).x} ${nt(gradW).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+<path d={`M${nb(rug).x} ${nb(rug).y} C${nb(rug).x} ${nb(rug).y+15},${nt(patterns).x} ${nt(patterns).y-15},${nt(patterns).x} ${nt(patterns).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+
+{/* ── LIT WIRES (active paths with electricity pulses) ── */}
+{/* Pump → Scan */}
 {modActive("pumpportal")>0&&<>
-<path d={`M${nx.pump+nw} ${ny.pump+nh/2} L${nx.scan} ${ny.scan+nh/2}`} fill="none" stroke={T.cy} strokeWidth="1.5" opacity=".6" filter="url(#wglow)"/>
-<circle r="3" fill={T.cy} filter="url(#wglow)"><animateMotion dur="1.2s" repeatCount="indefinite" path={`M${nx.pump+nw} ${ny.pump+nh/2} L${nx.scan} ${ny.scan+nh/2}`}/></circle>
+<path d={`M${nr(pump).x} ${nr(pump).y} L${nl(scan).x} ${nl(scan).y}`} fill="none" stroke={T.cy} strokeWidth="1.5" opacity=".6" filter="url(#wglow)"/>
+<circle r="3" fill={T.cy} filter="url(#wglow)"><animateMotion dur="1.2s" repeatCount="indefinite" path={`M${nr(pump).x} ${nr(pump).y} L${nl(scan).x} ${nl(scan).y}`}/></circle>
 </>}
+{/* Scan → Score */}
 {modActive("scorer")>0&&<>
-<path d={`M${nx.scan+nw} ${ny.scan+nh/2} L${nx.score} ${ny.score+nh/2}`} fill="none" stroke={T.pu} strokeWidth="1.5" opacity=".5" filter="url(#wglow)"/>
-<circle r="2.5" fill={T.pu} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite" path={`M${nx.scan+nw} ${ny.scan+nh/2} L${nx.score} ${ny.score+nh/2}`}/></circle>
+<path d={`M${nr(scan).x} ${nr(scan).y} L${nl(score).x} ${nl(score).y}`} fill="none" stroke={T.pu} strokeWidth="1.5" opacity=".5" filter="url(#wglow)"/>
+<circle r="2.5" fill={T.pu} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite" path={`M${nr(scan).x} ${nr(scan).y} L${nl(score).x} ${nl(score).y}`}/></circle>
 </>}
-{/* Scorer → Hub */}
+{/* Scan → Hub (main flow down) */}
 {modActive("scorer")>0&&<>
-<path d={`M${nx.score+nw} ${ny.score+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={domC} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
-<circle r="2.5" fill={domC} filter="url(#wglow)"><animateMotion dur="1.4s" repeatCount="indefinite" path={`M${nx.score+nw} ${ny.score+nh/2} L${nx.hub} ${ny.hub+nh/2}`}/></circle>
+<path d={`M${nb(scan).x} ${nb(scan).y} L${nt(hub).x} ${nt(hub).y}`} fill="none" stroke={domC} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
+<circle r="2.5" fill={domC} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite" path={`M${nb(scan).x} ${nb(scan).y} L${nt(hub).x} ${nt(hub).y}`}/></circle>
 </>}
 {/* Social → Hub */}
 {fh.socialSignals>.1&&<>
-<path d={`M${nx.social+nw} ${ny.social+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={T.or} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
-<circle r="2" fill={T.or} filter="url(#wglow)"><animateMotion dur="1.8s" repeatCount="indefinite" path={`M${nx.social+nw} ${ny.social+nh/2} L${nx.hub} ${ny.hub+nh/2}`}/></circle>
+<path d={`M${nr(social).x} ${nr(social).y} L${nl(hub).x} ${nl(hub).y}`} fill="none" stroke={T.or} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
+<circle r="2" fill={T.or} filter="url(#wglow)"><animateMotion dur="1.6s" repeatCount="indefinite" path={`M${nr(social).x} ${nr(social).y} L${nl(hub).x} ${nl(hub).y}`}/></circle>
 </>}
-{/* Rug Det → Hub */}
+{/* Rug → Hub */}
 {fh.rugRisk>.05&&<>
-<path d={`M${nx.rugd+nw} ${ny.rugd+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={T.rd} strokeWidth="1.5" opacity={Math.min(.7,fh.rugRisk+.2)} filter="url(#wglow)"/>
-<circle r="2" fill={T.rd} filter="url(#wglow)"><animateMotion dur="1.6s" repeatCount="indefinite" path={`M${nx.rugd+nw} ${ny.rugd+nh/2} L${nx.hub} ${ny.hub+nh/2}`}/></circle>
+<path d={`M${nl(rugd).x} ${nl(rugd).y} L${nr(hub).x} ${nr(hub).y}`} fill="none" stroke={T.rd} strokeWidth="1.5" opacity={Math.min(.7,fh.rugRisk+.2)} filter="url(#wglow)"/>
+<circle r="2" fill={T.rd} filter="url(#wglow)"><animateMotion dur="1.5s" repeatCount="indefinite" path={`M${nl(rugd).x} ${nl(rugd).y} L${nr(hub).x} ${nr(hub).y}`}/></circle>
 </>}
-{/* Hub → output wires — lit per decision */}
-{["ape","watch","skip","rug"].map(k=>{if(!hot[k])return null;const speed=k===dominant?"1.0s":"2.0s";return<g key={"lit_"+k}>
-<path d={`M${nx.hub+nw} ${ny.hub+nh/2} L${nx[k]} ${ny[k]+nh/2}`} fill="none" stroke={wc[k]} strokeWidth={k===dominant?"2":"1.5"} opacity={k===dominant?.7:.35} filter="url(#wglow)"/>
-<circle r={k===dominant?"3":"2"} fill={wc[k]} opacity=".9" filter="url(#wglow)"><animateMotion dur={speed} repeatCount="indefinite" path={`M${nx.hub+nw} ${ny.hub+nh/2} L${nx[k]} ${ny[k]+nh/2}`}/></circle>
+{/* Hub → output wires */}
+{[{k:"ape",n:ape},{k:"watch",n:watch},{k:"skip",n:skip},{k:"rug",n:rug}].map(({k,n})=>{if(!hot[k])return null;const spd=k===dominant?"0.8s":"1.8s";return<g key={"lit_"+k}>
+<path d={`M${nb(hub).x} ${nb(hub).y} L${nt(n).x} ${nt(n).y}`} fill="none" stroke={wc[k]} strokeWidth={k===dominant?"2":"1.5"} opacity={k===dominant?.7:.3} filter="url(#wglow)"/>
+<circle r={k===dominant?"3":"2"} fill={wc[k]} opacity=".9" filter="url(#wglow)"><animateMotion dur={spd} repeatCount="indefinite" path={`M${nb(hub).x} ${nb(hub).y} L${nt(n).x} ${nt(n).y}`}/></circle>
 </g>})}
 
-{/* ── NODES (circuit components) ── */}
+{/* ── FEEDBACK LOOP WIRES (lit when active — reverse flow) ── */}
+{/* APE outcomes → Learner (green, slower pulse) */}
+{hasLearner&&hot.ape&&<>
+<path d={`M${nb(ape).x} ${nb(ape).y} C${nb(ape).x} ${nb(ape).y+15},${nt(learner).x} ${nt(learner).y-15},${nt(learner).x} ${nt(learner).y}`} fill="none" stroke={T.gn} strokeWidth="1" opacity=".3" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="2" fill={T.gn} opacity=".7" filter="url(#fbglow)"><animateMotion dur="2.5s" repeatCount="indefinite" path={`M${nb(ape).x} ${nb(ape).y} C${nb(ape).x} ${nb(ape).y+15},${nt(learner).x} ${nt(learner).y-15},${nt(learner).x} ${nt(learner).y}`}/></circle>
+</>}
+{/* Learner → Scorer (feedback: adjustments flow back up) */}
+{hasLearner&&<>
+<path d={`M${nt(learner).x} ${nt(learner).y} C${nt(learner).x} ${nt(learner).y-20},${nb(score).x-20} ${nb(score).y+20},${nb(score).x} ${nb(score).y}`} fill="none" stroke={T.cy} strokeWidth="1" opacity=".25" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.cy} opacity=".6" filter="url(#fbglow)"><animateMotion dur="3s" repeatCount="indefinite" path={`M${nt(learner).x} ${nt(learner).y} C${nt(learner).x} ${nt(learner).y-20},${nb(score).x-20} ${nb(score).y+20},${nb(score).x} ${nb(score).y}`}/></circle>
+</>}
+{/* WATCH → Grad Watch (graduated tokens monitored) */}
+{hasGradWatch&&<>
+<path d={`M${nb(watch).x} ${nb(watch).y} L${nt(gradW).x} ${nt(gradW).y}`} fill="none" stroke={T.yl} strokeWidth="1" opacity=".3" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.yl} opacity=".7" filter="url(#fbglow)"><animateMotion dur="2s" repeatCount="indefinite" path={`M${nb(watch).x} ${nb(watch).y} L${nt(gradW).x} ${nt(gradW).y}`}/></circle>
+</>}
+{/* Grad Watch → Hub (post-grad intel feeds back) */}
+{hasGradWatch&&<>
+<path d={`M${nt(gradW).x} ${nt(gradW).y} L${nb(hub).x} ${nb(hub).y+8}`} fill="none" stroke={T.yl} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.yl} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.5s" repeatCount="indefinite" path={`M${nt(gradW).x} ${nt(gradW).y} L${nb(hub).x} ${nb(hub).y+8}`}/></circle>
+</>}
+{/* RUG → Patterns (rug patterns stored) */}
+{hasPatterns&&hot.rug&&<>
+<path d={`M${nb(rug).x} ${nb(rug).y} C${nb(rug).x} ${nb(rug).y+15},${nt(patterns).x} ${nt(patterns).y-15},${nt(patterns).x} ${nt(patterns).y}`} fill="none" stroke={T.rd} strokeWidth="1" opacity=".25" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.rd} opacity=".6" filter="url(#fbglow)"><animateMotion dur="2.8s" repeatCount="indefinite" path={`M${nb(rug).x} ${nb(rug).y} C${nb(rug).x} ${nb(rug).y+15},${nt(patterns).x} ${nt(patterns).y-15},${nt(patterns).x} ${nt(patterns).y}`}/></circle>
+</>}
+{/* Patterns → Rug Detect (pattern memory improves detection) */}
+{hasPatterns&&<>
+<path d={`M${nt(patterns).x} ${nt(patterns).y} C${nt(patterns).x} ${nt(patterns).y-20},${nb(rugd).x+20} ${nb(rugd).y+20},${nb(rugd).x} ${nb(rugd).y}`} fill="none" stroke={T.or} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.or} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.2s" repeatCount="indefinite" path={`M${nt(patterns).x} ${nt(patterns).y} C${nt(patterns).x} ${nt(patterns).y-20},${nb(rugd).x+20} ${nb(rugd).y+20},${nb(rugd).x} ${nb(rugd).y}`}/></circle>
+</>}
+
+{/* ── PROCESS NODES (Tier 1 + 2) ── */}
 {[
-{id:"pump",x:nx.pump,y:ny.pump,label:"PumpPortal",sub:"WS Feed",c:T.cy,v:engineState.pool?.recent5m||0,active:modActive("pumpportal")},
-{id:"scan",x:nx.scan,y:ny.scan,label:"Scanner",sub:"Filter",c:T.pu,v:engineState.pool?.active||0,active:modActive("scorer")},
-{id:"score",x:nx.score,y:ny.score,label:"Scorer",sub:"Velocity",c:T.pu,v:total,active:modActive("scorer")},
-{id:"social",x:nx.social,y:ny.social,label:"Social",sub:"Signals",c:T.or,v:Math.round(fh.socialSignals*100)+"%",active:fh.socialSignals>.05?1:0},
-{id:"rugd",x:nx.rugd,y:ny.rugd,label:"Rug Detect",sub:"Safety",c:T.rd,v:d.rug,active:modActive("rug_detector")},
-{id:"hub",x:nx.hub,y:ny.hub,label:"Decision",sub:"Hub",c:domC,v:total,active:1,isHub:true},
-].map(n=><g key={n.id}>
-{/* Node glow */}
-{n.active>.5&&<rect x={n.x-2} y={n.y-2} width={nw+4} height={nh+4} rx="7" fill={n.c} opacity=".08" filter="url(#nglow)" style={{transition:"opacity 1s"}}/>}
-{/* Node body */}
-<rect x={n.x} y={n.y} width={nw} height={nh} rx="5" fill={T.bg} stroke={n.active>.5?n.c:T.ft} strokeWidth={n.isHub?"1.5":"1"} opacity={n.active>.5?1:.5} style={{transition:"all .8s"}}/>
-{/* Pulsing ring for hub */}
-{n.isHub&&<rect x={n.x-1} y={n.y-1} width={nw+2} height={nh+2} rx="6" fill="none" stroke={domC} strokeWidth=".5" opacity=".4" style={{animation:"gp 2s infinite"}}/>}
-{/* Activity indicator dot */}
-<circle cx={n.x+nw-4} cy={n.y+4} r="2" fill={n.active>.5?T.gn:T.ft} opacity={n.active>.5?1:.3}><animate attributeName="opacity" values={n.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
-{/* Label */}
-<text x={n.x+nw/2} y={n.y+nh/2-2} textAnchor="middle" fill={n.active>.5?n.c:T.ft} fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{n.label}</text>
-<text x={n.x+nw/2} y={n.y+nh/2+6} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6"} fontFamily="monospace">{n.sub} · {n.v}</text>
+{n:pump,label:"PumpPortal",sub:"WS Feed",c:T.cy,v:engineState.pool?.recent5m||0,active:modActive("pumpportal")},
+{n:scan,label:"Scanner",sub:"Filter",c:T.pu,v:engineState.pool?.active||0,active:modActive("scorer")},
+{n:score,label:"Scorer",sub:"Velocity",c:T.pu,v:total,active:modActive("scorer")},
+{n:social,label:"Social",sub:"Signals",c:T.or,v:Math.round(fh.socialSignals*100)+"%",active:fh.socialSignals>.05?1:0},
+{n:hub,label:"Decision",sub:"Hub",c:domC,v:total,active:1,isHub:true},
+{n:rugd,label:"Rug Detect",sub:"Safety",c:T.rd,v:d.rug,active:modActive("rug_detector")},
+].map((nd,i)=><g key={"n"+i}>
+{nd.active>.5&&<rect x={nd.n.x-2} y={nd.n.y-2} width={nw+4} height={nh+4} rx="7" fill={nd.c} opacity=".08" filter="url(#nglow)"/>}
+<rect x={nd.n.x} y={nd.n.y} width={nw} height={nh} rx="5" fill={T.bg} stroke={nd.active>.5?nd.c:T.ft} strokeWidth={nd.isHub?"1.5":"1"} opacity={nd.active>.5?1:.5}/>
+{nd.isHub&&<rect x={nd.n.x-1} y={nd.n.y-1} width={nw+2} height={nh+2} rx="6" fill="none" stroke={domC} strokeWidth=".5" opacity=".4" style={{animation:"gp 2s infinite"}}/>}
+<circle cx={nd.n.x+nw-4} cy={nd.n.y+4} r="2" fill={nd.active>.5?T.gn:T.ft} opacity={nd.active>.5?1:.3}><animate attributeName="opacity" values={nd.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
+<text x={nd.n.x+nw/2} y={nd.n.y+nh/2-2} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{nd.label}</text>
+<text x={nd.n.x+nw/2} y={nd.n.y+nh/2+6} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
 </g>)}
 
-{/* ── OUTPUT NODES (APE/WATCH/SKIP/RUG) ── */}
+{/* ── OUTPUT NODES (Tier 3) ── */}
 {[
-{id:"ape",label:"APE",c:T.gn,v:d.ape,x:nx.ape,y:ny.ape},
-{id:"watch",label:"WATCH",c:T.yl,v:d.watch,x:nx.watch,y:ny.watch},
-{id:"skip",label:"SKIP",c:T.ft,v:d.skip,x:nx.skip,y:ny.skip},
-{id:"rug",label:"RUG",c:T.rd,v:d.rug,x:nx.rug,y:ny.rug},
-].map(n=><g key={n.id}>
-{/* Output node glow when hot */}
-{hot[n.id]&&n.id===dominant&&<rect x={n.x-2} y={n.y-2} width={nw+4} height={nh+4} rx="7" fill={n.c} opacity=".15" filter="url(#nglow)"/>}
-<rect x={n.x} y={n.y} width={nw} height={nh} rx="5" fill={hot[n.id]?n.c+"12":T.bg} stroke={hot[n.id]?n.c:T.ft+"44"} strokeWidth={n.id===dominant?"1.5":"1"} style={{transition:"all .8s"}}/>
-<text x={n.x+nw/2} y={n.y+nh/2-1} textAnchor="middle" fill={hot[n.id]?n.c:T.ft} fontSize={mb?"7":"8"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{n.label}</text>
-<text x={n.x+nw/2} y={n.y+nh/2+7} textAnchor="middle" fill={hot[n.id]?n.c:T.ft} fontSize={mb?"7":"8"} fontWeight="900" fontFamily="monospace" opacity=".8">{n.v}</text>
+{n:ape,id:"ape",label:"APE",c:T.gn,v:d.ape},
+{n:watch,id:"watch",label:"WATCH",c:T.yl,v:d.watch},
+{n:skip,id:"skip",label:"SKIP",c:T.ft,v:d.skip},
+{n:rug,id:"rug",label:"RUG",c:T.rd,v:d.rug},
+].map(nd=><g key={nd.id}>
+{hot[nd.id]&&nd.id===dominant&&<rect x={nd.n.x-2} y={nd.n.y-2} width={nw+4} height={nh+4} rx="7" fill={nd.c} opacity=".15" filter="url(#nglow)"/>}
+<rect x={nd.n.x} y={nd.n.y} width={nw} height={nh} rx="5" fill={hot[nd.id]?nd.c+"12":T.bg} stroke={hot[nd.id]?nd.c:T.ft+"44"} strokeWidth={nd.id===dominant?"1.5":"1"}/>
+<text x={nd.n.x+nw/2} y={nd.n.y+nh/2-1} textAnchor="middle" fill={hot[nd.id]?nd.c:T.ft} fontSize={mb?"7":"8"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{nd.label}</text>
+<text x={nd.n.x+nw/2} y={nd.n.y+nh/2+7} textAnchor="middle" fill={hot[nd.id]?nd.c:T.ft} fontSize={mb?"7":"8"} fontWeight="900" fontFamily="monospace" opacity=".8">{nd.v}</text>
 </g>)}
 
-{/* Pool stats bottom bar */}
+{/* ── FEEDBACK NODES (Tier 4) ── */}
+{[
+{n:learner,label:"Learner",sub:"Outcomes",c:T.cy,v:autoTrade?.learner?.totalTrades||0,active:hasLearner},
+{n:gradW,label:"Grad Watch",sub:"Monitor",c:T.yl,v:intelData?.gradWatch?.count||0,active:hasGradWatch},
+{n:patterns,label:"Patterns",sub:"Memory",c:T.or,v:chartPatterns?.total||0,active:hasPatterns},
+].map((nd,i)=><g key={"fb"+i}>
+<rect x={nd.n.x} y={nd.n.y} width={nw} height={nh} rx="5" fill={T.bg} stroke={nd.active?nd.c+"66":T.ft+"33"} strokeWidth="1" strokeDasharray={nd.active?"":"3 2"} opacity={nd.active?1:.4}/>
+<text x={nd.n.x+nw/2} y={nd.n.y+nh/2-2} textAnchor="middle" fill={nd.active?nd.c:T.ft} fontSize={mb?"5":"6"} fontWeight="800" fontFamily="monospace" letterSpacing=".3">{nd.label}</text>
+<text x={nd.n.x+nw/2} y={nd.n.y+nh/2+5} textAnchor="middle" fill={T.ft} fontSize={mb?"4":"5"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
+{nd.active&&<circle cx={nd.n.x+nw-3} cy={nd.n.y+3} r="1.5" fill={T.gn} opacity=".8"><animate attributeName="opacity" values="1;.3;1" dur="3s" repeatCount="indefinite"/></circle>}
+</g>)}
+
+{/* Feedback label */}
+<text x={W/2} y={fbY+nh+10} textAnchor="middle" fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".4">↑ feedback loops — outcomes train future decisions ↑</text>
+
+{/* Pool stats */}
 <text x={W/2} y={H-4} textAnchor="middle" fill={T.ft} fontSize="6" fontFamily="monospace">{engineState.pool?.total||0} pool · {engineState.pool?.active||0} active · {engineState.pool?.recent5m||0} 5m · {engineState.pool?.graduated||0} grad · {engineState.flow?.buyPressure||50}% buy pressure</text>
 </svg>
 
-{/* Feature heatmap strip below diagram */}
-<div style={{display:"flex",gap:2,marginTop:6,position:"relative",zIndex:1}}>
+{/* Feature heatmap strip */}
+<div style={{display:"flex",gap:2,marginTop:4,position:"relative",zIndex:1}}>
 {Object.entries(fh).map(([k,v])=>{const heat=Math.round(v*100);const c=heat>70?T.gn:heat>40?T.yl:heat>20?T.or:T.ft;return<div key={k} style={{flex:1,background:c+Math.round(heat*.4+5).toString(16).padStart(2,"0"),border:"1px solid "+c+"22",borderRadius:3,padding:"3px 2px",textAlign:"center",transition:"all 1s",position:"relative",overflow:"hidden"}}>
 {heat>50&&<div style={{position:"absolute",inset:0,background:`linear-gradient(180deg,${c}11,transparent)`,animation:"gp 3s infinite"}}/>}
 <div style={{fontSize:10,fontWeight:900,color:c,position:"relative"}}>{heat}</div>
