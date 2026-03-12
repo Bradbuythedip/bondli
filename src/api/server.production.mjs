@@ -723,7 +723,13 @@ function processRadarMessage(data) {
         if (!t.image && meta.image) { t.image = meta.image; }
         if (!t.twitter && meta.twitter) t.twitter = meta.twitter;
         if (!t.website && meta.website) t.website = meta.website;
-        if (meta.complete) t.graduated = true;
+        // Only trust meta.complete if token also has a raydiumPool — prevents false positives
+        // from stale/wrong API responses marking brand-new tokens as graduated
+        if (meta.complete && meta.raydiumPool) {
+          t.graduated = true;
+          t.graduatedAt = Date.now();
+          if (t.mcapUsd < gradMcUsd()) t.mcapUsd = gradMcUsd();
+        }
       }).catch(() => {});
     }
 
@@ -803,8 +809,10 @@ function processRadarMessage(data) {
       token.mcapUsd = Math.round(mcSol * solUsdPrice);
     }
 
-    // Graduation detection: vSol approaching 85 SOL = near graduation
-    if (vSol >= 79 && !token.graduated) {
+    // Graduation detection: vSol must be very close to 85 SOL threshold
+    // Previously used >= 79 which was too aggressive — tokens often pump to 79-83 then dump back.
+    // Real graduation fires a migration event (handled separately). This is a safety net only.
+    if (vSol >= 84 && !token.graduated) {
       token.graduated = true;
       // Floor mcap to graduation threshold — bonding curve mcap underreports
       if (token.mcapUsd < gradMcUsd()) token.mcapUsd = gradMcUsd();
@@ -3342,7 +3350,9 @@ function startAutoTrader(wallet, settings) {
               const pair = d?.pairs?.[0];
               if (pair) {
                 const mcUsd = pair.marketCap || pair.fdv || 0;
-                token = { mcapUsd: mcUsd, mcapSol: solUsdPrice > 0 ? mcUsd / solUsdPrice : 0, name: pair.baseToken?.name || "", graduated: true };
+                // Only mark graduated if DexScreener shows a Raydium pair (dexId === "raydium")
+                const isRaydium = pair.dexId === "raydium" || pair.dexId === "raydium-clmm";
+                token = { mcapUsd: mcUsd, mcapSol: solUsdPrice > 0 ? mcUsd / solUsdPrice : 0, name: pair.baseToken?.name || "", graduated: isRaydium };
               }
             }
           } catch {}
