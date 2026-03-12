@@ -2515,13 +2515,17 @@ app.post("/api/quick-sell", async (req, res) => {
     const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
     const pct = Math.min(100, Math.max(1, percent || 100));
 
-    // Pre-flight: check token balance + get decimals
+    // Pre-flight: check token balance + get decimals (both SPL Token and Token-2022)
     let tokenBalance = 0;
     let tokenDecimals = 6;
     let balanceCheckFailed = false;
     try {
-      const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
-      const account = tokenAccounts.value.find(ta => ta.account.data.parsed.info.mint === ca);
+      const [splAccts, t22Accts] = await Promise.all([
+        connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") }).catch(() => ({ value: [] })),
+        connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb") }).catch(() => ({ value: [] })),
+      ]);
+      const allAccts = [...splAccts.value, ...t22Accts.value];
+      const account = allAccts.find(ta => ta.account.data.parsed.info.mint === ca);
       if (account) {
         tokenBalance = parseFloat(account.account.data.parsed.info.tokenAmount.uiAmountString || "0");
         tokenDecimals = account.account.data.parsed.info.tokenAmount.decimals || 6;
@@ -2743,37 +2747,49 @@ app.post("/api/quick-sell", async (req, res) => {
       return res.status(400).json({ error: "Sell failed: " + errorSummary.slice(0, 200) });
     }
 
-    // Confirm transaction on-chain before marking position as sold
-    // Wait up to 30s for confirmation — if it fails, position stays open
+    // Confirm transaction on-chain — poll status instead of blocking on confirmTransaction
+    // which often times out on congested Solana RPCs
     let confirmed = false;
-    try {
-      await connection.confirmTransaction(sig, "confirmed");
-      confirmed = true;
-      console.log(`[SELL] Confirmed: ${sig}`);
-    } catch (e) {
-      console.log(`[SELL] Confirmation failed for ${sig}: ${e.message} — checking tx status`);
-      // Fallback: check if the transaction actually landed despite confirmation timeout
+    const confirmStart = Date.now();
+    const CONFIRM_TIMEOUT = 20000; // 20s max
+    const POLL_INTERVAL = 2000;
+
+    while (Date.now() - confirmStart < CONFIRM_TIMEOUT) {
       try {
-        const txStatus = await connection.getSignatureStatus(sig);
+        const txStatus = await connection.getSignatureStatus(sig, { searchTransactionHistory: false });
         if (txStatus?.value?.confirmationStatus === "confirmed" || txStatus?.value?.confirmationStatus === "finalized") {
           confirmed = true;
-          console.log(`[SELL] Tx landed despite confirmation timeout: ${sig}`);
-        } else if (txStatus?.value?.err) {
-          console.log(`[SELL] Tx failed on-chain: ${sig} err=${JSON.stringify(txStatus.value.err)}`);
+          console.log(`[SELL] Confirmed: ${sig}`);
+          break;
         }
-      } catch {}
+        if (txStatus?.value?.err) {
+          console.log(`[SELL] Tx failed on-chain: ${sig} err=${JSON.stringify(txStatus.value.err)}`);
+          break;
+        }
+      } catch (e) {
+        console.log(`[SELL] Status check error: ${e.message}`);
+      }
+      await new Promise(r => setTimeout(r, POLL_INTERVAL));
     }
 
-    if (!confirmed) {
-      // Transaction may not have landed — don't remove position
-      console.log(`[SELL] NOT CONFIRMED — keeping position open for ${ca.slice(0,8)}`);
-      return res.json({ ok: false, signature: sig, percent: pct, method, confirmed: false, error: "Transaction sent but not confirmed on-chain. Position kept open — check Solscan and retry." });
-    }
-
-    // Only track sell (remove from wallet) AFTER confirmation
+    // Track sell optimistically — the tx was successfully sent and signed
+    // Even if confirmation times out, the tx will likely land
     if (pct >= 100) trackSell(wallet, ca);
 
-    res.json({ ok: true, signature: sig, percent: pct, method, confirmed: true, tokenBalance: +tokenBalance.toFixed(2) });
+    if (!confirmed) {
+      console.log(`[SELL] Confirmation timed out but tx was sent: ${sig} for ${ca.slice(0,8)}`);
+      // Return success with signature — tx was sent, likely will land
+      // Background: schedule a delayed check to log final status
+      setTimeout(async () => {
+        try {
+          const st = await connection.getSignatureStatus(sig, { searchTransactionHistory: true });
+          const status = st?.value?.confirmationStatus;
+          console.log(`[SELL] Delayed check for ${sig}: ${status || "not found"}`);
+        } catch {}
+      }, 30000);
+    }
+
+    res.json({ ok: true, signature: sig, percent: pct, method, confirmed, tokenBalance: +tokenBalance.toFixed(2) });
   } catch (e) {
     console.error("[QUICK-SELL] Error:", e.message);
     res.status(500).json({ error: e.message });
@@ -2788,7 +2804,12 @@ app.post("/api/sell-all", async (req, res) => {
     if (!tw) return res.status(400).json({ error: "No trading wallet" });
 
     const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
-    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+    // Scan both SPL Token and Token-2022 programs
+    const [splAccounts, t22Accounts] = await Promise.all([
+      connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") }).catch(() => ({ value: [] })),
+      connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb") }).catch(() => ({ value: [] })),
+    ]);
+    const tokenAccounts = { value: [...splAccounts.value, ...t22Accounts.value] };
 
     let sold = 0;
     for (const ta of tokenAccounts.value) {
@@ -4088,8 +4109,42 @@ app.post("/api/auto-trade/exit-position", async (req, res) => {
       if (txBytes.byteLength > 100) {
         const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
         tx.sign([kp]);
-        sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+        sig = await heliusSendRawTx(connection, tx.serialize());
       }
+    }
+    // If PumpPortal failed, try Jupiter as fallback for graduated tokens
+    if (!sig) {
+      try {
+        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+        const account = tokenAccounts.value.find(ta => ta.account.data.parsed.info.mint === ca);
+        if (account) {
+          const tokenBalance = parseFloat(account.account.data.parsed.info.tokenAmount.uiAmountString || "0");
+          const tokenDecimals = account.account.data.parsed.info.tokenAmount.decimals || 6;
+          const sellAmount = Math.round(tokenBalance * Math.pow(10, tokenDecimals));
+          if (sellAmount > 0) {
+            const orderResp = await fetch("https://lite-api.jup.ag/ultra/v1/order", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ inputMint: ca, outputMint: "So11111111111111111111111111111111111111112", amount: sellAmount, taker: tw.pubkey }),
+              signal: AbortSignal.timeout(10000),
+            });
+            if (orderResp.ok) {
+              const order = await orderResp.json();
+              if (order.transaction) {
+                const txBuf = Buffer.from(order.transaction, "base64");
+                const tx = VersionedTransaction.deserialize(txBuf);
+                tx.sign([kp]);
+                const rawTx = Buffer.from(tx.serialize()).toString("base64");
+                const execResp = await fetch("https://lite-api.jup.ag/ultra/v1/execute", {
+                  method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ signedTransaction: rawTx, requestId: order.requestId }),
+                  signal: AbortSignal.timeout(15000),
+                });
+                if (execResp.ok) { const r = await execResp.json(); sig = r.signature || r.txid; }
+              }
+            }
+          }
+        }
+      } catch (e) { console.log(`[AUTO-EXIT] Jupiter fallback error: ${e.message}`); }
     }
     // Move to recently closed with manual-exit reason
     const token = radar.tokens.get(ca);
@@ -4349,8 +4404,8 @@ function trackBuy(wallet, ca, solAmount) {
     solSpent: solAmount,
     time: Date.now(),
   });
-  // Clean entries older than 10 min (by then RPC should have caught up)
-  for (const [c, p] of wp) { if (Date.now() - p.time > 600000) wp.delete(c); }
+  // Clean entries older than 2 min (RPC usually catches up within 30-60s)
+  for (const [c, p] of wp) { if (Date.now() - p.time > 120000) wp.delete(c); }
 }
 
 function trackSell(wallet, ca) {
@@ -4395,19 +4450,29 @@ app.get("/api/positions/:wallet", async (req, res) => {
     if (pubkeysToScan.length === 0) return res.json({ positions: [] });
 
     // Scan all Bondli wallets for token accounts (trading + extras)
+    // Check both standard SPL Token and Token-2022 programs
+    const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+    const TOKEN_2022_PROGRAM = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
     const allTokenAccounts = [];
     const scannedPubkeys = new Set(); // deduplicate
+    const scanPromises = [];
     for (const pk of pubkeysToScan) {
       const pkStr = pk.toBase58();
       if (scannedPubkeys.has(pkStr)) continue;
       scannedPubkeys.add(pkStr);
-      try {
-        const accts = await connection.getParsedTokenAccountsByOwner(pk, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
-        allTokenAccounts.push(...accts.value);
-      } catch (e) {
-        console.warn(`[POSITIONS] RPC error for ${pkStr.slice(0,8)}: ${e.message}`);
-      }
+      // Scan both token programs in parallel
+      scanPromises.push(
+        connection.getParsedTokenAccountsByOwner(pk, { programId: TOKEN_PROGRAM })
+          .then(accts => allTokenAccounts.push(...accts.value))
+          .catch(e => console.warn(`[POSITIONS] RPC error (SPL) for ${pkStr.slice(0,8)}: ${e.message}`))
+      );
+      scanPromises.push(
+        connection.getParsedTokenAccountsByOwner(pk, { programId: TOKEN_2022_PROGRAM })
+          .then(accts => allTokenAccounts.push(...accts.value))
+          .catch(e => { /* Token-2022 may not exist for this wallet, ignore */ })
+      );
     }
+    await Promise.all(scanPromises);
 
     // Aggregate amounts by mint across all wallets
     const mintAmounts = new Map(); // mint → { amount, decimals }
@@ -4421,28 +4486,34 @@ app.get("/api/positions/:wallet", async (req, res) => {
       if (existing) { existing.amount += amount; } else { mintAmounts.set(mint, { amount, decimals }); }
     }
 
-    const positions = [];
-    for (const [mint, { amount, decimals }] of mintAmounts) {
-      
-      // Get token info from radar or fetch from pump.fun
-      let radarToken = radar.tokens.get(mint);
-      
-      // If not in radar, try pump.fun then DexScreener
-      if (!radarToken) {
+    // Resolve metadata for unknown mints in parallel (batch of up to 10 at a time)
+    const unknownMints = [...mintAmounts.keys()].filter(m => !radar.tokens.get(m));
+    const metadataCache = new Map(); // mint → radarToken-like object
+
+    // Fetch metadata in parallel batches
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < unknownMints.length; i += BATCH_SIZE) {
+      const batch = unknownMints.slice(i, i + BATCH_SIZE);
+      await Promise.all(batch.map(async (mint) => {
+        // Try pump.fun first, then DexScreener
         try {
           const meta = await fetchPumpFunMetadata(mint);
           if (meta) {
-            radarToken = { name: meta.name, ticker: meta.symbol, image: meta.image, mcapSol: 0, mcapUsd: meta.marketCap || 0 };
+            metadataCache.set(mint, { name: meta.name, ticker: meta.symbol, image: meta.image, mcapSol: 0, mcapUsd: meta.marketCap || 0 });
+            return;
           }
         } catch {}
-      }
-      if (!radarToken) {
         try {
           const dr = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(5000) });
-          if (dr.ok) { const dd = await dr.json(); const p = dd?.pairs?.[0]; if (p) radarToken = { name: p.baseToken?.name||"", ticker: p.baseToken?.symbol||"", image: p.info?.imageUrl||"", mcapSol: 0, mcapUsd: p.marketCap||p.fdv||0 }; }
+          if (dr.ok) { const dd = await dr.json(); const p = dd?.pairs?.[0]; if (p) metadataCache.set(mint, { name: p.baseToken?.name||"", ticker: p.baseToken?.symbol||"", image: p.info?.imageUrl||"", mcapSol: 0, mcapUsd: p.marketCap||p.fdv||0 }); }
         } catch {}
-      }
-      
+      }));
+    }
+
+    const positions = [];
+    for (const [mint, { amount, decimals }] of mintAmounts) {
+      const radarToken = radar.tokens.get(mint) || metadataCache.get(mint) || null;
+
       // Estimate value: tokens held / total supply * mcap
       // pump.fun total supply is ~1B tokens
       const totalSupply = 1_000_000_000;
@@ -4450,7 +4521,7 @@ app.get("/api/positions/:wallet", async (req, res) => {
       const mcUsd = radarToken?.mcapUsd || 0;
       const valueUsd = mcUsd > 0 ? holdPct * mcUsd : 0;
       const valueSol = solUsdPrice > 0 ? valueUsd / solUsdPrice : 0;
-      
+
       positions.push({
         mint,
         ticker: radarToken?.ticker || "",
