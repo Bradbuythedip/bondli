@@ -806,6 +806,8 @@ function processRadarMessage(data) {
     // Graduation detection: vSol approaching 85 SOL = near graduation
     if (vSol >= 79 && !token.graduated) {
       token.graduated = true;
+      // Floor mcap to graduation threshold — bonding curve mcap underreports
+      if (token.mcapUsd < gradMcUsd()) token.mcapUsd = gradMcUsd();
     }
 
     // Sparkline
@@ -831,11 +833,17 @@ function processRadarMessage(data) {
     if (token) {
       token.graduated = true;
       token.graduatedAt = Date.now();
+      // Set mcap floor to graduation MC — bonding curve mcap is stale/misleading post-graduation
+      const gradMc = gradMcUsd();
+      if (token.mcapUsd < gradMc) token.mcapUsd = gradMc;
       console.log(`[RADAR] Token graduated: ${token.name || mint.slice(0, 8)} — MC: $${token.mcapUsd}`);
       // Smart wallet: resolve outcome as win for all buyers
       smartWallets.resolveOutcome(mint, true);
       // Fetch live MC from DexScreener since PumpPortal stops sending data after graduation
+      // Retry with delay since Raydium pool takes seconds to index
       refreshGraduatedMcap(mint).catch(() => {});
+      setTimeout(() => refreshGraduatedMcap(mint).catch(() => {}), 15000);
+      setTimeout(() => refreshGraduatedMcap(mint).catch(() => {}), 60000);
       // Add to graduated watchlist for 24h follow
       const wEntry = { name: token.name || "", ticker: token.ticker || "", gradMcap: token.mcapUsd || 0, gradTime: Date.now(), spark: [...(token.spark || [])], peakMcap: token.mcapUsd || 0, lastMcap: token.mcapUsd || 0, lastRefresh: Date.now() };
       gradWatchlist.set(mint, wEntry);
@@ -5397,6 +5405,22 @@ app.get("/api/engine-state", (req, res) => {
     momentum: Math.min(1, recent5m.length / 20),
   };
 
+  // Aggregate dynamics across tracked tokens for oracle visualization
+  const dynCounts = { rocket: 0, rising: 0, fading: 0, crashing: 0, declining: 0, stable: 0 };
+  const momCounts = { sustained: 0, flash: 0, exhausted: 0, building: 0, fading: 0, nascent: 0 };
+  let dynTotal = 0, avgImpulse = 0, avgAccel = 0, avgVelocity = 0;
+  for (const t of recent30m) {
+    const dyn = scoreDynamics.get(t.ca);
+    if (!dyn) continue;
+    dynTotal++;
+    dynCounts[dyn.trend] = (dynCounts[dyn.trend] || 0) + 1;
+    momCounts[dyn.momentum] = (momCounts[dyn.momentum] || 0) + 1;
+    avgImpulse += dyn.impulse || 0;
+    avgAccel += dyn.acceleration || 0;
+    avgVelocity += dyn.velocity || 0;
+  }
+  if (dynTotal > 0) { avgImpulse /= dynTotal; avgAccel /= dynTotal; avgVelocity /= dynTotal; }
+
   res.json({
     ts: now,
     pool: { total: tokens.length, active: withBuys.length, recent5m: recent5m.length, graduated: graduated.length },
@@ -5405,6 +5429,12 @@ app.get("/api/engine-state", (req, res) => {
     signals: signalFlow.slice(0, 20),
     modules,
     featureHeat,
+    dynamics: {
+      tracked: dynTotal,
+      trends: dynCounts,
+      momentum: momCounts,
+      avg: { velocity: +avgVelocity.toFixed(4), acceleration: +avgAccel.toFixed(6), impulse: +avgImpulse.toFixed(2) },
+    },
     solPrice: solUsdPrice,
     gradMc: gradMcUsd(),
   });

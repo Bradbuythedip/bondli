@@ -1120,8 +1120,8 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+6} fill="url(#hubGlow)"/>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+2} fill="none" stroke="url(#solGrad)" strokeWidth="1.5" opacity=".5" style={{animation:"gp 2s infinite"}}/>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR-1} fill={T.bg} stroke="url(#solGrad)" strokeWidth="2"/>
-{/* Bondli logo at top of brain circle */}
-<image href="/bondli-logo.svg" x={nc(nd.n).x-7} y={nc(nd.n).y-hubR+1} width="14" height="12" opacity=".8"/>
+{/* Bondli logo at top of brain circle — slightly larger for visibility */}
+<image href="/bondli-logo.svg" x={nc(nd.n).x-10} y={nc(nd.n).y-hubR-1} width="20" height="17" opacity=".85"/>
 <text x={nc(nd.n).x} y={nc(nd.n).y+4} textAnchor="middle" fill="url(#solGrad)" fontSize={mb?"6":"8"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{nd.label}</text>
 <text x={nc(nd.n).x} y={nc(nd.n).y+12} textAnchor="middle" fill={T.dm} fontSize={mb?"4":"5"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y-hubR+2} r="2.5" fill="#14F195" opacity=".9"><animate attributeName="opacity" values="1;.4;1" dur="1.5s" repeatCount="indefinite"/></circle>
@@ -1129,7 +1129,7 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 {(()=>{const pw=nd.pillImg?nw+14:nw;const px=nd.pillImg?nd.n.x-7:nd.n.x;return<>
 {nd.active>.5&&<rect x={px-2} y={nd.n.y-2} width={pw+4} height={nh+4} rx="7" fill={nd.c} opacity=".08" filter="url(#nglow)"/>}
 <rect x={px} y={nd.n.y} width={pw} height={nh} rx="5" fill={T.bg} stroke={nd.active>.5?nd.c:T.ft} strokeWidth="1" opacity={nd.active>.5?1:.5}/>
-{nd.pillImg?<image href="/pumpfun-pill.svg" x={px+3} y={nd.n.y+3} width={nh-6} height={nh-6} opacity=".8"/>:<text x={nd.n.x+5} y={nd.n.y+6} fontSize="5" fill={nd.c} opacity=".6">{nd.ico}</text>}
+{nd.pillImg?<image href="/pumpfun-pill.svg" x={px+4} y={nd.n.y+4} width={nh-9} height={nh-9} opacity=".8"/>:<text x={nd.n.x+5} y={nd.n.y+6} fontSize="5" fill={nd.c} opacity=".6">{nd.ico}</text>}
 <circle cx={px+pw-4} cy={nd.n.y+4} r="2" fill={nd.active>.5?T.gn:T.ft} opacity={nd.active>.5?1:.3}><animate attributeName="opacity" values={nd.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
 <text x={px+pw/2} y={nd.n.y+nh/2-1} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{nd.label}</text>
 <text x={px+pw/2} y={nd.n.y+nh/2+6} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
@@ -1164,6 +1164,39 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 {/* Feedback label */}
 <text x={W/2} y={fbY+nh+10} textAnchor="middle" fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".4">↑ feedback loops — outcomes train future decisions ↑</text>
 </svg>
+
+{/* ═══ DYNAMICS BAR — Acceleration, Impulse, Momentum ═══ */}
+{(()=>{const dy=engineState.dynamics;if(!dy||!dy.tracked)return null;const tr=dy.trends||{};const mm=dy.momentum||{};const av=dy.avg||{};
+const trendBars=[{k:"rocket",c:T.gn,l:"🚀"},{k:"rising",c:"#4ade80",l:"↑"},{k:"building",c:T.yl,l:"⬆"},{k:"stable",c:T.ft,l:"—"},{k:"fading",c:T.or,l:"↓"},{k:"crashing",c:T.rd,l:"💥"}];
+const accelColor=av.acceleration>0.005?T.gn:av.acceleration<-0.005?T.rd:T.ft;
+const impulseColor=av.impulse>15?T.gn:av.impulse>5?T.yl:T.ft;
+const momLabel=mm.sustained>mm.flash&&mm.sustained>mm.nascent?"SUSTAINED":mm.flash>mm.building?"FLASH":mm.building>mm.nascent?"BUILDING":"NASCENT";
+const momColor=momLabel==="SUSTAINED"?T.gn:momLabel==="FLASH"?T.or:momLabel==="BUILDING"?T.yl:T.ft;
+return<div style={{display:"flex",alignItems:"center",gap:mb?4:8,padding:"4px 8px",marginTop:4,background:T.bg+"88",borderRadius:6,border:"1px solid "+T.bd+"44",fontSize:mb?7:8,fontFamily:"monospace",flexWrap:"wrap"}}>
+{/* Acceleration gauge */}
+<div style={{display:"flex",alignItems:"center",gap:3}}>
+<span style={{color:T.ft,opacity:.6}}>d²S/dt²</span>
+<span style={{color:accelColor,fontWeight:800}}>{av.acceleration>0?"+":""}{(av.acceleration*1000).toFixed(1)}<span style={{color:T.ft,fontWeight:400,opacity:.5}}>m</span></span>
+</div>
+<span style={{color:T.bd}}>|</span>
+{/* Impulse (area under curve) */}
+<div style={{display:"flex",alignItems:"center",gap:3}}>
+<span style={{color:T.ft,opacity:.6}}>∫v·dt</span>
+<span style={{color:impulseColor,fontWeight:800}}>{av.impulse.toFixed(1)}</span>
+</div>
+<span style={{color:T.bd}}>|</span>
+{/* Momentum classification */}
+<div style={{display:"flex",alignItems:"center",gap:3}}>
+<span style={{color:T.ft,opacity:.6}}>momentum</span>
+<span style={{color:momColor,fontWeight:900,letterSpacing:.5}}>{momLabel}</span>
+</div>
+<span style={{color:T.bd}}>|</span>
+{/* Trend distribution mini-bar */}
+<div style={{display:"flex",alignItems:"center",gap:2,flex:1,minWidth:60}}>
+{trendBars.map(b=>{const cnt=(tr[b.k]||0)+(b.k==="building"?(mm.building||0):0);const pct=dy.tracked>0?cnt/dy.tracked*100:0;return pct>0?<div key={b.k} style={{height:6,borderRadius:3,background:b.c,flex:pct,minWidth:pct>5?4:2,opacity:.7}} title={`${b.k}: ${cnt}`}/>:null})}
+<span style={{color:T.ft,opacity:.4,marginLeft:2}}>{dy.tracked}tok</span>
+</div>
+</div>})()}
 </div>})()}
 </div>
 
