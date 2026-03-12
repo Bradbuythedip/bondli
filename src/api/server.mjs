@@ -30,6 +30,7 @@ import { scoreToken } from "../engine/velocity-scorer.mjs";
 // Intelligence — meme scoring, score dynamics, artwork originality
 import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
 import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
+import { MetaTracker, calcOptimalSize, classifyToken } from "../engine/meta-engine.mjs";
 
 // Launch Sessions (dev wallet generation + funding)
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
@@ -129,7 +130,7 @@ app.use((req, res, next) => {
 // SERVICES
 // ═══════════════════════════════════════
 let sessionStore, paymentVerifier, sessionManager, movers;
-let intel, scoreDynamics, artworkScanner;
+let intel, scoreDynamics, artworkScanner, metaTracker;
 const orch = new Orchestrator();
 
 async function initServices() {
@@ -141,8 +142,18 @@ async function initServices() {
   paymentVerifier = new PaymentVerifier(connection);
   await paymentVerifier.init();
 
+  // Meta tracker — narrative detection and memetic fitness tracking
+  metaTracker = new MetaTracker();
+  // Restore meta state from Redis
+  if (redis) {
+    try {
+      const metaState = await redis.get("meta:state");
+      if (metaState) metaTracker.import(JSON.parse(metaState));
+    } catch {}
+  }
+
   // Intelligence engine — thinking fast (score dynamics) and slow (ML + RAG)
-  intel = new MemeIntelligence(redis);
+  intel = new MemeIntelligence(redis, metaTracker);
   // Share intel engine with orchestrator so pre-buy safety gate uses same trained model
   orch.intel = intel;
   scoreDynamics = new ScoreDynamics(5000);
@@ -168,9 +179,10 @@ async function initServices() {
       }
       // Prune stale score dynamics entries
       scoreDynamics.prune();
-      // Persist artwork scanner
+      // Persist artwork scanner + meta tracker
       if (redis) {
         try { await redis.set("intel:artwork", JSON.stringify(artworkScanner.export()), "EX", 604800); } catch {}
+        try { await redis.set("meta:state", JSON.stringify(metaTracker.export()), "EX", 604800); } catch {}
       }
     } catch (e) {
       console.error("[INTEL] Feedback loop error:", e.message);
@@ -408,6 +420,13 @@ app.get("/api/score/:ca", apiLimiter, async (req, res) => {
         scored.rugScore = intelScore.rugScore;
         scored.rugFlags = intelScore.rugFlags;
         scored.chartPenalty = intelScore.chartPenalty;
+        // Meta narrative info
+        if (intelScore.narrative) {
+          scored.narrative = intelScore.narrative;
+          scored.narrativeName = intelScore.narrativeName;
+          scored.metaBoost = intelScore.metaBoost || 0;
+          scored.metaHeat = intelScore.metaHeat || 0;
+        }
       } catch {}
     }
 
@@ -532,8 +551,18 @@ app.get("/api/intel/stats", apiLimiter, (req, res) => {
     intel: intel ? intel.getStats() : null,
     dynamics: scoreDynamics ? { tracked: scoreDynamics.history.size } : null,
     artwork: artworkScanner ? artworkScanner.getStats() : null,
+    meta: metaTracker ? metaTracker.getCurrentMeta() : null,
   };
   res.json(stats);
+});
+
+// Meta narrative stats — what's hot right now
+app.get("/api/intel/meta", apiLimiter, (req, res) => {
+  if (!metaTracker) return res.json({ active: false });
+  res.json({
+    current: metaTracker.getCurrentMeta(),
+    narratives: metaTracker.getSummary(),
+  });
 });
 
 // Manual outcome label (for admin/testing)
@@ -933,13 +962,17 @@ function createLiveSim(id, settings) {
   const state = {
     settings: {
       minScore: settings.minScore || 28,
-      solPerTrade: settings.solPerTrade || 0.05,
+      solPerTrade: settings.solPerTrade || 0.08,  // Raised from 0.05 — 0.05 barely covers fees
       maxPositions: settings.maxPositions || 5,
-      tp1: settings.tp1 || 25, tp1Sell: settings.tp1Sell || 35,
-      tp2: settings.tp2 || 70, tp2Sell: settings.tp2Sell || 35,
-      tp3: settings.tp3 || 150, tp3Sell: settings.tp3Sell || 50,
-      sl1: settings.sl1 || 12, sl1Sell: settings.sl1Sell || 70,
-      sl2: settings.sl2 || 22,
+      // TP tiers: raised to ensure net profit after 25% cut + tx fees
+      // TP1 at 40%: after fees (25% of 40% = 10%), net ~30% minus tx costs = ~25% net
+      // Old TP1 at 25%: after fees net was ~13%, barely above breakeven
+      tp1: settings.tp1 || 40, tp1Sell: settings.tp1Sell || 30,
+      tp2: settings.tp2 || 100, tp2Sell: settings.tp2Sell || 30,
+      tp3: settings.tp3 || 250, tp3Sell: settings.tp3Sell || 40,
+      // SL tiers: tightened SL1 but loosened sell % — cut losers fast but don't dump all at once
+      sl1: settings.sl1 || 15, sl1Sell: settings.sl1Sell || 50,
+      sl2: settings.sl2 || 30,
       momentumExit: settings.momentumExit !== false,
     },
     positions: new Map(),    // ca → simulated position
@@ -1000,21 +1033,20 @@ function createLiveSim(id, settings) {
     });
   }
 
-  // Score-based position sizing (mirrors auto-ape exactly)
-  function calcPositionSize(score, trend, rugFlagCount) {
-    const minS = state.settings.minScore;
-    const range = Math.max(80 - minS, 20);
-    let mult = 0.5 + ((score - minS) / range);
-    if (trend === "rocket") mult += 0.2;
-    else if (trend === "rising") mult += 0.1;
-    else if (trend === "fading") mult -= 0.15;
-    else if (trend === "declining") mult -= 0.25;
-    mult -= rugFlagCount * 0.1;
-    mult = Math.max(0.4, Math.min(1.6, mult));
-    // Apply calibration bias
-    mult += state.calibration.adjustments.scoreBias * 0.01;
-    mult = Math.max(0.3, Math.min(1.8, mult));
-    return Math.round(state.settings.solPerTrade * mult * 1000) / 1000;
+  // Fee-aware position sizing — ensures trades are large enough to profit after costs
+  function calcPositionSize(score, trend, rugFlagCount, token) {
+    // Get meta boost for this token
+    const metaBoost = (metaTracker && token) ? metaTracker.getMetaBoost(token).boost : 0;
+
+    // Use optimal sizing from meta-engine (accounts for fees, meta heat, expected return)
+    const optimal = calcOptimalSize(score, metaBoost, state.settings.solPerTrade, trend, rugFlagCount);
+
+    // Apply calibration bias on top
+    let finalSize = optimal.size;
+    finalSize *= 1 + (state.calibration.adjustments.scoreBias * 0.01);
+    finalSize = Math.max(0.03, Math.min(state.settings.solPerTrade * 2.5, finalSize));
+
+    return Math.round(finalSize * 1000) / 1000;
   }
 
   state.interval = setInterval(async () => {
@@ -1102,7 +1134,9 @@ function createLiveSim(id, settings) {
           addDecision("SELL", { ca, name: pos.name, reason: "TP1", pnlPct: changePct.toFixed(1), sellPct: s.tp1Sell, action: `TP1 +${changePct.toFixed(0)}%` });
           log(`SIM TP1 ${pos.name}: +${changePct.toFixed(0)}% — would sell ${s.tp1Sell}%`, "profit");
           pos.tpHit = 1;
-        } else if (fromPeak > 30 && changePct > 10 && pos.tpHit === 0) {
+        } else if (fromPeak > 35 && changePct > 25 && pos.tpHit === 0) {
+          // Trailing stop: only triggers if we were up 25%+ and dropped 35% from peak
+          // Old: changePct > 10 was too close to breakeven after fees
           addDecision("SELL", { ca, name: pos.name, reason: "trailing", pnlPct: changePct.toFixed(1), sellPct: s.tp1Sell, action: `TRAIL +${changePct.toFixed(0)}%` });
           log(`SIM TRAIL ${pos.name}: +${changePct.toFixed(0)}% (down ${fromPeak.toFixed(0)}% from peak)`, "profit");
           pos.tpHit = 1;
@@ -1164,7 +1198,7 @@ function createLiveSim(id, settings) {
         const dyn = scoreDynamics?.get(t.ca);
         const trend = dyn?.trend || "new";
         const rugFlagCount = t.rugFlags?.length || 0;
-        const tradeSol = calcPositionSize(score, trend, rugFlagCount);
+        const tradeSol = calcPositionSize(score, trend, rugFlagCount, t);
         const sizeMult = +(tradeSol / state.settings.solPerTrade).toFixed(2);
 
         state.positions.set(t.ca, {

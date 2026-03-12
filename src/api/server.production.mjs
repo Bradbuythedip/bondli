@@ -41,6 +41,7 @@ import { heliusSmartSend, getOptimalPriorityFee } from "../engine/helius-enhance
 import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
 import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
 import { XSocialIntel } from "../engine/x-social-intel.mjs";
+import { MetaTracker } from "../engine/meta-engine.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
 
 // ═══════════════════════════════════════
@@ -94,7 +95,10 @@ if (REDIS_URL) {
 // Core services
 const sessionManager = new SessionManager(redis);
 const fleetTrader = new FleetTrader();
-const memeIntel = new MemeIntelligence(redis);
+const metaTracker = new MetaTracker();
+// Restore meta state from Redis
+if (redis) { try { const ms = await redis.get("meta:state"); if (ms) metaTracker.import(JSON.parse(ms)); } catch {} }
+const memeIntel = new MemeIntelligence(redis, metaTracker);
 const scoreDynamics = new ScoreDynamics(5000);
 const historicalMovers = new HistoricalMovers(redis);
 const artworkScanner = new ArtworkScanner(5000);
@@ -5269,6 +5273,7 @@ app.get("/api/intel/stats", (req, res) => {
       graduationRate: matureTokens.length > 0 ? (matureGraduated.length / matureTokens.length * 100).toFixed(1) + "%" : graduated.length > 0 ? (graduated.length / Math.max(1, tokens.length) * 100).toFixed(1) + "%" : "0%",
     },
     monitor: { tracking: hot.length },
+    meta: metaTracker ? metaTracker.getCurrentMeta() : null,
     // Top signals: additional validation feedback loop — must pass quality gate
     topSignals: unique.filter(t => {
       // Gate 1: minimum score threshold
