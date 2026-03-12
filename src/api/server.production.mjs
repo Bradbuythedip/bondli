@@ -2280,7 +2280,7 @@ app.post("/api/quick-ape", async (req, res) => {
       return res.status(400).json({ error: "Buy failed on all routes. Token may be inactive or liquidity too low." });
     }
 
-    // Track position immediately for instant bags visibility
+    // Track position immediately for instant wallet visibility
     trackBuy(wallet, ca, solAmount);
 
     // Wait for confirmation (non-blocking for response but log result)
@@ -2561,7 +2561,7 @@ app.post("/api/quick-sell", async (req, res) => {
       return res.json({ ok: false, signature: sig, percent: pct, method, confirmed: false, error: "Transaction sent but not confirmed on-chain. Position kept open — check Solscan and retry." });
     }
 
-    // Only track sell (remove from bags) AFTER confirmation
+    // Only track sell (remove from wallet) AFTER confirmation
     if (pct >= 100) trackSell(wallet, ca);
 
     res.json({ ok: true, signature: sig, percent: pct, method, confirmed: true, tokenBalance: +tokenBalance.toFixed(2) });
@@ -3609,7 +3609,7 @@ function startAutoTrader(wallet, settings) {
               tx.sign([kp]);
               const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
               state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: tradeSol, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2) });
-              trackBuy(wallet, t.ca, tradeSol); // instant bags visibility
+              trackBuy(wallet, t.ca, tradeSol); // instant wallet visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
               broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: tradeSol, mcap: t.mcapUsd, wallet, score: t._apeScore, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2) } });
             }
