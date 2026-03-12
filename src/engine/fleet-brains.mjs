@@ -256,18 +256,28 @@ function walletDecide(brain, gameState, elapsedSeconds, bondingPct) {
       return { action: "hold", reason: "externals_active_hold" };
     }
 
+    // ── MINIMUM PROFIT GUARD ──
+    // Don't sell at tiny margins that get eaten by tx fees + platform cut.
+    // Tx fees: ~0.002-0.005 SOL per trade (buy+sell = 2 txs).
+    // Platform cut: 25% of profit on free tier.
+    // Rent: ~0.002 SOL for token accounts.
+    // Need at least ~12% gross profit to net positive after all costs.
+    const MIN_PROFIT_BONDING_PCT = 15; // Don't trigger profit-taking below this bonding % progress
+    const isAboveBreakeven = bondingPct >= MIN_PROFIT_BONDING_PCT;
+
     // ── AXIOM 5: Sell into demand, never into vacuum ──
     switch (brain.sellTrigger) {
       case "momentum":
-        // Degen: sells when momentum turns negative
-        if (momentum < -0.05 * (1 - brain.fearFactor)) {
+        // Degen: sells when momentum turns negative — but only if above breakeven
+        if (momentum < -0.05 * (1 - brain.fearFactor) && isAboveBreakeven) {
           brain.phase = "selling";
           return { action: "sell", percent: (1 - brain.holdPct) * 100, reason: "momentum_dump" };
         }
         break;
       case "profit_target":
         // Accumulator: sells at 2-3x (checks via bonding progress)
-        if (bondingPct > 40 + brain.greed * 30) {
+        // Raised from 40+ to 55+ to ensure meaningful profit above fees/rent
+        if (bondingPct > 55 + brain.greed * 25 && isAboveBreakeven) {
           brain.phase = "selling";
           return { action: "sell", percent: 50, reason: "profit_target_1" };
         }

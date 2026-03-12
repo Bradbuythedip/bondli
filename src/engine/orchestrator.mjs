@@ -231,8 +231,16 @@ export class Orchestrator {
       }
       case "WHALE":
         return { side: "buy", amount: alloc * 0.7 };
-      case "LIQUIDATE":
+      case "LIQUIDATE": {
+        // Only liquidate if session is profitable enough to cover fees + rent
+        const sessionProfit = (session.totalSolRecovered || 0) - (session.totalSol || 0);
+        const minProfitForLiquidate = 0.01; // Need at least 0.01 SOL gross profit before liquidating
+        if (sessionProfit < minProfitForLiquidate) {
+          console.log(`[ORCH] LIQUIDATE skipped — session profit ${sessionProfit.toFixed(4)} SOL below threshold`);
+          return null;
+        }
         return { side: "sell", amount: Math.floor(alloc * 0.6 * 1e9) };
+      }
       case "PURGE": {
         // Anti-sniper purge: sell a percentage
         const purgeAmt = Math.floor(alloc * (this.purgePercent / 100) * 1e9);

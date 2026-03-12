@@ -876,11 +876,23 @@ class RAGMemory {
   getStats() {
     const withOutcome = this.store.filter(e => e.outcome).length;
     const graduated = this.store.filter(e => e.outcome?.graduated).length;
+    // Also count tokens that graduated by other signals (mcap, bonding curve, etc.)
+    const gradBySignal = this.store.filter(e => e.graduated || e.features?.graduated).length;
+    const totalGrad = Math.max(graduated, gradBySignal);
+    // Use whichever denominator is available: labeled outcomes first, then total tokens
+    let graduationRate;
+    if (withOutcome > 0) {
+      graduationRate = (graduated / withOutcome * 100).toFixed(1) + "%";
+    } else if (this.store.length > 0 && totalGrad > 0) {
+      graduationRate = (totalGrad / this.store.length * 100).toFixed(1) + "%";
+    } else {
+      graduationRate = "0%";
+    }
     return {
       total: this.store.length,
       labeled: withOutcome,
-      graduated,
-      graduationRate: withOutcome > 0 ? (graduated / withOutcome * 100).toFixed(1) + "%" : "N/A",
+      graduated: totalGrad,
+      graduationRate,
     };
   }
 
