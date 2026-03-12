@@ -13,6 +13,8 @@ import { PumpSdk, OnlinePumpSdk, getBuyTokenAmountFromSolAmount, getSellSolAmoun
 import BN from "bn.js";
 import bs58 from "bs58";
 import CONFIG from "./config.mjs";
+import { getOptimalPriorityFee, heliusSmartSend } from "./helius-enhanced.mjs";
+import { ContinuousVolumeEngine, AutoRugController } from "./volume-engine.mjs";
 import { EventEmitter } from "events";
 import WebSocket from "ws";
 
@@ -411,35 +413,8 @@ const ROLES = [
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// ═══════════════════════════════════════
-// HELIUS SEND — use Helius endpoint for better tx landing (staked connections)
-// Falls back to standard RPC if Helius not configured or fails
-// ═══════════════════════════════════════
-async function heliusSendRawTx(connection, serializedTx, opts = {}) {
-  if (CONFIG.HELIUS_SEND_TX_URL) {
-    try {
-      const base58Tx = bs58.encode(serializedTx);
-      const res = await fetch(CONFIG.HELIUS_SEND_TX_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0", id: 1,
-          method: "sendTransaction",
-          params: [base58Tx, { skipPreflight: true, encoding: "base58", maxRetries: 3 }],
-        }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.result) return data.result;
-      }
-    } catch (e) {
-      console.warn(`[HELIUS-TX] Failed, falling back to standard RPC:`, e.message);
-    }
-  }
-  // Fallback: standard RPC sendRawTransaction
-  return connection.sendRawTransaction(serializedTx, { skipPreflight: true, maxRetries: 3, ...opts });
-}
+// HELIUS SEND — delegated to helius-enhanced.mjs (priority fees + smart tx)
+const heliusSendRawTx = heliusSmartSend;
 
 // ═══════════════════════════════════════
 // ENFORCED PROFIT SKIM
@@ -817,98 +792,85 @@ class FleetTrader extends EventEmitter {
     if (!session.running) return;
     await sleep(2000); // brief pause to let chart render
 
-    // ═══ PHASE 2: Volume generation (3-5 MINUTES) ═══
-    // This is the critical phase — paint the chart to attract real buyers
+    // ═══ PHASE 2: CONTINUOUS VOLUME + AUTO-RUG ═══
+    // Volume engine runs continuously with escalating trade sizes
+    // Auto-rug monitors external volume and triggers atomic sell when it dries up
     if (!session.running) return;
     session.phase = "volume";
     this.emit("phase", { ca, phase: "volume" });
+    console.log(`[FLEET] CREATE v7: Phase 2 — continuous escalating volume + auto-rug monitor...`);
 
-    // Run volume for at least 3 minutes (time-based, not cycle-based)
-    const volumeEnd = Date.now() + (3 * 60 * 1000) + Math.random() * (2 * 60 * 1000); // 3-5 min
-    let volCycle = 0;
-    console.log(`[FLEET] CREATE v6: Phase 2 — volume for ${Math.round((volumeEnd - Date.now()) / 60000)}min...`);
+    // Start continuous volume engine
+    const volumeEngine = new ContinuousVolumeEngine(session, {
+      onlineSdk: this.onlineSdk,
+      connection: this.connection,
+    });
+    session._volumeEngine = volumeEngine;
 
-    while (Date.now() < volumeEnd && session.running) {
-      if (gameState?.alive) {
-        const gs = gameState.snapshot();
-        if (gs.signal === "SELL_NOW") {
-          console.log(`[FLEET] SELL_NOW during volume — going to sell phase`);
-          break;
-        }
-        if (volCycle % 3 === 0) {
-          console.log(`[FLEET] [VOL] round ${volCycle} | ${gs.uniqueBuyers} ext buyers | ${gs.buyPressure}% bp | ${gs.signal}`);
-        }
-      }
+    // Forward volume engine events
+    volumeEngine.on("trade", (data) => this.emit("trade", data));
 
-      await this._generateVolume(session, global, feeConfig, 2);
-      volCycle++;
-      
-      try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
+    // Start auto-rug controller (monitors for volume drought)
+    const autoRug = new AutoRugController(session, {
+      onlineSdk: this.onlineSdk,
+      connection: this.connection,
+    });
+    session._autoRug = autoRug;
+
+    autoRug.on("drought-detected", (data) => {
+      console.log(`[FLEET] Auto-rug triggered: ${data.droughtSec}s drought`);
+      volumeEngine.stop(); // stop volume immediately
+      this.emit("phase", { ca, phase: "auto-rug" });
+    });
+
+    autoRug.on("rug-complete", (data) => {
+      console.log(`[FLEET] Auto-rug complete: ${data.sold} wallets sold, master: ${data.masterBalance?.toFixed(4)} SOL`);
+      session.phase = "rugged";
+      this.emit("phase", { ca, phase: "rugged" });
+      this.emit("rug-complete", { ca, ...data });
+    });
+
+    autoRug.on("rug-failed", (data) => {
+      console.error(`[FLEET] Auto-rug failed: ${data.error}`);
+    });
+
+    // Run both in parallel — volume pumps while auto-rug monitors
+    await Promise.race([
+      volumeEngine.start(),
+      autoRug.start(),
+    ]);
+
+    // If auto-rug triggered, we're done
+    if (autoRug.triggered) {
+      session.phase = "rugged";
+      this.emit("phase", { ca, phase: "rugged" });
+      console.log(`[FLEET] Session ended via auto-rug. Volume engine stats:`, volumeEngine.snapshot());
+      return;
     }
 
-    console.log(`[FLEET] Volume phase done — ${volCycle} cycles, ${session.tradeCount} total trades`);
-
-    // ═══ PHASE 3: Sell INTO demand ═══
+    // If volume stopped for another reason (manual stop, SELL_NOW signal)
+    // Fall back to sell phase
     if (!session.running) return;
     session.phase = "selling";
     this.emit("phase", { ca, phase: "selling" });
-    console.log(`[FLEET] CREATE v6: Phase 3 — sell into demand...`);
+    console.log(`[FLEET] CREATE v7: Fallback sell phase...`);
 
     try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
 
-    // Sort wallets by sell delay, sell one at a time
     const sellOrder = [...funded].sort((a, b) => (a.roleConfig.sellDelay || 30) - (b.roleConfig.sellDelay || 30));
-
     for (let i = 0; i < sellOrder.length && session.running; i++) {
       const wallet = sellOrder[i];
-
-      // Wait for demand before selling (check GameState)
-      let waitedForDemand = 0;
-      const maxWaitForDemand = 60000; // max 60s waiting per wallet
-      
-      while (waitedForDemand < maxWaitForDemand && session.running) {
-        if (gameState?.alive) {
-          const gs = gameState.snapshot();
-          // Good conditions to sell into:
-          if (gs.signal === "SELL_NOW") break; // emergency — sell regardless
-          if (gs.buyPressure > 45) break;       // buyers are active — sell into them
-          if (gs.uniqueBuyers >= 2) break;       // real people buying
-          if (gs.momentum > 0.1) break;          // price going up — good time to take profit
-        }
-        // If no GameState or just launched, wait then sell anyway
-        if (!gameState?.alive && waitedForDemand > 15000) break;
-        
-        await sleep(5000);
-        waitedForDemand += 5000;
-        
-        if (waitedForDemand % 15000 === 0) {
-          console.log(`[FLEET] [${wallet.role}] Waiting for demand... (${(waitedForDemand/1000).toFixed(0)}s)`);
-        }
-      }
-
-      if (!session.running) break;
-      
-      // Sell this wallet's tokens
-      console.log(`[FLEET] [${wallet.role}] Selling (waited ${(waitedForDemand/1000).toFixed(0)}s for demand)...`);
+      console.log(`[FLEET] [${wallet.role}] Selling...`);
       try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
-      
-      // Don't sell everything — keep 15-30% for moonshot potential
-      const holdBack = 0.15 + Math.random() * 0.15; // keep 15-30%
-      const sellPct = (wallet.roleConfig.sellPct || 0.70) * (1 - holdBack);
-      
       await this._runSellLoop(session, wallet, global, feeConfig);
-
-      // Gap between wallets selling (10-25s, looks like different people taking profit)
-      if (i < sellOrder.length - 1) {
-        await sleep(10000 + Math.random() * 15000);
-      }
+      if (i < sellOrder.length - 1) await sleep(5000 + Math.random() * 10000);
     }
 
-    // ═══ PHASE 5: Hold remainder ═══
+    // ═══ PHASE 3: Hold remainder ═══
     if (session.running) {
       session.phase = "holding";
       this.emit("phase", { ca, phase: "holding" });
-      console.log(`[FLEET] CREATE v5: Phase 5 — holding remaining tokens. Close manually when ready.`);
+      console.log(`[FLEET] CREATE v7: holding remaining tokens. Close manually when ready.`);
     }
   }
 
@@ -947,51 +909,61 @@ class FleetTrader extends EventEmitter {
     await Promise.allSettled(buyPromises);
     console.log(`[FLEET] APE: ${session.tradeCount} buys landed`);
 
-    // Phase 2: Hold briefly — let the chart develop, wait for other buyers
-    // GameState continuously monitors — can extend or cut hold short
+    // Phase 2: Hold + continuous volume + auto-rug
+    // Volume engine keeps chart active, auto-rug dumps when volume dries
     if (!session.running) return;
     session.phase = "holding";
     this.emit("phase", { ca, phase: "holding" });
-    const baseHoldTime = (session.fleetConfig?.duration || 1) * 60 * 1000;
-    let holdEnd = Date.now() + baseHoldTime;
-    console.log(`[FLEET] APE: Holding for ${(baseHoldTime / 1000).toFixed(0)}s (GameState may adjust)...`);
+    console.log(`[FLEET] APE: Phase 2 — continuous volume + auto-rug monitor...`);
 
-    while (Date.now() < holdEnd && session.running) {
-      await sleep(5000 + Math.random() * 8000);
-      if (!session.running) break;
+    // Start continuous volume engine
+    const volumeEngine = new ContinuousVolumeEngine(session, {
+      onlineSdk: this.onlineSdk,
+      connection: this.connection,
+    });
+    session._volumeEngine = volumeEngine;
+    volumeEngine.on("trade", (data) => this.emit("trade", data));
 
-      // Check GameState for early exit or hold extension
-      if (session.gameState?.alive) {
-        const gs = session.gameState.snapshot();
+    // Start auto-rug controller
+    const autoRug = new AutoRugController(session, {
+      onlineSdk: this.onlineSdk,
+      connection: this.connection,
+    });
+    session._autoRug = autoRug;
 
-        if (gs.signal === "SELL_NOW") {
-          console.log(`[GAME] APE: ⚡ SELL_NOW during hold — cutting hold short`);
-          break; // exit hold, go straight to sells
-        }
-        if (gs.signal === "RIDE" && gs.holdExtension > 0) {
-          const newEnd = Date.now() + gs.holdExtension * 1000;
-          if (newEnd > holdEnd) {
-            console.log(`[GAME] APE: 📈 Extending hold by ${gs.holdExtension}s (${gs.buyPressure}% buy pressure)`);
-            holdEnd = newEnd;
-          }
-        }
+    autoRug.on("drought-detected", () => {
+      volumeEngine.stop();
+      this.emit("phase", { ca, phase: "auto-rug" });
+    });
+    autoRug.on("rug-complete", (data) => {
+      session.phase = "rugged";
+      this.emit("phase", { ca, phase: "rugged" });
+      this.emit("rug-complete", { ca, ...data });
+    });
 
-        // Log game state periodically
-        if (Math.random() < 0.3) {
-          console.log(`[GAME] ${gs.signal} | bp:${gs.buyPressure}% | mom:${gs.momentum} | buyers:${gs.uniqueBuyers} | vol:${gs.volumeRate}/min${gs.whaleAlert ? " | 🐋" : ""}${gs.devSelling ? " | ⚠DEV" : ""}`);
-        }
+    // Also respect duration limit — stop after configured duration
+    const baseHoldTime = (session.fleetConfig?.duration || 5) * 60 * 1000;
+    const durationTimer = setTimeout(() => {
+      if (session.running && !autoRug.triggered) {
+        console.log(`[FLEET] APE: Duration limit reached — stopping volume`);
+        volumeEngine.stop();
+        autoRug.stop();
       }
+    }, baseHoldTime);
 
-      // During hold, run coordinated volume to attract real buyers
-      if (Date.now() < holdEnd && session.running) {
-        const activeWallets = fleetWallets.filter(w => w.funded && w.trades.length > 0);
-        if (activeWallets.length >= 2) {
-          // Run one volume cycle per hold iteration
-          await this._generateVolume(session, global, feeConfig, 1);
-        } else {
-          await sleep(5000);
-        }
-      }
+    // Run both in parallel
+    await Promise.race([
+      volumeEngine.start(),
+      autoRug.start(),
+    ]);
+
+    clearTimeout(durationTimer);
+
+    // If auto-rug triggered, we're done
+    if (autoRug.triggered) {
+      session.phase = "rugged";
+      console.log(`[FLEET] APE: Auto-rug complete`);
+      return;
     }
 
     // Phase 3: Exit — staggered sells (faster than CREATE mode)
@@ -1466,8 +1438,10 @@ class FleetTrader extends EventEmitter {
     const tokenAmount = getBuyTokenAmountFromSolAmount({ global, feeConfig, mintSupply, bondingCurve, amount: solBN });
     if (tokenAmount.isZero()) return { ok: false, error: "Zero tokens" };
     const instructions = await this.sdk.buyInstructions({ global, bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo, mint, user: keypair.publicKey, amount: tokenAmount, solAmount: solBN, slippage: 25 });
+    // Dynamic priority fee from Helius
+    const priorityFee = await getOptimalPriorityFee();
     const tx = new Transaction();
-    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 150_000 }), ...instructions);
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
     // Use Jito for MEV protection on buys (most vulnerable to sandwich)
     const sig = await this._sendWithJito(tx, [keypair]);
     return { ok: true, sig, tokens: tokenAmount.toString() };
@@ -1486,9 +1460,11 @@ class FleetTrader extends EventEmitter {
     const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
     const solOut = getSellSolAmountFromTokenAmount({ global, feeConfig, mintSupply, bondingCurve, amount: sellAmount });
     const instructions = await this.sdk.sellInstructions({ global, bondingCurveAccountInfo, bondingCurve, mint, user: keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 50 });
+    // Dynamic priority fee from Helius
+    const priorityFee = await getOptimalPriorityFee();
     const tx = new Transaction();
-    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 150_000 }), ...instructions);
-    // Use Helius endpoint for sells (better landing rate via staked connections)
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
+    // Use Helius smart send for sells (staked connections + auto-retry)
     tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
     tx.feePayer = keypair.publicKey;
     tx.sign(keypair);
@@ -1504,7 +1480,9 @@ class FleetTrader extends EventEmitter {
     if (session.phase === "closed") return session._closeResult || {};
     session.running = false; session.phase = "closing";
     this.emit("phase", { ca, phase: "closing" });
-    // Stop game state monitoring
+    // Stop volume engine, auto-rug, and game state monitoring
+    if (session._volumeEngine) session._volumeEngine.stop();
+    if (session._autoRug) session._autoRug.stop();
     if (session.gameState) session.gameState.stop();
     await sleep(3000);
     // Fetch global/feeConfig with retry — critical for selling tokens
@@ -1624,6 +1602,8 @@ class FleetTrader extends EventEmitter {
         activeWallets: s.fleetWallets.filter(w => w.funded).length,
         walletDetails: s.fleetWallets.map(w => ({ role: w.role, pubkey: w.pubkey.slice(0, 8), allocation: w.allocation, spent: w.solSpent, recovered: w.solRecovered, trades: w.trades.length })),
         gameState: s.gameState?.alive ? s.gameState.snapshot() : null,
+        volumeEngine: s._volumeEngine?.snapshot() || null,
+        autoRug: s._autoRug?.snapshot() || null,
       };
     }
     return { sessions, activeSessions: this.sessions.size };
