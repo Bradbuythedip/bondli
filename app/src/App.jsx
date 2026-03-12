@@ -932,34 +932,37 @@ const hasPatterns=(chartPatterns?.total||0)>0;
 /* Bezier curve helper: creates smooth S-curve between two points */
 const bezier=(a,b)=>{const dx=b.x-a.x;const dy=b.y-a.y;if(Math.abs(dy)>Math.abs(dx)){const cy1=a.y+dy*0.4;const cy2=b.y-dy*0.4;return`M${a.x} ${a.y} C${a.x} ${cy1},${b.x} ${cy2},${b.x} ${b.y}`}const cx1=a.x+dx*0.4;const cx2=b.x-dx*0.4;return`M${a.x} ${a.y} C${cx1} ${a.y},${cx2} ${b.y},${b.x} ${b.y}`};
 /* SVG dimensions — generous spacing to avoid overlaps */
-const W=mb?360:540;const H=mb?280:280;
+const W=mb?360:540;const H=mb?230:280;
 /* Node sizes */
-const nw=mb?48:56;const nh=mb?22:20;
+const nw=mb?44:56;const nh=mb?20:20;
 const cx=W/2;/* center x */
-const hubR=mb?22:28;/* Hub circle radius — bigger for brain */
+const hubR=mb?20:28;/* Hub circle radius — bigger for brain */
 /* Tier 1: inputs (top row, spread wide) — shifted down to make room for pill icon */
-const t1sp=mb?70:100;/* input spacing */
-const pump={x:cx-nw/2-t1sp,y:28};
-const scan={x:cx-nw/2,y:28};
-const score={x:cx-nw/2+t1sp,y:28};
+const t1sp=mb?62:100;/* input spacing */
+const t1cx=mb?cx+14:cx;/* mobile: shift input row right to clear tier labels */
+const pump={x:t1cx-nw/2-t1sp,y:28};
+const scan={x:t1cx-nw/2,y:28};
+const score={x:t1cx-nw/2+t1sp,y:28};
 /* Tier 2: process — hub centered, sides brought closer to center */
-const t2y=mb?76:78;
-const t2sp=mb?85:105;/* tighter gap from hub — more centered */
-const social={x:cx-nw/2-t2sp,y:t2y};
-const hub={x:cx-nw/2,y:t2y};
-const rugd={x:cx-nw/2+t2sp,y:t2y};
-/* Tier 3: outputs (4 across, properly margined so right cards don't clip) */
-const outY=mb?135:135;
-const outMargin=mb?20:50;/* generous margin on each side — keeps all cards visible */
-const outSpan=W-2*outMargin-nw;/* distributable space for card left edges */
+const t2y=mb?68:78;
+const t2cx=mb?cx+14:cx;/* mobile: shift right to clear labels */
+const t2sp=mb?78:105;/* tighter gap from hub — more centered */
+const social={x:t2cx-nw/2-t2sp,y:t2y};
+const hub={x:t2cx-nw/2,y:t2y};
+const rugd={x:t2cx-nw/2+t2sp,y:t2y};
+/* Tier 3: outputs (4 across, asymmetric margins — left needs room for tier labels) */
+const outY=mb?120:135;
+const outL=mb?36:50;/* left margin — clears tier labels on mobile */
+const outR=mb?8:50;/* right margin */
+const outSpan=W-outL-outR-nw;/* distributable space for card left edges */
 const outGap=outSpan/3;
-const outStart=outMargin;
+const outStart=outL;
 const ape={x:outStart,y:outY};
 const watch={x:outStart+outGap,y:outY};
 const skip={x:outStart+outGap*2,y:outY};
 const rug={x:outStart+outGap*3,y:outY};
 /* Tier 4: feedback (bottom, aligned under their connected outputs) */
-const fbY=mb?200:205;
+const fbY=mb?172:205;
 const learner={x:ape.x,y:fbY};
 const gradW={x:watch.x,y:fbY};
 const patterns={x:rug.x,y:fbY};
@@ -1031,8 +1034,8 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 <path d={`M${nt(learner).x} ${nt(learner).y} C${nt(learner).x-15} ${nt(learner).y-30},${nb(score).x-25} ${nb(score).y+25},${nb(score).x} ${nb(score).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* GradWatch → Hub: straight up */}
 <path d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
-{/* Patterns → Rug Detect: right side loop — extra wide radius to clear RUG card */}
-<path d={`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+80} ${nr(patterns).y},${nr(rugd).x+80} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+{/* Patterns → Rug Detect: right side loop — wide radius to clear RUG card */}
+{(()=>{const fbOff=mb?35:80;return<path d={`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+fbOff} ${nr(patterns).y},${nr(rugd).x+fbOff} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>})()}
 {/* APE → Learner: straight down */}
 <path d={bezier(nb(ape),nt(learner))} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* WATCH → GradWatch: straight down */}
@@ -1100,7 +1103,7 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 </>}
 {/* Patterns → Rug Detect (pattern memory improves detection) */}
 {/* Patterns → RugDetect (route along right edge) */}
-{hasPatterns&&(()=>{const p=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+80} ${nr(patterns).y},${nr(rugd).x+80} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;return<>
+{hasPatterns&&(()=>{const fbOff=mb?35:80;const p=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+fbOff} ${nr(patterns).y},${nr(rugd).x+fbOff} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;return<>
 <path d={p} fill="none" stroke={T.or} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
 <circle r="1.5" fill={T.or} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.2s" repeatCount="indefinite" path={p}/></circle>
 </>})()}
