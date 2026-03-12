@@ -2557,15 +2557,37 @@ app.post("/api/quick-sell", async (req, res) => {
       return res.status(400).json({ error: "Sell failed: " + errorSummary.slice(0, 200) });
     }
 
-    // Track sell for immediate bags update
+    // Confirm transaction on-chain before marking position as sold
+    // Wait up to 30s for confirmation — if it fails, position stays open
+    let confirmed = false;
+    try {
+      await connection.confirmTransaction(sig, "confirmed");
+      confirmed = true;
+      console.log(`[SELL] Confirmed: ${sig}`);
+    } catch (e) {
+      console.log(`[SELL] Confirmation failed for ${sig}: ${e.message} — checking tx status`);
+      // Fallback: check if the transaction actually landed despite confirmation timeout
+      try {
+        const txStatus = await connection.getSignatureStatus(sig);
+        if (txStatus?.value?.confirmationStatus === "confirmed" || txStatus?.value?.confirmationStatus === "finalized") {
+          confirmed = true;
+          console.log(`[SELL] Tx landed despite confirmation timeout: ${sig}`);
+        } else if (txStatus?.value?.err) {
+          console.log(`[SELL] Tx failed on-chain: ${sig} err=${JSON.stringify(txStatus.value.err)}`);
+        }
+      } catch {}
+    }
+
+    if (!confirmed) {
+      // Transaction may not have landed — don't remove position
+      console.log(`[SELL] NOT CONFIRMED — keeping position open for ${ca.slice(0,8)}`);
+      return res.json({ ok: false, signature: sig, percent: pct, method, confirmed: false, error: "Transaction sent but not confirmed on-chain. Position kept open — check Solscan and retry." });
+    }
+
+    // Only track sell (remove from bags) AFTER confirmation
     if (pct >= 100) trackSell(wallet, ca);
 
-    // Background confirmation
-    connection.confirmTransaction(sig, "confirmed").then(() => {
-      console.log(`[SELL] Confirmed: ${sig}`);
-    }).catch(() => {});
-
-    res.json({ ok: true, signature: sig, percent: pct, method, tokenBalance: +tokenBalance.toFixed(2) });
+    res.json({ ok: true, signature: sig, percent: pct, method, confirmed: true, tokenBalance: +tokenBalance.toFixed(2) });
   } catch (e) {
     console.error("[QUICK-SELL] Error:", e.message);
     res.status(500).json({ error: e.message });
@@ -2831,7 +2853,19 @@ function startAutoTrader(wallet, settings) {
               const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
               tx.sign([kp]);
               const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-              return sig;
+              // Confirm before returning — if not confirmed, don't close position
+              try {
+                await connection.confirmTransaction(sig, "confirmed");
+                return sig;
+              } catch {
+                // Check if tx actually landed despite timeout
+                try {
+                  const st = await connection.getSignatureStatus(sig);
+                  if (st?.value?.confirmationStatus === "confirmed" || st?.value?.confirmationStatus === "finalized") return sig;
+                } catch {}
+                log(`Sell tx not confirmed ${ca.slice(0,6)} (${reason}): ${sig} — keeping position`);
+                return null;
+              }
             }
           }
         } catch (e) { log(`Sell error ${ca.slice(0,6)} (${reason}): ${e.message}`); }
@@ -2974,9 +3008,11 @@ function startAutoTrader(wallet, settings) {
               if (dyn.trend === "crashing" && dyn.scores >= 3) {
                 log(`CRASH EXIT ${ca.slice(0,6)}: score v=${dyn.velocity}/s a=${dyn.acceleration}/s² trend=CRASHING — FULL SELL`);
                 const sig = await execSell(ca, 100, kp, "crash-exit");
-                if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "CRASH", reason: "score-crashing", velocity: dyn.velocity } });
-                exitPosition(ca, 100, "crash-exit");
-                trackSell(wallet, ca);
+                if (sig) {
+                  broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "CRASH", reason: "score-crashing", velocity: dyn.velocity } });
+                  exitPosition(ca, 100, "crash-exit");
+                  trackSell(wallet, ca);
+                }
                 continue;
               }
               // Fading: score still positive but decelerating hard = pump dying
@@ -2994,9 +3030,11 @@ function startAutoTrader(wallet, settings) {
               if (scoreDrop >= 30) {
                 log(`MOMENTUM EXIT ${ca.slice(0,6)}: score ${pos.entryScore}→${currentScore} (−${scoreDrop}) — FULL SELL`);
                 const sig = await execSell(ca, 100, kp, "momentum-exit");
-                if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOMENTUM", reason: "score-crash" } });
-                exitPosition(ca, 100, "momentum-exit");
-                trackSell(wallet, ca);
+                if (sig) {
+                  broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOMENTUM", reason: "score-crash" } });
+                  exitPosition(ca, 100, "momentum-exit");
+                  trackSell(wallet, ca);
+                }
                 continue;
               } else if (scoreDrop >= 20) {
                 s.sl1 = Math.round(s.sl1 * 0.5);
@@ -3085,25 +3123,31 @@ function startAutoTrader(wallet, settings) {
           if (changePct <= -80) {
             log(`Moonbag dead ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — full exit`);
             const sig = await execSell(ca, 100, kp, "moonbag-dead");
-            if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "moonbag-dead" } });
-            exitPosition(ca, 100, "moonbag-dead");
-            trackSell(wallet, ca);
+            if (sig) {
+              broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "moonbag-dead" } });
+              exitPosition(ca, 100, "moonbag-dead");
+              trackSell(wallet, ca);
+            }
           } else if (fromPeak > 60 && changePct > 30) {
             // Moonbag was running hard but pulled back significantly — take remaining profit
             log(`Moonbag trail ${ca.slice(0,6)}: +${changePct.toFixed(0)}% (−${fromPeak.toFixed(0)}% from peak) — exit moonbag`);
             const sig = await execSell(ca, 100, kp, "moonbag-trail");
-            if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "moonbag-trail" } });
-            exitPosition(ca, 100, "moonbag-trail");
-            trackSell(wallet, ca);
+            if (sig) {
+              broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, reason: "moonbag-trail" } });
+              exitPosition(ca, 100, "moonbag-trail");
+              trackSell(wallet, ca);
+            }
           }
         }
         // SL2: Full exit
         else if (!pos.isMoonbag && pos.slHit < 2 && changePct <= -s.sl2) {
           log(`SL2 ${ca.slice(0,6)}: ${changePct.toFixed(0)}% — full exit`);
           const sig = await execSell(ca, 100, kp, "SL2");
-          if (sig) broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "SL2", reason: "stop-loss" } });
-          exitPosition(ca, 100, "SL2");
-          trackSell(wallet, ca);
+          if (sig) {
+            broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "SL2", reason: "stop-loss" } });
+            exitPosition(ca, 100, "SL2");
+            trackSell(wallet, ca);
+          }
         }
         // SL1: Reduce exposure — sell sl1Sell% to cut risk
         else if (!pos.isMoonbag && pos.slHit < 1 && changePct <= -s.sl1) {
