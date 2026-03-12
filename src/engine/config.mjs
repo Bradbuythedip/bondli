@@ -1,20 +1,20 @@
-// BONDLI v3.0 Config
+// BONDLI v4.0 Config — Helius Enhanced + Volume Engine
 import "dotenv/config";
 
-// Auto-construct Helius URLs from API key (free tier works great for ≤50 req/s)
+// Auto-construct Helius URLs from API key
 const _heliusKey = process.env.HELIUS_API_KEY || "";
 const _heliusRpc = _heliusKey ? `https://mainnet.helius-rpc.com/?api-key=${_heliusKey}` : "";
 const _heliusWs  = _heliusKey ? `wss://mainnet.helius-rpc.com/?api-key=${_heliusKey}` : "";
 const _heliusSendTx = _heliusKey ? `https://mainnet.helius-rpc.com/?api-key=${_heliusKey}` : "";
 
 export const CONFIG = {
-  // If HELIUS_API_KEY is set, auto-use Helius RPC (massively better than public RPC)
+  // Helius RPC (staked connections, priority fee API, smart transactions)
   RPC_URL:           process.env.RPC_URL || _heliusRpc || "https://api.mainnet-beta.solana.com",
   WS_URL:            process.env.WS_URL || _heliusWs || "",
   HELIUS_API_KEY:    _heliusKey,
   USE_HELIUS_ATLAS:  process.env.USE_HELIUS_ATLAS === "true",
   HELIUS_SEND_TX_URL: process.env.HELIUS_SEND_TX_URL || _heliusSendTx,
-  HELIUS_SMART_TX:   process.env.HELIUS_SMART_TX === "true",
+  HELIUS_SMART_TX:   process.env.HELIUS_SMART_TX !== "false", // default ON now
   MASTER_SEED:       process.env.MASTER_SEED || "",
   TOKEN_CA:          process.env.TOKEN_CA || process.argv[2] || "",
   TOKEN_WEIGHTS:     process.env.TOKEN_WEIGHTS || "",
@@ -30,6 +30,17 @@ export const CONFIG = {
   PLATFORM_WALLET:   process.env.PLATFORM_WALLET || "anal.sol",
   FEE_SALT:          process.env.FEE_SALT || "bndl3xK9",
   PURGE_PERCENT:     parseInt(process.env.PURGE_PERCENT || "30"),
+
+  // Volume engine — continuous self-trading
+  VOLUME_MIN_INTERVAL_MS:  parseInt(process.env.VOLUME_MIN_INTERVAL_MS || "800"),   // fastest trade gap
+  VOLUME_MAX_INTERVAL_MS:  parseInt(process.env.VOLUME_MAX_INTERVAL_MS || "4000"),  // slowest trade gap
+  VOLUME_ESCALATION_RATE:  parseFloat(process.env.VOLUME_ESCALATION_RATE || "1.08"), // multiply volume each cycle
+  VOLUME_MAX_MULTIPLIER:   parseFloat(process.env.VOLUME_MAX_MULTIPLIER || "5.0"),   // max escalation cap
+
+  // Auto-rug — volume drought detection
+  AUTO_RUG_ENABLED:        process.env.AUTO_RUG_ENABLED !== "false", // default ON
+  AUTO_RUG_DROUGHT_SEC:    parseInt(process.env.AUTO_RUG_DROUGHT_SEC || "45"),       // seconds of no external volume
+  AUTO_RUG_MIN_WAIT_SEC:   parseInt(process.env.AUTO_RUG_MIN_WAIT_SEC || "60"),      // minimum time before auto-rug can trigger
 };
 
 export const WALLET_ROLES = [

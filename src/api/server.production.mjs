@@ -37,6 +37,7 @@ import { FleetTrader, skimSweep } from "../engine/fleet-trader.mjs";
 import { createToken } from "../engine/token-creator.mjs";
 import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, PLATFORM_WALLET } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
+import { heliusSmartSend, getOptimalPriorityFee } from "../engine/helius-enhanced.mjs";
 import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
 import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
 import { XSocialIntel } from "../engine/x-social-intel.mjs";
@@ -49,32 +50,8 @@ const PORT = parseInt(process.env.PORT || "3001");
 // CONFIG.RPC_URL now auto-uses Helius when HELIUS_API_KEY is set
 const RPC_URL = process.env.RPC_URL || CONFIG.RPC_URL || "https://api.mainnet-beta.solana.com";
 
-// Helius-optimized sendTransaction (staked connections = better landing rate)
-// Falls back to standard connection.sendRawTransaction if Helius unavailable
-async function heliusSendRawTx(conn, serializedTx, opts = {}) {
-  if (CONFIG.HELIUS_SEND_TX_URL) {
-    try {
-      const base58Tx = bs58.encode(serializedTx);
-      const res = await fetch(CONFIG.HELIUS_SEND_TX_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0", id: 1,
-          method: "sendTransaction",
-          params: [base58Tx, { skipPreflight: true, encoding: "base58", maxRetries: 3 }],
-        }),
-        signal: AbortSignal.timeout(10000),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.result) return data.result;
-      }
-    } catch (e) {
-      console.warn(`[HELIUS-TX] Failed, falling back:`, e.message);
-    }
-  }
-  return conn.sendRawTransaction(serializedTx, { skipPreflight: true, maxRetries: 3, ...opts });
-}
+// Helius-optimized sendTransaction — delegated to helius-enhanced.mjs
+const heliusSendRawTx = heliusSmartSend;
 const REDIS_URL = process.env.REDIS_URL || null;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
 const PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data";
