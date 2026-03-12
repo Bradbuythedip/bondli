@@ -995,6 +995,7 @@ function extractQuickFeatures(t) {
   let smoothGrindScore = 0;
   let dipRatioScore = 0.5;
   let staircaseScore = 0;
+  let flatlineSpikeScore = 0;
   if (spark.length >= 5) {
     const start = spark[0] || 1;
     const peak = Math.max(...spark);
@@ -1058,6 +1059,30 @@ function extractQuickFeatures(t) {
     }
     // Staircase penalizes chart health
     if (staircaseScore > 0.4) chartHealthScore = Math.max(0, chartHealthScore - staircaseScore * 0.5);
+
+    // ── FLATLINE SPIKE DETECTION ──
+    // Classic rug: chart sits near zero/flat for most of its life, then a single
+    // massive buy creates a vertical spike. The "hockey stick from zero" pattern.
+    // Detection: majority of spark points cluster in a narrow low range, then the
+    // last few points jump dramatically. Real organic growth doesn't look like this.
+    if (spark.length >= 6) {
+      const sorted = [...spark].sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length / 2)] || 1;
+      const lastFew = spark.slice(-3);
+      const lastMax = Math.max(...lastFew);
+      // Count how many points are "flat" (within 30% of median)
+      const flatCount = spark.slice(0, -3).filter(v => v <= median * 1.3).length;
+      const flatRatio = flatCount / Math.max(1, spark.length - 3);
+      const spikeRatio = median > 0 ? lastMax / median : 0;
+      // Flatline spike: >70% of history is flat AND last points spike >3x median
+      if (flatRatio > 0.7 && spikeRatio > 3) {
+        flatlineSpikeScore = Math.min(1, 0.4 + (flatRatio - 0.7) * 2 + Math.min(0.4, (spikeRatio - 3) * 0.05));
+      } else if (flatRatio > 0.6 && spikeRatio > 5) {
+        flatlineSpikeScore = Math.min(0.6, 0.3 + (spikeRatio - 5) * 0.03);
+      }
+      // Flatline spike kills chart health
+      if (flatlineSpikeScore > 0.3) chartHealthScore = Math.max(0, chartHealthScore - flatlineSpikeScore * 0.6);
+    }
   }
 
   // ── ZERO SELL FLAG — the #1 rug signal ──
@@ -1125,6 +1150,7 @@ function extractQuickFeatures(t) {
     ch_smoothGrind: smoothGrindScore,
     ch_dipRatio: dipRatioScore,
     ch_staircaseScore: staircaseScore,
+    ch_flatlineSpike: flatlineSpikeScore,
     // Extra rug signals (used in buy gate, not in FEATURE_KEYS)
     _rg_devSelfSnipe: devSelfSnipe,
     _rg_earlyDump: earlyDumpScore,
@@ -1471,6 +1497,7 @@ setInterval(() => {
           if (qf._rg_buySellImbalance > 0.5) rugHeatPenalty += qf._rg_buySellImbalance * 20;
           if (qf.ch_staircaseScore > 0.3) rugHeatPenalty += qf.ch_staircaseScore * 15;
           if (qf.ch_smoothGrind > 0.35) rugHeatPenalty += qf.ch_smoothGrind * 10;
+          if (qf.ch_flatlineSpike > 0.25) rugHeatPenalty += qf.ch_flatlineSpike * 20;
         }
       } catch {}
       return { ...t, _heat: (t.buys/ageMin)*10 + ub*8 + t.volumeSol*5 + (t.mcapUsd>5000?10:0) - rugHeatPenalty };
@@ -1519,6 +1546,8 @@ setInterval(() => {
           if (qf.ch_staircaseScore > 0.3) rugMomentumPenalty += qf.ch_staircaseScore * 20;
           // Smooth grind: no natural dips
           if (qf.ch_smoothGrind > 0.35) rugMomentumPenalty += qf.ch_smoothGrind * 15;
+          // Flatline spike: dead chart with sudden pump
+          if (qf.ch_flatlineSpike > 0.25) rugMomentumPenalty += qf.ch_flatlineSpike * 25;
           // Fresh wallets buying: dev self-buying
           if (qf._rg_freshWalletRatio > 0.6) rugMomentumPenalty += qf._rg_freshWalletRatio * 15;
           // Hard reject: obvious rug = exclude from momentum entirely
@@ -3589,6 +3618,10 @@ function startAutoTrader(wallet, settings) {
           else if (qf.ch_staircaseScore > 0.6 && !isVeryYoung) rugRejectReason = "staircase_chart";
           else if (qf.ch_staircaseScore > 0.4 && qf._rg_freshWalletRatio > 0.6 && !isVeryYoung) rugRejectReason = "staircase_fresh_wallets";
           else if (qf._rg_freshWalletRatio > 0.8 && qf._rg_zeroSellFlag > 0.4 && !isVeryYoung) rugRejectReason = "fresh_wallet_rug";
+          // Flatline spike: dead chart with sudden vertical pump = dev self-buy rug
+          else if (qf.ch_flatlineSpike > 0.5 && !isVeryYoung) rugRejectReason = "flatline_spike";
+          else if (qf.ch_flatlineSpike > 0.3 && qf._rg_zeroSellFlag > 0.3 && !isVeryYoung) rugRejectReason = "flatline_spike_no_sells";
+          else if (qf.ch_flatlineSpike > 0.3 && qf._rg_freshWalletRatio > 0.5 && !isVeryYoung) rugRejectReason = "flatline_spike_fresh_wallets";
           else if (t._artworkFlags?.includes("EXACT_DUPLICATE")) rugRejectReason = "stolen_art";
           else {
             const rugSignals = [
@@ -3601,6 +3634,7 @@ function startAutoTrader(wallet, settings) {
               qf._rg_buySellImbalance > 0.5 && !isVeryYoung,
               qf.ch_staircaseScore > 0.3 && !isVeryYoung,
               qf._rg_freshWalletRatio > 0.6 && !isVeryYoung,
+              qf.ch_flatlineSpike > 0.25 && !isVeryYoung,
               t._artworkOriginal === false,
             ].filter(Boolean).length;
             // Young tokens need more signals to reject (4 instead of 3)
@@ -4919,6 +4953,17 @@ app.get("/api/intel/stats", (req, res) => {
     const sellVol2 = t.sellVolumeSol || 0;
     if (vol > 0 && sellVol2 / vol > 0.8) { rugFlags.push("liquidity_drain"); rugScore += 15; }
 
+    // Flatline-spike chart pattern (classic rug shape)
+    if (t.spark && t.spark.length >= 6) {
+      const sp = t.spark, srt = [...sp].sort((a, b) => a - b);
+      const med = srt[Math.floor(srt.length / 2)] || 1;
+      const lastMax = Math.max(...sp.slice(-3));
+      const flatCt = sp.slice(0, -3).filter(v => v <= med * 1.3).length;
+      const flatR = flatCt / Math.max(1, sp.length - 3);
+      const spikeR = med > 0 ? lastMax / med : 0;
+      if ((flatR > 0.7 && spikeR > 3) || (flatR > 0.6 && spikeR > 5)) { rugFlags.push("flatline_spike"); rugScore += 18; }
+    }
+
     rugScore = Math.min(100, rugScore);
     // Non-linear penalty: mild rugs get small penalty, heavy rugs get crushed
     const rugPenalty = rugScore < 30
@@ -5302,6 +5347,10 @@ function createLiveSim(id, settings) {
       else if (qf.ch_staircaseScore > 0.6) rugRejectReason = "staircase_chart";
       else if (qf.ch_staircaseScore > 0.4 && qf._rg_freshWalletRatio > 0.6) rugRejectReason = "staircase_fresh_wallets";
       else if (qf._rg_freshWalletRatio > 0.8 && qf._rg_zeroSellFlag > 0.4) rugRejectReason = "fresh_wallet_rug";
+      // Flatline spike: dead chart with sudden vertical pump = dev self-buy rug
+      else if (qf.ch_flatlineSpike > 0.5) rugRejectReason = "flatline_spike";
+      else if (qf.ch_flatlineSpike > 0.3 && qf._rg_zeroSellFlag > 0.3) rugRejectReason = "flatline_spike_no_sells";
+      else if (qf.ch_flatlineSpike > 0.3 && qf._rg_freshWalletRatio > 0.5) rugRejectReason = "flatline_spike_fresh_wallets";
       else if (t._artworkFlags?.includes("EXACT_DUPLICATE")) rugRejectReason = "stolen_art";
       else {
         const rugSignals = [
@@ -5312,6 +5361,7 @@ function createLiveSim(id, settings) {
           qf.ch_smoothGrind > 0.35, qf.ch_dipRatio < 0.1,
           qf._rg_zeroSellFlag > 0.4, qf._rg_buySellImbalance > 0.5,
           qf.ch_staircaseScore > 0.3, qf._rg_freshWalletRatio > 0.6,
+          qf.ch_flatlineSpike > 0.25,
           t._artworkOriginal === false,
         ].filter(Boolean).length;
         if (rugSignals >= 3) rugRejectReason = "multi_rug_" + rugSignals;
