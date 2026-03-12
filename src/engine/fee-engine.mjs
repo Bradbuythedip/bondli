@@ -8,6 +8,12 @@ const FREE_PROFIT_CUT = parseFloat(process.env.FREE_PROFIT_CUT || "25"); // %
 const PRO_FEE_SOL = parseFloat(process.env.PRO_FEE_SOL || "1");
 const VIP_FEE_SOL = parseFloat(process.env.VIP_FEE_SOL || "10");
 const MIN_PROFIT_THRESHOLD = 0.001; // SOL — don't skim dust
+// Breakeven math: For a 0.1 SOL trade on free tier (25% cut):
+//   TX costs: ~0.003 SOL/tx × 2 (buy + sell) = 0.006 SOL
+//   Rent: ~0.002 SOL for token account
+//   Total overhead: ~0.008 SOL
+//   Gross profit needed: 0.008 / (1 - 0.25) = ~0.0107 SOL = ~10.7% on 0.1 SOL
+// → Minimum ~12% gross profit to be net positive after all costs.
 
 // ── Whitelist from env (re-reads on each call so hot-reloadable) ──
 let _whitelistCache = null;

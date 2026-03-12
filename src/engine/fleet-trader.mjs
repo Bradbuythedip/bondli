@@ -1204,6 +1204,27 @@ class FleetTrader extends EventEmitter {
       const gsMultiplier = gameState?.sellMultiplier || 1.0;
       const actualPct = pctPerRound * (0.7 + Math.random() * 0.6) * Math.min(gsMultiplier, 2.0);
 
+      // ── PROFIT GUARD: don't sell if we'd lose money after fees ──
+      // Estimate: each tx costs ~0.003 SOL (priority fee + rent), platform takes 25% of profit.
+      // So we need gross profit > (tx_fees * 2) / (1 - 0.25) = ~0.008 SOL minimum net per wallet.
+      const TX_COST_EST = 0.003;        // estimated cost per transaction (priority fee + base fee)
+      const PLATFORM_CUT = 0.25;        // 25% of profit on free tier
+      const MIN_NET_PROFIT_SOL = 0.008; // minimum net profit to justify a sell
+      const walletInvested = wallet.solSpent || 0;
+      const walletRecovered = wallet.solRecovered || 0;
+      const estGrossProfit = walletRecovered - walletInvested;
+      const estNetProfit = estGrossProfit * (1 - PLATFORM_CUT) - (TX_COST_EST * 2);
+
+      // Skip this sell round if we haven't recovered enough yet (unless it's SELL_NOW or last round)
+      const gs3 = gameState?.alive ? gameState.snapshot() : null;
+      const isEmergency = gs3?.signal === "SELL_NOW";
+      const isLastRound = i === sellRounds - 1;
+      const currentBondingPct = gameState?.bondingPct || 0;
+      if (!isEmergency && !isLastRound && walletInvested > 0 && estNetProfit < MIN_NET_PROFIT_SOL && currentBondingPct < 15) {
+        console.log(`[FLEET] [${wallet.role}] SKIP sell — below breakeven (net: ${estNetProfit.toFixed(4)} SOL, bonding: ${currentBondingPct.toFixed(0)}%)`);
+        continue;
+      }
+
       try {
         // Refetch global for fresh bonding curve
         try { global = await this.onlineSdk.fetchGlobal(); feeConfig = await this.onlineSdk.fetchFeeConfig(); } catch {}
