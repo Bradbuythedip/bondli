@@ -1120,8 +1120,8 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+6} fill="url(#hubGlow)"/>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+2} fill="none" stroke="url(#solGrad)" strokeWidth="1.5" opacity=".5" style={{animation:"gp 2s infinite"}}/>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR-1} fill={T.bg} stroke="url(#solGrad)" strokeWidth="2"/>
-{/* Bondli logo at top of brain circle — slightly larger for visibility */}
-<image href="/bondli-logo.svg" x={nc(nd.n).x-10} y={nc(nd.n).y-hubR-1} width="20" height="17" opacity=".85"/>
+{/* Bondli logo — centered inside top of brain circle */}
+<image href="/bondli-logo.svg" x={nc(nd.n).x-12} y={nc(nd.n).y-hubR+5} width="24" height="20" opacity=".9"/>
 <text x={nc(nd.n).x} y={nc(nd.n).y+4} textAnchor="middle" fill="url(#solGrad)" fontSize={mb?"6":"8"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{nd.label}</text>
 <text x={nc(nd.n).x} y={nc(nd.n).y+12} textAnchor="middle" fill={T.dm} fontSize={mb?"4":"5"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y-hubR+2} r="2.5" fill="#14F195" opacity=".9"><animate attributeName="opacity" values="1;.4;1" dur="1.5s" repeatCount="indefinite"/></circle>
@@ -1129,7 +1129,7 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 {(()=>{const pw=nd.pillImg?nw+14:nw;const px=nd.pillImg?nd.n.x-7:nd.n.x;return<>
 {nd.active>.5&&<rect x={px-2} y={nd.n.y-2} width={pw+4} height={nh+4} rx="7" fill={nd.c} opacity=".08" filter="url(#nglow)"/>}
 <rect x={px} y={nd.n.y} width={pw} height={nh} rx="5" fill={T.bg} stroke={nd.active>.5?nd.c:T.ft} strokeWidth="1" opacity={nd.active>.5?1:.5}/>
-{nd.pillImg?<image href="/pumpfun-pill.svg" x={px+4} y={nd.n.y+4} width={nh-9} height={nh-9} opacity=".8"/>:<text x={nd.n.x+5} y={nd.n.y+6} fontSize="5" fill={nd.c} opacity=".6">{nd.ico}</text>}
+{nd.pillImg?<image href="/pumpfun-pill.svg" x={px+1} y={nd.n.y+4} width={nh-9} height={nh-9} opacity=".8"/>:<text x={nd.n.x+5} y={nd.n.y+6} fontSize="5" fill={nd.c} opacity=".6">{nd.ico}</text>}
 <circle cx={px+pw-4} cy={nd.n.y+4} r="2" fill={nd.active>.5?T.gn:T.ft} opacity={nd.active>.5?1:.3}><animate attributeName="opacity" values={nd.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
 <text x={px+pw/2} y={nd.n.y+nh/2-1} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{nd.label}</text>
 <text x={px+pw/2} y={nd.n.y+nh/2+6} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
