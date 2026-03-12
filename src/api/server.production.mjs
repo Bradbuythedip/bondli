@@ -5071,6 +5071,22 @@ app.get("/api/admin/users", requireAdmin, async (req, res) => {
   res.json({ users: allUsers });
 });
 
+// Admin: whitelist a wallet as VIP (no payment required)
+app.post("/api/admin/whitelist", requireAdmin, async (req, res) => {
+  const { wallet } = req.body;
+  if (!wallet || wallet.length < 32) return res.status(400).json({ error: "Valid wallet required" });
+  await saveUser(wallet, { tier: "vip", whitelisted: true, paid: true });
+  res.json({ ok: true, wallet, tier: "vip", whitelisted: true });
+});
+
+// Admin: remove VIP/whitelist from a wallet
+app.post("/api/admin/unwhitelist", requireAdmin, async (req, res) => {
+  const { wallet } = req.body;
+  if (!wallet || wallet.length < 32) return res.status(400).json({ error: "Valid wallet required" });
+  await saveUser(wallet, { tier: "free", whitelisted: false, paid: false });
+  res.json({ ok: true, wallet, tier: "free", whitelisted: false });
+});
+
 // ═══════════════════════════════════════
 // ROUTES: INTEL (meme analytics)
 // ═══════════════════════════════════════
