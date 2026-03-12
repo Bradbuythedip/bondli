@@ -1031,8 +1031,8 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 <path d={`M${nt(learner).x} ${nt(learner).y} C${nt(learner).x-15} ${nt(learner).y-30},${nb(score).x-25} ${nb(score).y+25},${nb(score).x} ${nb(score).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* GradWatch → Hub: straight up */}
 <path d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
-{/* Patterns → Rug Detect: right side loop — wide radius to avoid RUG card */}
-<path d={`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+45} ${nr(patterns).y},${nr(rugd).x+45} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+{/* Patterns → Rug Detect: right side loop — extra wide radius to clear RUG card */}
+<path d={`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+80} ${nr(patterns).y},${nr(rugd).x+80} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* APE → Learner: straight down */}
 <path d={bezier(nb(ape),nt(learner))} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* WATCH → GradWatch: straight down */}
@@ -1100,7 +1100,7 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 </>}
 {/* Patterns → Rug Detect (pattern memory improves detection) */}
 {/* Patterns → RugDetect (route along right edge) */}
-{hasPatterns&&(()=>{const p=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+45} ${nr(patterns).y},${nr(rugd).x+45} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;return<>
+{hasPatterns&&(()=>{const p=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+80} ${nr(patterns).y},${nr(rugd).x+80} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;return<>
 <path d={p} fill="none" stroke={T.or} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
 <circle r="1.5" fill={T.or} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.2s" repeatCount="indefinite" path={p}/></circle>
 </>})()}
@@ -1123,12 +1123,14 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 <text x={nc(nd.n).x} y={nc(nd.n).y+12} textAnchor="middle" fill={T.dm} fontSize={mb?"4":"5"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y-hubR+2} r="2.5" fill="#14F195" opacity=".9"><animate attributeName="opacity" values="1;.4;1" dur="1.5s" repeatCount="indefinite"/></circle>
 </g>:<g key={"n"+i}>
-{nd.active>.5&&<rect x={nd.n.x-2} y={nd.n.y-2} width={nw+4} height={nh+4} rx="7" fill={nd.c} opacity=".08" filter="url(#nglow)"/>}
-<rect x={nd.n.x} y={nd.n.y} width={nw} height={nh} rx="5" fill={T.bg} stroke={nd.active>.5?nd.c:T.ft} strokeWidth="1" opacity={nd.active>.5?1:.5}/>
-{nd.pillImg?<image href="/pumpfun-pill.svg" x={nd.n.x+2} y={nd.n.y+2} width={nh-4} height={nh-4} opacity=".8"/>:<text x={nd.n.x+5} y={nd.n.y+6} fontSize="5" fill={nd.c} opacity=".6">{nd.ico}</text>}
-<circle cx={nd.n.x+nw-4} cy={nd.n.y+4} r="2" fill={nd.active>.5?T.gn:T.ft} opacity={nd.active>.5?1:.3}><animate attributeName="opacity" values={nd.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
-<text x={nd.n.x+nw/2} y={nd.n.y+nh/2-1} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{nd.label}</text>
-<text x={nd.n.x+nw/2} y={nd.n.y+nh/2+6} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
+{(()=>{const pw=nd.pillImg?nw+14:nw;const px=nd.pillImg?nd.n.x-7:nd.n.x;return<>
+{nd.active>.5&&<rect x={px-2} y={nd.n.y-2} width={pw+4} height={nh+4} rx="7" fill={nd.c} opacity=".08" filter="url(#nglow)"/>}
+<rect x={px} y={nd.n.y} width={pw} height={nh} rx="5" fill={T.bg} stroke={nd.active>.5?nd.c:T.ft} strokeWidth="1" opacity={nd.active>.5?1:.5}/>
+{nd.pillImg?<image href="/pumpfun-pill.svg" x={px+3} y={nd.n.y+3} width={nh-6} height={nh-6} opacity=".8"/>:<text x={nd.n.x+5} y={nd.n.y+6} fontSize="5" fill={nd.c} opacity=".6">{nd.ico}</text>}
+<circle cx={px+pw-4} cy={nd.n.y+4} r="2" fill={nd.active>.5?T.gn:T.ft} opacity={nd.active>.5?1:.3}><animate attributeName="opacity" values={nd.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
+<text x={px+pw/2} y={nd.n.y+nh/2-1} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{nd.label}</text>
+<text x={px+pw/2} y={nd.n.y+nh/2+6} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
+</>})()}
 </g>)}
 
 {/* ── OUTPUT NODES (Tier 3) ── */}
@@ -1162,12 +1164,11 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 </div>})()}
 </div>
 
-{/* How it works — collapsible */}
-<button onClick={()=>sShowHow(!showHow)} style={{width:"100%",padding:"8px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+{/* How it works — always visible */}
+<div style={{padding:"8px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,marginBottom:6}}>
 <span style={{fontSize:12,fontWeight:700,color:T.dm}}>How scoring works</span>
-<span style={{fontSize:10,color:T.ft}}>{showHow?"▾":"▸"}</span>
-</button>
-{showHow&&<>
+</div>
+<>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:4,marginBottom:6}}>
 {[{name:"Tipping Point (Gladwell)",color:T.gn,items:["Law of the Few — whale/influencer concentration","Stickiness Factor — meme phrase memorability","Power of Context — trending topic + market mood","Maven/Connector/Salesman — wallet archetype signals","10K Hour Rule — token pattern maturity depth"]},
 {name:"Thinking Fast & Slow (Kahneman)",color:T.yl,items:["Cognitive Ease — name pronounceability score","Anchoring Bias — first price vs current price drift","Availability Heuristic — recency of similar rugs","Loss Aversion — 2x weight on sell pressure vs buys","Herd Signal — System 1 buy acceleration cascade","Peak-End Rule — chart shape memory at peak + now","Prospect Theory — framing effect on holder behavior"]},
@@ -1187,7 +1188,7 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 <span style={{fontSize:8,color:l.c,fontWeight:700}}>{l.st}</span>
 </div>)}
 </div>
-</>}
+</>
 
 {/* Live ML Behavior — Pro/VIP only — collapsible */}
 {(user?.tier==="pro"||user?.tier==="vip"||user?.whitelisted)&&intelData?.scorer?.topFeatures?.length>0&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,marginTop:6}}>
