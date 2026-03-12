@@ -5239,9 +5239,44 @@ app.get("/api/intel/stats", (req, res) => {
       graduationRate: matureTokens.length > 0 ? (matureGraduated.length / matureTokens.length * 100).toFixed(1) + "%" : "N/A",
     },
     monitor: { tracking: hot.length },
+    // Top signals: additional validation feedback loop — must pass quality gate
+    topSignals: unique.filter(t => {
+      // Gate 1: minimum score threshold
+      if (t.score < 20) return false;
+      // Gate 2: must not be flagged as rug
+      if (t.rugScore > 40 || (t.rugFlags || []).length >= 2) return false;
+      // Gate 3: must have real buy activity (not just 1-2 buys)
+      if (t.buys < 3) return false;
+      // Gate 4: must have multiple unique buyers (not just dev)
+      if (t.ub < 2) return false;
+      // Gate 5: check dev credibility if available
+      const tok = radar.tokens.get(t.ca);
+      if (tok?._devCredData) {
+        if (tok._devCredData.namePrevRugged && tok._devCredData.devLaunchCount > 3) return false;
+        if (tok._devCredData.devCredScore < 0.15) return false;
+      }
+      // Gate 6: chart pattern check — reject known bad patterns
+      const qf = tok ? extractQuickFeatures(tok) : null;
+      if (qf) {
+        if (qf._rg_pumpDump > 0.5 || qf.ch_flatlineSpike > 0.5) return false;
+        if (qf.ch_smoothGrind > 0.6) return false;
+      }
+      return true;
+    }).slice(0, 4).map(t => {
+      const tok = radar.tokens.get(t.ca);
+      const ageMin = tok?.createdAt ? Math.round((Date.now() - tok.createdAt) / 60000) : 0;
+      return {
+        ca: t.ca, score: t.score, bondProb: t.bondProb, name: t.name, ticker: tok?.ticker || "",
+        mcap: t.mcapUsd, description: t.description || "", twitter: t.twitter || "",
+        website: t.website || "", telegram: tok?.telegram || "", image: t.image || "",
+        buys: t.buys || 0, sells: tok?.sells || 0, ub: t.ub || 0, ageMin,
+        dexBoosted: t.dexBoosted, boostAmount: t.boostAmount || 0,
+        devCred: tok?._devCredData ? { score: tok._devCredData.devCredScore, launches: tok._devCredData.devLaunchCount, sol: tok._devCredData.devSolBalance } : null,
+      };
+    }),
     recentEvents: unique.slice(0, 10).map(t => ({
       type: "score",
-      data: { ca: t.ca, score: t.score, bondProb: t.bondProb, rugScore: t.rugScore || 0, rugFlags: t.rugFlags || [], name: t.name, mcap: t.mcapUsd, dexBoosted: t.dexBoosted, boostAmount: t.boostAmount, description: t.description || "", twitter: t.twitter || "", website: t.website || "", image: t.image || "", buys: t.buys || 0, ub: t.ub || 0 },
+      data: { ca: t.ca, score: t.score, bondProb: t.bondProb, rugScore: t.rugScore || 0, rugFlags: t.rugFlags || [], name: t.name, mcap: t.mcapUsd, dexBoosted: t.dexBoosted, boostAmount: t.boostAmount, description: t.description || "", twitter: t.twitter || "", website: t.website || "", telegram: "", image: t.image || "", buys: t.buys || 0, sells: t.vol || 0, ub: t.ub || 0 },
       time: t.time,
     })),
     artwork: artworkScanner ? artworkScanner.getStats() : null,
