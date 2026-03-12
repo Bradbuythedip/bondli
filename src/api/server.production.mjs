@@ -642,7 +642,8 @@ function processRadarMessage(data) {
   }
 }
 
-// ═══ GRADUATED MC REFRESH — DexScreener fallback ═══
+// ═══ GRADUATED MC REFRESH — batched DexScreener for speed ═══
+// Single-token fallback (used on graduation event)
 async function refreshGraduatedMcap(mint) {
   try {
     const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(8000) });
@@ -650,17 +651,54 @@ async function refreshGraduatedMcap(mint) {
     const d = await r.json();
     const pair = d?.pairs?.[0];
     if (!pair) return;
-    const token = radar.tokens.get(mint);
-    if (!token) return;
-    const newMcap = pair.fdv || pair.marketCap || 0;
-    if (newMcap > 0) {
-      token.mcapUsd = Math.round(newMcap);
-      token.mcapSol = solUsdPrice > 0 ? Math.round(newMcap / solUsdPrice) : token.mcapSol;
-      token.spark.push(token.mcapUsd);
-      if (token.spark.length > 60) token.spark = token.spark.slice(-60);
-      token.raydiumPool = pair.pairAddress || true;
-    }
+    applyMcapUpdate(mint, pair);
   } catch {}
+}
+
+// Apply MC data from a DexScreener pair to a radar token
+function applyMcapUpdate(mint, pair) {
+  const token = radar.tokens.get(mint);
+  if (!token) return;
+  const newMcap = pair.fdv || pair.marketCap || 0;
+  if (newMcap > 0) {
+    const changed = token.mcapUsd !== Math.round(newMcap);
+    token.mcapUsd = Math.round(newMcap);
+    token.mcapSol = solUsdPrice > 0 ? Math.round(newMcap / solUsdPrice) : token.mcapSol;
+    token.spark.push(token.mcapUsd);
+    if (token.spark.length > 60) token.spark = token.spark.slice(-60);
+    token.raydiumPool = pair.pairAddress || true;
+    // Push MC update to frontend immediately via WebSocket
+    if (changed) broadcastWS({ event: "mcap-update", data: { ca: mint, mcap: token.mcapUsd, mcapSol: token.mcapSol } });
+  }
+}
+
+// Batch fetch MC for multiple tokens in one DexScreener request (up to 30 per batch)
+async function batchRefreshMcap(mints) {
+  if (mints.length === 0) return;
+  const BATCH_SIZE = 30;
+  for (let i = 0; i < mints.length; i += BATCH_SIZE) {
+    const batch = mints.slice(i, i + BATCH_SIZE);
+    try {
+      const url = `https://api.dexscreener.com/latest/dex/tokens/${batch.join(",")}`;
+      const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (!d?.pairs) continue;
+      // Group pairs by base token address — pick best pair per token
+      const bestPairs = new Map();
+      for (const pair of d.pairs) {
+        const addr = pair.baseToken?.address;
+        if (!addr || !batch.includes(addr)) continue;
+        const existing = bestPairs.get(addr);
+        if (!existing || (pair.liquidity?.usd || 0) > (existing.liquidity?.usd || 0)) {
+          bestPairs.set(addr, pair);
+        }
+      }
+      for (const [mint, pair] of bestPairs) {
+        applyMcapUpdate(mint, pair);
+      }
+    } catch {}
+  }
 }
 
 // ═══ GRADUATED WATCHLIST — follows tokens beyond radar TTL ═══
@@ -668,35 +706,49 @@ async function refreshGraduatedMcap(mint) {
 const gradWatchlist = new Map(); // ca → { name, ticker, gradMcap, gradTime, spark, peakMcap, lastMcap, lastRefresh }
 const GRAD_WATCH_TTL = 86400000; // 24h
 
-// Periodically refresh MC for all graduated tokens (every 30s)
+// Periodically refresh MC for all graduated tokens (every 10s — batched so only 1-2 requests)
 setInterval(async () => {
-  const graduated = [...radar.tokens.entries()].filter(([, t]) => t.graduated);
-  for (const [ca] of graduated.slice(0, 10)) { // max 10 per cycle to avoid rate limits
-    await refreshGraduatedMcap(ca);
-    await new Promise(r => setTimeout(r, 500)); // rate limit spacing
-  }
-  // Also refresh watchlist tokens via DexScreener
+  // Batch refresh all graduated radar tokens in one request
+  const graduatedMints = [...radar.tokens.entries()].filter(([, t]) => t.graduated).map(([ca]) => ca);
+  await batchRefreshMcap(graduatedMints);
+
+  // Also batch refresh stale watchlist tokens
   const now = Date.now();
   const stale = [...gradWatchlist.entries()]
-    .filter(([, w]) => now - w.lastRefresh > 60000 && now - w.gradTime < GRAD_WATCH_TTL)
-    .slice(0, 5);
-  for (const [ca, w] of stale) {
+    .filter(([, w]) => now - w.lastRefresh > 30000 && now - w.gradTime < GRAD_WATCH_TTL)
+    .slice(0, 30);
+  if (stale.length > 0) {
+    const staleMints = stale.map(([ca]) => ca);
     try {
-      const d = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${ca}`, { signal: AbortSignal.timeout(8000) }).then(r => r.json()).catch(() => null);
-      if (d?.pairs?.[0]) {
-        const mc = d.pairs[0].fdv || 0;
-        w.lastMcap = mc;
-        if (mc > w.peakMcap) w.peakMcap = mc;
-        w.spark.push(mc);
-        if (w.spark.length > 100) w.spark = w.spark.slice(-100);
-        w.lastRefresh = now;
-        // Store updated learning data
-        if (redis) {
-          try { await redis.hSet("grad:watchlist", ca, JSON.stringify(w)); } catch {}
+      const url = `https://api.dexscreener.com/latest/dex/tokens/${staleMints.join(",")}`;
+      const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (r.ok) {
+        const d = await r.json();
+        if (d?.pairs) {
+          const bestPairs = new Map();
+          for (const pair of d.pairs) {
+            const addr = pair.baseToken?.address;
+            if (!addr) continue;
+            const existing = bestPairs.get(addr);
+            if (!existing || (pair.liquidity?.usd || 0) > (existing.liquidity?.usd || 0)) {
+              bestPairs.set(addr, pair);
+            }
+          }
+          for (const [ca, w] of stale) {
+            const pair = bestPairs.get(ca);
+            if (pair) {
+              const mc = pair.fdv || 0;
+              w.lastMcap = mc;
+              if (mc > w.peakMcap) w.peakMcap = mc;
+              w.spark.push(mc);
+              if (w.spark.length > 100) w.spark = w.spark.slice(-100);
+              w.lastRefresh = now;
+              if (redis) { try { await redis.hSet("grad:watchlist", ca, JSON.stringify(w)); } catch {} }
+            }
+          }
         }
       }
     } catch {}
-    await new Promise(r => setTimeout(r, 500));
   }
   // Evict expired watchlist entries — label outcome before removing
   for (const [ca, w] of gradWatchlist) {
@@ -714,7 +766,7 @@ setInterval(async () => {
       if (redis) { try { await redis.hDel("grad:watchlist", ca); } catch {} }
     }
   }
-}, 30000);
+}, 10000);
 
 // Load watchlist from Redis on startup
 (async () => {
