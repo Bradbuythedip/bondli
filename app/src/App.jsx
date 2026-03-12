@@ -463,7 +463,6 @@ useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null)sOl(d
 useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(d=>sFl(d)).catch(()=>{})},5000);return()=>clearInterval(iv)},[launched,lCA]);
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>r.json()).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
-useEffect(()=>{if(tab!=="intel")return;const poll=()=>{a.gm("24h").then(d=>sDexMovers(d)).catch(()=>{})};poll();const iv=setInterval(poll,30000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?3000:10000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
 // Live sim polling — runs for all users when sim is active
 useEffect(()=>{if(tab!=="intel"||!liveSim?.active)return;const poll=()=>a.simst(user?.pubkey||"anon").then(d=>{if(d.active)sLiveSim(p=>({...p,...d}));else sLiveSim(null)}).catch(()=>{});poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab,liveSim?.active,user?.pubkey]);
@@ -890,7 +889,7 @@ return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16p
 {/* Score bar */}
 <div style={{height:16,borderRadius:4,background:T.sf,overflow:"hidden",position:"relative",marginRight:4}}>
 <div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,score)+"%",borderRadius:4,background:`linear-gradient(90deg,${sc}66,${sc})`,transition:"width 0.6s ease"}}/>
-<div style={{position:"absolute",left:Math.min(98,bp)+"%",top:2,width:2,height:12,borderRadius:1,background:"rgba(255,255,255,0.5)",transition:"left 0.6s ease"}}/>
+{bp<100&&<div style={{position:"absolute",left:Math.min(95,bp)+"%",top:2,width:2,height:12,borderRadius:1,background:"rgba(255,255,255,0.5)",transition:"left 0.6s ease"}}/>}
 {isRug&&<div style={{position:"absolute",right:0,top:0,height:"100%",width:"30%",background:"repeating-linear-gradient(45deg,transparent,transparent 2px,#ff174422 2px,#ff174422 4px)"}}/>}
 </div>
 {/* Score */}
@@ -926,22 +925,6 @@ return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16p
 
 </div>{/* end grid */}
 </div>
-
-{/* DEX Movers — DexScreener + Birdeye data */}
-{dexMovers&&((dexMovers.hotGraduated||dexMovers.graduated)?.length>0||dexMovers.boosted?.length>0||dexMovers.trending?.length>0)&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?8:12,marginTop:6}}>
-<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><IC.chart s={14} c={T.yl}/><span style={{fontSize:13,fontWeight:800}}>DEX Movers</span><span style={{fontSize:9,color:T.ft}}>DexScreener + Birdeye</span></div>
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:4}}>
-{[{label:"Top Graduated",data:dexMovers.hotGraduated||dexMovers.graduated||[],color:T.gn},{label:"DEX Boosted",data:dexMovers.boosted||[],color:"#ffd600"},{label:"Trending",data:dexMovers.trending||[],color:T.pu}].map(sec=>sec.data.length>0&&<div key={sec.label} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:8}}>
-<div style={{fontSize:10,fontWeight:800,color:sec.color,marginBottom:4}}>{sec.label}</div>
-{sec.data.slice(0,5).map((t,i)=><div key={t.ca||i} onClick={()=>{if(t.ca){sTab("radar");sRS(t.ca);sRExp(t.ca)}}} style={{display:"flex",alignItems:"center",gap:4,padding:"3px 0",borderBottom:i<4?"1px solid "+T.bd+"22":"none",cursor:"pointer"}}>
-<span style={{fontSize:9,color:T.ft,width:12}}>{i+1}</span>
-{t.image&&<img src={imgProxy(t.image)} style={{width:18,height:18,borderRadius:4,objectFit:"cover"}} alt="" onError={e=>e.target.style.display="none"}/>}
-<div style={{flex:1,minWidth:0}}><div style={{fontSize:10,fontWeight:700,color:T.tx,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t.name||t.ca?.slice(0,8)}</div></div>
-<div style={{textAlign:"right"}}>{t.mcapUsd>0&&<div style={{fontSize:9,color:T.dm}}>${fm(t.mcapUsd)}</div>}{t.change24h!=null&&<div style={{fontSize:8,color:t.change24h>=0?T.gn:T.rd,fontWeight:700}}>{t.change24h>=0?"+":""}{typeof t.change24h==="number"?t.change24h.toFixed(1):t.change24h}%</div>}</div>
-</div>)}
-</div>)}
-</div>
-</div>}
 
 {/* How it works — collapsible */}
 <button onClick={()=>sShowHow(!showHow)} style={{width:"100%",padding:"8px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
