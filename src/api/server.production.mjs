@@ -307,9 +307,9 @@ async function fetchPumpFunMetadata(ca) {
       symbol: d.symbol || "",
       description: (d.description || "").slice(0, 200),
       image: d.image_uri || d.profile_image || "",
-      twitter: d.twitter || "",
-      website: d.website || "",
-      telegram: d.telegram || "",
+      twitter: (() => { const tw = d.twitter || ""; if (!tw) return ""; if (tw.startsWith("http")) { const m = tw.match(/(?:twitter\.com|x\.com)\/([^/?#]+)/); return m ? m[1] : tw; } return tw.startsWith("@") ? tw.slice(1) : tw; })(),
+      website: (() => { const w = d.website || ""; if (!w) return ""; return w.startsWith("http") ? w : w.includes(".") ? "https://" + w : ""; })(),
+      telegram: (() => { const tg = d.telegram || ""; if (!tg) return ""; if (tg.startsWith("http")) { const m = tg.match(/t\.me\/([^/?#]+)/); return m ? m[1] : tg; } return tg.startsWith("@") ? tg.slice(1) : tg; })(),
       complete: d.complete || false,
       raydiumPool: d.raydium_pool || null,
       marketCap: d.usd_market_cap || d.market_cap || 0,
@@ -4475,6 +4475,9 @@ app.get("/api/intel/stats", (req, res) => {
   const tokens = [...radar.tokens.values()];
   const withMcap = tokens.filter(t => t.mcapUsd > 0);
   const graduated = tokens.filter(t => t.mcapUsd >= gradMcUsd());
+  // Grad rate: only count tokens old enough to have had a chance to graduate (30+ min)
+  const matureTokens = withMcap.filter(t => t.createdAt && (Date.now() - t.createdAt) > 30 * 60 * 1000);
+  const matureGraduated = matureTokens.filter(t => t.mcapUsd >= gradMcUsd());
   const hot = tokens.filter(t => t.buys >= 2 || t.volumeSol > 0.1);
   
   const topFeatures = [
@@ -4606,6 +4609,10 @@ app.get("/api/intel/stats", (req, res) => {
       boostAmount: dexBoost?.amount || 0,
       buys, ub, vol,
       time: t.createdAt,
+      description: t.description || "",
+      twitter: t.twitter || "",
+      website: t.website || "",
+      image: t.image || "",
     };
   }).sort((a, b) => b.score - a.score);
 
@@ -4628,12 +4635,12 @@ app.get("/api/intel/stats", (req, res) => {
     memory: {
       total: tokens.length, labeled: withMcap.length,
       graduated: graduated.length,
-      graduationRate: withMcap.length > 0 ? (graduated.length / withMcap.length * 100).toFixed(1) + "%" : "N/A",
+      graduationRate: matureTokens.length > 0 ? (matureGraduated.length / matureTokens.length * 100).toFixed(1) + "%" : "N/A",
     },
     monitor: { tracking: hot.length },
     recentEvents: unique.slice(0, 10).map(t => ({
       type: "score",
-      data: { ca: t.ca, score: t.score, bondProb: t.bondProb, rugScore: t.rugScore || 0, rugFlags: t.rugFlags || [], name: t.name, mcap: t.mcapUsd, dexBoosted: t.dexBoosted, boostAmount: t.boostAmount },
+      data: { ca: t.ca, score: t.score, bondProb: t.bondProb, rugScore: t.rugScore || 0, rugFlags: t.rugFlags || [], name: t.name, mcap: t.mcapUsd, dexBoosted: t.dexBoosted, boostAmount: t.boostAmount, description: t.description || "", twitter: t.twitter || "", website: t.website || "", image: t.image || "", buys: t.buys || 0, ub: t.ub || 0 },
       time: t.time,
     })),
     artwork: artworkScanner ? artworkScanner.getStats() : null,
