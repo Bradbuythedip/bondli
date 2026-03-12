@@ -836,8 +836,8 @@ const modActive=id=>{const m=mods.find(x=>x.id===id);return m?.status==="active"
 const hasLearner=(autoTrade?.learner?.totalTrades||0)>0;
 const hasGradWatch=(intelData?.gradWatch?.count||0)>0;
 const hasPatterns=(chartPatterns?.total||0)>0;
-/* SVG dimensions — taller to fit feedback row */
-const W=mb?320:480;const H=mb?280:270;
+/* SVG dimensions — tight to content */
+const W=mb?320:480;const H=mb?200:195;
 /* Centered node positions — 4 tiers */
 const nw=mb?50:58;const nh=mb?24:22;
 const cx=W/2;/* center x */
@@ -885,7 +885,9 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 <span style={{color:T.rd}}>{engineState.flow?.totalSells||0}<span style={{color:T.ft}}> sells</span></span>
 <span style={{color:T.yl}}>{engineState.flow?.totalVol||0}<span style={{color:T.ft}}> SOL</span></span>
 <span style={{color:T.dm}}>|</span>
-<span style={{color:T.dm}}>{engineState.pool?.total||0} tokens</span>
+<span style={{color:T.dm}}>{engineState.pool?.total||0} pool</span>
+<span style={{color:T.dm}}>{engineState.pool?.active||0} active</span>
+<span style={{color:T.dm}}>{engineState.pool?.graduated||0} grad</span>
 </div>
 </div>
 
@@ -1034,19 +1036,7 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 
 {/* Feedback label */}
 <text x={W/2} y={fbY+nh+10} textAnchor="middle" fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".4">↑ feedback loops — outcomes train future decisions ↑</text>
-
-{/* Pool stats */}
-<text x={W/2} y={H-4} textAnchor="middle" fill={T.ft} fontSize="6" fontFamily="monospace">{engineState.pool?.total||0} pool · {engineState.pool?.active||0} active · {engineState.pool?.recent5m||0} 5m · {engineState.pool?.graduated||0} grad · {engineState.flow?.buyPressure||50}% buy pressure</text>
 </svg>
-
-{/* Feature heatmap strip */}
-<div style={{display:"flex",gap:2,marginTop:4,position:"relative",zIndex:1}}>
-{Object.entries(fh).map(([k,v])=>{const heat=Math.round(v*100);const c=heat>70?T.gn:heat>40?T.yl:heat>20?T.or:T.ft;return<div key={k} style={{flex:1,background:c+Math.round(heat*.4+5).toString(16).padStart(2,"0"),border:"1px solid "+c+"22",borderRadius:3,padding:"3px 2px",textAlign:"center",transition:"all 1s",position:"relative",overflow:"hidden"}}>
-{heat>50&&<div style={{position:"absolute",inset:0,background:`linear-gradient(180deg,${c}11,transparent)`,animation:"gp 3s infinite"}}/>}
-<div style={{fontSize:10,fontWeight:900,color:c,position:"relative"}}>{heat}</div>
-<div style={{fontSize:mb?4:5,fontWeight:700,color:T.dm,textTransform:"uppercase",letterSpacing:.2,lineHeight:1.1,position:"relative"}}>{k.replace(/([A-Z])/g," $1").trim()}</div>
-</div>})}
-</div>
 </div>})()}
 
 {/* ═══ LIVE INTEL: Scores + Spotlight + Pulse (3 columns) ═══ */}
