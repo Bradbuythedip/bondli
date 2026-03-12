@@ -931,33 +931,34 @@ const hasPatterns=(chartPatterns?.total||0)>0;
 /* Bezier curve helper: creates smooth S-curve between two points */
 const bezier=(a,b)=>{const dx=b.x-a.x;const dy=b.y-a.y;if(Math.abs(dy)>Math.abs(dx)){const cy1=a.y+dy*0.4;const cy2=b.y-dy*0.4;return`M${a.x} ${a.y} C${a.x} ${cy1},${b.x} ${cy2},${b.x} ${b.y}`}const cx1=a.x+dx*0.4;const cx2=b.x-dx*0.4;return`M${a.x} ${a.y} C${cx1} ${a.y},${cx2} ${b.y},${b.x} ${b.y}`};
 /* SVG dimensions — generous spacing to avoid overlaps */
-const W=mb?340:520;const H=mb?240:230;
+const W=mb?360:540;const H=mb?280:280;
 /* Node sizes */
 const nw=mb?48:56;const nh=mb?22:20;
 const cx=W/2;/* center x */
-const hubR=mb?16:18;/* Hub circle radius — compact */
-/* Tier 1: inputs (top row, spread wide) */
+const hubR=mb?22:28;/* Hub circle radius — bigger for brain */
+/* Tier 1: inputs (top row, spread wide) — shifted down to make room for pill icon */
 const t1sp=mb?70:100;/* input spacing */
-const pump={x:cx-nw/2-t1sp,y:8};
-const scan={x:cx-nw/2,y:8};
-const score={x:cx-nw/2+t1sp,y:8};
-/* Tier 2: process — hub centered, sides spread far to avoid circle overlap */
-const t2y=mb?56:52;
-const t2sp=mb?90:120;/* wider gap from hub */
+const pump={x:cx-nw/2-t1sp,y:28};
+const scan={x:cx-nw/2,y:28};
+const score={x:cx-nw/2+t1sp,y:28};
+/* Tier 2: process — hub centered, sides brought closer to center */
+const t2y=mb?76:78;
+const t2sp=mb?85:105;/* tighter gap from hub — more centered */
 const social={x:cx-nw/2-t2sp,y:t2y};
 const hub={x:cx-nw/2,y:t2y};
 const rugd={x:cx-nw/2+t2sp,y:t2y};
-/* Tier 3: outputs (4 across, spread wide with even gaps) */
-const outY=mb?110:105;
-const outW=W-40;/* use full width minus margins */
-const outGap=outW/3;
-const outStart=(W-outW)/2;
+/* Tier 3: outputs (4 across, properly margined so right cards don't clip) */
+const outY=mb?135:135;
+const outMargin=mb?15:40;/* generous margin on each side */
+const outSpan=W-2*outMargin-nw;/* distributable space for card left edges */
+const outGap=outSpan/3;
+const outStart=outMargin;
 const ape={x:outStart,y:outY};
 const watch={x:outStart+outGap,y:outY};
 const skip={x:outStart+outGap*2,y:outY};
 const rug={x:outStart+outGap*3,y:outY};
 /* Tier 4: feedback (bottom, aligned under their connected outputs) */
-const fbY=mb?170:165;
+const fbY=mb?200:205;
 const learner={x:ape.x,y:fbY};
 const gradW={x:watch.x,y:fbY};
 const patterns={x:rug.x,y:fbY};
@@ -999,6 +1000,9 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 <linearGradient id="solGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#9945FF"/><stop offset="100%" stopColor="#14F195"/></linearGradient>
 <radialGradient id="hubGlow" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="#9945FF" stopOpacity=".15"/><stop offset="50%" stopColor="#14F195" stopOpacity=".08"/><stop offset="100%" stopColor="transparent" stopOpacity="0"/></radialGradient>
 </defs>
+
+{/* ── PUMPFUN PILL above PumpPortal ── */}
+<image href="/pumpfun-pill.svg" x={nc(pump).x-10} y={pump.y-24} width="20" height="20" opacity=".85"/>
 
 {/* ── TIER LABELS ── */}
 <text x="6" y={pump.y+nh/2+1} fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".5">INPUT</text>
@@ -1110,12 +1114,14 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 {n:hub,label:"BONDLI",sub:"Brain",c:domC,v:total,active:1,isHub:true},
 {n:rugd,label:"Rug Detect",sub:"Safety",c:T.rd,v:d.rug,active:modActive("rug_detector"),ico:"R"},
 ].map((nd,i)=>nd.isHub?<g key={"n"+i}>
-<circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+4} fill="url(#hubGlow)"/>
-<circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+1} fill="none" stroke="url(#solGrad)" strokeWidth="1.5" opacity=".5" style={{animation:"gp 2s infinite"}}/>
-<circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR-1} fill={T.bg} stroke="url(#solGrad)" strokeWidth="1.5"/>
-<text x={nc(nd.n).x} y={nc(nd.n).y-1} textAnchor="middle" fill="url(#solGrad)" fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{nd.label}</text>
-<text x={nc(nd.n).x} y={nc(nd.n).y+6} textAnchor="middle" fill={T.dm} fontSize={mb?"4":"5"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
-<circle cx={nc(nd.n).x} cy={nc(nd.n).y-hubR+2} r="2" fill="#14F195" opacity=".9"><animate attributeName="opacity" values="1;.4;1" dur="1.5s" repeatCount="indefinite"/></circle>
+<circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+6} fill="url(#hubGlow)"/>
+<circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+2} fill="none" stroke="url(#solGrad)" strokeWidth="1.5" opacity=".5" style={{animation:"gp 2s infinite"}}/>
+<circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR-1} fill={T.bg} stroke="url(#solGrad)" strokeWidth="2"/>
+{/* Bondli logo inside brain */}
+<image href="/bondli-logo.svg" x={nc(nd.n).x-8} y={nc(nd.n).y-12} width="16" height="14" opacity=".7"/>
+<text x={nc(nd.n).x} y={nc(nd.n).y+5} textAnchor="middle" fill="url(#solGrad)" fontSize={mb?"6":"8"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{nd.label}</text>
+<text x={nc(nd.n).x} y={nc(nd.n).y+12} textAnchor="middle" fill={T.dm} fontSize={mb?"4":"5"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
+<circle cx={nc(nd.n).x} cy={nc(nd.n).y-hubR+2} r="2.5" fill="#14F195" opacity=".9"><animate attributeName="opacity" values="1;.4;1" dur="1.5s" repeatCount="indefinite"/></circle>
 </g>:<g key={"n"+i}>
 {nd.active>.5&&<rect x={nd.n.x-2} y={nd.n.y-2} width={nw+4} height={nh+4} rx="7" fill={nd.c} opacity=".08" filter="url(#nglow)"/>}
 <rect x={nd.n.x} y={nd.n.y} width={nw} height={nh} rx="5" fill={T.bg} stroke={nd.active>.5?nd.c:T.ft} strokeWidth="1" opacity={nd.active>.5?1:.5}/>
