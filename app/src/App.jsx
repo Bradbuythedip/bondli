@@ -824,7 +824,97 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 </div>
 <div style={{fontSize:11,color:T.ft,textAlign:"center"}}>{intelData?`${intelData.scorer?.trainCount||0} tokens scored · SOL $${intelData.solPrice?.toFixed(0)||"?"} · uptime ${intelData.uptime||"—"}`:"Connecting to intel engine..."}</div>
 
-{/* ═══ ORACLE ENGINE — CIRCUIT WIRE DIAGRAM ═══ */}
+{/* ═══ TOP SIGNALS + LIVE RADAR PULSE (above Oracle) ═══ */}
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginBottom:6}}>
+
+{/* Top Signals — top 3-4 scoring tokens */}
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,display:"flex",flexDirection:"column",maxHeight:320}}>
+<div style={{fontSize:13,fontWeight:700,color:T.dm,marginBottom:6}}>Top Signals</div>
+{(()=>{const events=intelData?.recentEvents||[];const allT=[...(rt.momentum||[]),...(rt.hot||[]),...(rt.new||[]),...(rt.graduating||[])];const topTokens=events.slice(0,4).map(e=>e.data).filter(Boolean);if(!topTokens.length)return<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:T.ft}}>Scanning...</div>;
+return<div style={{display:"flex",flexDirection:"column",gap:4}}>
+{topTokens.map((top,ti)=>{const match=allT.find(t=>t.ca===top.ca);const sc=top.score>=50?T.gn:top.score>=25?T.yl:T.pu;const fullCA=top.ca||"";
+return<div key={fullCA+ti} onClick={()=>{if(fullCA.length>=20){sTab("radar");sRS(fullCA);sRExp(fullCA);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",gap:8,alignItems:"center",padding:"6px 4px",borderRadius:6,border:"1px solid "+(ti===0?sc+"33":T.bd+"44"),background:ti===0?sc+"06":"transparent",cursor:"pointer"}}>
+<div style={{position:"relative",width:38,height:38,borderRadius:6,overflow:"hidden",background:T.sf,flexShrink:0}}>{match?.image?<img src={imgProxy(match.image)} style={{width:"100%",height:"100%",objectFit:"cover"}} alt="" onError={e=>e.target.style.display="none"}/>:<div style={{width:"100%",height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,color:T.pu+"66",fontWeight:900}}>{(top.name||"?")[0]}</div>}
+<div style={{position:"absolute",top:2,left:2,fontSize:8,fontWeight:900,color:"#fff",background:sc,borderRadius:3,padding:"0 3px",lineHeight:"14px"}}>#{ti+1}</div></div>
+<div style={{flex:1,minWidth:0}}>
+<div style={{display:"flex",alignItems:"center",gap:4}}>
+<span style={{fontSize:12,fontWeight:900,color:T.tx,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{top.name||top.ca?.slice(0,8)}</span>
+{top.bondProb>=100&&<span style={{fontSize:6,fontWeight:800,color:T.gn,background:T.gn+"15",padding:"0 3px",borderRadius:2}}>GRAD</span>}
+</div>
+<div style={{display:"flex",gap:6,alignItems:"center",marginTop:2}}>
+<span style={{fontSize:18,fontWeight:900,color:sc}}>{top.score}</span><span style={{fontSize:9,color:T.ft}}>pts</span>
+<span style={{fontSize:10,fontWeight:700,color:T.yl}}>{top.bondProb}%</span><span style={{fontSize:9,color:T.ft}}>bond</span>
+{top.mcap>0&&<span style={{fontSize:10,color:T.dm}}>${(top.mcap/1000).toFixed(1)}K</span>}
+</div>
+</div>
+{(user?.tier==="pro"||user?.whitelisted)&&trW&&fullCA.length>=20&&top.score>=40&&<div style={{display:"flex",flexDirection:"column",gap:2,flexShrink:0}}>
+{[0.05,0.1].map(amt=><button key={amt} onClick={async(ev)=>{ev.stopPropagation();try{hp([6,15,6]);toast(`Aping ${top.name||"token"} ${amt} SOL...`,"info");await quickBuy(fullCA,amt)}catch(e){toast(e.message,"error")}}} style={{padding:"3px 8px",background:T.gn+"0a",border:"1px solid "+T.gn+"22",borderRadius:4,fontSize:9,fontWeight:800,color:T.gn,cursor:"pointer"}}>{amt}</button>)}
+</div>}
+</div>})}
+</div>})()}
+</div>
+
+{/* Live Radar Pulse — enhanced activity visualization */}
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}>
+<span style={{width:8,height:8,borderRadius:"50%",background:T.gn,boxShadow:`0 0 12px ${T.gn}88,0 0 24px ${T.gn}44`,animation:"gp 1.5s infinite"}}/>
+<span style={{fontSize:13,fontWeight:800,color:T.tx}}>Live Radar Pulse</span>
+</div>
+<div style={{display:"flex",gap:8,fontSize:10,color:T.ft}}>
+<span><span style={{display:"inline-block",width:6,height:6,borderRadius:1,background:T.gn,marginRight:3,verticalAlign:"middle"}}/>APE</span>
+<span><span style={{display:"inline-block",width:6,height:6,borderRadius:1,background:T.yl,marginRight:3,verticalAlign:"middle"}}/>WATCH</span>
+<span><span style={{display:"inline-block",width:6,height:6,borderRadius:1,background:"#ff1744",marginRight:3,verticalAlign:"middle"}}/>RUG RISK</span>
+</div>
+</div>
+<div style={{display:"flex",flexDirection:"column",gap:2}}>
+{(intelData?.recentEvents||[]).slice(0,12).map((e,i)=>{
+const score=e.data?.score||0;const bp=e.data?.bondProb||0;const name=e.data?.name||e.data?.ca?.slice(0,6)||"?";
+const rugScore=e.data?.rugScore||0;const rugFlags=e.data?.rugFlags||[];
+const isRug=rugScore>50||rugFlags.length>=2;
+const sc=isRug?"#ff1744":score>=50?T.gn:score>=25?T.yl:T.pu;
+const mcap=e.data?.mcap||0;const mcapStr=mcap>=1000?(mcap/1000).toFixed(1)+"K":mcap>0?mcap.toString():"—";
+const fullCA=e.data?.ca||"";
+const canApe=(user?.tier==="pro"||user?.whitelisted)&&trW&&fullCA.length>=20&&score>=50&&!isRug;
+return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16px 90px 1fr 28px 48px 56px":"16px 110px 1fr 28px 58px 32px",alignItems:"center",padding:"3px 0",borderBottom:i<11?"1px solid "+T.bd+"44":"none",gap:0}}>
+<span style={{fontSize:8,color:T.ft,textAlign:"center"}}>{i+1}</span>
+<div onClick={()=>{if(!fullCA||fullCA.length<20)return;sTab("radar");sRS(fullCA);sRExp(fullCA);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}} style={{paddingLeft:2,paddingRight:4,overflow:"hidden",cursor:"pointer"}}>
+<span style={{fontSize:10,color:T.tx,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"flex",alignItems:"center",gap:2}}>{name.slice(0,14)}{e.data?.dexBoosted&&<span style={{fontSize:6,fontWeight:800,color:"#ffd600",background:"#ffd60015",padding:"0 2px",borderRadius:2}}>DEX</span>}{bp>=100&&<span style={{fontSize:6,fontWeight:800,color:T.gn,background:T.gn+"15",padding:"0 2px",borderRadius:2}}>GRAD</span>}</span>
+</div>
+<div style={{height:16,borderRadius:4,background:T.sf,overflow:"hidden",position:"relative",marginRight:4}}>
+<div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,score)+"%",borderRadius:4,background:`linear-gradient(90deg,${sc}66,${sc})`,transition:"width 0.6s ease"}}/>
+{bp<100&&<div style={{position:"absolute",left:Math.min(95,bp)+"%",top:2,width:2,height:12,borderRadius:1,background:"rgba(255,255,255,0.5)",transition:"left 0.6s ease"}}/>}
+{isRug&&<div style={{position:"absolute",right:0,top:0,height:"100%",width:"30%",background:"repeating-linear-gradient(45deg,transparent,transparent 2px,#ff174422 2px,#ff174422 4px)"}}/>}
+</div>
+<span style={{fontSize:12,color:sc,fontWeight:900,textAlign:"right"}}>{score}</span>
+<div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",paddingLeft:4}}>
+<span style={{fontSize:7,color:bp>=100?T.gn:T.yl,fontWeight:700}}>{bp}%</span>
+<span style={{fontSize:9,color:T.ft}}>${mcapStr}</span>
+</div>
+<div style={{textAlign:"center",display:"flex",justifyContent:"center",gap:2}}>
+{canApe?<button onClick={async(ev)=>{ev.stopPropagation();try{hp([6,15,6]);toast(`Aping ${name} 0.05 SOL...`,"info");await quickBuy(fullCA,0.05)}catch(err){toast(err.message,"error")}}} style={{fontSize:7,fontWeight:800,color:"#0a0a0f",background:T.gn,border:"none",borderRadius:3,padding:"2px 6px",cursor:"pointer",lineHeight:1.2}}>APE</button>
+:isRug?<span style={{fontSize:7,color:"#ff1744",fontWeight:800,padding:"1px 4px",borderRadius:3,background:"#ff174415"}} title={rugFlags.join(", ")}>RUG</span>
+:score>=25?<span style={{fontSize:7,color:T.yl,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.yl+"15"}}>WATCH</span>
+:null}
+</div>
+</div>})}
+</div>
+{intelData?.gradWatch?.count>0&&<div style={{marginTop:6,paddingTop:6,borderTop:"1px solid "+T.bd}}>
+<div onClick={()=>sGradsOpen(!gradsOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
+<span style={{fontSize:10,fontWeight:800,color:T.yl}}>Following Grads</span>
+<span style={{fontSize:8,color:T.ft}}>{intelData.gradWatch.count} tracked 24h {gradsOpen?"▾":"▸"}</span>
+</div>
+{gradsOpen&&intelData.gradWatch.tokens?.map(g=>{const c=g.changePct>=0?T.gn:T.rd;return<div key={g.ca} style={{display:"flex",alignItems:"center",gap:6,padding:"2px 0",fontSize:9}}>
+<span style={{color:T.tx,fontWeight:700,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{g.name||g.ca?.slice(0,6)}</span>
+<span style={{color:T.ft}}>${fm(g.currentMcap)}</span>
+<span style={{color:c,fontWeight:800}}>{g.changePct>=0?"+":""}{g.changePct}%</span>
+<span style={{color:T.ft}}>{g.age}h</span>
+</div>})}
+</div>}
+</div>
+</div>{/* end top signals grid */}
+
+{/* ═══ ORACLE ENGINE — BONDLI BRAIN ═══ */}
 {engineState&&(()=>{
 const d=engineState.decisions||{ape:0,watch:0,skip:0,rug:0};
 const total=d.ape+d.watch+d.skip+d.rug||1;
@@ -838,13 +928,15 @@ const modActive=id=>{const m=mods.find(x=>x.id===id);return m?.status==="active"
 const hasLearner=(autoTrade?.learner?.totalTrades||0)>0;
 const hasGradWatch=(intelData?.gradWatch?.count||0)>0;
 const hasPatterns=(chartPatterns?.total||0)>0;
+/* Bezier curve helper: creates smooth S-curve between two points */
+const bezier=(a,b)=>{const dx=b.x-a.x;const dy=b.y-a.y;if(Math.abs(dy)>Math.abs(dx)){const cy1=a.y+dy*0.4;const cy2=b.y-dy*0.4;return`M${a.x} ${a.y} C${a.x} ${cy1},${b.x} ${cy2},${b.x} ${b.y}`}const cx1=a.x+dx*0.4;const cx2=b.x-dx*0.4;return`M${a.x} ${a.y} C${cx1} ${a.y},${cx2} ${b.y},${b.x} ${b.y}`};
 /* SVG dimensions — tight to content */
 const W=mb?320:480;const H=mb?200:195;
 /* Centered node positions — 4 tiers */
 const nw=mb?50:58;const nh=mb?24:22;
 const cx=W/2;/* center x */
 /* Tier 1: inputs (top) */
-const pump={x:cx-nw/2-mb?60:80,y:10};
+const pump={x:cx-nw/2-(mb?60:80),y:10};
 const scan={x:cx-nw/2,y:10};
 const score={x:cx-nw/2+(mb?60:80),y:10};
 /* Tier 2: decision hub + side feeds */
@@ -879,8 +971,8 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 {/* Header */}
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4,position:"relative",zIndex:2}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
-<div style={{width:7,height:7,borderRadius:"50%",background:T.cy,boxShadow:`0 0 8px ${T.cy}66`,animation:"gp 1.5s infinite"}}/>
-<span style={{fontSize:10,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:`linear-gradient(90deg,${T.cy},${T.pu})`,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Oracle Engine</span>
+<div style={{width:8,height:8,borderRadius:"50%",background:`linear-gradient(135deg,#9945FF,#14F195)`,boxShadow:"0 0 10px #9945FF66,0 0 20px #14F19533",animation:"gp 1.5s infinite"}}/>
+<span style={{fontSize:10,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:"linear-gradient(90deg,#9945FF,#14F195)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Bondli Brain</span>
 </div>
 <div style={{display:"flex",alignItems:"center",gap:6,fontSize:7,color:T.ft}}>
 <span style={{color:T.gn}}>{engineState.flow?.totalBuys||0}<span style={{color:T.ft}}> buys</span></span>
@@ -899,6 +991,8 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 <filter id="wglow"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
 <filter id="nglow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
 <filter id="fbglow"><feGaussianBlur stdDeviation="1.5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<linearGradient id="solGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#9945FF"/><stop offset="100%" stopColor="#14F195"/></linearGradient>
+<radialGradient id="hubGlow" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="#9945FF" stopOpacity=".15"/><stop offset="50%" stopColor="#14F195" stopOpacity=".08"/><stop offset="100%" stopColor="transparent" stopOpacity="0"/></radialGradient>
 </defs>
 
 {/* ── TIER LABELS ── */}
@@ -911,55 +1005,55 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 <line x1="0" y1={outY-4} x2={W} y2={outY-4} stroke={T.ft} strokeWidth=".5" opacity=".06" strokeDasharray="4 4"/>
 <line x1="0" y1={fbY-4} x2={W} y2={fbY-4} stroke={T.ft} strokeWidth=".5" opacity=".06" strokeDasharray="4 4"/>
 
-{/* ── DIM WIRES (all possible paths) ── */}
+{/* ── DIM WIRES (flexible bezier curves) ── */}
 {/* Forward flow: Pump→Scan→Score */}
-<path d={`M${nr(pump).x} ${nr(pump).y} L${nl(scan).x} ${nl(scan).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
-<path d={`M${nr(scan).x} ${nr(scan).y} L${nl(score).x} ${nl(score).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={bezier(nr(pump),nl(scan))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={bezier(nr(scan),nl(score))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
 {/* Down to hub: Score→Hub, Social→Hub, Rug→Hub */}
-<path d={`M${nb(scan).x} ${nb(scan).y} L${nt(hub).x} ${nt(hub).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
-<path d={`M${nr(social).x} ${nr(social).y} L${nl(hub).x} ${nl(hub).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
-<path d={`M${nl(rugd).x} ${nl(rugd).y} L${nr(hub).x} ${nr(hub).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={bezier(nb(scan),nt(hub))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={bezier(nr(social),nl(hub))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={bezier(nl(rugd),nr(hub))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
 {/* Hub → outputs */}
-{[ape,watch,skip,rug].map((n,i)=><path key={"dw"+i} d={`M${nb(hub).x} ${nb(hub).y} L${nt(n).x} ${nt(n).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>)}
-{/* Feedback wires (curved) */}
+{[ape,watch,skip,rug].map((n,i)=><path key={"dw"+i} d={bezier(nb(hub),nt(n))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>)}
+{/* Feedback wires (curved, dashed) */}
 <path d={`M${nt(learner).x} ${nt(learner).y} C${nt(learner).x} ${nt(learner).y-20},${nb(score).x-20} ${nb(score).y+20},${nb(score).x} ${nb(score).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
-<path d={`M${nt(gradW).x} ${nt(gradW).y} L${nb(hub).x} ${nb(hub).y+8}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+<path d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 <path d={`M${nt(patterns).x} ${nt(patterns).y} C${nt(patterns).x} ${nt(patterns).y-20},${nb(rugd).x+20} ${nb(rugd).y+20},${nb(rugd).x} ${nb(rugd).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* Outputs → feedback nodes */}
 <path d={`M${nb(ape).x} ${nb(ape).y} C${nb(ape).x} ${nb(ape).y+15},${nt(learner).x} ${nt(learner).y-15},${nt(learner).x} ${nt(learner).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
-<path d={`M${nb(watch).x} ${nb(watch).y} L${nt(gradW).x} ${nt(gradW).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+<path d={bezier(nb(watch),nt(gradW))} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 <path d={`M${nb(rug).x} ${nb(rug).y} C${nb(rug).x} ${nb(rug).y+15},${nt(patterns).x} ${nt(patterns).y-15},${nt(patterns).x} ${nt(patterns).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 
-{/* ── LIT WIRES (active paths with electricity pulses) ── */}
+{/* ── LIT WIRES (active paths with electricity pulses — bezier curves) ── */}
 {/* Pump → Scan */}
 {modActive("pumpportal")>0&&<>
-<path d={`M${nr(pump).x} ${nr(pump).y} L${nl(scan).x} ${nl(scan).y}`} fill="none" stroke={T.cy} strokeWidth="1.5" opacity=".6" filter="url(#wglow)"/>
-<circle r="3" fill={T.cy} filter="url(#wglow)"><animateMotion dur="1.2s" repeatCount="indefinite" path={`M${nr(pump).x} ${nr(pump).y} L${nl(scan).x} ${nl(scan).y}`}/></circle>
+<path d={bezier(nr(pump),nl(scan))} fill="none" stroke={T.cy} strokeWidth="1.5" opacity=".6" filter="url(#wglow)"/>
+<circle r="3" fill={T.cy} filter="url(#wglow)"><animateMotion dur="1.2s" repeatCount="indefinite" path={bezier(nr(pump),nl(scan))}/></circle>
 </>}
 {/* Scan → Score */}
 {modActive("scorer")>0&&<>
-<path d={`M${nr(scan).x} ${nr(scan).y} L${nl(score).x} ${nl(score).y}`} fill="none" stroke={T.pu} strokeWidth="1.5" opacity=".5" filter="url(#wglow)"/>
-<circle r="2.5" fill={T.pu} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite" path={`M${nr(scan).x} ${nr(scan).y} L${nl(score).x} ${nl(score).y}`}/></circle>
+<path d={bezier(nr(scan),nl(score))} fill="none" stroke={T.pu} strokeWidth="1.5" opacity=".5" filter="url(#wglow)"/>
+<circle r="2.5" fill={T.pu} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite" path={bezier(nr(scan),nl(score))}/></circle>
 </>}
 {/* Scan → Hub (main flow down) */}
 {modActive("scorer")>0&&<>
-<path d={`M${nb(scan).x} ${nb(scan).y} L${nt(hub).x} ${nt(hub).y}`} fill="none" stroke={domC} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
-<circle r="2.5" fill={domC} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite" path={`M${nb(scan).x} ${nb(scan).y} L${nt(hub).x} ${nt(hub).y}`}/></circle>
+<path d={bezier(nb(scan),nt(hub))} fill="none" stroke={domC} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
+<circle r="2.5" fill={domC} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite" path={bezier(nb(scan),nt(hub))}/></circle>
 </>}
 {/* Social → Hub */}
 {fh.socialSignals>.1&&<>
-<path d={`M${nr(social).x} ${nr(social).y} L${nl(hub).x} ${nl(hub).y}`} fill="none" stroke={T.or} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
-<circle r="2" fill={T.or} filter="url(#wglow)"><animateMotion dur="1.6s" repeatCount="indefinite" path={`M${nr(social).x} ${nr(social).y} L${nl(hub).x} ${nl(hub).y}`}/></circle>
+<path d={bezier(nr(social),nl(hub))} fill="none" stroke={T.or} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
+<circle r="2" fill={T.or} filter="url(#wglow)"><animateMotion dur="1.6s" repeatCount="indefinite" path={bezier(nr(social),nl(hub))}/></circle>
 </>}
 {/* Rug → Hub */}
 {fh.rugRisk>.05&&<>
-<path d={`M${nl(rugd).x} ${nl(rugd).y} L${nr(hub).x} ${nr(hub).y}`} fill="none" stroke={T.rd} strokeWidth="1.5" opacity={Math.min(.7,fh.rugRisk+.2)} filter="url(#wglow)"/>
-<circle r="2" fill={T.rd} filter="url(#wglow)"><animateMotion dur="1.5s" repeatCount="indefinite" path={`M${nl(rugd).x} ${nl(rugd).y} L${nr(hub).x} ${nr(hub).y}`}/></circle>
+<path d={bezier(nl(rugd),nr(hub))} fill="none" stroke={T.rd} strokeWidth="1.5" opacity={Math.min(.7,fh.rugRisk+.2)} filter="url(#wglow)"/>
+<circle r="2" fill={T.rd} filter="url(#wglow)"><animateMotion dur="1.5s" repeatCount="indefinite" path={bezier(nl(rugd),nr(hub))}/></circle>
 </>}
 {/* Hub → output wires */}
 {[{k:"ape",n:ape},{k:"watch",n:watch},{k:"skip",n:skip},{k:"rug",n:rug}].map(({k,n})=>{if(!hot[k])return null;const spd=k===dominant?"0.8s":"1.8s";return<g key={"lit_"+k}>
-<path d={`M${nb(hub).x} ${nb(hub).y} L${nt(n).x} ${nt(n).y}`} fill="none" stroke={wc[k]} strokeWidth={k===dominant?"2":"1.5"} opacity={k===dominant?.7:.3} filter="url(#wglow)"/>
-<circle r={k===dominant?"3":"2"} fill={wc[k]} opacity=".9" filter="url(#wglow)"><animateMotion dur={spd} repeatCount="indefinite" path={`M${nb(hub).x} ${nb(hub).y} L${nt(n).x} ${nt(n).y}`}/></circle>
+<path d={bezier(nb(hub),nt(n))} fill="none" stroke={wc[k]} strokeWidth={k===dominant?"2":"1.5"} opacity={k===dominant?.7:.3} filter="url(#wglow)"/>
+<circle r={k===dominant?"3":"2"} fill={wc[k]} opacity=".9" filter="url(#wglow)"><animateMotion dur={spd} repeatCount="indefinite" path={bezier(nb(hub),nt(n))}/></circle>
 </g>})}
 
 {/* ── FEEDBACK LOOP WIRES (lit when active — reverse flow) ── */}
@@ -975,13 +1069,13 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 </>}
 {/* WATCH → Grad Watch (graduated tokens monitored) */}
 {hasGradWatch&&<>
-<path d={`M${nb(watch).x} ${nb(watch).y} L${nt(gradW).x} ${nt(gradW).y}`} fill="none" stroke={T.yl} strokeWidth="1" opacity=".3" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.yl} opacity=".7" filter="url(#fbglow)"><animateMotion dur="2s" repeatCount="indefinite" path={`M${nb(watch).x} ${nb(watch).y} L${nt(gradW).x} ${nt(gradW).y}`}/></circle>
+<path d={bezier(nb(watch),nt(gradW))} fill="none" stroke={T.yl} strokeWidth="1" opacity=".3" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.yl} opacity=".7" filter="url(#fbglow)"><animateMotion dur="2s" repeatCount="indefinite" path={bezier(nb(watch),nt(gradW))}/></circle>
 </>}
 {/* Grad Watch → Hub (post-grad intel feeds back) */}
 {hasGradWatch&&<>
-<path d={`M${nt(gradW).x} ${nt(gradW).y} L${nb(hub).x} ${nb(hub).y+8}`} fill="none" stroke={T.yl} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.yl} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.5s" repeatCount="indefinite" path={`M${nt(gradW).x} ${nt(gradW).y} L${nb(hub).x} ${nb(hub).y+8}`}/></circle>
+<path d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.yl} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.yl} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.5s" repeatCount="indefinite" path={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})}/></circle>
 </>}
 {/* RUG → Patterns (rug patterns stored) */}
 {hasPatterns&&hot.rug&&<>
@@ -996,18 +1090,25 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 
 {/* ── PROCESS NODES (Tier 1 + 2) ── */}
 {[
-{n:pump,label:"PumpPortal",sub:"WS Feed",c:T.cy,v:engineState.pool?.recent5m||0,active:modActive("pumpportal")},
-{n:scan,label:"Scanner",sub:"Filter",c:T.pu,v:engineState.pool?.active||0,active:modActive("scorer")},
-{n:score,label:"Scorer",sub:"Velocity",c:T.pu,v:total,active:modActive("scorer")},
-{n:social,label:"Social",sub:"Signals",c:T.or,v:Math.round(fh.socialSignals*100)+"%",active:fh.socialSignals>.05?1:0},
-{n:hub,label:"Decision",sub:"Hub",c:domC,v:total,active:1,isHub:true},
-{n:rugd,label:"Rug Detect",sub:"Safety",c:T.rd,v:d.rug,active:modActive("rug_detector")},
-].map((nd,i)=><g key={"n"+i}>
+{n:pump,label:"PumpPortal",sub:"WS Feed",c:T.cy,v:engineState.pool?.recent5m||0,active:modActive("pumpportal"),ico:"P"},
+{n:scan,label:"Scanner",sub:"Filter",c:T.pu,v:engineState.pool?.active||0,active:modActive("scorer"),ico:"S"},
+{n:score,label:"Scorer",sub:"Velocity",c:T.pu,v:total,active:modActive("scorer"),ico:"V"},
+{n:social,label:"Social",sub:"Signals",c:T.or,v:Math.round(fh.socialSignals*100)+"%",active:fh.socialSignals>.05?1:0,ico:"W"},
+{n:hub,label:"BONDLI",sub:"Brain",c:domC,v:total,active:1,isHub:true},
+{n:rugd,label:"Rug Detect",sub:"Safety",c:T.rd,v:d.rug,active:modActive("rug_detector"),ico:"R"},
+].map((nd,i)=>nd.isHub?<g key={"n"+i}>
+<circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={nw/2+6} fill="url(#hubGlow)"/>
+<circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={nw/2+2} fill="none" stroke="url(#solGrad)" strokeWidth="1.5" opacity=".5" style={{animation:"gp 2s infinite"}}/>
+<circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={nw/2-2} fill={T.bg} stroke="url(#solGrad)" strokeWidth="2"/>
+<text x={nc(nd.n).x} y={nc(nd.n).y-2} textAnchor="middle" fill="url(#solGrad)" fontSize={mb?"7":"8"} fontWeight="900" fontFamily="monospace" letterSpacing="1.5">{nd.label}</text>
+<text x={nc(nd.n).x} y={nc(nd.n).y+7} textAnchor="middle" fill={T.dm} fontSize={mb?"5":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
+<circle cx={nc(nd.n).x} cy={nd.n.y+1} r="2.5" fill="#14F195" opacity=".9"><animate attributeName="opacity" values="1;.4;1" dur="1.5s" repeatCount="indefinite"/></circle>
+</g>:<g key={"n"+i}>
 {nd.active>.5&&<rect x={nd.n.x-2} y={nd.n.y-2} width={nw+4} height={nh+4} rx="7" fill={nd.c} opacity=".08" filter="url(#nglow)"/>}
-<rect x={nd.n.x} y={nd.n.y} width={nw} height={nh} rx="5" fill={T.bg} stroke={nd.active>.5?nd.c:T.ft} strokeWidth={nd.isHub?"1.5":"1"} opacity={nd.active>.5?1:.5}/>
-{nd.isHub&&<rect x={nd.n.x-1} y={nd.n.y-1} width={nw+2} height={nh+2} rx="6" fill="none" stroke={domC} strokeWidth=".5" opacity=".4" style={{animation:"gp 2s infinite"}}/>}
+<rect x={nd.n.x} y={nd.n.y} width={nw} height={nh} rx="5" fill={T.bg} stroke={nd.active>.5?nd.c:T.ft} strokeWidth="1" opacity={nd.active>.5?1:.5}/>
+<text x={nd.n.x+5} y={nd.n.y+6} fontSize="5" fill={nd.c} opacity=".6">{nd.ico}</text>
 <circle cx={nd.n.x+nw-4} cy={nd.n.y+4} r="2" fill={nd.active>.5?T.gn:T.ft} opacity={nd.active>.5?1:.3}><animate attributeName="opacity" values={nd.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
-<text x={nd.n.x+nw/2} y={nd.n.y+nh/2-2} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{nd.label}</text>
+<text x={nd.n.x+nw/2} y={nd.n.y+nh/2-1} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{nd.label}</text>
 <text x={nd.n.x+nw/2} y={nd.n.y+nh/2+6} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
 </g>)}
 
@@ -1040,111 +1141,6 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 <text x={W/2} y={fbY+nh+10} textAnchor="middle" fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".4">↑ feedback loops — outcomes train future decisions ↑</text>
 </svg>
 </div>})()}
-
-{/* ═══ LIVE INTEL: Scores + Spotlight + Pulse (3 columns) ═══ */}
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginTop:6}}>
-
-{/* Token Spotlight — top scoring token with image */}
-<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,display:"flex",flexDirection:"column",maxHeight:280}}>
-<div style={{fontSize:13,fontWeight:700,color:T.dm,marginBottom:6}}>Top Signal</div>
-{(()=>{const top=intelData?.recentEvents?.[0]?.data;if(!top)return<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:T.ft}}>Scanning...</div>;
-const allT=[...(rt.momentum||[]),...(rt.hot||[]),...(rt.new||[]),...(rt.graduating||[])];
-const match=allT.find(t=>t.ca===top.ca);
-return<div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
-<div style={{display:"flex",gap:8,alignItems:"center"}}>
-<div style={{width:52,height:52,borderRadius:8,overflow:"hidden",background:T.sf,flexShrink:0}}>{match?.image?<img src={imgProxy(match.image)} style={{width:"100%",height:"100%",objectFit:"cover"}} alt="" onError={e=>e.target.style.display="none"}/>:<div style={{width:"100%",height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,color:T.pu+"66",fontWeight:900}}>{(top.name||"?")[0]}</div>}</div>
-<div><div style={{fontSize:13,fontWeight:900,color:T.tx}}>{top.name||top.ca?.slice(0,8)}</div>
-<div style={{fontSize:8,color:T.ft,marginTop:1}}>{top.ca?.slice(0,12)}…</div>
-<div style={{display:"flex",gap:4,alignItems:"center",marginTop:3}}><span style={{fontSize:22,fontWeight:900,color:top.score>=50?T.gn:top.score>=25?T.yl:T.pu}}>{top.score}</span><span style={{fontSize:11,color:T.ft}}>pts</span><span style={{fontSize:11,fontWeight:700,color:T.yl}}>{top.bondProb}%</span><span style={{fontSize:11,color:T.ft}}>bond</span></div>
-{top.mcap>0&&<div style={{fontSize:12,color:T.dm,marginTop:1}}>${(top.mcap/1000).toFixed(1)}K MC</div>}
-</div></div>
-{(top.description||match?.description)&&<div style={{fontSize:10,color:T.dm,lineHeight:1.4,padding:"4px 0",borderTop:"1px solid "+T.bd+"44",marginTop:4}}>{(top.description||match?.description||"").slice(0,160)}{(top.description||match?.description||"").length>160?"…":""}</div>}
-{/* Signal breakdown */}
-<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginTop:"auto"}}>
-{[{l:"Velocity",v:Math.min(10,Math.round((top.buys||match?.buys||0)/Math.max(1,((match?.age||60)/60)))),mx:10},
-{l:"Pressure",v:match?Math.round((match.buys||0)/Math.max(1,(match.buys||0)+(match.sells||0))*10):5,mx:10},
-{l:"Diversity",v:Math.min(10,top.ub||match?.uniqueBuyers||0),mx:10},
-{l:"Social",v:(match?.twitter?4:0)+(match?.website?3:0)+(match?.telegram?3:0),mx:10}
-].map(s=><div key={s.l} style={{display:"flex",alignItems:"center",gap:3}}>
-<span style={{fontSize:7,color:T.ft,width:40,textAlign:"right"}}>{s.l}</span>
-<div style={{flex:1,height:5,borderRadius:2,background:T.sf}}><div style={{width:(s.v/s.mx*100)+"%",height:"100%",borderRadius:2,background:T.gn}}/></div>
-<span style={{fontSize:7,color:T.gn,width:12,fontWeight:700}}>{s.v}</span>
-</div>)}
-</div>
-{(user?.tier==="pro"||user?.whitelisted)&&trW&&<div style={{display:"flex",gap:3,marginTop:6}}>
-{[0.05,0.1,0.25].map(amt=><button key={amt} onClick={async(ev)=>{ev.stopPropagation();if(!top.ca||top.ca.length<20){toast("No CA","error");return}try{hp([6,15,6]);toast(`Aping ${top.name||"token"} ${amt} SOL...`,"info");await quickBuy(top.ca,amt)}catch(e){toast(e.message,"error")}}} style={{flex:1,padding:"6px 0",background:T.gn+"0a",border:"1px solid "+T.gn+"22",borderRadius:5,fontSize:10,fontWeight:800,color:T.gn,cursor:"pointer"}}>{amt} SOL</button>)}
-<button onClick={()=>{if(top.ca){sTab("radar");sRS(top.ca);sRExp(top.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{padding:"6px 8px",background:T.sf,border:"1px solid "+T.bd,borderRadius:5,fontSize:9,fontWeight:700,color:T.dm,cursor:"pointer"}}>Details</button>
-</div>}
-</div>})()}
-</div>
-
-{/* Live Radar Pulse — enhanced activity visualization */}
-<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10}}>
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-<div style={{display:"flex",alignItems:"center",gap:6}}>
-<span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>
-<span style={{fontSize:13,fontWeight:800,color:T.tx}}>Live Radar Pulse</span>
-</div>
-<div style={{display:"flex",gap:8,fontSize:10,color:T.ft}}>
-<span><span style={{display:"inline-block",width:6,height:6,borderRadius:1,background:T.gn,marginRight:3,verticalAlign:"middle"}}/>APE</span>
-<span><span style={{display:"inline-block",width:6,height:6,borderRadius:1,background:T.yl,marginRight:3,verticalAlign:"middle"}}/>WATCH</span>
-<span><span style={{display:"inline-block",width:6,height:6,borderRadius:1,background:"#ff1744",marginRight:3,verticalAlign:"middle"}}/>RUG RISK</span>
-</div>
-</div>
-<div style={{display:"flex",flexDirection:"column",gap:2}}>
-{(intelData?.recentEvents||[]).slice(0,12).map((e,i)=>{
-const score=e.data?.score||0;const bp=e.data?.bondProb||0;const name=e.data?.name||e.data?.ca?.slice(0,6)||"?";
-const rugScore=e.data?.rugScore||0;const rugFlags=e.data?.rugFlags||[];
-const isRug=rugScore>50||rugFlags.length>=2;
-const sc=isRug?"#ff1744":score>=50?T.gn:score>=25?T.yl:T.pu;
-const mcap=e.data?.mcap||0;const mcapStr=mcap>=1000?(mcap/1000).toFixed(1)+"K":mcap>0?mcap.toString():"—";
-const fullCA=e.data?.ca||"";
-const canApe=(user?.tier==="pro"||user?.whitelisted)&&trW&&fullCA.length>=20&&score>=50&&!isRug;
-return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16px 90px 1fr 28px 48px 56px":"16px 110px 1fr 28px 58px 32px",alignItems:"center",padding:"3px 0",borderBottom:i<11?"1px solid "+T.bd+"44":"none",gap:0}}>
-{/* Rank */}
-<span style={{fontSize:8,color:T.ft,textAlign:"center"}}>{i+1}</span>
-{/* Name — click opens details in radar */}
-<div onClick={()=>{if(!fullCA||fullCA.length<20)return;sTab("radar");sRS(fullCA);sRExp(fullCA);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}} style={{paddingLeft:2,paddingRight:4,overflow:"hidden",cursor:"pointer"}}>
-<span style={{fontSize:10,color:T.tx,fontWeight:700,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"flex",alignItems:"center",gap:2}}>{name.slice(0,14)}{e.data?.dexBoosted&&<span style={{fontSize:6,fontWeight:800,color:"#ffd600",background:"#ffd60015",padding:"0 2px",borderRadius:2}}>DEX</span>}{bp>=100&&<span style={{fontSize:6,fontWeight:800,color:T.gn,background:T.gn+"15",padding:"0 2px",borderRadius:2}}>GRAD</span>}</span>
-</div>
-{/* Score bar */}
-<div style={{height:16,borderRadius:4,background:T.sf,overflow:"hidden",position:"relative",marginRight:4}}>
-<div style={{position:"absolute",left:0,top:0,height:"100%",width:Math.min(100,score)+"%",borderRadius:4,background:`linear-gradient(90deg,${sc}66,${sc})`,transition:"width 0.6s ease"}}/>
-{bp<100&&<div style={{position:"absolute",left:Math.min(95,bp)+"%",top:2,width:2,height:12,borderRadius:1,background:"rgba(255,255,255,0.5)",transition:"left 0.6s ease"}}/>}
-{isRug&&<div style={{position:"absolute",right:0,top:0,height:"100%",width:"30%",background:"repeating-linear-gradient(45deg,transparent,transparent 2px,#ff174422 2px,#ff174422 4px)"}}/>}
-</div>
-{/* Score */}
-<span style={{fontSize:12,color:sc,fontWeight:900,textAlign:"right"}}>{score}</span>
-{/* Bond + MC */}
-<div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",paddingLeft:4}}>
-<span style={{fontSize:7,color:bp>=100?T.gn:T.yl,fontWeight:700}}>{bp}%</span>
-<span style={{fontSize:9,color:T.ft}}>${mcapStr}</span>
-</div>
-{/* Action col: Ape button for high-score tokens, Rug badge for risky ones */}
-<div style={{textAlign:"center",display:"flex",justifyContent:"center",gap:2}}>
-{canApe?<button onClick={async(ev)=>{ev.stopPropagation();try{hp([6,15,6]);toast(`Aping ${name} 0.05 SOL...`,"info");await quickBuy(fullCA,0.05)}catch(err){toast(err.message,"error")}}} style={{fontSize:7,fontWeight:800,color:"#0a0a0f",background:T.gn,border:"none",borderRadius:3,padding:"2px 6px",cursor:"pointer",lineHeight:1.2}}>APE</button>
-:isRug?<span style={{fontSize:7,color:"#ff1744",fontWeight:800,padding:"1px 4px",borderRadius:3,background:"#ff174415"}} title={rugFlags.join(", ")}>RUG</span>
-:score>=25?<span style={{fontSize:7,color:T.yl,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.yl+"15"}}>WATCH</span>
-:null}
-</div>
-</div>})}
-</div>
-{/* Graduated Watchlist — 24h follow */}
-{intelData?.gradWatch?.count>0&&<div style={{marginTop:6,paddingTop:6,borderTop:"1px solid "+T.bd}}>
-<div onClick={()=>sGradsOpen(!gradsOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
-<span style={{fontSize:10,fontWeight:800,color:T.yl}}>Following Grads</span>
-<span style={{fontSize:8,color:T.ft}}>{intelData.gradWatch.count} tracked 24h {gradsOpen?"▾":"▸"}</span>
-</div>
-{gradsOpen&&intelData.gradWatch.tokens?.map(g=>{const c=g.changePct>=0?T.gn:T.rd;return<div key={g.ca} style={{display:"flex",alignItems:"center",gap:6,padding:"2px 0",fontSize:9}}>
-<span style={{color:T.tx,fontWeight:700,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{g.name||g.ca?.slice(0,6)}</span>
-<span style={{color:T.ft}}>${fm(g.currentMcap)}</span>
-<span style={{color:c,fontWeight:800}}>{g.changePct>=0?"+":""}{g.changePct}%</span>
-<span style={{color:T.ft}}>{g.age}h</span>
-</div>})}
-</div>}
-</div>
-
-</div>{/* end grid */}
 </div>
 
 {/* How it works — collapsible */}
