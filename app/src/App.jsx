@@ -222,9 +222,9 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:4}}><span style={{fontSize:mb?32:40,fontWeight:900,color:fixMc(t,solP)>=1e6?"#ffaa00":fixMc(t,solP)>=1e5?T.gn:T.tx}}>${fm(fixMc(t,solP))}</span>{t.h1Change!=null&&<span style={{fontSize:20,fontWeight:700,color:t.h1Change>0?T.gn:"#ff4444"}}>{t.h1Change>0?"+":""}{t.h1Change.toFixed(1)}%</span>}</div>
 {/* Social links — always visible */}
 <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
-<SL href={t.twitter?("https://twitter.com/"+(t.twitter.startsWith("@")?t.twitter.slice(1):t.twitter)):null} icon={IC.tw} label="Twitter"/>
-<SL href={t.website} icon={IC.globe} label="Website"/>
-<SL href={t.telegram?("https://t.me/"+(t.telegram.startsWith("@")?t.telegram.slice(1):t.telegram)):null} icon={IC.tg} label="Telegram"/>
+<SL href={t.twitter?(t.twitter.startsWith("http")?t.twitter:"https://twitter.com/"+(t.twitter.startsWith("@")?t.twitter.slice(1):t.twitter)):null} icon={IC.tw} label="Twitter"/>
+<SL href={t.website?(t.website.startsWith("http")?t.website:"https://"+t.website):null} icon={IC.globe} label="Website"/>
+<SL href={t.telegram?(t.telegram.startsWith("http")?t.telegram:"https://t.me/"+(t.telegram.startsWith("@")?t.telegram.slice(1):t.telegram)):null} icon={IC.tg} label="Telegram"/>
 <a href={"https://pump.fun/coin/"+t.ca} target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:4,padding:"6px 10px",background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:5,fontSize:14,color:T.gn,textDecoration:"none",fontWeight:700}}>pump.fun</a>
 <a href={"https://www.gmgn.cc/sol/token/"+t.ca} target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:5,padding:"6px 12px",background:T.bg,border:"1px solid "+T.bd,borderRadius:5,fontSize:14,color:T.dm,textDecoration:"none"}}>gmgn</a>
 <a href={"https://dexscreener.com/solana/"+t.ca} target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:5,padding:"6px 12px",background:T.bg,border:"1px solid "+T.bd,borderRadius:5,fontSize:14,color:T.dm,textDecoration:"none"}}>dex</a>
@@ -435,7 +435,7 @@ const[rEnabled,sRE]=useState(true);const[autoTrade,sAutoTrade]=useState(null);co
 const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");const[refMsg,sRefMsg]=useState("");
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
-const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);
+const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);
 // Live sim state — must be declared here, NOT inside IIFEs (React Rules of Hooks / error #310)
 const[simExpanded,sSimExpanded]=useState(true);const[simDetailOpen,sSimDetailOpen]=useState(true);const[simGuideOpen,sSimGuideOpen]=useState(false);const[simRunning,sSimRunning]=useState(false);
 const[liveSim,sLiveSim]=useState(null);const[simStarting,sSimStarting]=useState(false);
@@ -463,12 +463,13 @@ useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null)sOl(d
 useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(d=>sFl(d)).catch(()=>{})},5000);return()=>clearInterval(iv)},[launched,lCA]);
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>r.json()).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
+useEffect(()=>{if(tab!=="intel")return;const poll=()=>{a.gm("24h").then(d=>sDexMovers(d)).catch(()=>{})};poll();const iv=setInterval(poll,30000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?3000:10000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
 // Live sim polling — runs for all users when sim is active
 useEffect(()=>{if(tab!=="intel"||!liveSim?.active)return;const poll=()=>a.simst(user?.pubkey||"anon").then(d=>{if(d.active)sLiveSim(p=>({...p,...d}));else sLiveSim(null)}).catch(()=>{});poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab,liveSim?.active,user?.pubkey]);
 useEffect(()=>{if(tab!=="intel")return;a.gcp().then(d=>sChartPatterns(d)).catch(()=>{});const iv=setInterval(()=>a.gcp().then(d=>sChartPatterns(d)).catch(()=>{}),30000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs)sRT(d.tabs);if(d.poolSize!=null)sRP(d.poolSize);if(d.gradMc)sGradMc(d.gradMc);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,5000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
-useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,10000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
+useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){const onChainMints=new Set(d.positions.map(p=>p.mint));sPos(prev=>{const recentPending=prev.filter(p=>p.pending&&!onChainMints.has(p.mint)&&(Date.now()-(p.pendingSince||0))<60000);return[...d.positions,...recentPending]});sHeld(prev=>{const n=new Set(d.positions.map(p=>p.mint));prev.forEach(m=>{if(!onChainMints.has(m)){const stillPending=true;if(stillPending)n.add(m)}});return n})}}).catch(()=>{});f();const iv=setInterval(f,10000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.grf(user.pubkey).then(d=>sRefData(d)).catch(()=>{})},[user?.pubkey]);
 // CA lookup effect — must be before early return to satisfy Rules of Hooks
 const allRadarPre=(()=>{const seen=new Set();return[...(rt.momentum||[]),...(rt.hot||[]),...(rt.new||[]),...(rt.graduating||[])].filter(t=>{if(seen.has(t.ca))return false;seen.add(t.ca);return true})})();
@@ -476,8 +477,8 @@ useEffect(()=>{const q=rSearch.trim();const isCA=/^[1-9A-HJ-NP-Za-km-z]{32,44}$/
 
 const disconnect=async()=>{try{const p=window?.phantom?.solana||window?.solana;await p?.disconnect()}catch{}sU(null)};
 const resetHome=()=>{sLd(false);sLCA("");sAsid("");sFl(null)};
-const quickBuy=async(ca,s)=>{if(!user?.pubkey||user.demo){toast("Connect wallet","error");return}if(!trW){toast("Create trading key","error");return}if(trB<s){toast(`Need ${s} SOL`,"error");return}const r=await a.qb(user.pubkey,ca,s);if(r.signature){sTrB(b=>b-s);hp([6,15,6]);toast("Bought "+s+" SOL","success");sTab("wallet");sRExp(null);if(r.position){sPos(prev=>{if(prev.some(p=>p.mint===ca))return prev;return[{mint:ca,name:r.position.name,ticker:r.position.ticker,image:r.position.image,mcapUsd:r.position.mcapUsd,mcapSol:r.position.mcapSol,marketCapSol:r.position.mcapSol,valueSol:s,valueUsd:s*solP,amount:0,holdPct:0,pnlSol:0,pnlPct:0,pending:true},...prev]});sHeld(prev=>new Set([...prev,ca]))}const rb=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)));if(d.positions.some(p=>p.mint===ca))return}}catch{}if(n<8)setTimeout(()=>rb(n+1),(n+1)*2500)};setTimeout(()=>rb(0),4000);return r.signature}throw new Error(r.error||"Failed")};
-const quickSell=async(ca,pct)=>{if(!user?.pubkey)throw new Error("Connect wallet");let lastErr="";for(let attempt=0;attempt<2;attempt++){try{const r=await a.qs(user.pubkey,ca,pct);if(r.error&&!r.signature)throw new Error(r.error);if(!r.signature)throw new Error("No signature returned");if(r.confirmed===false){toast("Sell sent but not confirmed — position kept open. Retry if needed.","error");setTimeout(()=>a.gp(user.pubkey).then(d=>{if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{}),5000);return r.signature}if(pct>=100){sPos(prev=>prev.map(p=>p.mint===ca?{...p,selling:true}:p));sHeld(prev=>{const n=new Set(prev);n.delete(ca);return n})}const refreshPos=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)));return}}catch{}if(n<4)setTimeout(()=>refreshPos(n+1),(n+1)*2000)};setTimeout(()=>refreshPos(0),2000);return r.signature}catch(e){lastErr=e.message;if(attempt===0)await new Promise(r=>setTimeout(r,1500))}}throw new Error(lastErr||"Sell failed")};
+const quickBuy=async(ca,s)=>{if(!user?.pubkey||user.demo){toast("Connect wallet","error");return}if(!trW){toast("Create trading key","error");return}if(trB<s){toast(`Need ${s} SOL`,"error");return}const r=await a.qb(user.pubkey,ca,s);if(r.signature){sTrB(b=>b-s);hp([6,15,6]);toast("Bought "+s+" SOL","success");sTab("wallet");sRExp(null);if(r.position){sPos(prev=>{if(prev.some(p=>p.mint===ca))return prev;return[{mint:ca,name:r.position.name,ticker:r.position.ticker,image:r.position.image,mcapUsd:r.position.mcapUsd,mcapSol:r.position.mcapSol,marketCapSol:r.position.mcapSol,valueSol:s,valueUsd:s*solP,amount:0,holdPct:0,pnlSol:0,pnlPct:0,pending:true,pendingSince:Date.now()},...prev]});sHeld(prev=>new Set([...prev,ca]))}const rb=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){const onChainMints=new Set(d.positions.map(p=>p.mint));sPos(prev=>{const pending=prev.filter(p=>p.pending&&!onChainMints.has(p.mint)&&(Date.now()-(p.pendingSince||0))<60000);return[...d.positions,...pending]});sHeld(new Set([...d.positions.map(p=>p.mint),...(d.positions.some(p2=>p2.mint===ca)?[]:[ca])]));if(d.positions.some(p=>p.mint===ca))return}}catch{}if(n<8)setTimeout(()=>rb(n+1),(n+1)*2500)};setTimeout(()=>rb(0),4000);setTimeout(()=>{sPos(prev=>prev.map(p=>p.mint===ca&&p.pending&&(Date.now()-(p.pendingSince||0))>=60000?{...p,pending:false,pendingExpired:true}:p))},62000);return r.signature}throw new Error(r.error||"Failed")};
+const quickSell=async(ca,pct)=>{if(!user?.pubkey)throw new Error("Connect wallet");let lastErr="";for(let attempt=0;attempt<2;attempt++){try{const r=await a.qs(user.pubkey,ca,pct);if(r.error&&!r.signature)throw new Error(r.error);if(!r.signature)throw new Error("No signature returned");if(r.confirmed===false){toast("Sell tx sent — waiting for confirmation. Will refresh automatically.","info");const checkConfirm=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){const still=d.positions.find(p=>p.mint===ca);if(pct>=100&&!still){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)));toast("Sell confirmed","success");return}sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)))}}catch{}if(n<6)setTimeout(()=>checkConfirm(n+1),(n+1)*3000)};setTimeout(()=>checkConfirm(0),4000);return r.signature}if(pct>=100){sPos(prev=>prev.map(p=>p.mint===ca?{...p,selling:true}:p));sHeld(prev=>{const n=new Set(prev);n.delete(ca);return n})}else{sPos(prev=>prev.map(p=>p.mint===ca?{...p,valueSol:p.valueSol?(p.valueSol*(100-pct)/100):p.valueSol,valueUsd:p.valueUsd?(p.valueUsd*(100-pct)/100):p.valueUsd,partialSell:true}:p))}const refreshPos=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)));return}}catch{}if(n<4)setTimeout(()=>refreshPos(n+1),(n+1)*2000)};setTimeout(()=>refreshPos(0),2000);return r.signature}catch(e){lastErr=e.message;if(attempt===0)await new Promise(r=>setTimeout(r,1500))}}throw new Error(lastErr||"Sell failed")};
 
 if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHeight:"100dvh",background:T.bg,fontFamily:M,overflow:"auto"}}>
 {/* ═══ HERO ═══ */}
@@ -702,7 +703,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <div onClick={()=>sRExp(expanded?null:p.mint)} style={{display:"flex",alignItems:"center",gap:mb?6:10,padding:mb?"8px":"10px 12px",cursor:"pointer",background:expanded?T.gn+"04":"transparent"}}>
 <div style={{width:42,height:42,borderRadius:8,overflow:"hidden",background:T.bg,flexShrink:0}}>{p.image?<img src={imgProxy(p.image)} style={{width:"100%",height:"100%",objectFit:"cover"}} alt="" onError={e=>e.target.style.display="none"}/>:<div style={{width:"100%",height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,color:T.ft}}>{(tk(p.ticker)||"?")[0]}</div>}</div>
 <div style={{flex:1,minWidth:0}}>
-<div style={{display:"flex",alignItems:"baseline",gap:4}}><span style={{fontSize:14,fontWeight:800}}>{p.name||tk(p.ticker)||p.mint?.slice(0,8)}</span>{p.pending&&<span style={{fontSize:8,fontWeight:700,color:T.yl,background:T.yl+"12",padding:"1px 4px",borderRadius:3,animation:"gp 1.5s infinite"}}>CONFIRMING</span>}{mc>0&&<span style={{fontSize:13,color:T.ft}}>${fm(mc)}</span>}{p.holdPct>0&&<span style={{fontSize:10,color:T.pu}}>{p.holdPct}%</span>}</div>
+<div style={{display:"flex",alignItems:"baseline",gap:4}}><span style={{fontSize:14,fontWeight:800}}>{p.name||tk(p.ticker)||p.mint?.slice(0,8)}</span>{p.pending&&<span style={{fontSize:8,fontWeight:700,color:T.yl,background:T.yl+"12",padding:"1px 4px",borderRadius:3,animation:"gp 1.5s infinite"}}>CONFIRMING</span>}{p.pendingExpired&&!p.pending&&<span style={{fontSize:8,fontWeight:700,color:T.or,background:T.or+"12",padding:"1px 4px",borderRadius:3}}>CHECK TX</span>}{mc>0&&<span style={{fontSize:13,color:T.ft}}>${fm(mc)}</span>}{p.holdPct>0&&<span style={{fontSize:10,color:T.pu}}>{p.holdPct}%</span>}</div>
 <div style={{fontSize:13,color:T.dm}}>{fm(p.amount)} tokens</div>
 </div>
 <div style={{textAlign:"right",flexShrink:0}}>
@@ -837,6 +838,7 @@ return<div style={{flex:1,display:"flex",flexDirection:"column",gap:6}}>
 <div style={{display:"flex",gap:4,alignItems:"center",marginTop:3}}><span style={{fontSize:22,fontWeight:900,color:top.score>=50?T.gn:top.score>=25?T.yl:T.pu}}>{top.score}</span><span style={{fontSize:11,color:T.ft}}>pts</span><span style={{fontSize:11,fontWeight:700,color:T.yl}}>{top.bondProb}%</span><span style={{fontSize:11,color:T.ft}}>bond</span></div>
 {top.mcap>0&&<div style={{fontSize:12,color:T.dm,marginTop:1}}>${(top.mcap/1000).toFixed(1)}K MC</div>}
 </div></div>
+{(top.description||match?.description)&&<div style={{fontSize:10,color:T.dm,lineHeight:1.4,padding:"4px 0",borderTop:"1px solid "+T.bd+"44",marginTop:4}}>{(top.description||match?.description||"").slice(0,160)}{(top.description||match?.description||"").length>160?"…":""}</div>}
 {/* Signal breakdown */}
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginTop:"auto"}}>
 {[{l:"Velocity",v:Math.min(10,Math.round((top.buys||match?.buys||0)/Math.max(1,((match?.age||60)/60)))),mx:10},
@@ -924,6 +926,22 @@ return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16p
 
 </div>{/* end grid */}
 </div>
+
+{/* DEX Movers — DexScreener + Birdeye data */}
+{dexMovers&&((dexMovers.hotGraduated||dexMovers.graduated)?.length>0||dexMovers.boosted?.length>0||dexMovers.trending?.length>0)&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?8:12,marginTop:6}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><IC.chart s={14} c={T.yl}/><span style={{fontSize:13,fontWeight:800}}>DEX Movers</span><span style={{fontSize:9,color:T.ft}}>DexScreener + Birdeye</span></div>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:4}}>
+{[{label:"Top Graduated",data:dexMovers.hotGraduated||dexMovers.graduated||[],color:T.gn},{label:"DEX Boosted",data:dexMovers.boosted||[],color:"#ffd600"},{label:"Trending",data:dexMovers.trending||[],color:T.pu}].map(sec=>sec.data.length>0&&<div key={sec.label} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:8}}>
+<div style={{fontSize:10,fontWeight:800,color:sec.color,marginBottom:4}}>{sec.label}</div>
+{sec.data.slice(0,5).map((t,i)=><div key={t.ca||i} onClick={()=>{if(t.ca){sTab("radar");sRS(t.ca);sRExp(t.ca)}}} style={{display:"flex",alignItems:"center",gap:4,padding:"3px 0",borderBottom:i<4?"1px solid "+T.bd+"22":"none",cursor:"pointer"}}>
+<span style={{fontSize:9,color:T.ft,width:12}}>{i+1}</span>
+{t.image&&<img src={imgProxy(t.image)} style={{width:18,height:18,borderRadius:4,objectFit:"cover"}} alt="" onError={e=>e.target.style.display="none"}/>}
+<div style={{flex:1,minWidth:0}}><div style={{fontSize:10,fontWeight:700,color:T.tx,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t.name||t.ca?.slice(0,8)}</div></div>
+<div style={{textAlign:"right"}}>{t.mcapUsd>0&&<div style={{fontSize:9,color:T.dm}}>${fm(t.mcapUsd)}</div>}{t.change24h!=null&&<div style={{fontSize:8,color:t.change24h>=0?T.gn:T.rd,fontWeight:700}}>{t.change24h>=0?"+":""}{typeof t.change24h==="number"?t.change24h.toFixed(1):t.change24h}%</div>}</div>
+</div>)}
+</div>)}
+</div>
+</div>}
 
 {/* How it works — collapsible */}
 <button onClick={()=>sShowHow(!showHow)} style={{width:"100%",padding:"8px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
