@@ -1,12 +1,19 @@
 // BONDLI v3.0 Config
 import "dotenv/config";
 
+// Auto-construct Helius URLs from API key (free tier works great for ≤50 req/s)
+const _heliusKey = process.env.HELIUS_API_KEY || "";
+const _heliusRpc = _heliusKey ? `https://mainnet.helius-rpc.com/?api-key=${_heliusKey}` : "";
+const _heliusWs  = _heliusKey ? `wss://mainnet.helius-rpc.com/?api-key=${_heliusKey}` : "";
+const _heliusSendTx = _heliusKey ? `https://mainnet.helius-rpc.com/?api-key=${_heliusKey}` : "";
+
 export const CONFIG = {
-  RPC_URL:           process.env.RPC_URL || "https://api.mainnet-beta.solana.com",
-  WS_URL:            process.env.WS_URL || "",
-  HELIUS_API_KEY:    process.env.HELIUS_API_KEY || "",
+  // If HELIUS_API_KEY is set, auto-use Helius RPC (massively better than public RPC)
+  RPC_URL:           process.env.RPC_URL || _heliusRpc || "https://api.mainnet-beta.solana.com",
+  WS_URL:            process.env.WS_URL || _heliusWs || "",
+  HELIUS_API_KEY:    _heliusKey,
   USE_HELIUS_ATLAS:  process.env.USE_HELIUS_ATLAS === "true",
-  HELIUS_SEND_TX_URL: process.env.HELIUS_SEND_TX_URL || "",
+  HELIUS_SEND_TX_URL: process.env.HELIUS_SEND_TX_URL || _heliusSendTx,
   HELIUS_SMART_TX:   process.env.HELIUS_SMART_TX === "true",
   MASTER_SEED:       process.env.MASTER_SEED || "",
   TOKEN_CA:          process.env.TOKEN_CA || process.argv[2] || "",

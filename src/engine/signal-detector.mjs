@@ -26,7 +26,8 @@ export class SignalDetector {
     try {
       if (CONFIG.HELIUS_API_KEY) {
         const res = await fetch(
-          `${this.heliusBase}/addresses/${address}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=50`
+          `${this.heliusBase}/addresses/${address}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=50`,
+          { signal: AbortSignal.timeout(8000) }
         );
         if (res.ok) {
           const txs = await res.json();
