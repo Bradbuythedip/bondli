@@ -1,6 +1,6 @@
 // BONDLI v4.0 — Helius Enhanced (Priority Fees + Smart Transactions)
 // Uses helius-sdk for optimal fee estimation and tx landing
-import { Helius } from "helius-sdk";
+import { createHelius } from "helius-sdk";
 import { Connection, VersionedTransaction, Transaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import CONFIG from "./config.mjs";
@@ -9,7 +9,7 @@ let _helius = null;
 
 export function getHelius() {
   if (!_helius && CONFIG.HELIUS_API_KEY) {
-    _helius = new Helius(CONFIG.HELIUS_API_KEY);
+    _helius = createHelius(CONFIG.HELIUS_API_KEY);
   }
   return _helius;
 }
