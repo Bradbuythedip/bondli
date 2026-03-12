@@ -1219,7 +1219,7 @@ function outcomeToLabel(outcome) {
 
 class ScoreDynamics {
   constructor(maxTokens = 5000) {
-    this.history = new Map(); // ca → { scores: [{s, t}], v, a }
+    this.history = new Map(); // ca → { scores: [{s, t}], v, a, impulse }
     this.maxTokens = maxTokens;
   }
 
@@ -1231,7 +1231,7 @@ class ScoreDynamics {
     const now = Date.now();
     let entry = this.history.get(ca);
     if (!entry) {
-      entry = { scores: [], v: 0, a: 0 };
+      entry = { scores: [], v: 0, a: 0, impulse: 0 };
       this.history.set(ca, entry);
       // Evict oldest if at capacity
       if (this.history.size > this.maxTokens) {
@@ -1249,7 +1249,8 @@ class ScoreDynamics {
     if (scores.length < 2) {
       entry.v = 0;
       entry.a = 0;
-      return { velocity: 0, acceleration: 0, trend: "stable", scores: scores.length };
+      entry.impulse = 0;
+      return { velocity: 0, acceleration: 0, impulse: 0, ivRatio: 0, momentum: "nascent", trend: "stable", scores: scores.length };
     }
 
     // ── Compute velocity: weighted linear regression on recent points ──
@@ -1275,6 +1276,32 @@ class ScoreDynamics {
       entry.a = entry.a === 0 ? rawA : entry.a * 0.3 + rawA * 0.7;
     }
 
+    // ── Impulse: area under velocity curve (trapezoidal integration) ──
+    // Impulse = accumulated |velocity| × dt — measures total energy delivered.
+    // High impulse + high velocity = sustained runner. Low impulse + high velocity = flash pump.
+    const dtImpulse = (latest.t - prev.t) / 1000;
+    const trapArea = dtImpulse > 0 ? ((Math.abs(entry.v) + Math.abs(v)) / 2) * dtImpulse : 0;
+    entry.impulse = (entry.impulse || 0) + trapArea;
+    // Decay impulse slowly so stale tokens don't accumulate forever (half-life ~5 min)
+    const decayFactor = Math.exp(-dtImpulse / 300);
+    entry.impulse *= decayFactor;
+    entry.impulse += trapArea;
+
+    // ── Impulse/Velocity ratio: sustained vs flash ──
+    // High ratio = large accumulated area relative to current speed = sustained momentum
+    // Low ratio = speed spike with no history = flash pump / unsustained
+    const absV = Math.abs(entry.v);
+    const ivRatio = absV > 0.01 ? entry.impulse / absV : 0;
+
+    // ── Momentum classification (using impulse + velocity together) ──
+    let momentum;
+    if (entry.v > 0.1 && ivRatio > 30) momentum = "sustained";       // big area, still fast = strong runner
+    else if (entry.v > 0.2 && ivRatio < 10) momentum = "flash";       // fast but no history = flash pump
+    else if (entry.v < -0.1 && entry.impulse > 20) momentum = "exhausted"; // was big, now falling = momentum exhaustion
+    else if (entry.v > 0.05 && ivRatio > 15) momentum = "building";   // moderate area, rising = early runner
+    else if (entry.v < -0.05) momentum = "fading";
+    else momentum = "nascent";
+
     // ── Classify trend ──
     let trend;
     if (entry.v > 0.3 && entry.a > 0.01) trend = "rocket";       // accelerating upward
@@ -1287,6 +1314,9 @@ class ScoreDynamics {
     return {
       velocity: +entry.v.toFixed(4),
       acceleration: +entry.a.toFixed(6),
+      impulse: +entry.impulse.toFixed(2),
+      ivRatio: +ivRatio.toFixed(1),
+      momentum,
       trend,
       scores: n,
     };
@@ -1297,9 +1327,21 @@ class ScoreDynamics {
     const entry = this.history.get(ca);
     if (!entry) return null;
     const n = entry.scores.length;
+    const absV = Math.abs(entry.v);
+    const ivRatio = absV > 0.01 ? (entry.impulse || 0) / absV : 0;
+    let momentum;
+    if (entry.v > 0.1 && ivRatio > 30) momentum = "sustained";
+    else if (entry.v > 0.2 && ivRatio < 10) momentum = "flash";
+    else if (entry.v < -0.1 && (entry.impulse || 0) > 20) momentum = "exhausted";
+    else if (entry.v > 0.05 && ivRatio > 15) momentum = "building";
+    else if (entry.v < -0.05) momentum = "fading";
+    else momentum = "nascent";
     return {
       velocity: +entry.v.toFixed(4),
       acceleration: +entry.a.toFixed(6),
+      impulse: +(entry.impulse || 0).toFixed(2),
+      ivRatio: +ivRatio.toFixed(1),
+      momentum,
       trend: entry.v > 0.3 && entry.a > 0.01 ? "rocket"
         : entry.v > 0.1 ? "rising"
         : entry.v > 0 && entry.a < -0.01 ? "fading"
