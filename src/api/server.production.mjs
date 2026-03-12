@@ -446,11 +446,9 @@ function processRadarMessage(data) {
   const vSol = data.vSolInBondingCurve || 0;
   const vTokens = data.vTokensInBondingCurve || 0;
   const trader = data.traderPublicKey || "";
-  // FDV = price * total supply. PumpPortal's marketCapSol underreports (~half)
-  // because it uses bonding curve supply, not the full 1B token supply.
-  // Compute FDV ourselves: (vSol / vTokens) * 1,000,000,000
-  const TOTAL_SUPPLY = 1_000_000_000;
-  const mcSol = vTokens > 0 ? (vSol / vTokens) * TOTAL_SUPPLY : (data.marketCapSol || 0);
+  // Use PumpPortal's marketCapSol directly — it matches chart prices (GMGN, pump.fun).
+  // Previously computed FDV via (vSol/vTokens)*1B which inflated MC vs chart price.
+  const mcSol = data.marketCapSol || (vTokens > 0 ? vSol : 0);
 
   // ═══ TOKEN CREATION ═══
   if (data.txType === "create") {
@@ -636,7 +634,7 @@ async function refreshGraduatedMcap(mint) {
 function applyMcapUpdate(mint, pair) {
   const token = radar.tokens.get(mint);
   if (!token) return;
-  const newMcap = pair.fdv || pair.marketCap || 0;
+  const newMcap = pair.marketCap || pair.fdv || 0;
   if (newMcap > 0) {
     const changed = token.mcapUsd !== Math.round(newMcap);
     token.mcapUsd = Math.round(newMcap);
@@ -714,7 +712,7 @@ setInterval(async () => {
           for (const [ca, w] of stale) {
             const pair = bestPairs.get(ca);
             if (pair) {
-              const mc = pair.fdv || 0;
+              const mc = pair.marketCap || pair.fdv || 0;
               w.lastMcap = mc;
               if (mc > w.peakMcap) w.peakMcap = mc;
               w.spark.push(mc);
@@ -2911,7 +2909,7 @@ function startAutoTrader(wallet, settings) {
               const d = await r.json();
               const pair = d?.pairs?.[0];
               if (pair) {
-                const mcUsd = pair.fdv || pair.marketCap || 0;
+                const mcUsd = pair.marketCap || pair.fdv || 0;
                 token = { mcapUsd: mcUsd, mcapSol: solUsdPrice > 0 ? mcUsd / solUsdPrice : 0, name: pair.baseToken?.name || "", graduated: true };
               }
             }
@@ -4072,7 +4070,7 @@ app.get("/api/positions/:wallet", async (req, res) => {
       if (!radarToken) {
         try {
           const dr = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(5000) });
-          if (dr.ok) { const dd = await dr.json(); const p = dd?.pairs?.[0]; if (p) radarToken = { name: p.baseToken?.name||"", ticker: p.baseToken?.symbol||"", image: p.info?.imageUrl||"", mcapSol: 0, mcapUsd: p.fdv||0 }; }
+          if (dr.ok) { const dd = await dr.json(); const p = dd?.pairs?.[0]; if (p) radarToken = { name: p.baseToken?.name||"", ticker: p.baseToken?.symbol||"", image: p.info?.imageUrl||"", mcapSol: 0, mcapUsd: p.marketCap||p.fdv||0 }; }
         } catch {}
       }
       
