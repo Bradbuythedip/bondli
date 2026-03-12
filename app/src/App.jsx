@@ -431,7 +431,7 @@ const[toasts,sToasts]=useState([]);
 const[rt,sRT]=useState({new:[],hot:[],graduating:[],momentum:[]});
 const[rTab,sRTab]=useState("momentum");const[rLoad,sRL]=useState(true);const[rPool,sRP]=useState(0);const[gradMc,sGradMc]=useState(34000);
 const[rExp,sRExp]=useState(null);const[buying,sBuy]=useState(null);const[selling,sSell]=useState(null);const[rSearch,sRS]=useState("");
-const[rEnabled,sRE]=useState(true);const[autoTrade,sAutoTrade]=useState(null);const[img,sImg]=useState(null);const[showKeys,sShowKeys]=useState(false);
+const[rEnabled,sRE]=useState(true);const[autoTrade,sAutoTrade]=useState(null);const[img,sImg]=useState(null);const[showKeys,sShowKeys]=useState(false);const[aaAdvanced,sAAAdvanced]=useState(false);
 const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");const[refMsg,sRefMsg]=useState("");
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
@@ -958,7 +958,7 @@ return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16p
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:11,fontWeight:800}}>Model Behavior</span><span style={{fontSize:7,color:T.dm}}>live feature weights</span></div>
 {/* Feature weight bars */}
 <div style={{display:"grid",gap:4}}>
-{intelData.scorer.topFeatures.slice(0,8).map((f,i)=>{const maxW=parseFloat(intelData.scorer.topFeatures[0]?.weight)||2.5;const pct=Math.min(100,Math.round((parseFloat(f.weight)/maxW)*100));const featureNames={oc_buyVelocity5m:"Buy Velocity (5m)",tp_stickiness:"Meme Stickiness",oc_uniqueBuyers5m:"Unique Buyers (5m)",k_herdSignal:"Herd Signal",tp_lawOfFew:"Law of Few",k_cognitiveEase:"Name Ease",oc_volumeSol5m:"Volume SOL (5m)",so_hasTwitter:"Has Twitter",ch_healthScore:"Chart Health",ch_pumpDump:"Pump & Dump",rg_devSellSpeed:"Dev Sell Speed",rg_mcapDropRate:"MC Drop Rate",rg_buyerRetention:"Buyer Retention",k_anchoring:"Anchoring Bias",k_availability:"Availability Heuristic",k_lossAversion:"Loss Aversion (2x)",k_peakEnd:"Peak-End Rule",k_prospectTheory:"Prospect Theory",gl_thinSlice:"Thin-Slice (30s)",gl_outlier:"Outlier Detection",gl_10kMaturity:"Pattern Maturity",gl_accumAdvantage:"Early Mover Cluster",tp_context:"Power of Context",cs_cascadeOnset:"Cascade Onset",cs_cascadeStrength:"Cascade Strength",cs_reflexivity:"Reflexivity Loop",cs_curveVelocity:"Curve Velocity",cs_attentionShare:"Attention Share"};return<div key={f.feature} style={{display:"flex",alignItems:"center",gap:6}}>
+{intelData.scorer.topFeatures.slice(0,8).map((f,i)=>{const maxW=parseFloat(intelData.scorer.topFeatures[0]?.weight)||2.5;const pct=Math.min(100,Math.round((parseFloat(f.weight)/maxW)*100));const featureNames={oc_buyVelocity5m:"Buy Velocity (5m)",tp_stickiness:"Meme Stickiness",oc_uniqueBuyers5m:"Unique Buyers (5m)",k_herdSignal:"Herd Signal",tp_lawOfFew:"Law of Few",k_cognitiveEase:"Name Ease",oc_volumeSol5m:"Volume SOL (5m)",so_hasTwitter:"Has Twitter",ch_healthScore:"Chart Health",ch_pumpDump:"Pump & Dump",rg_devSellSpeed:"Dev Sell Speed",rg_mcapDropRate:"MC Drop Rate",rg_buyerRetention:"Buyer Retention",k_anchoring:"Anchoring Bias",k_availability:"Availability Heuristic",k_lossAversion:"Loss Aversion (2x)",k_peakEnd:"Peak-End Rule",k_prospectTheory:"Prospect Theory",gl_thinSlice:"Thin-Slice (30s)",gl_outlier:"Outlier Detection",gl_10kMaturity:"Pattern Maturity",gl_accumAdvantage:"Early Mover Cluster",tp_context:"Power of Context",cs_cascadeOnset:"Cascade Onset",cs_cascadeStrength:"Cascade Strength",cs_reflexivity:"Reflexivity Loop",cs_curveVelocity:"Curve Velocity",cs_attentionShare:"Attention Share",sir_r0:"Viral R0",sir_infectRate:"Infection Rate",sir_recoveryRate:"Recovery Rate",gf_curveProgress:"Curve Progress",gf_frontrunSignal:"Grad Frontrun",apd_attentionGrowth:"Attention Growth",apd_priceFlat:"Price Flat",apd_divergence:"Attn-Price Diverge"};return<div key={f.feature} style={{display:"flex",alignItems:"center",gap:6}}>
 <span style={{fontSize:7,color:T.dm,minWidth:90,textAlign:"right"}}>{featureNames[f.feature]||f.feature}</span>
 <div style={{flex:1,height:6,borderRadius:3,background:T.bg,overflow:"hidden"}}><div style={{width:pct+"%",height:"100%",borderRadius:3,background:`linear-gradient(90deg,${T.pu},${T.gn})`,transition:"width 1s"}}/></div>
 <span style={{fontSize:7,color:T.tx,fontWeight:700,minWidth:25}}>{f.weight}</span>
@@ -975,118 +975,121 @@ return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16p
 </div></div>}
 </div>}
 
-{/* Auto-Ape Settings */}
+{/* Auto-Ape — Don Norman redesign: defaults that work, details on demand */}
 {user?.pubkey&&!user.demo&&trW&&(()=>{
 const aaOpen=autoTrade?.open||autoTrade?.active;
 const aaActive=autoTrade?.active;
-const S=autoTrade?.settings||{minScore:25,solPerTrade:0.05,maxPositions:3,tp1:35,tp1Sell:50,tp2:80,tp2Sell:30,tp3:150,tp3Sell:50,sl1:15,sl1Sell:60,sl2:30,momentumExit:true};
-const adj=(k,step,mn,mx)=>{const cur=S[k]??0;const nv=Math.max(mn,Math.min(mx,+(cur+step).toFixed(4)));sAutoTrade(p=>({...p,settings:{...p.settings,[k]:nv}}))};
-/* Auto-balance TP sell %s to always total 100%.
-   When one changes, the others shrink/grow proportionally.
-   Keys: tp1Sell, tp2Sell, tp3Sell — each is the % of TOTAL position to sell at that tier. */
-const adjTP=(k,step)=>{
-  const keys=["tp1Sell","tp2Sell","tp3Sell"];
-  const others=keys.filter(x=>x!==k);
-  const cur=S[k]||0;
-  const nv=Math.max(5,Math.min(90,cur+step));
-  const remaining=100-nv;
-  const otherSum=(S[others[0]]||0)+(S[others[1]]||0);
-  const r0=otherSum>0?Math.round(remaining*(S[others[0]]||0)/otherSum):Math.round(remaining/2);
-  const r1=remaining-r0;
-  sAutoTrade(p=>({...p,settings:{...p.settings,[k]:nv,[others[0]]:Math.max(5,r0),[others[1]]:Math.max(5,r1)}}));
+/* Auto-compute optimal TP/SL from bet size using power-law math:
+   Small bets → wider stops (can afford variance), Big bets → tighter stops (capital preservation) */
+const autoSettings=(solPerTrade)=>{
+  const sol=solPerTrade||0.05;
+  // Aggression scales inversely with bet size: small bets = aggressive, big bets = conservative
+  const aggr=sol<=0.05?1.2:sol<=0.1?1.0:sol<=0.25?0.85:sol<=0.5?0.7:0.6;
+  return{
+    minScore:Math.round(sol<=0.05?22:sol<=0.1?28:sol<=0.25?35:sol<=0.5?42:50),
+    maxPositions:Math.round(sol<=0.05?5:sol<=0.1?4:sol<=0.25?3:sol<=0.5?2:2),
+    tp1:Math.round(30*aggr),tp1Sell:30,
+    tp2:Math.round(80*aggr),tp2Sell:30,
+    tp3:Math.round(200*aggr),tp3Sell:40,
+    sl1:Math.round(10/aggr),sl1Sell:60,
+    sl2:Math.round(20/aggr),
+    momentumExit:true,
+    reentryDips:true,
+  };
 };
-/* Auto-balance SL: sl1Sell is partial, remainder is implied for SL2 (always 100%) */
-const adjSL=(step)=>{
-  const nv=Math.max(10,Math.min(90,+(S.sl1Sell||50)+step));
-  sAutoTrade(p=>({...p,settings:{...p.settings,sl1Sell:nv}}));
-};
-const StepBtn=({k,step,mn,mx,c,fmt,onAdj})=>{const v=S[k]??0;return<div style={{display:"flex",alignItems:"center",gap:0,background:T.bg,borderRadius:6,overflow:"hidden",border:"1px solid "+(c||T.bd)+"22",width:"100%",boxSizing:"border-box"}}>
-<button onClick={()=>onAdj?onAdj(-Math.abs(step)):adj(k,-Math.abs(step),mn,mx)} style={{padding:mb?"8px 8px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?16:14,fontWeight:800,cursor:"pointer",lineHeight:1,flexShrink:0}}>-</button>
+const S=autoTrade?.settings||{solPerTrade:0.05,...autoSettings(0.05)};
+const computed=autoSettings(S.solPerTrade);
+// Use computed values unless user has customized via advanced
+const eff=aaAdvanced?S:{...computed,solPerTrade:S.solPerTrade,...(autoTrade?.customized?S:{})};
+const adj=(k,step,mn,mx)=>{const cur=S[k]??0;const nv=Math.max(mn,Math.min(mx,+(cur+step).toFixed(4)));sAutoTrade(p=>({...p,customized:true,settings:{...p.settings,[k]:nv}}))};
+const StepBtn=({k,step,mn,mx,c,fmt})=>{const v=S[k]??0;return<div style={{display:"flex",alignItems:"center",gap:0,background:T.bg,borderRadius:6,overflow:"hidden",border:"1px solid "+(c||T.bd)+"22",width:"100%",boxSizing:"border-box"}}>
+<button onClick={()=>adj(k,-Math.abs(step),mn,mx)} style={{padding:mb?"8px 8px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?16:14,fontWeight:800,cursor:"pointer",lineHeight:1,flexShrink:0}}>-</button>
 <div style={{flex:1,textAlign:"center",fontSize:mb?13:13,fontWeight:800,color:c||T.tx,padding:"4px 0",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{fmt?fmt(v):v}</div>
-<button onClick={()=>onAdj?onAdj(Math.abs(step)):adj(k,Math.abs(step),mn,mx)} style={{padding:mb?"8px 8px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?16:14,fontWeight:800,cursor:"pointer",lineHeight:1,flexShrink:0}}>+</button>
+<button onClick={()=>adj(k,Math.abs(step),mn,mx)} style={{padding:mb?"8px 8px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?16:14,fontWeight:800,cursor:"pointer",lineHeight:1,flexShrink:0}}>+</button>
 </div>};
-const tpTotal=(S.tp1Sell||0)+(S.tp2Sell||0)+(S.tp3Sell||0);
-return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),borderRadius:10,padding:mb?8:16,marginTop:6,overflow:"hidden",width:"100%",maxWidth:"100%",boxSizing:"border-box"}}>
-{/* Header + buttons */}
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:aaOpen?8:0,flexWrap:"wrap",gap:4}}>
-<div style={{display:"flex",alignItems:"center",gap:6}}><IC.trend s={16} c={aaActive?T.gn:T.ft}/><span style={{fontSize:15,fontWeight:800}}>Auto-Ape</span>{aaActive&&<span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}</div>
-<div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
-{/* OPEN: expand panel to configure */}
-{!aaOpen&&<button onClick={()=>sAutoTrade(p=>({...p,open:true,settings:p?.settings||S}))} style={{padding:mb?"8px 16px":"6px 14px",borderRadius:6,border:"1px solid "+T.bd,background:T.bg,color:T.tx,fontWeight:800,fontSize:mb?13:12,cursor:"pointer"}}>OPEN</button>}
-{/* START: begin auto-trading */}
-{aaOpen&&!aaActive&&<button onClick={async()=>{try{const r=await a.ats(user.pubkey,S);sAutoTrade({open:true,active:true,settings:r.settings,positions:[],log:[]});toast("Auto-ape started","success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"7px 12px":"6px 14px",borderRadius:6,border:"none",background:T.gn,color:"#fff",fontWeight:800,fontSize:mb?12:12,cursor:"pointer"}}>START</button>}
-{/* PAUSE: stop buying, keep monitoring */}
-{aaActive&&<button onClick={async()=>{try{await a.atp(user.pubkey);sAutoTrade(p=>({...p,active:false,open:true}));toast("Paused — positions still monitored","success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"7px 12px":"6px 14px",borderRadius:6,border:"none",background:T.yl,color:"#000",fontWeight:800,fontSize:mb?12:12,cursor:"pointer"}}>PAUSE</button>}
-{/* CLOSE ALL: sell everything, stop */}
-{aaOpen&&(aaActive||autoTrade?.positions?.length>0)&&<button onClick={async()=>{if(!confirm("Sell ALL positions and stop?"))return;try{const r=await a.atc(user.pubkey);sAutoTrade({open:true,active:false,settings:S,positions:[],log:[]});toast(`Closed ${r.closed||0} positions`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"7px 10px":"6px 14px",borderRadius:6,border:"none",background:T.rd,color:"#fff",fontWeight:800,fontSize:mb?12:12,cursor:"pointer"}}>CLOSE ALL</button>}
-{/* Collapse */}
-{aaOpen&&!aaActive&&<button onClick={()=>sAutoTrade(p=>({...p,open:false}))} style={{padding:mb?"8px 10px":"6px 8px",borderRadius:6,border:"1px solid "+T.bd,background:"none",color:T.ft,fontWeight:800,fontSize:mb?13:11,cursor:"pointer"}}>×</button>}
+/* Presets for bet size — Don Norman: recognition over recall */
+const presets=[{l:"Micro",sol:0.02,desc:"Lowest risk"},{l:"Scout",sol:0.05,desc:"Default"},{l:"Standard",sol:0.1,desc:"Moderate"},{l:"Aggressive",sol:0.25,desc:"Higher risk"}];
+const maxLoss=(eff.solPerTrade*(eff.sl2/100)*eff.maxPositions);
+const maxExposure=(eff.maxPositions*eff.solPerTrade);
+return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),borderRadius:10,padding:mb?8:12,marginTop:6,overflow:"hidden",width:"100%",maxWidth:"100%",boxSizing:"border-box"}}>
+{/* Header — single row: title + primary action */}
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:4}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}>
+<IC.trend s={16} c={aaActive?T.gn:T.ft}/>
+<span style={{fontSize:15,fontWeight:800}}>Auto-Ape</span>
+{aaActive&&<span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}
+{aaActive&&<span style={{fontSize:9,color:T.gn,fontWeight:700}}>{autoTrade?.positions?.length||0} open</span>}
+</div>
+<div style={{display:"flex",gap:4}}>
+{/* Primary action: START or PAUSE — one button, clear state */}
+{!aaActive?<button onClick={async()=>{if(!aaOpen){sAutoTrade(p=>({...p,open:true,settings:{...eff,solPerTrade:S.solPerTrade}}));return}try{const r=await a.ats(user.pubkey,eff);sAutoTrade({open:true,active:true,settings:r.settings,positions:[],log:[]});toast("Auto-ape started","success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"8px 20px":"7px 18px",borderRadius:6,border:"none",background:aaOpen?"linear-gradient(135deg,#00c853,#00e676)":T.gn,color:"#000",fontWeight:900,fontSize:mb?14:13,cursor:"pointer"}}>{aaOpen?"START":"OPEN"}</button>
+:<button onClick={async()=>{try{await a.atp(user.pubkey);sAutoTrade(p=>({...p,active:false,open:true}));toast("Paused","success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"8px 16px":"7px 14px",borderRadius:6,border:"none",background:T.yl,color:"#000",fontWeight:900,fontSize:mb?14:13,cursor:"pointer"}}>PAUSE</button>}
+{/* CLOSE ALL — destructive, separated visually */}
+{aaActive&&<button onClick={async()=>{if(!confirm("Sell ALL and stop?"))return;try{const r=await a.atc(user.pubkey);sAutoTrade({open:true,active:false,settings:S,positions:[],log:[]});toast(`Closed ${r.closed||0}`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:mb?"8px 10px":"7px 10px",borderRadius:6,border:"1px solid "+T.rd+"44",background:T.rd+"18",color:T.rd,fontWeight:800,fontSize:mb?11:10,cursor:"pointer"}}>EXIT ALL</button>}
+{aaOpen&&!aaActive&&<button onClick={()=>sAutoTrade(p=>({...p,open:false}))} style={{padding:"7px 8px",borderRadius:6,border:"1px solid "+T.bd,background:"none",color:T.ft,fontWeight:800,fontSize:11,cursor:"pointer"}}>×</button>}
 </div>
 </div>
-{!aaOpen&&<div style={{fontSize:11,color:T.dm,marginTop:4}}>Walk away mode: auto-buys green tokens, sells at 3 TP / 2 SL tiers.</div>}
-{/* Expanded panel */}
-{aaOpen&&<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:mb?6:12,width:"100%",boxSizing:"border-box",overflow:"hidden"}}>
-<div style={{minWidth:0,overflow:"hidden"}}>{/* LEFT: Config */}
-<div style={{fontSize:11,color:T.dm,marginBottom:8}}>Configure targets, then hit START. Uses +/- to adjust.</div>
-{/* Core settings */}
-<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
-{[{l:"Min Score",k:"minScore",st:5,mn:15,mx:90},{l:"SOL/Trade",k:"solPerTrade",st:0.01,mn:0.01,mx:1,fmt:v=>v.toFixed(2)},{l:"Max Pos",k:"maxPositions",st:1,mn:1,mx:15}].map(s=><div key={s.k} style={{textAlign:"center"}}><div style={{fontSize:mb?9:8,color:T.ft,fontWeight:700,marginBottom:3}}>{s.l}</div><StepBtn k={s.k} step={s.st} mn={s.mn} mx={s.mx} fmt={s.fmt}/></div>)}
+
+{/* Collapsed state: one-line summary */}
+{!aaOpen&&<div style={{fontSize:11,color:T.dm,marginTop:4}}>Set your bet size. Bot handles entries, exits, and sizing automatically.</div>}
+
+{/* Expanded: simple mode */}
+{aaOpen&&<div style={{marginTop:8}}>
+
+{/* Bet size presets — big tappable buttons */}
+<div style={{fontSize:10,fontWeight:700,color:T.dm,marginBottom:4}}>Bet Size</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:8}}>
+{presets.map(p=>{const active=Math.abs(S.solPerTrade-p.sol)<0.005;return<button key={p.sol} onClick={()=>{sAutoTrade(prev=>({...prev,customized:false,settings:{...autoSettings(p.sol),solPerTrade:p.sol}}))}} style={{padding:mb?"10px 0":"8px 0",background:active?"linear-gradient(135deg,"+T.gn+"22,"+T.gn+"08)":T.bg,border:"2px solid "+(active?T.gn:T.bd),borderRadius:8,cursor:"pointer",textAlign:"center"}}>
+<div style={{fontSize:mb?16:14,fontWeight:900,color:active?T.gn:T.tx}}>{p.sol}</div>
+<div style={{fontSize:mb?9:8,color:active?T.gn:T.ft,fontWeight:700}}>{p.l}</div>
+</button>})}
 </div>
-{/* TP tiers — sell %s auto-balance to 100% */}
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
-<div style={{fontSize:mb?10:9,fontWeight:700,color:T.gn}}>Take Profit</div>
-<div style={{fontSize:mb?9:8,fontWeight:700,color:tpTotal===100?T.gn:T.yl}}>{tpTotal}% allocated</div>
+
+{/* Auto-computed strategy summary — what the bot WILL do (visibility of system status) */}
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:8,padding:mb?8:10,marginBottom:8}}>
+<div style={{fontSize:9,fontWeight:700,color:T.dm,marginBottom:6}}>Strategy (auto-computed from bet size)</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
+<div><div style={{fontSize:8,color:T.ft}}>Min Score</div><div style={{fontSize:14,fontWeight:900,color:T.pu}}>{eff.minScore}</div></div>
+<div><div style={{fontSize:8,color:T.ft}}>Max Positions</div><div style={{fontSize:14,fontWeight:900,color:T.tx}}>{eff.maxPositions}</div></div>
+<div><div style={{fontSize:8,color:T.ft}}>Max Exposure</div><div style={{fontSize:14,fontWeight:900,color:T.tx}}>{maxExposure.toFixed(2)}</div></div>
 </div>
-{/* Visual allocation bar */}
-<div style={{display:"flex",height:mb?8:6,borderRadius:4,overflow:"hidden",marginBottom:6,border:"1px solid "+T.gn+"22"}}>
-<div style={{width:(S.tp1Sell||0)+"%",background:T.gn,transition:"width .2s"}}/>
-<div style={{width:(S.tp2Sell||0)+"%",background:T.gn+"88",transition:"width .2s"}}/>
-<div style={{width:(S.tp3Sell||0)+"%",background:T.gn+"44",transition:"width .2s"}}/>
+<div style={{display:"flex",gap:8,marginTop:6,paddingTop:6,borderTop:"1px solid "+T.bd+"44"}}>
+<div style={{flex:1}}><div style={{fontSize:8,color:T.gn,fontWeight:700}}>Take Profit</div><div style={{fontSize:10,color:T.dm}}>+{eff.tp1}% → +{eff.tp2}% → +{eff.tp3}% runner</div></div>
+<div style={{flex:1}}><div style={{fontSize:8,color:T.rd,fontWeight:700}}>Stop Loss</div><div style={{fontSize:10,color:T.dm}}>-{eff.sl1}% cut 60% → -{eff.sl2}% exit</div></div>
+<div><div style={{fontSize:8,color:T.ft}}>Max Loss</div><div style={{fontSize:12,fontWeight:900,color:T.rd}}>{maxLoss.toFixed(3)}</div></div>
 </div>
-<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
-{[{l:"TP1",k:"tp1",sk:"tp1Sell",st:10,sst:5,desc:"Secure"},{l:"TP2",k:"tp2",sk:"tp2Sell",st:10,sst:5,desc:"Scale out"},{l:"TP3 Runner",k:"tp3",sk:"tp3Sell",st:25,sst:5,desc:"Moonbag"}].map(t=><div key={t.k} style={{background:T.bg,borderRadius:6,padding:mb?6:6,border:"1px solid "+T.gn+"22",minWidth:0,overflow:"hidden"}}>
-<div style={{fontSize:mb?10:8,color:T.gn,fontWeight:800,marginBottom:4,textAlign:"center"}}>{t.l}</div>
-<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>Trigger</div>
-<StepBtn k={t.k} step={t.st} mn={10} mx={1000} c={T.gn} fmt={v=>"+"+v+"%"}/>
-<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2,marginTop:4}}>Sell %</div>
-<StepBtn k={t.sk} step={t.sst} mn={5} mx={90} c={T.gn} fmt={v=>v+"%"} onAdj={s=>adjTP(t.sk,s)}/>
-<div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:3}}>{t.desc}</div>
-</div>)}
-</div>
-{/* SL tiers */}
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
-<div style={{fontSize:mb?10:9,fontWeight:700,color:T.rd}}>Stop Loss</div>
-<div style={{fontSize:mb?9:8,color:T.dm}}>SL1: {S.sl1Sell||50}% → SL2: 100% exit</div>
-</div>
-<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:4,marginBottom:8}}>
-<div style={{background:T.bg,borderRadius:6,padding:mb?6:6,border:"1px solid "+T.rd+"22",minWidth:0,overflow:"hidden"}}>
-<div style={{fontSize:mb?10:8,color:T.rd,fontWeight:800,marginBottom:4,textAlign:"center"}}>SL1 Reduce</div>
-<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>Trigger</div>
-<StepBtn k="sl1" step={5} mn={5} mx={80} c={T.rd} fmt={v=>"-"+v+"%"}/>
-<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2,marginTop:4}}>Sell %</div>
-<StepBtn k="sl1Sell" step={5} mn={10} mx={90} c={T.rd} fmt={v=>v+"%"} onAdj={s=>adjSL(s)}/>
-<div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:3}}>Cut {S.sl1Sell||50}%, keep {100-(S.sl1Sell||50)}%</div>
-</div>
-<div style={{background:T.bg,borderRadius:6,padding:mb?6:6,border:"1px solid "+T.rd+"22",minWidth:0,overflow:"hidden"}}>
-<div style={{fontSize:mb?10:8,color:T.rd,fontWeight:800,marginBottom:4,textAlign:"center"}}>SL2 Full Exit</div>
-<div style={{fontSize:mb?8:7,color:T.ft,marginBottom:2}}>Trigger</div>
-<StepBtn k="sl2" step={5} mn={10} mx={90} c={T.rd} fmt={v=>"-"+v+"%"}/>
-<div style={{fontSize:mb?8:7,color:T.dm,textAlign:"center",marginTop:6}}>Sells 100% — full bail</div>
+<div style={{display:"flex",gap:4,marginTop:6}}>
+<span style={{fontSize:7,fontWeight:700,color:T.pu,background:T.pu+"12",padding:"2px 5px",borderRadius:3}}>MOMENTUM EXIT</span>
+<span style={{fontSize:7,fontWeight:700,color:T.cy,background:T.cy+"12",padding:"2px 5px",borderRadius:3}}>KELLY SIZING</span>
+<span style={{fontSize:7,fontWeight:700,color:T.yl,background:T.yl+"12",padding:"2px 5px",borderRadius:3}}>DIP RE-ENTRY</span>
 </div>
 </div>
-{/* Momentum exit toggle */}
-<div style={{background:T.bg,borderRadius:6,padding:mb?10:8,border:"1px solid "+T.pu+"22",marginBottom:8}}>
+
+{/* Advanced dropdown — power users only */}
+<button onClick={()=>sAAAdvanced(!aaAdvanced)} style={{width:"100%",padding:"6px 10px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:aaAdvanced?6:0}}>
+<span style={{fontSize:10,fontWeight:700,color:T.ft}}>Advanced Settings</span>
+<span style={{fontSize:9,color:T.ft}}>{aaAdvanced?"▾":"▸"}</span>
+</button>
+{aaAdvanced&&<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:8,padding:8,marginBottom:6}}>
+<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:6}}>
+{[{l:"Min Score",k:"minScore",st:5,mn:15,mx:90},{l:"SOL/Trade",k:"solPerTrade",st:0.01,mn:0.01,mx:1,fmt:v=>v.toFixed(2)},{l:"Max Pos",k:"maxPositions",st:1,mn:1,mx:15}].map(s=><div key={s.k} style={{textAlign:"center"}}><div style={{fontSize:8,color:T.ft,fontWeight:700,marginBottom:2}}>{s.l}</div><StepBtn k={s.k} step={s.st} mn={s.mn} mx={s.mx} fmt={s.fmt}/></div>)}
+</div>
+<div style={{fontSize:9,fontWeight:700,color:T.gn,marginBottom:4}}>Take Profit</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:6}}>
+{[{l:"TP1",k:"tp1",st:10,mn:10,mx:500},{l:"TP2",k:"tp2",st:10,mn:10,mx:500},{l:"TP3 Runner",k:"tp3",st:25,mn:10,mx:1000}].map(t=><div key={t.k} style={{textAlign:"center"}}><div style={{fontSize:7,color:T.gn,fontWeight:700,marginBottom:2}}>{t.l}</div><StepBtn k={t.k} step={t.st} mn={t.mn} mx={t.mx} c={T.gn} fmt={v=>"+"+v+"%"}/></div>)}
+</div>
+<div style={{fontSize:9,fontWeight:700,color:T.rd,marginBottom:4}}>Stop Loss</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:4,marginBottom:6}}>
+{[{l:"SL1 Cut",k:"sl1",st:5,mn:5,mx:80},{l:"SL2 Exit",k:"sl2",st:5,mn:10,mx:90}].map(t=><div key={t.k} style={{textAlign:"center"}}><div style={{fontSize:7,color:T.rd,fontWeight:700,marginBottom:2}}>{t.l}</div><StepBtn k={t.k} step={t.st} mn={t.mn} mx={t.mx} c={T.rd} fmt={v=>"-"+v+"%"}/></div>)}
+</div>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-<div>
-<div style={{fontSize:mb?11:10,fontWeight:800,color:T.pu}}>Momentum Exit</div>
-<div style={{fontSize:mb?9:8,color:T.dm,marginTop:2}}>Auto-tightens stops when token intel score drops. Sells faster on fading momentum.</div>
+<span style={{fontSize:9,fontWeight:700,color:T.pu}}>Momentum Exit</span>
+<button onClick={()=>sAutoTrade(p=>({...p,customized:true,settings:{...p.settings,momentumExit:!S.momentumExit}}))} style={{padding:"4px 10px",borderRadius:5,border:"1px solid "+(S.momentumExit?T.pu:T.bd),background:S.momentumExit?T.pu+"22":"none",color:S.momentumExit?T.pu:T.ft,fontWeight:800,fontSize:10,cursor:"pointer"}}>{S.momentumExit?"ON":"OFF"}</button>
 </div>
-<button onClick={()=>sAutoTrade(p=>({...p,settings:{...p.settings,momentumExit:!S.momentumExit}}))} style={{padding:mb?"8px 14px":"6px 12px",borderRadius:6,border:"1px solid "+(S.momentumExit?T.pu:T.bd),background:S.momentumExit?T.pu+"22":"none",color:S.momentumExit?T.pu:T.ft,fontWeight:800,fontSize:mb?12:11,cursor:"pointer",whiteSpace:"nowrap"}}>{S.momentumExit?"ON":"OFF"}</button>
-</div>
-{S.momentumExit&&<div style={{fontSize:mb?8:7,color:T.dm,marginTop:4,lineHeight:1.5}}>Score drops 20+pts → SL tightens 50% • Score drops 30+pts → immediate sell • Re-scores every 15s from live radar data</div>}
-</div>
+</div>}
+
 {/* APPLY button when settings changed while active */}
-{aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,S);sAutoTrade(p=>({...p,log:[...(p?.log||[]),{msg:"Settings applied",time:Date.now()}]}));toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:4}}>APPLY CHANGES</button>}
+{aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,eff);sAutoTrade(p=>({...p,log:[...(p?.log||[]),{msg:"Settings applied",time:Date.now()}]}));toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:4}}>APPLY CHANGES</button>}
 
 {/* ═══ LIVE SIM MODE — mirrors auto-ape decisions in real-time, no real trades ═══ */}
 {/* Available to ALL tiers. Auto-calibrates over time. Graduates to real trading after ~1hr. */}
