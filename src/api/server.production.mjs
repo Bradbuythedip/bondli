@@ -4433,6 +4433,66 @@ app.get("/api/auto-trade/status", (req, res) => {
 });
 
 // ═══════════════════════════════════════
+// SESSION LOG EXPORT — full dump for offline analysis/training
+// ═══════════════════════════════════════
+app.get("/api/auto-trade/export-session", (req, res) => {
+  const wallet = req.query.wallet;
+  const state = autoTraders.get(wallet);
+
+  // Trade learner history + insights (available even if auto-trader not running)
+  const learnerHistory = tradeLearner.history || [];
+  const learnerInsights = tradeLearner.insights;
+  const learnerAdjustments = tradeLearner.getAdjustments();
+
+  // Scorer model state
+  const scorerState = memeIntel?.scorer ? memeIntel.scorer.export() : null;
+
+  // Active auto-trader state
+  let autoState = null;
+  if (state) {
+    autoState = {
+      settings: state.settings,
+      log: state.log || [],
+      positions: [...state.positions.entries()].map(([ca, p]) => {
+        const token = radar.tokens.get(ca);
+        const currentMcap = token?.mcapUsd || 0;
+        return { ca, name: token?.name || ca.slice(0, 8), ...p, currentMcap };
+      }),
+      recentlyClosed: state.recentlyClosed || [],
+      pipeline: state._pipelineStats || null,
+      calibration: state.calibration || null,
+    };
+  }
+
+  // Recent radar tokens snapshot (last 50 scored)
+  const radarSnapshot = [];
+  for (const [ca, t] of radar.tokens) {
+    if (radarSnapshot.length >= 50) break;
+    if (!t.buys) continue;
+    radarSnapshot.push({
+      ca, name: t.name, mcap: t.mcapUsd, buys: t.buys, sells: t.sells,
+      uniqueBuyers: t.uniqueBuyers?.size || 0, age: Math.round((Date.now() - t.createdAt) / 60000),
+      bondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve / 85 * 100) : 0,
+      graduated: !!t.graduated, twitter: !!t.twitter, website: !!t.website,
+    });
+  }
+
+  const dump = {
+    exportedAt: new Date().toISOString(),
+    wallet: wallet || "none",
+    learner: { history: learnerHistory, insights: learnerInsights, adjustments: learnerAdjustments },
+    scorer: scorerState,
+    autoTrader: autoState,
+    radarSnapshot,
+    solPrice: solUsdPrice,
+  };
+
+  res.setHeader("Content-Disposition", `attachment; filename="bondli-session-${Date.now()}.json"`);
+  res.setHeader("Content-Type", "application/json");
+  res.json(dump);
+});
+
+// ═══════════════════════════════════════
 // PAPER TRADE SIMULATION — backtest settings against recent radar data
 // Applies Kahneman's "premortem" technique: simulate the WORST case
 // before committing real capital. Norman: make errors visible BEFORE they cost you.
