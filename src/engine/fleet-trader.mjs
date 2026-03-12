@@ -412,6 +412,36 @@ const ROLES = [
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ═══════════════════════════════════════
+// HELIUS SEND — use Helius endpoint for better tx landing (staked connections)
+// Falls back to standard RPC if Helius not configured or fails
+// ═══════════════════════════════════════
+async function heliusSendRawTx(connection, serializedTx, opts = {}) {
+  if (CONFIG.HELIUS_SEND_TX_URL) {
+    try {
+      const base58Tx = bs58.encode(serializedTx);
+      const res = await fetch(CONFIG.HELIUS_SEND_TX_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1,
+          method: "sendTransaction",
+          params: [base58Tx, { skipPreflight: true, encoding: "base58", maxRetries: 3 }],
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.result) return data.result;
+      }
+    } catch (e) {
+      console.warn(`[HELIUS-TX] Failed, falling back to standard RPC:`, e.message);
+    }
+  }
+  // Fallback: standard RPC sendRawTransaction
+  return connection.sendRawTransaction(serializedTx, { skipPreflight: true, maxRetries: 3, ...opts });
+}
+
+// ═══════════════════════════════════════
 // ENFORCED PROFIT SKIM
 // ═══════════════════════════════════════
 async function skimSweep(connection, sourceKp, destinationPubkey, profitConfig, solInputForThisWallet = 0) {
@@ -1363,10 +1393,12 @@ class FleetTrader extends EventEmitter {
         }
       }
     } catch (e) {
-      console.warn(`[FLEET] Jito send failed (${endpoint.split("/")[2]}): ${e.message} — falling back to standard`);
+      console.warn(`[FLEET] Jito send failed (${endpoint.split("/")[2]}): ${e.message} — falling back to Helius/standard`);
     }
-    // Fallback to standard send
-    return await sendAndConfirmTransaction(this.connection, tx, signers, { skipPreflight: true, commitment: "confirmed", maxRetries: 3 });
+    // Fallback: Helius sendTransaction (staked connections) → standard RPC
+    const sig = await heliusSendRawTx(this.connection, serialized);
+    await this.connection.confirmTransaction(sig, "confirmed");
+    return sig;
   }
 
   // ═══ MANUAL FLEET COMMANDS (from war room UI) ═══
@@ -1456,8 +1488,12 @@ class FleetTrader extends EventEmitter {
     const instructions = await this.sdk.sellInstructions({ global, bondingCurveAccountInfo, bondingCurve, mint, user: keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 50 });
     const tx = new Transaction();
     tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 150_000 }), ...instructions);
-    // Standard send for sells (less vulnerable to MEV, speed matters more)
-    const sig = await sendAndConfirmTransaction(this.connection, tx, [keypair], { skipPreflight: true, commitment: "confirmed", maxRetries: 3 });
+    // Use Helius endpoint for sells (better landing rate via staked connections)
+    tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
+    tx.feePayer = keypair.publicKey;
+    tx.sign(keypair);
+    const sig = await heliusSendRawTx(this.connection, tx.serialize());
+    await this.connection.confirmTransaction(sig, "confirmed");
     return { ok: true, sig, solOut: parseFloat(solOut.toString()) / 1e9, tokens: sellAmount.toString() };
   }
 

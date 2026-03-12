@@ -95,7 +95,8 @@ export class RugScanner {
   async _checkTradeActivity(mint) {
     try {
       const res = await fetch(
-        `https://api.helius.xyz/v0/addresses/${mint}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=100`
+        `https://api.helius.xyz/v0/addresses/${mint}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=100`,
+        { signal: AbortSignal.timeout(8000) }
       );
       if (!res.ok) return { totalBuys: 0, totalSells: 0, uniqueBuyers: 0, uniqueSellers: 0 };
       const txs = await res.json();
@@ -150,7 +151,8 @@ export class RugScanner {
   async _checkCreator(address) {
     try {
       const res = await fetch(
-        `https://api.helius.xyz/v0/addresses/${address}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=100`
+        `https://api.helius.xyz/v0/addresses/${address}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=100`,
+        { signal: AbortSignal.timeout(8000) }
       );
       if (!res.ok) return { rugCount: 0, tokenCount: 0 };
       const txs = await res.json();

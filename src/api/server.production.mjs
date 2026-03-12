@@ -46,7 +46,35 @@ import { HistoricalMovers } from "../engine/historical-movers.mjs";
 // ENVIRONMENT
 // ═══════════════════════════════════════
 const PORT = parseInt(process.env.PORT || "3001");
+// CONFIG.RPC_URL now auto-uses Helius when HELIUS_API_KEY is set
 const RPC_URL = process.env.RPC_URL || CONFIG.RPC_URL || "https://api.mainnet-beta.solana.com";
+
+// Helius-optimized sendTransaction (staked connections = better landing rate)
+// Falls back to standard connection.sendRawTransaction if Helius unavailable
+async function heliusSendRawTx(conn, serializedTx, opts = {}) {
+  if (CONFIG.HELIUS_SEND_TX_URL) {
+    try {
+      const base58Tx = bs58.encode(serializedTx);
+      const res = await fetch(CONFIG.HELIUS_SEND_TX_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1,
+          method: "sendTransaction",
+          params: [base58Tx, { skipPreflight: true, encoding: "base58", maxRetries: 3 }],
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.result) return data.result;
+      }
+    } catch (e) {
+      console.warn(`[HELIUS-TX] Failed, falling back:`, e.message);
+    }
+  }
+  return conn.sendRawTransaction(serializedTx, { skipPreflight: true, maxRetries: 3, ...opts });
+}
 const REDIS_URL = process.env.REDIS_URL || null;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
 const PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data";
@@ -226,7 +254,7 @@ async function pollSolPrice() {
   }
 }
 pollSolPrice();
-setInterval(pollSolPrice, 30000);
+setInterval(pollSolPrice, 60000); // 60s — SOL price doesn't move fast enough to justify 30s
 
 // ═══════════════════════════════════════
 // DEXSCREENER BOOST POLLER — paid/boosted token detection
@@ -2130,10 +2158,7 @@ app.post("/api/quick-ape", async (req, res) => {
         const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
         tx.sign([kp]);
 
-        sig = await connection.sendRawTransaction(tx.serialize(), {
-          skipPreflight: true,
-          maxRetries: 3,
-        });
+        sig = await heliusSendRawTx(connection, tx.serialize());
         method = `pumpportal:${pool}`;
         console.log(`[BUY] Success pool=${pool}: ${sig}`);
         break;
@@ -2324,7 +2349,7 @@ app.post("/api/quick-sell", async (req, res) => {
 
         const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
         tx.sign([kp]);
-        sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+        sig = await heliusSendRawTx(connection, tx.serialize());
         method = `pumpportal:${pool}`;
         console.log(`[SELL] Success pool=${pool}: ${sig}`);
         break;
