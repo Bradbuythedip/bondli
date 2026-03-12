@@ -82,6 +82,13 @@ const FEATURE_KEYS = [
   "ch_dipRatio",        // ratio of dip candles vs up candles (0=no dips at all, 1=many dips = healthy)
   "ch_staircaseScore",  // monotonically increasing with uniform step sizes = dev self-buying (0=normal, 1=perfect staircase)
 
+  // Cascade & Reflexivity (information cascade + feedback loops)
+  "cs_cascadeOnset",    // sequential unique-wallet buys with no intervening sells (0-1)
+  "cs_cascadeStrength", // buy size uniformity during cascade (Gini drops = stronger cascade)
+  "cs_reflexivity",     // d(buyers)/d(price) * d(price)/d(buyers) feedback loop strength (0-1)
+  "cs_curveVelocity",   // bonding curve progress velocity (dPct/dMinute) — fast fill = strong signal
+  "cs_attentionShare",  // token volume relative to total observed volume (0-1)
+
   // Meta
   "mt_hourOfDay",       // 0-23 normalized to 0-1
   "mt_dayOfWeek",       // 0-6 normalized to 0-1
@@ -388,6 +395,52 @@ function extractFeatures(token) {
     f.ch_staircaseScore = 0;
   }
 
+  // ─── Cascade & Reflexivity (Bikhchandani-Hirshleifer-Welch + Soros) ───
+
+  // Cascade onset: count sequential unique-wallet buys with no intervening sells
+  // A cascade = information cascade where each buyer infers "others know something"
+  let cascadeLen = 0, maxCascade = 0;
+  const cascadeWallets = new Set();
+  for (const tr of trades) {
+    if ((tr.side === "buy" || tr.txType === "buy") && !cascadeWallets.has(tr.wallet)) {
+      cascadeWallets.add(tr.wallet);
+      cascadeLen++;
+      maxCascade = Math.max(maxCascade, cascadeLen);
+    } else if (tr.side === "sell" || tr.txType === "sell") {
+      cascadeLen = 0; // cascade breaks on any sell
+      cascadeWallets.clear();
+    }
+  }
+  f.cs_cascadeOnset = Math.min(1, maxCascade / 15); // 15+ sequential unique buys = full cascade
+
+  // Cascade strength: during cascade, buy sizes become more uniform (herding = everyone bets similar)
+  // Low Gini during cascade = strong herd behavior
+  const cascadeBuys = buys.slice(-Math.min(maxCascade, buys.length));
+  const cascadeGini = cascadeBuys.length > 2 ? gini(cascadeBuys.map(b => b.solAmount || b.sol || 0)) : 0.5;
+  f.cs_cascadeStrength = maxCascade >= 3 ? Math.max(0, 1 - cascadeGini) : 0;
+
+  // Reflexivity: price → attention → buys → price feedback loop
+  // Measure as correlation between price increase rate and buy rate increase
+  // Proxy: if buy velocity is ACCELERATING while MC is rising, loop is self-reinforcing
+  const recentBuysR = buys.slice(-20);
+  const olderBuysR = buys.slice(-40, -20);
+  const buyAccel = olderBuysR.length > 0 ? recentBuysR.length / Math.max(1, olderBuysR.length) : 1;
+  const mcRising = spark.length > 2 ? (spark[spark.length - 1] || 0) > (spark[Math.max(0, spark.length - 4)] || 0) : false;
+  f.cs_reflexivity = mcRising && buyAccel > 1.2 ? Math.min(1, (buyAccel - 1) * 0.8) : 0;
+
+  // Bonding curve velocity: how fast is the curve filling?
+  // vSolInBondingCurve / 85 SOL = % to graduation
+  // Track rate of change: dPct/dMinute
+  const curveProgress = t.vSolInBondingCurve ? t.vSolInBondingCurve / 85 : 0;
+  const curveVelocity = ageMin > 0 ? curveProgress / ageMin : 0;
+  // Sweet spot: 0.5-2% per minute = healthy graduation trajectory
+  f.cs_curveVelocity = Math.min(1, curveVelocity * 30); // 3.3%/min → 1.0
+
+  // Attention share: this token's volume vs typical token volume
+  // Higher = capturing more attention in zero-sum meme market
+  const tokenVol = t.volumeSol || sum(buyAmounts);
+  f.cs_attentionShare = Math.min(1, tokenVol / 50); // 50 SOL volume = full attention score
+
   // ─── Meta ───
   const now = new Date();
   f.mt_hourOfDay = now.getUTCHours() / 23;
@@ -429,6 +482,7 @@ class ScoringEngine {
       oc: 1.5,  // On-chain velocity important
       rg: 3.0,  // Rug detection — HIGHEST weight (losing money > missing plays)
       ch: 2.0,  // Chart pattern analysis — catches fake charts and pump-dumps
+      cs: 1.8,  // Cascade & Reflexivity — information cascades are the #1 driver of meme pumps
       so: 0.6,  // Social is noisy
       mt: 0.3,  // Time-of-day is minor
     };
@@ -465,7 +519,7 @@ class ScoringEngine {
     // ── Single pass: weighted sum + per-group sums ──
     // Zero-alloc: reuse pre-allocated group accumulators
     let weightedSum = 0;
-    let gs_tp = 0, gs_k = 0, gs_oc = 0, gs_rg = 0, gs_ch = 0, gs_so = 0, gs_mt = 0;
+    let gs_tp = 0, gs_k = 0, gs_oc = 0, gs_rg = 0, gs_ch = 0, gs_cs = 0, gs_so = 0, gs_mt = 0;
     const mc = this._mCache;
 
     for (let i = 0; i < FEATURE_KEYS.length; i++) {
@@ -478,6 +532,7 @@ class ScoringEngine {
         case "oc": gs_oc += wv; break;
         case "rg": gs_rg += wv; break;
         case "ch": gs_ch += wv; break;
+        case "cs": gs_cs += wv; break;
         case "so": gs_so += wv; break;
         case "mt": gs_mt += wv; break;
       }
@@ -493,6 +548,7 @@ class ScoringEngine {
     const s_oc = gws.oc > 0 ? gs_oc / gws.oc : 0;
     const s_rg = gws.rg > 0 ? gs_rg / gws.rg : 0;
     const s_ch = gws.ch > 0 ? gs_ch / gws.ch : 0;
+    const s_cs = gws.cs > 0 ? gs_cs / gws.cs : 0;
     const s_so = gws.so > 0 ? gs_so / gws.so : 0;
     const s_mt = gws.mt > 0 ? gs_mt / gws.mt : 0;
 
@@ -515,11 +571,14 @@ class ScoringEngine {
     // ── Tipping Point composite ──
     const tippingScore = s_tp * 0.4 + s_k * 0.3 + s_oc * 0.2 + s_so * 0.1;
 
-    // ── Bond probability ──
-    const bpRaw = tippingScore * 40
-      + (features.oc_buyVelocity5m || 0) * 25
-      + (features.oc_uniqueBuyers5m || 0) * 20
-      + (features.k_herdSignal || 0) * 15
+    // ── Bond probability (enhanced with cascade + reflexivity) ──
+    const bpRaw = tippingScore * 30
+      + (features.oc_buyVelocity5m || 0) * 20
+      + (features.oc_uniqueBuyers5m || 0) * 15
+      + (features.k_herdSignal || 0) * 10
+      + (features.cs_cascadeOnset || 0) * 15     // cascade = strong grad signal
+      + (features.cs_reflexivity || 0) * 12       // self-reinforcing loop = graduation likely
+      + (features.cs_curveVelocity || 0) * 18     // curve filling fast = closest to graduation
       - rugPenalty * 0.8
       - chartPenalty * 0.6;
     const bondProb = bpRaw < 1 ? 1 : bpRaw > 99 ? 99 : (bpRaw + 0.5) | 0;
@@ -574,6 +633,7 @@ class ScoringEngine {
         onChain: (s_oc * 100 + 0.5) | 0,
         rugDetection: (s_rg * 100 + 0.5) | 0,
         chartPattern: (s_ch * 100 + 0.5) | 0,
+        cascade: (s_cs * 100 + 0.5) | 0,
         social: (s_so * 100 + 0.5) | 0,
         timing: (s_mt * 100 + 0.5) | 0,
       },
