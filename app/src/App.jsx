@@ -1034,7 +1034,8 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 {!aaOpen&&<div style={{fontSize:11,color:T.dm,marginTop:4}}>Set your bet size. Bot handles entries, exits, and sizing automatically.</div>}
 
 {/* Expanded: simple mode */}
-{aaOpen&&<div style={{marginTop:8}}>
+{aaOpen&&<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:8,marginTop:8}}>
+<div>{/* LEFT: Config */}
 
 {/* Bet size presets — big tappable buttons */}
 <div style={{fontSize:10,fontWeight:700,color:T.dm,marginBottom:4}}>Bet Size</div>
