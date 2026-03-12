@@ -982,12 +982,12 @@ const aaActive=autoTrade?.active;
 /* Auto-compute optimal TP/SL from bet size using power-law math:
    Small bets → wider stops (can afford variance), Big bets → tighter stops (capital preservation) */
 const autoSettings=(solPerTrade)=>{
-  const sol=solPerTrade||0.05;
+  const sol=solPerTrade||0.1;
   // Aggression scales inversely with bet size: small bets = aggressive, big bets = conservative
-  const aggr=sol<=0.05?1.2:sol<=0.1?1.0:sol<=0.25?0.85:sol<=0.5?0.7:0.6;
+  const aggr=sol<=0.1?1.2:sol<=0.25?1.0:sol<=0.5?0.85:sol<=1?0.7:sol<=2?0.6:0.5;
   return{
-    minScore:Math.round(sol<=0.05?22:sol<=0.1?28:sol<=0.25?35:sol<=0.5?42:50),
-    maxPositions:Math.round(sol<=0.05?5:sol<=0.1?4:sol<=0.25?3:sol<=0.5?2:2),
+    minScore:Math.round(sol<=0.1?22:sol<=0.25?28:sol<=0.5?35:sol<=1?42:50),
+    maxPositions:Math.round(sol<=0.1?5:sol<=0.25?4:sol<=0.5?3:sol<=1?2:2),
     tp1:Math.round(30*aggr),tp1Sell:30,
     tp2:Math.round(80*aggr),tp2Sell:30,
     tp3:Math.round(200*aggr),tp3Sell:40,
@@ -997,7 +997,7 @@ const autoSettings=(solPerTrade)=>{
     reentryDips:true,
   };
 };
-const S=autoTrade?.settings||{solPerTrade:0.05,...autoSettings(0.05)};
+const S=autoTrade?.settings||{solPerTrade:0.1,...autoSettings(0.1)};
 const computed=autoSettings(S.solPerTrade);
 // Use computed values unless user has customized via advanced
 const eff=aaAdvanced?S:{...computed,solPerTrade:S.solPerTrade,...(autoTrade?.customized?S:{})};
@@ -1007,8 +1007,10 @@ const StepBtn=({k,step,mn,mx,c,fmt})=>{const v=S[k]??0;return<div style={{displa
 <div style={{flex:1,textAlign:"center",fontSize:mb?13:13,fontWeight:800,color:c||T.tx,padding:"4px 0",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{fmt?fmt(v):v}</div>
 <button onClick={()=>adj(k,Math.abs(step),mn,mx)} style={{padding:mb?"8px 8px":"6px 10px",background:"none",border:"none",color:c||T.ft,fontSize:mb?16:14,fontWeight:800,cursor:"pointer",lineHeight:1,flexShrink:0}}>+</button>
 </div>};
-/* Presets for bet size — Don Norman: recognition over recall */
-const presets=[{l:"Micro",sol:0.02,desc:"Lowest risk"},{l:"Scout",sol:0.05,desc:"Default"},{l:"Standard",sol:0.1,desc:"Moderate"},{l:"Aggressive",sol:0.25,desc:"Higher risk"}];
+/* Presets for bet size */
+const presets=[{l:"Scout",sol:0.1,desc:"Low risk"},{l:"Standard",sol:0.25,desc:"Moderate"},{l:"Full Send",sol:0.5,desc:"Higher risk"}];
+const isCustomBet=!presets.some(p=>Math.abs(S.solPerTrade-p.sol)<0.005);
+const settingsChanged=autoTrade?.customized||false;
 const maxLoss=(eff.solPerTrade*(eff.sl2/100)*eff.maxPositions);
 const maxExposure=(eff.maxPositions*eff.solPerTrade);
 return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),borderRadius:10,padding:mb?8:12,marginTop:6,overflow:"hidden",width:"100%",maxWidth:"100%",boxSizing:"border-box"}}>
@@ -1037,18 +1039,26 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 {aaOpen&&<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:8,marginTop:8}}>
 <div>{/* LEFT: Config */}
 
-{/* Bet size presets — big tappable buttons */}
-<div style={{fontSize:10,fontWeight:700,color:T.dm,marginBottom:4}}>Bet Size</div>
-<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:8}}>
-{presets.map(p=>{const active=Math.abs(S.solPerTrade-p.sol)<0.005;return<button key={p.sol} onClick={()=>{sAutoTrade(prev=>({...prev,customized:false,settings:{...autoSettings(p.sol),solPerTrade:p.sol}}))}} style={{padding:mb?"10px 0":"8px 0",background:active?"linear-gradient(135deg,"+T.gn+"22,"+T.gn+"08)":T.bg,border:"2px solid "+(active?T.gn:T.bd),borderRadius:8,cursor:"pointer",textAlign:"center"}}>
+{/* Bet size — presets + custom input */}
+<div style={{fontSize:10,fontWeight:700,color:T.dm,marginBottom:4}}>Bet Size (SOL per trade)</div>
+<div style={{display:"flex",gap:4,marginBottom:8,flexWrap:"wrap"}}>
+{presets.map(p=>{const active=Math.abs(S.solPerTrade-p.sol)<0.005;return<button key={p.sol} onClick={()=>{sAutoTrade(prev=>({...prev,customized:false,settings:{...autoSettings(p.sol),solPerTrade:p.sol}}))}} style={{flex:1,minWidth:60,padding:mb?"10px 0":"8px 0",background:active?"linear-gradient(135deg,"+T.gn+"22,"+T.gn+"08)":T.bg,border:"2px solid "+(active?T.gn:T.bd),borderRadius:8,cursor:"pointer",textAlign:"center"}}>
 <div style={{fontSize:mb?16:14,fontWeight:900,color:active?T.gn:T.tx}}>{p.sol}</div>
 <div style={{fontSize:mb?9:8,color:active?T.gn:T.ft,fontWeight:700}}>{p.l}</div>
 </button>})}
+{/* Custom input */}
+<div style={{flex:1,minWidth:60,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:isCustomBet?"linear-gradient(135deg,"+T.gn+"22,"+T.gn+"08)":T.bg,border:"2px solid "+(isCustomBet?T.gn:T.bd),borderRadius:8,padding:"4px 0"}}>
+<input type="number" step="0.01" min="0.01" max="10" value={isCustomBet?S.solPerTrade:""} placeholder="Custom" onChange={e=>{const v=parseFloat(e.target.value);if(v>0&&v<=10){sAutoTrade(prev=>({...prev,customized:false,settings:{...autoSettings(v),solPerTrade:v}}))}}} style={{width:"90%",background:"none",border:"none",textAlign:"center",fontSize:mb?14:13,fontWeight:900,color:isCustomBet?T.gn:T.tx,outline:"none",padding:0}}/>
+<div style={{fontSize:mb?9:8,color:isCustomBet?T.gn:T.ft,fontWeight:700}}>Custom</div>
+</div>
 </div>
 
-{/* Auto-computed strategy summary — what the bot WILL do (visibility of system status) */}
+{/* Strategy summary — what the bot WILL do */}
 <div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:8,padding:mb?8:10,marginBottom:8}}>
-<div style={{fontSize:9,fontWeight:700,color:T.dm,marginBottom:6}}>Strategy (auto-computed from bet size)</div>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+<div style={{fontSize:9,fontWeight:700,color:T.dm}}>{aaAdvanced?"Custom Strategy":"Auto Strategy"}{aaAdvanced?" (you control)":""}</div>
+{aaAdvanced&&<span style={{fontSize:7,fontWeight:700,color:T.yl,background:T.yl+"18",padding:"1px 5px",borderRadius:3}}>CUSTOM</span>}
+</div>
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6}}>
 <div><div style={{fontSize:8,color:T.ft}}>Min Score</div><div style={{fontSize:14,fontWeight:900,color:T.pu}}>{eff.minScore}</div></div>
 <div><div style={{fontSize:8,color:T.ft}}>Max Positions</div><div style={{fontSize:14,fontWeight:900,color:T.tx}}>{eff.maxPositions}</div></div>
@@ -1066,14 +1076,14 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 </div>
 </div>
 
-{/* Advanced dropdown — power users only */}
+{/* Customize dropdown */}
 <button onClick={()=>sAAAdvanced(!aaAdvanced)} style={{width:"100%",padding:"6px 10px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:aaAdvanced?6:0}}>
-<span style={{fontSize:10,fontWeight:700,color:T.ft}}>Advanced Settings</span>
+<span style={{fontSize:10,fontWeight:700,color:T.ft}}>Customize Strategy</span>
 <span style={{fontSize:9,color:T.ft}}>{aaAdvanced?"▾":"▸"}</span>
 </button>
 {aaAdvanced&&<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:8,padding:8,marginBottom:6}}>
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:6}}>
-{[{l:"Min Score",k:"minScore",st:5,mn:15,mx:90},{l:"SOL/Trade",k:"solPerTrade",st:0.01,mn:0.01,mx:1,fmt:v=>v.toFixed(2)},{l:"Max Pos",k:"maxPositions",st:1,mn:1,mx:15}].map(s=><div key={s.k} style={{textAlign:"center"}}><div style={{fontSize:8,color:T.ft,fontWeight:700,marginBottom:2}}>{s.l}</div><StepBtn k={s.k} step={s.st} mn={s.mn} mx={s.mx} fmt={s.fmt}/></div>)}
+{[{l:"Min Score",k:"minScore",st:5,mn:15,mx:90},{l:"SOL/Trade",k:"solPerTrade",st:0.01,mn:0.01,mx:10,fmt:v=>v.toFixed(2)},{l:"Max Pos",k:"maxPositions",st:1,mn:1,mx:15}].map(s=><div key={s.k} style={{textAlign:"center"}}><div style={{fontSize:8,color:T.ft,fontWeight:700,marginBottom:2}}>{s.l}</div><StepBtn k={s.k} step={s.st} mn={s.mn} mx={s.mx} fmt={s.fmt}/></div>)}
 </div>
 <div style={{fontSize:9,fontWeight:700,color:T.gn,marginBottom:4}}>Take Profit</div>
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:6}}>
@@ -1089,8 +1099,8 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 </div>
 </div>}
 
-{/* APPLY button when settings changed while active */}
-{aaActive&&<button onClick={async()=>{try{await a.atu(user.pubkey,eff);sAutoTrade(p=>({...p,log:[...(p?.log||[]),{msg:"Settings applied",time:Date.now()}]}));toast("Settings applied","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn+"18",color:T.gn,fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:4}}>APPLY CHANGES</button>}
+{/* APPLY STRATEGY — always visible when settings changed or when customized */}
+{aaOpen&&(settingsChanged||aaAdvanced)&&<button onClick={async()=>{if(aaActive){try{await a.atu(user.pubkey,eff);sAutoTrade(p=>({...p,customized:false,log:[...(p?.log||[]),{msg:"Strategy applied",time:Date.now()}]}));toast("Strategy applied","success")}catch(e){toast(e.message,"error")}}else{sAutoTrade(p=>({...p,customized:false,settings:{...eff}}));toast("Strategy saved","success")}}} style={{width:"100%",padding:mb?"10px 0":"8px 0",borderRadius:6,border:"none",background:"linear-gradient(135deg,"+T.gn+","+T.gn+"cc)",color:"#000",fontWeight:900,fontSize:mb?14:12,cursor:"pointer",marginBottom:6}}>APPLY STRATEGY</button>}
 
 {/* ═══ LIVE SIM MODE — mirrors auto-ape decisions in real-time, no real trades ═══ */}
 {/* Available to ALL tiers. Auto-calibrates over time. Graduates to real trading after ~1hr. */}

@@ -3521,19 +3521,22 @@ function startAutoTrader(wallet, settings) {
         const ageMin = (Date.now() - t.createdAt) / 60000;
         const sells = t.sells || 0;
         const dyn = scoreDynamics.get(t.ca);
-        const isAccelerating = dyn && dyn.scores >= 2 && (dyn.trend === "rocket" || dyn.trend === "rising");
+        const isAccelerating = dyn && dyn.scores >= 1 && (dyn.trend === "rocket" || dyn.trend === "rising");
         // Low-velocity early entry: token has few buys but healthy buy/sell ratio
         // and is in the pre-discovery FDV range ($4K-$30K). These are the tokens
         // we SHOULD be aping — before velocity picks up.
-        const isLowVelocity = mc >= 4000 && mc <= 30000 && buys >= 1 && sells <= buys && ub >= 1 && ageMin >= 0.3 && ageMin <= 30;
+        const isLowVelocity = mc >= 4000 && mc <= 30000 && buys >= 1 && sells <= buys && ub >= 1 && ageMin >= 0.2 && ageMin <= 30;
         // DexPaid early entry: boosted tokens get relaxed filters — paid = conviction
         const isDexPaid = !!radar.dexBoosted.get(t.ca);
+        // Very early tokens (< 2 min) in pre-discovery range — let through with minimal filters
+        const isVeryEarly = ageMin < 2 && mc >= 4000 && mc <= 25000 && buys >= 2 && ub >= 2 && sells <= buys;
         if (isAccelerating) {
-          if (!(mc > 3000 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) { pipeline.baseFilter++; return false; }
+          if (!(mc > 3000 && buys >= 2 && ub >= 1 && ageMin >= 0.2 && sells <= buys * 1.5)) { pipeline.baseFilter++; return false; }
           return true;
         }
-        if (isDexPaid && mc >= 4000 && buys >= 1 && sells <= buys * 2) return true; // dex paid = early entry signal
-        if (isLowVelocity) return true; // let low-velocity tokens through to scoring
+        if (isDexPaid && mc >= 4000 && buys >= 1 && sells <= buys * 2) return true;
+        if (isVeryEarly) return true; // fast-track very early movers
+        if (isLowVelocity) return true;
         if (!(mc > 5000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) { pipeline.baseFilter++; return false; }
         return true;
       });
@@ -3555,54 +3558,53 @@ function startAutoTrader(wallet, settings) {
         if (cd?.has(t.ca)) { pipeline.cooldown++; return false; }
         const buys = t.buys || 0; const ub = t.uniqueBuyers?.size || 0; const vol = t.volumeSol || 0;
         const mc = t.mcapUsd || 0; const sells = t.sells || 0;
-        const ageMin = Math.max(0.5, (Date.now() - t.createdAt) / 60000);
+        const ageMin = Math.max(0.2, (Date.now() - t.createdAt) / 60000);
         const sellVol = t.sellVolumeSol || 0;
 
         // ═══ HARD RUG GATE — reject obvious rugs before scoring ═══
+        // IMPORTANT: Tokens < 3 min old get relaxed gates — zero sells and buy imbalance
+        // are NORMAL at launch. Only hard-reject on dev activity signals for young tokens.
         const qf = extractQuickFeatures(t);
         let rugRejectReason = null;
+        const isVeryYoung = ageMin < 3; // tokens under 3 min get benefit of the doubt
         if (qf) {
           if (qf.rg_devSellSpeed > 0.4) rugRejectReason = "dev_sell";
           else if (qf._rg_devSelfSnipe > 0) rugRejectReason = "dev_snipe";
-          else if (qf.rg_mcapDropRate > 0.4) rugRejectReason = "mcap_crash";
+          else if (qf.rg_mcapDropRate > 0.4 && !isVeryYoung) rugRejectReason = "mcap_crash";
           else if (qf.rg_coordDumpScore > 0.35) rugRejectReason = "coord_dump";
-          else if (qf._rg_pumpDump > 0.5) rugRejectReason = "pump_dump";
+          else if (qf._rg_pumpDump > 0.5 && !isVeryYoung) rugRejectReason = "pump_dump";
           else if (qf._rg_sybilScore > 0.4) rugRejectReason = "sybil";
-          else if (qf._rg_earlyDump > 0.3 && ageMin < 5) rugRejectReason = "early_dump";
+          else if (qf._rg_earlyDump > 0.5 && ageMin < 5) rugRejectReason = "early_dump"; // raised from 0.3 to 0.5
           else if (qf._rg_quickFlipRate > 0.25) rugRejectReason = "quick_flip";
-          // whale_heavy: only reject if wallets are fresh OR no wallet age data yet
-          // Aged whale wallets buying = smart money conviction, NOT a rug signal
           else if (qf.rg_holderConcentration > 0.7 && buys > 5 && !(qf._whaleBullish > 0.3)) rugRejectReason = "whale_heavy";
-          else if (qf.rg_liqRemovalSpeed > 0.65) rugRejectReason = "liq_removal";
-          // NEW: smooth grind detection — fake charts with no natural dips
-          else if (qf.ch_smoothGrind > 0.6) rugRejectReason = "smooth_grind";
-          else if (qf.ch_smoothGrind > 0.4 && qf.ch_dipRatio < 0.1) rugRejectReason = "no_dips";
-          // CRITICAL: zero sells = #1 rug pattern. Many buys + zero organic sells = dev self-buying
-          else if (qf._rg_zeroSellFlag >= 0.8) rugRejectReason = "zero_sells";
-          else if (qf._rg_zeroSellFlag >= 0.5 && (qf.ch_smoothGrind > 0.3 || qf.ch_staircaseScore > 0.3)) rugRejectReason = "zero_sells_fake_chart";
-          // Buy/sell imbalance: 95%+ buys = almost certainly fake activity
-          else if (qf._rg_buySellImbalance >= 0.8 && buys >= 8) rugRejectReason = "all_buys_no_sells";
-          // Staircase chart: monotonic up with uniform steps = dev self-buying pattern
-          else if (qf.ch_staircaseScore > 0.6) rugRejectReason = "staircase_chart";
-          else if (qf.ch_staircaseScore > 0.4 && qf._rg_freshWalletRatio > 0.6) rugRejectReason = "staircase_fresh_wallets";
-          // Fresh wallets + zero sells combo: definitive rug setup
-          else if (qf._rg_freshWalletRatio > 0.8 && qf._rg_zeroSellFlag > 0.4) rugRejectReason = "fresh_wallet_rug";
-          // Artwork originality: exact duplicate image = almost certainly copycat scam
+          else if (qf.rg_liqRemovalSpeed > 0.65 && !isVeryYoung) rugRejectReason = "liq_removal";
+          else if (qf.ch_smoothGrind > 0.6 && !isVeryYoung) rugRejectReason = "smooth_grind";
+          else if (qf.ch_smoothGrind > 0.4 && qf.ch_dipRatio < 0.1 && !isVeryYoung) rugRejectReason = "no_dips";
+          // Zero sells: ONLY reject for tokens > 3 min old. At launch, zero sells is expected.
+          else if (qf._rg_zeroSellFlag >= 0.8 && !isVeryYoung) rugRejectReason = "zero_sells";
+          else if (qf._rg_zeroSellFlag >= 0.5 && (qf.ch_smoothGrind > 0.3 || qf.ch_staircaseScore > 0.3) && !isVeryYoung) rugRejectReason = "zero_sells_fake_chart";
+          // Buy/sell imbalance: only flag for older tokens with many buys
+          else if (qf._rg_buySellImbalance >= 0.8 && buys >= 15 && !isVeryYoung) rugRejectReason = "all_buys_no_sells";
+          else if (qf.ch_staircaseScore > 0.6 && !isVeryYoung) rugRejectReason = "staircase_chart";
+          else if (qf.ch_staircaseScore > 0.4 && qf._rg_freshWalletRatio > 0.6 && !isVeryYoung) rugRejectReason = "staircase_fresh_wallets";
+          else if (qf._rg_freshWalletRatio > 0.8 && qf._rg_zeroSellFlag > 0.4 && !isVeryYoung) rugRejectReason = "fresh_wallet_rug";
           else if (t._artworkFlags?.includes("EXACT_DUPLICATE")) rugRejectReason = "stolen_art";
           else {
             const rugSignals = [
               qf.rg_devSellSpeed > 0.25, qf.rg_coordDumpScore > 0.2,
               qf._rg_sybilScore > 0.25, qf._rg_quickFlipRate > 0.15,
               qf.rg_holderConcentration > 0.6, qf._rg_earlyDump > 0.2,
-              qf.rg_mcapDropRate > 0.25, qf._rg_pumpDump > 0.3,
-              qf.ch_smoothGrind > 0.35, qf.ch_dipRatio < 0.1,
-              qf._rg_zeroSellFlag > 0.4,           // zero/near-zero sells
-              qf._rg_buySellImbalance > 0.5,        // extreme buy imbalance
-              qf.ch_staircaseScore > 0.3,            // staircase chart pattern
-              qf._rg_freshWalletRatio > 0.6,         // fresh wallet buyers
-              t._artworkOriginal === false, // copied/stolen artwork
+              qf.rg_mcapDropRate > 0.25 && !isVeryYoung, qf._rg_pumpDump > 0.3 && !isVeryYoung,
+              qf.ch_smoothGrind > 0.35 && !isVeryYoung, qf.ch_dipRatio < 0.1 && !isVeryYoung,
+              qf._rg_zeroSellFlag > 0.4 && !isVeryYoung,  // skip for young tokens
+              qf._rg_buySellImbalance > 0.5 && !isVeryYoung,
+              qf.ch_staircaseScore > 0.3 && !isVeryYoung,
+              qf._rg_freshWalletRatio > 0.6 && !isVeryYoung,
+              t._artworkOriginal === false,
             ].filter(Boolean).length;
-            if (rugSignals >= 3) rugRejectReason = "multi_rug_" + rugSignals;
+            // Young tokens need more signals to reject (4 instead of 3)
+            const minSignals = isVeryYoung ? 4 : 3;
+            if (rugSignals >= minSignals) rugRejectReason = "multi_rug_" + rugSignals;
           }
           if (rugRejectReason) {
             pipeline.rugGate++;
@@ -3681,17 +3683,19 @@ function startAutoTrader(wallet, settings) {
         if (state.settings.requireBoosted && !dexBoost) return false;
 
         // ═══ VELOCITY/ACCELERATION GATE ═══
-        // Core principle: NEVER buy a token we haven't observed long enough to measure
-        // momentum. Score alone is a snapshot — velocity/acceleration show the TREND.
-        // Require 3+ observations (~15s) so v and a have real data before we risk SOL.
+        // Need at least 1 observation to have any data. For early movers (< 2 min old),
+        // allow entry with just 1 observation since waiting 15-30s means missing the move.
         const dyn = scoreDynamics.get(t.ca);
         let dynamicsBonus = 0;
 
-        if (!dyn || dyn.scores < 2) {
+        const isEarlyMover = ageMin < 2 && mc >= 4000 && mc <= 30000 && ub >= 2;
+        if (!dyn || (dyn.scores < 2 && !isEarlyMover)) {
           // Not enough data yet — skip this cycle, let it cook
           pipeline.scoreLow++;
           return false;
         }
+        // Early movers with 1 observation get a bonus for having velocity data at all
+        if (isEarlyMover && dyn && dyn.scores === 1) dynamicsBonus += 8;
 
         // Hard reject: actively crashing tokens
         if (dyn.trend === "crashing") { pipeline.trendReject++; return false; }
