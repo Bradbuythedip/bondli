@@ -5093,10 +5093,11 @@ app.post("/api/admin/unwhitelist", requireAdmin, async (req, res) => {
 app.get("/api/intel/stats", (req, res) => {
   const tokens = [...radar.tokens.values()];
   const withMcap = tokens.filter(t => t.mcapUsd > 0);
-  const graduated = tokens.filter(t => t.mcapUsd >= gradMcUsd());
-  // Grad rate: only count tokens old enough to have had a chance to graduate (30+ min)
-  const matureTokens = withMcap.filter(t => t.createdAt && (Date.now() - t.createdAt) > 30 * 60 * 1000);
-  const matureGraduated = matureTokens.filter(t => t.mcapUsd >= gradMcUsd());
+  const graduated = tokens.filter(t => t.graduated || t.mcapUsd >= gradMcUsd());
+  // Grad rate: count tokens old enough (10+ min) OR all tokens with any activity
+  const now = Date.now();
+  const matureTokens = tokens.filter(t => t.createdAt && (now - t.createdAt) > 10 * 60 * 1000 && (t.buys > 0 || t.mcapUsd > 0));
+  const matureGraduated = matureTokens.filter(t => t.graduated || t.mcapUsd >= gradMcUsd());
   const hot = tokens.filter(t => t.buys >= 2 || t.volumeSol > 0.1);
   
   const topFeatures = [
@@ -5265,7 +5266,7 @@ app.get("/api/intel/stats", (req, res) => {
     memory: {
       total: tokens.length, labeled: withMcap.length,
       graduated: graduated.length,
-      graduationRate: matureTokens.length > 0 ? (matureGraduated.length / matureTokens.length * 100).toFixed(1) + "%" : "N/A",
+      graduationRate: matureTokens.length > 0 ? (matureGraduated.length / matureTokens.length * 100).toFixed(1) + "%" : graduated.length > 0 ? (graduated.length / Math.max(1, tokens.length) * 100).toFixed(1) + "%" : "0%",
     },
     monitor: { tracking: hot.length },
     // Top signals: additional validation feedback loop — must pass quality gate
