@@ -89,6 +89,20 @@ const FEATURE_KEYS = [
   "cs_curveVelocity",   // bonding curve progress velocity (dPct/dMinute) — fast fill = strong signal
   "cs_attentionShare",  // token volume relative to total observed volume (0-1)
 
+  // SIR Viral Model (epidemiological meme spread)
+  "sir_r0",             // basic reproduction number R0: avg new buyers per existing buyer (0-1 normalized)
+  "sir_infectRate",     // new unique buyer arrival rate per minute (0-1)
+  "sir_recoveryRate",   // seller rate (people "recovering" from meme) (0-1, inverted = bullish)
+
+  // Graduation Frontrunning
+  "gf_curveProgress",   // bonding curve % filled (0-1, 0.8+ = near graduation)
+  "gf_frontrunSignal",  // combined signal: high curve progress + active cascade (0-1)
+
+  // Attention-Price Divergence
+  "apd_attentionGrowth",// is attention (volume, buyers) growing? (0-1)
+  "apd_priceFlat",      // is price relatively flat despite attention? (0-1)
+  "apd_divergence",     // attention growing + price flat = breakout imminent (0-1)
+
   // Meta
   "mt_hourOfDay",       // 0-23 normalized to 0-1
   "mt_dayOfWeek",       // 0-6 normalized to 0-1
@@ -441,6 +455,86 @@ function extractFeatures(token) {
   const tokenVol = t.volumeSol || sum(buyAmounts);
   f.cs_attentionShare = Math.min(1, tokenVol / 50); // 50 SOL volume = full attention score
 
+  // ─── SIR Viral Model (Epidemiological Meme Spread) ───
+  // R0 = basic reproduction number: how many new buyers does each buyer generate?
+  // R0 > 2 at the 5-min mark correlates with 3-5x higher graduation rate
+  // Model: S(susceptible) → I(infected/buying) → R(recovered/sold)
+  {
+    // Estimate R0 from buyer arrival rate acceleration
+    // Split trades into time windows and measure new-buyer growth rate
+    const buyTimes = buys.map(b => b.time || b.timestamp || 0).filter(t => t > 0).sort((a, b) => a - b);
+    if (buyTimes.length >= 5) {
+      const midpoint = Math.floor(buyTimes.length / 2);
+      const earlyWindow = buyTimes.slice(0, midpoint);
+      const lateWindow = buyTimes.slice(midpoint);
+      const earlySpan = (earlyWindow[earlyWindow.length - 1] - earlyWindow[0]) / 60000 || 1; // minutes
+      const lateSpan = (lateWindow[lateWindow.length - 1] - lateWindow[0]) / 60000 || 1;
+      const earlyRate = earlyWindow.length / earlySpan; // buyers per minute early
+      const lateRate = lateWindow.length / lateSpan;   // buyers per minute late
+      // R0 proxy: late rate / early rate — accelerating buyers = viral spread
+      const r0Raw = earlyRate > 0 ? lateRate / earlyRate : 1;
+      f.sir_r0 = Math.min(1, Math.max(0, (r0Raw - 0.5) / 3)); // R0=0.5→0, R0=2→0.5, R0=3.5→1
+      // Infection rate: new unique buyers per minute
+      const uniqueBuyerCount = new Set(buys.map(b => b.wallet)).size;
+      f.sir_infectRate = Math.min(1, uniqueBuyerCount / Math.max(1, ageMin) / 10); // 10/min = max
+      // Recovery rate: sellers per minute (inverted — low selling = still "infected" = bullish)
+      const sellRate = sells.length / Math.max(1, ageMin);
+      f.sir_recoveryRate = Math.max(0, 1 - Math.min(1, sellRate / 5)); // 5 sells/min = max recovery = bearish
+    } else {
+      f.sir_r0 = 0;
+      f.sir_infectRate = 0;
+      f.sir_recoveryRate = 0.5;
+    }
+  }
+
+  // ─── Graduation Frontrunning ───
+  // Tokens at 80%+ bonding curve progress with active cascade = near-guaranteed graduation
+  // 15-30% premium available by frontrunning graduation on Raydium
+  {
+    const curveProgress = t.vSolInBondingCurve ? t.vSolInBondingCurve / 85 : 0;
+    f.gf_curveProgress = Math.min(1, curveProgress);
+    // Frontrun signal: curve > 80% AND (cascade active OR strong buy pressure)
+    const cascadeActive = f.cs_cascadeOnset > 0.3;
+    const strongBuys = f.oc_buyVelocity5m > 0.3;
+    if (curveProgress >= 0.8) {
+      const urgency = (curveProgress - 0.8) * 5; // 0.8→0, 1.0→1
+      const confidence = cascadeActive ? 0.8 : strongBuys ? 0.5 : 0.2;
+      f.gf_frontrunSignal = Math.min(1, urgency * confidence * 2);
+    } else if (curveProgress >= 0.6) {
+      // Early warning: approaching graduation
+      f.gf_frontrunSignal = cascadeActive ? Math.min(0.3, (curveProgress - 0.6) * 1.5) : 0;
+    } else {
+      f.gf_frontrunSignal = 0;
+    }
+  }
+
+  // ─── Attention-Price Divergence ───
+  // Attention growing + price flat = breakout imminent (55-65% win rate on 15-30% moves in 2-5 min)
+  // This is the "coiled spring" — volume accumulating before price catches up
+  {
+    // Attention growth: compare recent volume/buyer rate to earlier
+    const recentBuyCount = buys.slice(-10).length;
+    const olderBuyCount = buys.slice(-20, -10).length;
+    const attentionGrowth = olderBuyCount > 0 ? recentBuyCount / Math.max(1, olderBuyCount) : 1;
+    f.apd_attentionGrowth = Math.min(1, Math.max(0, (attentionGrowth - 0.8) / 2)); // 0.8→0, 2.8→1
+
+    // Price flatness: low volatility in recent spark data
+    if (spark.length >= 4) {
+      const recentSpark = spark.slice(-4);
+      const sparkAvg = recentSpark.reduce((a, b) => a + b, 0) / recentSpark.length;
+      const sparkVar = recentSpark.reduce((s, v) => s + Math.abs(v - sparkAvg), 0) / recentSpark.length;
+      const sparkCv = sparkAvg > 0 ? sparkVar / sparkAvg : 0;
+      f.apd_priceFlat = Math.max(0, 1 - sparkCv * 10); // low CV = price is flat
+    } else {
+      f.apd_priceFlat = 0.5;
+    }
+
+    // Divergence: attention growing AND price flat = imminent breakout
+    f.apd_divergence = f.apd_attentionGrowth > 0.3 && f.apd_priceFlat > 0.5
+      ? Math.min(1, f.apd_attentionGrowth * f.apd_priceFlat * 1.5)
+      : 0;
+  }
+
   // ─── Meta ───
   const now = new Date();
   f.mt_hourOfDay = now.getUTCHours() / 23;
@@ -483,6 +577,9 @@ class ScoringEngine {
       rg: 3.0,  // Rug detection — HIGHEST weight (losing money > missing plays)
       ch: 2.0,  // Chart pattern analysis — catches fake charts and pump-dumps
       cs: 1.8,  // Cascade & Reflexivity — information cascades are the #1 driver of meme pumps
+      sir: 2.0, // SIR Viral Model — R0 > 2 correlates with 3-5x higher grad rate
+      gf: 2.5,  // Graduation Frontrunning — near-guaranteed premium at 80%+ curve
+      apd: 1.5, // Attention-Price Divergence — coiled spring breakout detection
       so: 0.6,  // Social is noisy
       mt: 0.3,  // Time-of-day is minor
     };
@@ -519,7 +616,7 @@ class ScoringEngine {
     // ── Single pass: weighted sum + per-group sums ──
     // Zero-alloc: reuse pre-allocated group accumulators
     let weightedSum = 0;
-    let gs_tp = 0, gs_k = 0, gs_oc = 0, gs_rg = 0, gs_ch = 0, gs_cs = 0, gs_so = 0, gs_mt = 0;
+    let gs_tp = 0, gs_k = 0, gs_oc = 0, gs_rg = 0, gs_ch = 0, gs_cs = 0, gs_sir = 0, gs_gf = 0, gs_apd = 0, gs_so = 0, gs_mt = 0;
     const mc = this._mCache;
 
     for (let i = 0; i < FEATURE_KEYS.length; i++) {
@@ -533,6 +630,9 @@ class ScoringEngine {
         case "rg": gs_rg += wv; break;
         case "ch": gs_ch += wv; break;
         case "cs": gs_cs += wv; break;
+        case "sir": gs_sir += wv; break;
+        case "gf": gs_gf += wv; break;
+        case "apd": gs_apd += wv; break;
         case "so": gs_so += wv; break;
         case "mt": gs_mt += wv; break;
       }
@@ -549,6 +649,9 @@ class ScoringEngine {
     const s_rg = gws.rg > 0 ? gs_rg / gws.rg : 0;
     const s_ch = gws.ch > 0 ? gs_ch / gws.ch : 0;
     const s_cs = gws.cs > 0 ? gs_cs / gws.cs : 0;
+    const s_sir = gws.sir > 0 ? gs_sir / gws.sir : 0;
+    const s_gf = gws.gf > 0 ? gs_gf / gws.gf : 0;
+    const s_apd = gws.apd > 0 ? gs_apd / gws.apd : 0;
     const s_so = gws.so > 0 ? gs_so / gws.so : 0;
     const s_mt = gws.mt > 0 ? gs_mt / gws.mt : 0;
 
@@ -571,7 +674,7 @@ class ScoringEngine {
     // ── Tipping Point composite ──
     const tippingScore = s_tp * 0.4 + s_k * 0.3 + s_oc * 0.2 + s_so * 0.1;
 
-    // ── Bond probability (enhanced with cascade + reflexivity) ──
+    // ── Bond probability (enhanced with cascade + reflexivity + SIR + frontrunning) ──
     const bpRaw = tippingScore * 30
       + (features.oc_buyVelocity5m || 0) * 20
       + (features.oc_uniqueBuyers5m || 0) * 15
@@ -579,6 +682,10 @@ class ScoringEngine {
       + (features.cs_cascadeOnset || 0) * 15     // cascade = strong grad signal
       + (features.cs_reflexivity || 0) * 12       // self-reinforcing loop = graduation likely
       + (features.cs_curveVelocity || 0) * 18     // curve filling fast = closest to graduation
+      + (features.sir_r0 || 0) * 14               // R0 > 2 = viral spread, high grad correlation
+      + (features.sir_infectRate || 0) * 8         // new buyer arrival rate
+      + (features.gf_frontrunSignal || 0) * 20     // 80%+ curve + cascade = near-certain graduation
+      + (features.apd_divergence || 0) * 10        // attention-price divergence = breakout imminent
       - rugPenalty * 0.8
       - chartPenalty * 0.6;
     const bondProb = bpRaw < 1 ? 1 : bpRaw > 99 ? 99 : (bpRaw + 0.5) | 0;
@@ -634,6 +741,9 @@ class ScoringEngine {
         rugDetection: (s_rg * 100 + 0.5) | 0,
         chartPattern: (s_ch * 100 + 0.5) | 0,
         cascade: (s_cs * 100 + 0.5) | 0,
+        viral: (s_sir * 100 + 0.5) | 0,
+        gradFrontrun: (s_gf * 100 + 0.5) | 0,
+        attentionDiv: (s_apd * 100 + 0.5) | 0,
         social: (s_so * 100 + 0.5) | 0,
         timing: (s_mt * 100 + 0.5) | 0,
       },

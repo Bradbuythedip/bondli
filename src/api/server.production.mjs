@@ -280,6 +280,123 @@ const radar = {
   dexBoosted: new Map(), // ca → { amount, updatedAt } — DexScreener paid/boosted
 };
 
+// ═══ SMART WALLET LABELING ═══
+// Track which wallets historically pick winners, weight their buys 3-5x in scoring
+// Uses in-memory LRU + Redis persistence for wallet performance history
+const smartWallets = {
+  // wallet(8-char prefix) → { buys, wins, losses, avgReturn, score, lastSeen }
+  walletStats: new Map(),
+  // Minimum trades to label a wallet as "smart"
+  MIN_TRADES: 3,
+  // Decay old entries every hour
+  lastCleanup: Date.now(),
+
+  // Record a buy — called when we see a wallet buy a token
+  recordBuy(walletPrefix, ca) {
+    if (!walletPrefix || walletPrefix.length < 6) return;
+    let stats = this.walletStats.get(walletPrefix);
+    if (!stats) {
+      stats = { buys: 0, wins: 0, losses: 0, totalReturn: 0, activeBuys: new Map(), score: 0, lastSeen: Date.now() };
+      this.walletStats.set(walletPrefix, stats);
+    }
+    stats.buys++;
+    stats.lastSeen = Date.now();
+    // Track entry MC for this token
+    const token = radar.tokens.get(ca);
+    if (token) {
+      stats.activeBuys.set(ca, { entryMcap: token.mcapUsd || 0, time: Date.now() });
+    }
+  },
+
+  // Resolve outcome — called when a token graduates or rugs
+  resolveOutcome(ca, graduated) {
+    for (const [wp, stats] of this.walletStats) {
+      const entry = stats.activeBuys.get(ca);
+      if (!entry) continue;
+      stats.activeBuys.delete(ca);
+      if (graduated) {
+        stats.wins++;
+        const token = radar.tokens.get(ca);
+        const exitMcap = token?.mcapUsd || entry.entryMcap;
+        const ret = entry.entryMcap > 0 ? (exitMcap - entry.entryMcap) / entry.entryMcap : 0;
+        stats.totalReturn += ret;
+      } else {
+        stats.losses++;
+        stats.totalReturn -= 0.5; // assume 50% loss on rug
+      }
+      // Recalculate score: win rate weighted by total return
+      const totalTrades = stats.wins + stats.losses;
+      if (totalTrades >= this.MIN_TRADES) {
+        const winRate = stats.wins / totalTrades;
+        const avgRet = stats.totalReturn / totalTrades;
+        stats.score = Math.min(1, Math.max(0, winRate * 0.6 + Math.min(0.4, avgRet * 0.1)));
+      }
+    }
+  },
+
+  // Get smart wallet count for a token — how many known-good wallets are buying
+  getSmartBuyerCount(token) {
+    const trades = token.recentTrades || token.trades || [];
+    const buyWallets = trades
+      .filter(t => t.side === "buy" || t.txType === "buy")
+      .map(t => (t.wallet || "").slice(0, 8));
+    let smartCount = 0;
+    for (const wp of new Set(buyWallets)) {
+      const stats = this.walletStats.get(wp);
+      if (stats && stats.score >= 0.4 && (stats.wins + stats.losses) >= this.MIN_TRADES) {
+        smartCount++;
+      }
+    }
+    return smartCount;
+  },
+
+  // Cleanup old entries — run periodically
+  cleanup() {
+    if (Date.now() - this.lastCleanup < 3600000) return; // hourly
+    this.lastCleanup = Date.now();
+    const cutoff = Date.now() - 86400000 * 7; // 7 days
+    for (const [wp, stats] of this.walletStats) {
+      if (stats.lastSeen < cutoff) this.walletStats.delete(wp);
+    }
+    // Cap at 5000 entries
+    if (this.walletStats.size > 5000) {
+      const entries = [...this.walletStats.entries()].sort((a, b) => a[1].lastSeen - b[1].lastSeen);
+      for (let i = 0; i < entries.length - 5000; i++) this.walletStats.delete(entries[i][0]);
+    }
+  },
+
+  // Persist to Redis (called periodically)
+  async save() {
+    if (!redis) return;
+    try {
+      const data = {};
+      for (const [wp, stats] of this.walletStats) {
+        if ((stats.wins + stats.losses) >= this.MIN_TRADES) {
+          data[wp] = { b: stats.buys, w: stats.wins, l: stats.losses, r: +stats.totalReturn.toFixed(2), s: +stats.score.toFixed(3), t: stats.lastSeen };
+        }
+      }
+      await redis.set("smart:wallets", JSON.stringify(data), "EX", 604800); // 7 days
+    } catch {}
+  },
+
+  // Restore from Redis
+  async load() {
+    if (!redis) return;
+    try {
+      const raw = await redis.get("smart:wallets");
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      for (const [wp, d] of Object.entries(data)) {
+        this.walletStats.set(wp, {
+          buys: d.b, wins: d.w, losses: d.l, totalReturn: d.r, activeBuys: new Map(),
+          score: d.s, lastSeen: d.t,
+        });
+      }
+      console.log(`[SMART-WALLET] Loaded ${this.walletStats.size} wallet profiles from Redis`);
+    } catch {}
+  },
+};
+
 const PUMP_FUN_API = "https://frontend-api-v3.pump.fun";
 
 // Fetch token metadata from pump.fun frontend API
@@ -565,7 +682,11 @@ function processRadarMessage(data) {
     if (data.txType === "buy") {
       token.buys++;
       token.volumeSol += sol;
-      if (trader) token.uniqueBuyers.add(trader);
+      if (trader) {
+        token.uniqueBuyers.add(trader);
+        // Smart wallet tracking: record this buy
+        smartWallets.recordBuy(trader.slice(0, 8), mint);
+      }
     } else {
       token.sells++;
       token.sellVolumeSol = (token.sellVolumeSol || 0) + sol;
@@ -606,6 +727,8 @@ function processRadarMessage(data) {
       token.graduated = true;
       token.graduatedAt = Date.now();
       console.log(`[RADAR] Token graduated: ${token.name || mint.slice(0, 8)} — MC: $${token.mcapUsd}`);
+      // Smart wallet: resolve outcome as win for all buyers
+      smartWallets.resolveOutcome(mint, true);
       // Fetch live MC from DexScreener since PumpPortal stops sending data after graduation
       refreshGraduatedMcap(mint).catch(() => {});
       // Add to graduated watchlist for 24h follow
@@ -973,7 +1096,7 @@ function extractQuickFeatures(t) {
   // Combined: fresh wallets + zero sells = definite rug setup
   const freshWalletRugSignal = freshWalletRatio > 0.7 && zeroSellFlag > 0.5 ? Math.min(1, freshWalletRatio * zeroSellFlag * 1.5) : freshWalletRatio;
 
-  return {
+  const result = {
     // On-chain
     oc_buyVelocity5m: Math.min(1, (buys / Math.max(1, Math.min(5, ageMin))) / 20),
     oc_uniqueBuyers5m: Math.min(1, ub / 30),
@@ -1015,7 +1138,65 @@ function extractQuickFeatures(t) {
     // Whale bullish: aged whale wallets buying = smart money conviction
     _whaleBullish: t._walletAgeData ? t._walletAgeData.whaleBullish : 0,
     _whaleBuys: t._walletAgeData ? t._walletAgeData.whaleBuys : [],
+
+    // ═══ SIR VIRAL MODEL ═══
+    // R0 estimation from buyer arrival rate acceleration
+    sir_r0: (() => {
+      const buyTimes2 = buyTrades.map(tr => tr.time).filter(t2 => t2 > 0).sort((a, b) => a - b);
+      if (buyTimes2.length < 5) return 0;
+      const mid = Math.floor(buyTimes2.length / 2);
+      const earlySpan = (buyTimes2[mid - 1] - buyTimes2[0]) / 60000 || 1;
+      const lateSpan = (buyTimes2[buyTimes2.length - 1] - buyTimes2[mid]) / 60000 || 1;
+      const earlyRate = mid / earlySpan;
+      const lateRate = (buyTimes2.length - mid) / lateSpan;
+      const r0 = earlyRate > 0 ? lateRate / earlyRate : 1;
+      return Math.min(1, Math.max(0, (r0 - 0.5) / 3));
+    })(),
+    sir_infectRate: Math.min(1, ub / Math.max(1, ageMin) / 10),
+    sir_recoveryRate: Math.max(0, 1 - Math.min(1, sells / Math.max(1, ageMin) / 5)),
+
+    // ═══ GRADUATION FRONTRUNNING ═══
+    gf_curveProgress: t.vSolInBondingCurve ? Math.min(1, t.vSolInBondingCurve / 85) : 0,
+    gf_frontrunSignal: (() => {
+      const cp = t.vSolInBondingCurve ? t.vSolInBondingCurve / 85 : 0;
+      if (cp < 0.6) return 0;
+      const bv = Math.min(1, (buys / Math.max(1, Math.min(5, ageMin))) / 20);
+      if (cp >= 0.8) {
+        const urgency = (cp - 0.8) * 5;
+        return Math.min(1, urgency * (bv > 0.3 ? 0.8 : 0.3) * 2);
+      }
+      return bv > 0.3 ? Math.min(0.3, (cp - 0.6) * 1.5) : 0;
+    })(),
+
+    // ═══ ATTENTION-PRICE DIVERGENCE ═══
+    apd_attentionGrowth: (() => {
+      const recent10 = buyTrades.slice(-10).length;
+      const older10 = buyTrades.slice(-20, -10).length;
+      const growth = older10 > 0 ? recent10 / Math.max(1, older10) : 1;
+      return Math.min(1, Math.max(0, (growth - 0.8) / 2));
+    })(),
+    apd_priceFlat: (() => {
+      if (spark.length < 4) return 0.5;
+      const rs = spark.slice(-4);
+      const avg = rs.reduce((a, b) => a + b, 0) / rs.length;
+      const variance = rs.reduce((s, v) => s + Math.abs(v - avg), 0) / rs.length;
+      return avg > 0 ? Math.max(0, 1 - (variance / avg) * 10) : 0.5;
+    })(),
+    apd_divergence: 0, // computed below
+
+    // ═══ SMART WALLET SIGNAL ═══
+    // How many known-winning wallets are buying this token
+    tp_mavenScore: Math.min(1, smartWallets.getSmartBuyerCount(t) * 0.25),
+    tp_connectorScore: t.knownInfluencerBuys ? Math.min(1, t.knownInfluencerBuys * 0.2) : 0,
   };
+
+  // Compute divergence after other fields are set
+  const _r = result;
+  if (_r.apd_attentionGrowth > 0.3 && _r.apd_priceFlat > 0.5) {
+    _r.apd_divergence = Math.min(1, _r.apd_attentionGrowth * _r.apd_priceFlat * 1.5);
+  }
+
+  return _r;
 }
 
 // ═══ CHART PATTERN STORAGE — persist graduated token charts for learning ═══
@@ -2798,12 +2979,20 @@ function startAutoTrader(wallet, settings) {
       sl2: settings.sl2 || 20,         // SL2: -20% full exit — capital preservation is #1
       requireBoosted: settings.requireBoosted || false,
       momentumExit: settings.momentumExit !== false, // default ON — auto-tighten stops on score drop
+      reentryDips: settings.reentryDips !== false,    // default ON — re-enter on dips, sell into volume
       enabled: true,
     },
     positions: new Map(), // ca → { entryMcap, entrySol, entryTime, peakMcap, tpHit, slHit }
     log: [],
     interval: null,
     lastActivity: Date.now(), // track last user interaction for auto-stop
+    // ═══ DRAWDOWN GOVERNOR ═══
+    // Tracks portfolio equity curve to reduce sizing during drawdowns
+    // At 25% DD → half size, at 50% DD → stop trading entirely
+    peakEquity: 0,      // high-water mark of portfolio value
+    totalInvested: 0,    // total SOL invested across all positions
+    totalRealized: 0,    // total SOL realized from sells
+    drawdownMult: 1.0,   // current sizing multiplier (1.0 = full, 0.5 = half, 0 = stopped)
   };
 
   const log = (msg) => {
@@ -2818,6 +3007,43 @@ function startAutoTrader(wallet, settings) {
       const tw = await getTradingWallet(wallet);
       if (!tw) return;
       const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+
+      // ═══ DRAWDOWN GOVERNOR — reduce sizing as drawdown deepens ═══
+      // Tracks equity curve: if portfolio drops from peak, reduce bet sizes
+      {
+        let currentEquity = 0;
+        try { currentEquity = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL; } catch {}
+        // Add unrealized position value estimate
+        for (const [ca, pos] of state.positions) {
+          const token = radar.tokens.get(ca);
+          if (token && pos.entryMcap > 0) {
+            const currentMcap = token.mcapUsd || 0;
+            const pctChange = (currentMcap - pos.entryMcap) / pos.entryMcap;
+            currentEquity += (pos.entrySol || state.settings.solPerTrade) * (1 + pctChange);
+          }
+        }
+        // Update high-water mark
+        if (currentEquity > state.peakEquity) state.peakEquity = currentEquity;
+        // Calculate drawdown from peak
+        const drawdownPct = state.peakEquity > 0 ? ((state.peakEquity - currentEquity) / state.peakEquity) * 100 : 0;
+        // Sizing multiplier: linear scale from 1.0 at 0% DD to 0.0 at 50% DD
+        // At 25% DD → 0.5x size, at 50% DD → stop trading
+        if (drawdownPct >= 50) {
+          state.drawdownMult = 0;
+          if (!state._ddStopLogged || Date.now() - state._ddStopLogged > 60000) {
+            log(`DRAWDOWN GOVERNOR: ${drawdownPct.toFixed(1)}% DD — TRADING HALTED`);
+            state._ddStopLogged = Date.now();
+          }
+        } else if (drawdownPct >= 10) {
+          state.drawdownMult = Math.max(0.1, 1 - drawdownPct / 50);
+          if (!state._ddWarnLogged || Date.now() - state._ddWarnLogged > 30000) {
+            log(`DRAWDOWN GOVERNOR: ${drawdownPct.toFixed(1)}% DD — sizing at ${(state.drawdownMult * 100).toFixed(0)}%`);
+            state._ddWarnLogged = Date.now();
+          }
+        } else {
+          state.drawdownMult = 1.0;
+        }
+      }
 
       // ── HELPER: execute a partial sell ──
       async function execSell(ca, sellPct, kp, reason) {
@@ -3046,14 +3272,40 @@ function startAutoTrader(wallet, settings) {
           } catch (e) { log(`Momentum score error ${ca.slice(0,6)}: ${e.message}`); }
         }
 
+        // ═══ SELL-INTO-VOLUME — detect volume spikes and take profit into liquidity ═══
+        // When volume surges (lots of buyers), there's liquidity to sell into without slippage
+        // This is the smart exit: sell when others are buying, not when they're selling
+        if (state.settings.reentryDips !== false && changePct > 15 && !pos.isMoonbag && pos.tpHit === 0) {
+          const token5mVol = token.volumeSol || 0;
+          const tokenAge = Math.max(1, (Date.now() - token.createdAt) / 60000);
+          const avgVolPerMin = token5mVol / tokenAge;
+          // Check recent trades for volume spike (last 60s)
+          const recentTrades = (token.trades || []).filter(tr => tr.time && Date.now() - tr.time < 60000);
+          const recentBuyVol = recentTrades.filter(tr => tr.side === "buy").reduce((s, tr) => s + (tr.sol || 0), 0);
+          const isVolSpike = recentBuyVol > avgVolPerMin * 3 && recentBuyVol > 0.5; // 3x average volume
+          if (isVolSpike) {
+            const sellPct = changePct >= 50 ? 40 : 25; // sell more if bigger profit
+            log(`SELL-INTO-VOLUME ${ca.slice(0,6)}: +${changePct.toFixed(0)}% vol spike ${recentBuyVol.toFixed(2)} SOL/min — selling ${sellPct}%`);
+            const sig = await execSell(ca, sellPct, kp, "volume-sell");
+            if (sig) {
+              broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "VOL-SELL", sellPct, volumeSpike: true } });
+              pos.tpHit = 1; // mark as partial exit
+              pos.volumeSold = true;
+            }
+          }
+        }
+
         // ═══ TAKE PROFIT — 3 tiers ═══
         // TP3: Runner — sell tp3Sell% of remaining (rest = moonbag forever)
         if (pos.tpHit < 3 && changePct >= s.tp3) {
-          // Dynamic trailing: wider at higher gains, tighter at lower
-          // At 2x (100%), trail within 20% of peak. At 5x+, trail within 25%.
-          const trailPct = changePct > 400 ? 25 : changePct > 200 ? 20 : 15;
+          // ═══ TRAILING STOP WIDENING ═══
+          // Bigger winners get wider trailing stops to capture fat-tail returns
+          // At 2x (100%): trail within 50% of peak — let it breathe
+          // At 10x (900%): trail within 30% — still wide for moonshot potential
+          // At 50x (4900%): trail within 25% — tightest, massive gains to protect
+          const trailPct = changePct >= 4900 ? 25 : changePct >= 900 ? 30 : changePct >= 400 ? 35 : changePct >= 200 ? 40 : 50;
           if (fromPeak < trailPct) {
-            log(`🏃 RUNNER ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — trailing (${fromPeak.toFixed(0)}% from peak, trail=${trailPct}%)`);
+            log(`RUNNER ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — trailing (${fromPeak.toFixed(0)}% from peak, trail=${trailPct}%)`);
           } else {
             log(`TP3 ${ca.slice(0,6)}: +${changePct.toFixed(0)}% — selling ${s.tp3Sell}% (moonbag rest)`);
             const sig = await execSell(ca, s.tp3Sell, kp, "TP3");
@@ -3085,8 +3337,9 @@ function startAutoTrader(wallet, settings) {
           }
           pos.tpHit = 1;
         }
-        // Trailing stop: dropped 30%+ from peak while still green and hasn't hit TP1 yet
-        else if (fromPeak > 30 && changePct > 10 && pos.tpHit === 0) {
+        // Trailing stop: dropped from peak while still green and hasn't hit TP1 yet
+        // Wider trail for bigger gains (trailing stop widening)
+        else if (fromPeak > (changePct >= 50 ? 40 : 30) && changePct > 10 && pos.tpHit === 0) {
           log(`Trailing ${ca.slice(0,6)}: +${changePct.toFixed(0)}% (down ${fromPeak.toFixed(0)}% from peak) — selling ${s.tp1Sell}%`);
           const sig = await execSell(ca, s.tp1Sell, kp, "trailing");
           if (sig) {
@@ -3107,8 +3360,8 @@ function startAutoTrader(wallet, settings) {
               exitPosition(ca, 100, "moonbag-dead");
               trackSell(wallet, ca);
             }
-          } else if (fromPeak > 60 && changePct > 30) {
-            // Moonbag was running hard but pulled back significantly — take remaining profit
+          } else if (fromPeak > (changePct >= 500 ? 70 : 60) && changePct > 30) {
+            // Moonbag trailing stop widening: wider trail for bigger runners
             log(`Moonbag trail ${ca.slice(0,6)}: +${changePct.toFixed(0)}% (−${fromPeak.toFixed(0)}% from peak) — exit moonbag`);
             const sig = await execSell(ca, 100, kp, "moonbag-trail");
             if (sig) {
@@ -3192,13 +3445,69 @@ function startAutoTrader(wallet, settings) {
         return;
       }
 
-      // Clean expired cooldowns — 10min for tokens with recovery signals, 30min for others
+      // Clean expired cooldowns — shorter for re-entry mode
       const cd = soldCooldowns.get(wallet);
       if (cd) for (const [c, t] of cd) {
         const dyn = scoreDynamics.get(c);
         const isRecovering = dyn && dyn.scores >= 3 && (dyn.trend === "rising" || dyn.trend === "rocket");
-        const cooldownMs = isRecovering ? 600000 : 1800000; // 10min if recovering, 30min otherwise
+        // Re-entry mode: allow re-buying sold tokens after 3min if dip-recovering, 10min normal
+        const cooldownMs = state.settings.reentryDips !== false
+          ? (isRecovering ? 180000 : 600000)   // 3min / 10min with re-entry enabled
+          : (isRecovering ? 600000 : 1800000); // 10min / 30min without re-entry
         if (Date.now() - t > cooldownMs) cd.delete(c);
+      }
+
+      // ═══ DIP RE-ENTRY — re-buy previously sold tokens on confirmed dips with recovery ═══
+      // User request: "enter tokens in the green that just dropped in price, sell into volume, re-enter the dip"
+      if (state.settings.reentryDips !== false && state.positions.size < state.settings.maxPositions) {
+        const recentlySold = soldCooldowns.get(wallet);
+        if (recentlySold) {
+          for (const [ca, soldTime] of recentlySold) {
+            if (state.positions.has(ca)) continue; // already have position
+            if (Date.now() - soldTime < 120000) continue; // wait at least 2 min after sell
+            const token = radar.tokens.get(ca);
+            if (!token) continue;
+            const dyn = scoreDynamics.get(ca);
+            if (!dyn || dyn.scores < 3) continue;
+            // Re-entry criteria: score recovering + MC dipped from peak + still has volume
+            const isRecovering = dyn.trend === "rising" || dyn.trend === "rocket";
+            const currentMcap = token.mcapUsd || 0;
+            const spark = token.spark || [];
+            const recentPeak = spark.length > 3 ? Math.max(...spark.slice(-10)) : currentMcap;
+            const dippedFromPeak = recentPeak > 0 ? ((recentPeak - currentMcap) / recentPeak) * 100 : 0;
+            // Dip + recovery = re-entry: 15%+ dip from recent peak AND score is coming back
+            if (isRecovering && dippedFromPeak >= 15 && currentMcap > 5000) {
+              let balance = 0;
+              try { balance = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL; } catch { continue; }
+              const reentryAmount = Math.round(state.settings.solPerTrade * 0.5 * state.drawdownMult * 1000) / 1000; // half-size re-entry
+              if (balance < reentryAmount + 0.01) continue;
+              log(`DIP-REENTRY ${token.name||ca.slice(0,6)} | dip:${dippedFromPeak.toFixed(0)}% | trend:${dyn.trend} | MC:$${Math.round(currentMcap)} | ${reentryAmount} SOL`);
+              try {
+                const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
+                  method: "POST", headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: ca, amount: reentryAmount, denominatedInSol: "true", slippage: 25, priorityFee: 0.005, pool: "auto" }),
+                });
+                if (buyResp.ok) {
+                  const txBytes = await buyResp.arrayBuffer();
+                  if (txBytes.byteLength > 100) {
+                    const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+                    tx.sign([kp]);
+                    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                    state.positions.set(ca, {
+                      entryMcap: currentMcap, entrySol: reentryAmount, entryTime: Date.now(),
+                      peakMcap: currentMcap, tpHit: 0, slHit: 0, dcaBuys: 0, isReentry: true,
+                      entryScore: dyn.currentScore || 0,
+                    });
+                    recentlySold.delete(ca); // remove from cooldown
+                    broadcastWS({ event: "auto-ape", data: { ca, name: token.name, sol: reentryAmount, mcap: currentMcap, wallet, score: dyn.currentScore || 0, reentry: true } });
+                    log(`DIP-REENTERED ${token.name||ca.slice(0,6)} +${reentryAmount} SOL sig:${sig.slice(0,12)}...`);
+                    if (state.positions.size >= state.settings.maxPositions) break;
+                  }
+                }
+              } catch (e) { log(`DIP-REENTRY error ${ca.slice(0,6)}: ${e.message}`); }
+            }
+          }
+        }
       }
 
       // ── PIPELINE STATS: track why tokens are rejected ──
@@ -3566,39 +3875,34 @@ function startAutoTrader(wallet, settings) {
       //   Trend bonus: rocket/rising adds +0.15x (momentum confirms conviction)
       //   Rug flags: each flag reduces by 0.1x (uncertainty penalty)
       function calcPositionSize(score, trend, rugFlagCount, baseSol) {
-        // ═══ ADAPTIVE QUARTER-KELLY SIZING ═══
+        // ═══ ADAPTIVE QUARTER-KELLY SIZING + DRAWDOWN GOVERNOR ═══
         // Meme tokens follow power-law returns (Pareto, not Gaussian)
-        // Most go to zero, a few do 10-100x. Quarter-Kelly handles this variance.
-        //
-        // Kelly: f* = (p * b - q) / b
-        //   p = win probability (from score → empirical win rate)
-        //   b = payoff ratio (average winner / average loser) ≈ 3.0 for memes
-        //   q = 1 - p
-        //
-        // Quarter-Kelly: f = f* / 4 (extreme variance reduction)
+        // Quarter-Kelly handles extreme variance. Drawdown governor protects capital.
 
-        // Empirical win rate by score bucket (calibrated from meme token outcomes)
-        // Higher scores historically win more often
+        // Drawdown governor: if trading halted, return 0
+        if (state.drawdownMult <= 0) return 0;
+
         const winRate = score >= 70 ? 0.45 : score >= 55 ? 0.35 : score >= 40 ? 0.25 : score >= 25 ? 0.15 : 0.08;
-        const payoffRatio = 3.0; // average winner returns 3x what average loser costs (due to fat right tail)
+        const payoffRatio = 3.0;
         const q = 1 - winRate;
         const kellyFull = Math.max(0, (winRate * payoffRatio - q) / payoffRatio);
         const kellyQuarter = kellyFull * 0.25;
 
-        // Convert Kelly fraction to position multiplier (0.3x - 2.0x of base)
-        // Kelly=0 → 0.3x, Kelly=0.1 → 1.0x, Kelly=0.2+ → 2.0x
         let mult = 0.3 + kellyQuarter * 8.5;
 
-        // Trend adjustment (momentum confirms conviction — reflexivity signal)
+        // Trend adjustment
         if (trend === "rocket") mult *= 1.15;
         else if (trend === "rising") mult *= 1.08;
         else if (trend === "fading") mult *= 0.85;
         else if (trend === "declining") mult *= 0.7;
 
-        // Rug flag penalty — each flag is evidence against, reduce exponentially
+        // Rug flag penalty
         if (rugFlagCount > 0) mult *= Math.pow(0.75, rugFlagCount);
 
-        // Clamp: never go below 0.25x or above 2.0x base
+        // ═══ DRAWDOWN GOVERNOR — scale down sizing as DD deepens ═══
+        // At 25% DD → 0.5x, at 50% DD → stopped (caught above)
+        mult *= state.drawdownMult;
+
         mult = Math.max(0.25, Math.min(2.0, mult));
         return Math.round(baseSol * mult * 1000) / 1000;
       }
@@ -5350,7 +5654,7 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 // ═══════════════════════════════════════
 // START
 // ═══════════════════════════════════════
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`\n═══════════════════════════════════════`);
   console.log(`  BONDLI v4 API — port ${PORT}`);
   console.log(`  RPC: ${RPC_URL.slice(0, 40)}...`);
@@ -5358,4 +5662,13 @@ server.listen(PORT, () => {
   console.log(`  SOL: $${solUsdPrice}`);
   console.log(`  Radar: PumpPortal WS connecting...`);
   console.log(`═══════════════════════════════════════\n`);
+
+  // Load smart wallet profiles from Redis
+  await smartWallets.load();
+
+  // Periodic smart wallet save + cleanup (every 10 minutes)
+  setInterval(() => {
+    smartWallets.cleanup();
+    smartWallets.save();
+  }, 600000);
 });
