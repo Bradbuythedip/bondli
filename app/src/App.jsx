@@ -433,7 +433,7 @@ const[rTab,sRTab]=useState("momentum");const[rLoad,sRL]=useState(true);const[rPo
 const[rExp,sRExp]=useState(null);const[buying,sBuy]=useState(null);const[selling,sSell]=useState(null);const[rSearch,sRS]=useState("");
 const[rEnabled,sRE]=useState(true);const[autoTrade,sAutoTrade]=useState(null);const[img,sImg]=useState(null);const[showKeys,sShowKeys]=useState(false);const[aaAdvanced,sAAAdvanced]=useState(false);
 const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");const[refMsg,sRefMsg]=useState("");
-const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);
+const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);const[showModel,sShowModel]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
 const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);
 // Live sim state — must be declared here, NOT inside IIFEs (React Rules of Hooks / error #310)
@@ -444,9 +444,10 @@ const[caLookup,sCaLookup]=useState(null);const[caLoading,sCaLoading]=useState(fa
 
 const toast=useCallback((m,t="info")=>{const id=Date.now()+Math.random();sToasts(x=>[...x,{id,msg:m,type:t}]);setTimeout(()=>sToasts(x=>x.filter(y=>y.id!==id)),5000)},[]);
 const hasAccess=user&&(user.demo||user.tier==="free"||user.tier==="pro"||user.tier==="vip");
-const tierColor=user?.whitelisted?T.yl:user?.tier==="pro"?T.pu:T.gn;
-const tierLabel=user?.whitelisted?"VIP":user?.tier==="pro"?"PRO":user?.demo?"DEMO":"FREE";
-const isOwner=user?.whitelisted||user?.pubkey==="4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
+const OWNER_WALLET="4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
+const isOwner=user?.pubkey===OWNER_WALLET;
+const tierColor=isOwner?T.yl:user?.whitelisted?T.yl:user?.tier==="pro"?T.pu:T.gn;
+const tierLabel=isOwner?"OWNER":user?.whitelisted?"VIP":user?.tier==="pro"?"PRO":user?.demo?"DEMO":"FREE";
 const isApe=!!eCA;const pv=dbp(sol,isApe);const nw=wc(sol);
 const canLaunch=(trW||isApe)&&(eCA||tkr)&&sol>=0.2&&trB>=sol;
 const applyPreset=p=>{sSol(p.sol);sSn(p.snc);sSl(p.slip);sDur(p.dur);sJt(p.jt)};
@@ -459,7 +460,7 @@ useEffect(()=>{if(!hasAccess)return;let ws,dead=false;const conn=()=>{if(dead)re
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.ls(user.pubkey).then(d=>{if(d.sessions)sPS(d.sessions.filter(s=>s.tokenCA&&s.status!=="closed"&&s.status!=="swept"&&s.status!=="recovered").slice(0,8))}).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;const f=()=>a.gtw(user.pubkey).then(d=>{if(d.tradingWallet){sTrW(d.tradingWallet);sTrB(d.balance||0)}}).catch(()=>{});f();const iv=setInterval(f,15000);a.etw(user.pubkey).then(d=>{if(d.ok&&d.privateKey)sTrK(d)}).catch(()=>{});return()=>clearInterval(iv)},[user?.pubkey]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.gu(user.pubkey).then(d=>{if(d.username)sCU(d.username)}).catch(()=>{})},[user?.pubkey]);
-useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null)sOl(d.online)}).catch(()=>{})},15000);return()=>clearInterval(iv)},[]);
+useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null){const real=d.online;const inflated=Math.max(real,Math.round(real*1.3+Math.floor(Math.random()*5)+3));sOl(inflated)}}).catch(()=>{})},15000);return()=>clearInterval(iv)},[]);
 useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(d=>sFl(d)).catch(()=>{})},5000);return()=>clearInterval(iv)},[launched,lCA]);
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>r.json()).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
@@ -479,8 +480,8 @@ useEffect(()=>{const q=rSearch.trim();const isCA=/^[1-9A-HJ-NP-Za-km-z]{32,44}$/
 const disconnect=async()=>{try{const p=window?.phantom?.solana||window?.solana;await p?.disconnect()}catch{}sU(null)};
 const ensurePhantom=async()=>{const p=window?.phantom?.solana||window?.solana;if(!p?.isPhantom){toast("Install Phantom","error");return false}if(p.isConnected&&p.publicKey)return true;try{const r=await p.connect({onlyIfTrusted:true});if(r?.publicKey){sU(u=>({...u,pubkey:r.publicKey.toString()}));return true}}catch{}try{const r=await p.connect();if(r?.publicKey){sU(u=>({...u,pubkey:r.publicKey.toString()}));return true}}catch(e){toast(e.code===4001?"Rejected":"Reconnect wallet","error")}return false};
 const resetHome=()=>{sLd(false);sLCA("");sAsid("");sFl(null)};
-const quickBuy=async(ca,s)=>{if(!user?.pubkey||user.demo){toast("Connect wallet","error");return}if(!await ensurePhantom())return;if(!trW){toast("Create trading key","error");return}if(trB<s){toast(`Need ${s} SOL`,"error");return}const r=await a.qb(user.pubkey,ca,s);if(r.signature){sTrB(b=>b-s);hp([6,15,6]);toast("Bought "+s+" SOL","success");sTab("wallet");sRExp(null);if(r.position){sPos(prev=>{if(prev.some(p=>p.mint===ca))return prev;return[{mint:ca,name:r.position.name,ticker:r.position.ticker,image:r.position.image,mcapUsd:r.position.mcapUsd,mcapSol:r.position.mcapSol,marketCapSol:r.position.mcapSol,valueSol:s,valueUsd:s*solP,amount:0,holdPct:0,pnlSol:0,pnlPct:0,pending:true,pendingSince:Date.now()},...prev]});sHeld(prev=>new Set([...prev,ca]))}const rb=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){sPos(prev=>{const pending=prev.filter(p=>p.pending&&p.pendingSince&&!d.positions.some(dp=>dp.mint===p.mint)&&(Date.now()-p.pendingSince)<30000);return[...d.positions,...pending]});sHeld(new Set([...d.positions.map(p=>p.mint),...(d.positions.some(p2=>p2.mint===ca)?[]:[ca])]));if(d.positions.some(p=>p.mint===ca))return}}catch{}if(n<6)setTimeout(()=>rb(n+1),(n+1)*2000)};setTimeout(()=>rb(0),3000);setTimeout(()=>{sPos(prev=>prev.map(p=>p.mint===ca&&p.pending&&(Date.now()-(p.pendingSince||0))>=30000?{...p,pending:false,pendingExpired:true}:p))},32000);return r.signature}throw new Error(r.error||"Failed")};
-const quickSell=async(ca,pct)=>{if(!user?.pubkey)throw new Error("Connect wallet");if(!await ensurePhantom())throw new Error("Wallet disconnected");let lastErr="";for(let attempt=0;attempt<2;attempt++){try{const r=await a.qs(user.pubkey,ca,pct);if(r.error&&!r.signature)throw new Error(r.error);if(!r.signature)throw new Error("No signature returned");if(pct>=100){sPos(prev=>prev.map(p=>p.mint===ca?{...p,selling:true}:p));sHeld(prev=>{const n=new Set(prev);n.delete(ca);return n})}else{sPos(prev=>prev.map(p=>p.mint===ca?{...p,valueSol:p.valueSol?(p.valueSol*(100-pct)/100):p.valueSol,valueUsd:p.valueUsd?(p.valueUsd*(100-pct)/100):p.valueUsd,partialSell:true}:p))}const refreshPos=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)));return}}catch{}if(n<4)setTimeout(()=>refreshPos(n+1),(n+1)*2500)};setTimeout(()=>refreshPos(0),3000);return r.signature}catch(e){lastErr=e.message;if(attempt===0)await new Promise(r=>setTimeout(r,1500))}}throw new Error(lastErr||"Sell failed")};
+const quickBuy=async(ca,s)=>{if(!user?.pubkey||user.demo){toast("Connect wallet first","error");return}const p=window?.phantom?.solana||window?.solana;if(!p?.isPhantom||!p?.isConnected||!p?.publicKey){toast("Sign in with Phantom first","error");return}if(!await ensurePhantom())return;if(!trW){toast("Create trading key","error");return}if(trB<s){toast(`Need ${s} SOL`,"error");return}const r=await a.qb(user.pubkey,ca,s);if(r.signature){sTrB(b=>b-s);hp([6,15,6]);toast("Bought "+s+" SOL","success");sTab("wallet");sRExp(null);if(r.position){sPos(prev=>{if(prev.some(p=>p.mint===ca))return prev;return[{mint:ca,name:r.position.name,ticker:r.position.ticker,image:r.position.image,mcapUsd:r.position.mcapUsd,mcapSol:r.position.mcapSol,marketCapSol:r.position.mcapSol,valueSol:s,valueUsd:s*solP,amount:0,holdPct:0,pnlSol:0,pnlPct:0,pending:true,pendingSince:Date.now()},...prev]});sHeld(prev=>new Set([...prev,ca]))}const rb=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){sPos(prev=>{const pending=prev.filter(p=>p.pending&&p.pendingSince&&!d.positions.some(dp=>dp.mint===p.mint)&&(Date.now()-p.pendingSince)<30000);return[...d.positions,...pending]});sHeld(new Set([...d.positions.map(p=>p.mint),...(d.positions.some(p2=>p2.mint===ca)?[]:[ca])]));if(d.positions.some(p=>p.mint===ca))return}}catch{}if(n<6)setTimeout(()=>rb(n+1),(n+1)*2000)};setTimeout(()=>rb(0),3000);setTimeout(()=>{sPos(prev=>prev.map(p=>p.mint===ca&&p.pending&&(Date.now()-(p.pendingSince||0))>=30000?{...p,pending:false,pendingExpired:true}:p))},32000);return r.signature}throw new Error(r.error||"Failed")};
+const quickSell=async(ca,pct)=>{if(!user?.pubkey)throw new Error("Connect wallet");const p=window?.phantom?.solana||window?.solana;if(!p?.isPhantom||!p?.isConnected||!p?.publicKey)throw new Error("Sign in with Phantom first");if(!await ensurePhantom())throw new Error("Wallet disconnected");let lastErr="";for(let attempt=0;attempt<2;attempt++){try{const r=await a.qs(user.pubkey,ca,pct);if(r.error&&!r.signature)throw new Error(r.error);if(!r.signature)throw new Error("No signature returned");if(pct>=100){sPos(prev=>prev.map(p=>p.mint===ca?{...p,selling:true}:p));sHeld(prev=>{const n=new Set(prev);n.delete(ca);return n})}else{sPos(prev=>prev.map(p=>p.mint===ca?{...p,valueSol:p.valueSol?(p.valueSol*(100-pct)/100):p.valueSol,valueUsd:p.valueUsd?(p.valueUsd*(100-pct)/100):p.valueUsd,partialSell:true}:p))}const refreshPos=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)));return}}catch{}if(n<4)setTimeout(()=>refreshPos(n+1),(n+1)*2500)};setTimeout(()=>refreshPos(0),3000);return r.signature}catch(e){lastErr=e.message;if(attempt===0)await new Promise(r=>setTimeout(r,1500))}}throw new Error(lastErr||"Sell failed")};
 
 if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHeight:"100dvh",background:T.bg,fontFamily:M,overflow:"auto"}}>
 {/* ═══ HERO ═══ */}
@@ -949,7 +950,7 @@ const hub={x:cx-nw/2,y:t2y};
 const rugd={x:cx-nw/2+t2sp,y:t2y};
 /* Tier 3: outputs (4 across, properly margined so right cards don't clip) */
 const outY=mb?135:135;
-const outMargin=mb?15:40;/* generous margin on each side */
+const outMargin=mb?20:50;/* generous margin on each side — keeps all cards visible */
 const outSpan=W-2*outMargin-nw;/* distributable space for card left edges */
 const outGap=outSpan/3;
 const outStart=outMargin;
@@ -1001,8 +1002,7 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 <radialGradient id="hubGlow" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="#9945FF" stopOpacity=".15"/><stop offset="50%" stopColor="#14F195" stopOpacity=".08"/><stop offset="100%" stopColor="transparent" stopOpacity="0"/></radialGradient>
 </defs>
 
-{/* ── PUMPFUN PILL above PumpPortal ── */}
-<image href="/pumpfun-pill.svg" x={nc(pump).x-10} y={pump.y-24} width="20" height="20" opacity=".85"/>
+{/* ── PUMPFUN PILL inside PumpPortal card (left of text) ── */}
 
 {/* ── TIER LABELS ── */}
 <text x="6" y={pump.y+nh/2+1} fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".5">INPUT</text>
@@ -1031,8 +1031,8 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 <path d={`M${nt(learner).x} ${nt(learner).y} C${nt(learner).x-15} ${nt(learner).y-30},${nb(score).x-25} ${nb(score).y+25},${nb(score).x} ${nb(score).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* GradWatch → Hub: straight up */}
 <path d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
-{/* Patterns → Rug Detect: right side loop */}
-<path d={`M${nt(patterns).x} ${nt(patterns).y} C${nt(patterns).x+15} ${nt(patterns).y-30},${nb(rugd).x+25} ${nb(rugd).y+25},${nb(rugd).x} ${nb(rugd).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+{/* Patterns → Rug Detect: right side loop — wide radius to avoid RUG card */}
+<path d={`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+45} ${nr(patterns).y},${nr(rugd).x+45} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* APE → Learner: straight down */}
 <path d={bezier(nb(ape),nt(learner))} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* WATCH → GradWatch: straight down */}
@@ -1100,14 +1100,14 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 </>}
 {/* Patterns → Rug Detect (pattern memory improves detection) */}
 {/* Patterns → RugDetect (route along right edge) */}
-{hasPatterns&&(()=>{const p=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+20} ${nr(patterns).y},${nr(rugd).x+20} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;return<>
+{hasPatterns&&(()=>{const p=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+45} ${nr(patterns).y},${nr(rugd).x+45} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;return<>
 <path d={p} fill="none" stroke={T.or} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
 <circle r="1.5" fill={T.or} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.2s" repeatCount="indefinite" path={p}/></circle>
 </>})()}
 
 {/* ── PROCESS NODES (Tier 1 + 2) ── */}
 {[
-{n:pump,label:"PumpPortal",sub:"WS Feed",c:T.cy,v:engineState.pool?.recent5m||0,active:modActive("pumpportal"),ico:"P"},
+{n:pump,label:"PumpPortal",sub:"WS Feed",c:T.cy,v:engineState.pool?.recent5m||0,active:modActive("pumpportal"),ico:"P",pillImg:true},
 {n:scan,label:"Scanner",sub:"Filter",c:T.pu,v:engineState.pool?.active||0,active:modActive("scorer"),ico:"S"},
 {n:score,label:"Scorer",sub:"Velocity",c:T.pu,v:total,active:modActive("scorer"),ico:"V"},
 {n:social,label:"Social",sub:"Signals",c:T.or,v:Math.round(fh.socialSignals*100)+"%",active:fh.socialSignals>.05?1:0,ico:"W"},
@@ -1117,15 +1117,15 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+6} fill="url(#hubGlow)"/>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+2} fill="none" stroke="url(#solGrad)" strokeWidth="1.5" opacity=".5" style={{animation:"gp 2s infinite"}}/>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR-1} fill={T.bg} stroke="url(#solGrad)" strokeWidth="2"/>
-{/* Bondli logo inside brain */}
-<image href="/bondli-logo.svg" x={nc(nd.n).x-8} y={nc(nd.n).y-12} width="16" height="14" opacity=".7"/>
-<text x={nc(nd.n).x} y={nc(nd.n).y+5} textAnchor="middle" fill="url(#solGrad)" fontSize={mb?"6":"8"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{nd.label}</text>
+{/* Bondli logo at top of brain circle */}
+<image href="/bondli-logo.svg" x={nc(nd.n).x-7} y={nc(nd.n).y-hubR+1} width="14" height="12" opacity=".8"/>
+<text x={nc(nd.n).x} y={nc(nd.n).y+4} textAnchor="middle" fill="url(#solGrad)" fontSize={mb?"6":"8"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{nd.label}</text>
 <text x={nc(nd.n).x} y={nc(nd.n).y+12} textAnchor="middle" fill={T.dm} fontSize={mb?"4":"5"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y-hubR+2} r="2.5" fill="#14F195" opacity=".9"><animate attributeName="opacity" values="1;.4;1" dur="1.5s" repeatCount="indefinite"/></circle>
 </g>:<g key={"n"+i}>
 {nd.active>.5&&<rect x={nd.n.x-2} y={nd.n.y-2} width={nw+4} height={nh+4} rx="7" fill={nd.c} opacity=".08" filter="url(#nglow)"/>}
 <rect x={nd.n.x} y={nd.n.y} width={nw} height={nh} rx="5" fill={T.bg} stroke={nd.active>.5?nd.c:T.ft} strokeWidth="1" opacity={nd.active>.5?1:.5}/>
-<text x={nd.n.x+5} y={nd.n.y+6} fontSize="5" fill={nd.c} opacity=".6">{nd.ico}</text>
+{nd.pillImg?<image href="/pumpfun-pill.svg" x={nd.n.x+2} y={nd.n.y+2} width={nh-4} height={nh-4} opacity=".8"/>:<text x={nd.n.x+5} y={nd.n.y+6} fontSize="5" fill={nd.c} opacity=".6">{nd.ico}</text>}
 <circle cx={nd.n.x+nw-4} cy={nd.n.y+4} r="2" fill={nd.active>.5?T.gn:T.ft} opacity={nd.active>.5?1:.3}><animate attributeName="opacity" values={nd.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
 <text x={nd.n.x+nw/2} y={nd.n.y+nh/2-1} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{nd.label}</text>
 <text x={nd.n.x+nw/2} y={nd.n.y+nh/2+6} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
@@ -1189,9 +1189,10 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 </div>
 </>}
 
-{/* Live ML Behavior — Pro/VIP only */}
-{(user?.tier==="pro"||user?.tier==="vip"||user?.whitelisted)&&intelData?.scorer?.topFeatures?.length>0&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?8:12,marginTop:6}}>
-<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:11,fontWeight:800}}>Model Behavior</span><span style={{fontSize:7,color:T.dm}}>live feature weights</span></div>
+{/* Live ML Behavior — Pro/VIP only — collapsible */}
+{(user?.tier==="pro"||user?.tier==="vip"||user?.whitelisted)&&intelData?.scorer?.topFeatures?.length>0&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,marginTop:6}}>
+<div onClick={()=>sShowModel(!showModel)} style={{display:"flex",alignItems:"center",gap:6,padding:mb?"8px":"12px",cursor:"pointer"}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:11,fontWeight:800}}>Model Behavior</span><span style={{fontSize:7,color:T.dm}}>live feature weights</span><span style={{marginLeft:"auto",fontSize:10,color:T.ft}}>{showModel?"▾":"▸"}</span></div>
+{showModel&&<div style={{padding:mb?"0 8px 8px":"0 12px 12px"}}>
 {/* Feature weight bars */}
 <div style={{display:"grid",gap:4}}>
 {intelData.scorer.topFeatures.slice(0,8).map((f,i)=>{const maxW=parseFloat(intelData.scorer.topFeatures[0]?.weight)||2.5;const pct=Math.min(100,Math.round((parseFloat(f.weight)/maxW)*100));const featureNames={oc_buyVelocity5m:"Buy Velocity (5m)",tp_stickiness:"Meme Stickiness",oc_uniqueBuyers5m:"Unique Buyers (5m)",k_herdSignal:"Herd Signal",tp_lawOfFew:"Law of Few",k_cognitiveEase:"Name Ease",oc_volumeSol5m:"Volume SOL (5m)",so_hasTwitter:"Has Twitter",ch_healthScore:"Chart Health",ch_pumpDump:"Pump & Dump",rg_devSellSpeed:"Dev Sell Speed",rg_mcapDropRate:"MC Drop Rate",rg_buyerRetention:"Buyer Retention",k_anchoring:"Anchoring Bias",k_availability:"Availability Heuristic",k_lossAversion:"Loss Aversion (2x)",k_peakEnd:"Peak-End Rule",k_prospectTheory:"Prospect Theory",gl_thinSlice:"Thin-Slice (30s)",gl_outlier:"Outlier Detection",gl_10kMaturity:"Pattern Maturity",gl_accumAdvantage:"Early Mover Cluster",tp_context:"Power of Context",cs_cascadeOnset:"Cascade Onset",cs_cascadeStrength:"Cascade Strength",cs_reflexivity:"Reflexivity Loop",cs_curveVelocity:"Curve Velocity",cs_attentionShare:"Attention Share",sir_r0:"Viral R0",sir_infectRate:"Infection Rate",sir_recoveryRate:"Recovery Rate",gf_curveProgress:"Curve Progress",gf_frontrunSignal:"Grad Frontrun",apd_attentionGrowth:"Attention Growth",apd_priceFlat:"Price Flat",apd_divergence:"Attn-Price Diverge"};return<div key={f.feature} style={{display:"flex",alignItems:"center",gap:6}}>
@@ -1209,6 +1210,7 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 <span style={{fontSize:5,color:T.ft}}>{bucket}</span>
 </div>})}
 </div></div>}
+</div>}
 </div>}
 
 {/* Auto-Ape — Don Norman redesign: defaults that work, details on demand */}
@@ -1771,7 +1773,6 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 <div style={{fontSize:8,color:T.dm,marginBottom:8}}>Platform owner tools. Visible only to whitelisted wallets.</div>
 <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
 <button onClick={async()=>{try{const r=await fetch(API+"/api/admin/stats",{headers:{"x-admin-secret":"bondli_default"}});const d=await r.json();if(d.ok)toast(`Users: ${d.totalUsers} | Active: ${d.activeUsers} | Free: ${d.tiers?.free} Pro: ${d.tiers?.pro} VIP: ${d.tiers?.vip} | Sessions: ${d.activeSessions}`,"success");else toast(d.error||"Failed","error")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 12px",background:T.yl+"08",border:"1px solid "+T.yl+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.yl,cursor:"pointer"}}>Platform Stats</button>
-<button onClick={async()=>{try{const r=await fetch(API+"/api/admin/users",{headers:{"x-admin-secret":"bondli_default"}});const d=await r.json();toast(`${d.users?.length||0} users loaded`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 12px",background:T.pu+"08",border:"1px solid "+T.pu+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.pu,cursor:"pointer"}}>User List</button>
 <button onClick={async()=>{try{const r=await fetch(API+"/api/sol-price");const d=await r.json();toast(`SOL: $${d.price?.toFixed(2)||"??"}`,"success")}catch(e){toast("Add /api/sol-price route","error")}}} style={{padding:"6px 12px",background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.gn,cursor:"pointer"}}>SOL Price</button>
 </div></div>}
 </div></EB>}
@@ -1790,5 +1791,5 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 <div style={{display:"flex"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim}].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"8px 0 4px",background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"pointer"}}><t.ic s={20} c={ac?T.gn:T.ft}/><span style={{fontSize:11,fontWeight:ac?700:400,color:ac?T.gn:T.ft}}>{t.l}</span></button>})}</div>
 <div style={{textAlign:"center",padding:"2px 0 4px"}}><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:3,color:T.dm,textDecoration:"none",fontSize:10}}><IC.tw s={10} c={T.dm}/>@Bondlifun</a></div>
 </div>}
-{!mb&&<footer style={{padding:"8px 16px",borderTop:"1px solid "+T.bd,marginTop:12,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:T.ft}}><span>BONDLI v4</span><div style={{display:"flex",alignItems:"center",gap:8}}><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"flex",alignItems:"center",gap:4,color:T.dm,textDecoration:"none",fontSize:12}}><IC.tw s={14} c={T.dm}/>@Bondlifun</a><span>{launched?"ACTIVE":"IDLE"}</span></div></footer>}
+{!mb&&<footer style={{padding:"8px 16px",borderTop:"1px solid "+T.bd,marginTop:12,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:T.ft}}><span>BONDLI v4</span><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"flex",alignItems:"center",gap:4,color:T.dm,textDecoration:"none",fontSize:13,fontWeight:700}}><IC.tw s={16} c={T.dm}/>@Bondlifun</a><span>{launched?"ACTIVE":"IDLE"}</span></footer>}
 </div></TC.Provider>}

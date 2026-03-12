@@ -1356,12 +1356,22 @@ function extractQuickFeatures(t) {
 const chartSnapshotCache = []; // in-memory fallback
 const MAX_CHART_SNAPSHOTS = 500;
 
+const chartSnapshotSeen = new Set(); // deduplicate by CA
 async function storeChartSnapshot(ca, token, outcome) {
+  // Deduplicate — only store one snapshot per contract address
+  if (chartSnapshotSeen.has(ca)) return;
+  chartSnapshotSeen.add(ca);
+  if (chartSnapshotSeen.size > MAX_CHART_SNAPSHOTS * 2) {
+    const arr = [...chartSnapshotSeen];
+    arr.splice(0, arr.length - MAX_CHART_SNAPSHOTS);
+    chartSnapshotSeen.clear();
+    arr.forEach(c => chartSnapshotSeen.add(c));
+  }
   const snapshot = {
     ca,
     name: token.name || "",
     ticker: token.ticker || "",
-    graduated: true,
+    graduated: !!outcome.graduated,
     spark: token.spark || [],
     peakMcx: outcome.peakMcx || 1,
     rugged: outcome.rugged || false,
@@ -1407,7 +1417,10 @@ function classifyChartPattern(spark, outcome) {
 
   if (outcome.rugged || outcome.devDumped) return "rug";
   // Smooth grind: gradual up with almost no dips — classic fake chart / self-bought rug
-  if (spark.length >= 8 && upPct > 0.82 && maxConsecutiveUp >= 5 && end > start * 1.3 && dips <= 2) return "smooth_grind_rug";
+  // Catch aggressive: constant velocity up (linear pump) is the #1 slow rug pattern
+  if (spark.length >= 6 && upPct > 0.78 && maxConsecutiveUp >= 4 && end > start * 1.2 && dips <= 3) return "smooth_grind_rug";
+  // Extra catch: very linear pump — nearly every candle up, minimal variance
+  if (spark.length >= 8 && upPct > 0.85 && end > start * 1.5) return "smooth_grind_rug";
   if (multiple > 8 && peakPct < 0.3) return "sniper_spike";
   // Staircase: gradual up with periodic small dips — can be legit or manipulated
   if (spark.length >= 10 && upPct > 0.7 && upPct <= 0.82 && dips >= 2 && dips <= spark.length * 0.2) return "staircase";
@@ -3858,7 +3871,7 @@ function startAutoTrader(wallet, settings) {
           rugPenalty += qf._rg_earlyDump > 0.2 ? 5 : 0;              // early selling
           rugPenalty += sellVol > vol * 0.4 ? 5 : 0;                  // sell pressure
           rugPenalty += qf._rg_pumpDump > 0.3 ? 8 : 0;               // pump-dump pattern
-          rugPenalty += qf.ch_smoothGrind > 0.35 ? Math.round(qf.ch_smoothGrind * 10) : 0; // smooth grind
+          rugPenalty += qf.ch_smoothGrind > 0.25 ? Math.round(qf.ch_smoothGrind * 18) : 0; // smooth grind — constant velocity up = slow rug, penalize hard
           rugPenalty += qf._rg_zeroSellFlag > 0.4 ? Math.round(qf._rg_zeroSellFlag * 15) : 0; // zero sells
           rugPenalty += qf._rg_buySellImbalance > 0.4 ? Math.round(qf._rg_buySellImbalance * 10) : 0; // buy imbalance
           rugPenalty += qf.ch_staircaseScore > 0.3 ? Math.round(qf.ch_staircaseScore * 12) : 0; // staircase
