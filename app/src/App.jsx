@@ -269,7 +269,7 @@ s.bondProb=calcBondProb(s.mc,mom,buyP);s.ph=phase;
 if(phase==="accumulate"&&f%6===0&&s.spent<budget*.6){const amt=budget*.02+Math.random()*budget*.025;s.buys.push({f,p:s.p,amt});s.spent+=budget*.03;s.sig="BUY"}
 else if(phase==="hold"){s.sig="HOLD";if(f%18===0)s.noise.push({f,sell:Math.random()>.45})}
 else if(phase==="distribute"&&f%8===0){s.sells.push({f,p:s.p,amt:budget*.04});s.back+=budget*.04*(1.1+Math.random()*.5);s.sig=f>300?"EXIT":"SELL"}
-else if(phase==="sweep"){s.sig="SWEEP";if(f%4===0&&s.back<s.spent*1.3){s.sells.push({f,p:s.p,amt:budget*.05});s.back+=budget*.05*.7}}
+else if(phase==="sweep"){s.sig="SWEEP";if(f%4===0&&s.back<s.spent){s.sells.push({f,p:s.p,amt:budget*.05});s.back+=budget*.05*.7}}
 else if(phase==="complete"){s.sig="DONE";s.bonded=s.mc>=gradMc;
 // Compute final analytics
 if(s.buys.length>0)s.avgEntry=s.buys.reduce((a,b)=>a+b.p,0)/s.buys.length;
@@ -448,7 +448,7 @@ const tierColor=user?.whitelisted?T.yl:user?.tier==="pro"?T.pu:T.gn;
 const tierLabel=user?.whitelisted?"VIP":user?.tier==="pro"?"PRO":user?.demo?"DEMO":"FREE";
 const isOwner=user?.whitelisted||user?.pubkey==="4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
 const isApe=!!eCA;const pv=dbp(sol,isApe);const nw=wc(sol);
-const canLaunch=(trW||isApe)&&(eCA||(tn&&tkr))&&sol>=0.2&&trB>=sol;
+const canLaunch=(trW||isApe)&&(eCA||tkr)&&sol>=0.2&&trB>=sol;
 const applyPreset=p=>{sSol(p.sol);sSn(p.snc);sSl(p.slip);sDur(p.dur);sJt(p.jt)};
 const connect=async()=>{try{const p=window?.phantom?.solana?.isPhantom?window.phantom.solana:window?.solana?.isPhantom?window.solana:null;if(!p){if(/iPhone|iPad|Android/i.test(navigator.userAgent)){window.location.href="https://phantom.app/ul/browse/"+encodeURIComponent(window.location.href);return}toast("Install Phantom","error");return}const r=await p.connect();const pk=r.publicKey.toString();sU({pubkey:pk,tier:"free",demo:false});a.chk(pk).then(d=>{if(d.tier)sU(u=>({...u,whitelisted:!!d.whitelisted,paid:!!d.paid,tier:d.tier}))}).catch(()=>{})}catch(e){toast(e.code===4001?"Rejected":"Failed","error")}};
 
