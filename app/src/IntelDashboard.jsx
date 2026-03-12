@@ -144,7 +144,7 @@ function LiveScoringDemo() {
               <div style={{ fontSize: 14, fontWeight: 700, color: COLORS.tx, fontFamily: M }}>{t.name}</div>
               <div style={{ display: "flex", gap: 4, marginTop: 2 }}>
                 <span style={{ fontSize: 11, color: COLORS.ft }}>{t.ca}</span>
-                {t.graduated && <span style={{ fontSize: 10, padding: "0 3px", borderRadius: 2, background: COLORS.gn + "22", color: COLORS.gn, fontWeight: 800 }}>BONDED</span>}
+                {t.graduated && <span style={{ fontSize: 10, padding: "0 3px", borderRadius: 2, background: COLORS.gn + "22", color: COLORS.gn, fontWeight: 800 }}>GRADUATED</span>}
                 {t.rugRisk > 50 && <span style={{ fontSize: 10, padding: "0 3px", borderRadius: 2, background: COLORS.rd + "22", color: COLORS.rd, fontWeight: 800 }}>RUG RISK</span>}
                 {t.similar > 0 && <span style={{ fontSize: 10, color: COLORS.pu }}>~{t.similar} similar</span>}
               </div>
