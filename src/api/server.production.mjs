@@ -205,6 +205,106 @@ async function enrichWalletAges(token) {
   return { walletAgeScore, whaleBullish, freshRatio, whaleBuys };
 }
 
+// ═══ DEV CREDIBILITY ENRICHMENT — name uniqueness + dev SOL + launch history ═══
+// Checks DexScreener for previous tokens with same name, dev wallet SOL balance, and
+// how many tokens the dev has created. High-value signal: fresh name + funded dev + first launch.
+const devCredCache = new Map(); // devWallet → { devSolBalance, devLaunchCount, ts }
+const nameCheckCache = new Map(); // name → { count, rugged, ts }
+
+async function enrichDevCredibility(token) {
+  const devW = token.devWallet || "";
+  const name = (token.name || "").trim().toLowerCase();
+  if (!devW || !name) return null;
+
+  const result = {
+    nameUnique: true,
+    namePrevLaunches: 0,
+    namePrevRugged: false,
+    devSolBalance: 0,
+    devLaunchCount: -1, // -1 = unknown
+  };
+
+  // 1. Check DexScreener for previous tokens with same name
+  const nameCached = nameCheckCache.get(name);
+  if (nameCached && Date.now() - nameCached.ts < 600000) { // 10 min cache
+    result.nameUnique = nameCached.count === 0;
+    result.namePrevLaunches = nameCached.count;
+    result.namePrevRugged = nameCached.rugged;
+  } else {
+    try {
+      const r = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(name)}`, {
+        signal: AbortSignal.timeout(6000),
+      });
+      if (r.ok) {
+        const d = await r.json();
+        const pairs = d?.pairs || [];
+        // Count Solana pairs with matching base token name (case-insensitive)
+        const matches = pairs.filter(p =>
+          p.chainId === "solana" &&
+          p.baseToken?.name?.toLowerCase() === name &&
+          p.baseToken?.address !== token.ca // exclude self
+        );
+        result.namePrevLaunches = matches.length;
+        result.nameUnique = matches.length === 0;
+        // Check if any previous token with same name rugged (liquidity < $500 or MC crashed >90%)
+        result.namePrevRugged = matches.some(p => {
+          const liq = p.liquidity?.usd || 0;
+          const mc = p.marketCap || p.fdv || 0;
+          const priceChange24h = p.priceChange?.h24 || 0;
+          return liq < 500 || mc < 1000 || priceChange24h < -80;
+        });
+        nameCheckCache.set(name, { count: matches.length, rugged: result.namePrevRugged, ts: Date.now() });
+      }
+    } catch (e) {
+      console.log(`[DEV-CRED] DexScreener name check failed for "${name}": ${e.message}`);
+    }
+  }
+
+  // 2. Check dev wallet SOL balance
+  const devCached = devCredCache.get(devW);
+  if (devCached && Date.now() - devCached.ts < 300000) { // 5 min cache
+    result.devSolBalance = devCached.devSolBalance;
+    result.devLaunchCount = devCached.devLaunchCount;
+  } else {
+    try {
+      const balance = await connection.getBalance(new PublicKey(devW));
+      result.devSolBalance = +(balance / LAMPORTS_PER_SOL).toFixed(3);
+    } catch (e) {
+      console.log(`[DEV-CRED] Balance check failed for ${devW.slice(0, 8)}: ${e.message}`);
+    }
+
+    // 3. Check dev's token creation history via pump.fun
+    // Count how many tokens this dev wallet has created recently
+    try {
+      const r = await fetch(`https://frontend-api-v3.pump.fun/coins/user-created-coins/${devW}?offset=0&limit=10&includeNsfw=true`, {
+        signal: AbortSignal.timeout(6000),
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+      });
+      if (r.ok) {
+        const coins = await r.json();
+        result.devLaunchCount = Array.isArray(coins) ? coins.length : 0;
+      }
+    } catch (e) {
+      console.log(`[DEV-CRED] Launch count check failed for ${devW.slice(0, 8)}: ${e.message}`);
+    }
+
+    devCredCache.set(devW, {
+      devSolBalance: result.devSolBalance,
+      devLaunchCount: result.devLaunchCount,
+      ts: Date.now(),
+    });
+  }
+
+  return result;
+}
+
+// Clean dev cred caches periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of devCredCache) { if (now - v.ts > 600000) devCredCache.delete(k); }
+  for (const [k, v] of nameCheckCache) { if (now - v.ts > 1200000) nameCheckCache.delete(k); }
+}, 300000);
+
 // Register owner wallet
 if (process.env.OWNER_WALLET) registerOwner(process.env.OWNER_WALLET);
 
@@ -1122,6 +1222,26 @@ function extractQuickFeatures(t) {
   // Combined: fresh wallets + zero sells = definite rug setup
   const freshWalletRugSignal = freshWalletRatio > 0.7 && zeroSellFlag > 0.5 ? Math.min(1, freshWalletRatio * zeroSellFlag * 1.5) : freshWalletRatio;
 
+  // ── DEV CREDIBILITY SCORE ──
+  // Fresh name (never launched before) + first-time dev + dev holding SOL = high trust
+  // Cached on token object via background enrichment (devCredData)
+  const devCred = t._devCredData || null;
+  let devCredScore = 0.5; // neutral default when no data
+  let nameUniquenessScore = 0.5; // 1 = never seen, 0 = spammed name
+  if (devCred) {
+    // Name uniqueness: 1 = first time this name, 0 = many previous tokens with same name
+    nameUniquenessScore = devCred.nameUnique ? 1.0 : Math.max(0, 1 - (devCred.namePrevLaunches || 0) * 0.25);
+    // Dev wallet scoring: SOL balance + launch count
+    const solBonus = devCred.devSolBalance >= 10 ? 1.0 : devCred.devSolBalance >= 5 ? 0.7 : devCred.devSolBalance >= 1 ? 0.4 : 0.1;
+    const launchPenalty = devCred.devLaunchCount === 0 ? 1.0 : devCred.devLaunchCount === 1 ? 0.8 : devCred.devLaunchCount <= 3 ? 0.5 : Math.max(0, 0.3 - devCred.devLaunchCount * 0.03);
+    // Combined: weight name 30%, dev balance 35%, launch count 35%
+    devCredScore = Math.min(1, nameUniquenessScore * 0.3 + solBonus * 0.35 + launchPenalty * 0.35);
+    // Perfect score: fresh name + first launch + 10+ SOL
+    if (devCred.nameUnique && devCred.devLaunchCount <= 1 && devCred.devSolBalance >= 10) devCredScore = 1.0;
+    // Previous tokens with same name that rugged = big penalty
+    if (devCred.namePrevRugged) devCredScore = Math.max(0, devCredScore - 0.4);
+  }
+
   const result = {
     // On-chain
     oc_buyVelocity5m: Math.min(1, (buys / Math.max(1, Math.min(5, ageMin))) / 20),
@@ -1165,6 +1285,12 @@ function extractQuickFeatures(t) {
     // Whale bullish: aged whale wallets buying = smart money conviction
     _whaleBullish: t._walletAgeData ? t._walletAgeData.whaleBullish : 0,
     _whaleBuys: t._walletAgeData ? t._walletAgeData.whaleBuys : [],
+    // Dev credibility: name uniqueness + dev wallet SOL + launch history
+    _devCredScore: devCredScore,
+    _nameUniqueness: nameUniquenessScore,
+    _devSolBalance: devCred?.devSolBalance || 0,
+    _devLaunchCount: devCred?.devLaunchCount ?? -1,
+    _namePrevRugged: devCred?.namePrevRugged || false,
 
     // ═══ SIR VIRAL MODEL ═══
     // R0 estimation from buyer arrival rate acceleration
@@ -3602,6 +3728,14 @@ function startAutoTrader(wallet, settings) {
             t._walletAgeChecking = false;
           }).catch(() => { t._walletAgeChecking = false; });
         }
+        // Dev credibility: name uniqueness + dev SOL balance + launch count
+        if (!t._devCredData && !t._devCredChecking && t.devWallet) {
+          t._devCredChecking = true;
+          enrichDevCredibility(t).then(data => {
+            t._devCredData = data;
+            t._devCredChecking = false;
+          }).catch(() => { t._devCredChecking = false; });
+        }
       }
 
       const hot = tokens.filter(t => {
@@ -3643,6 +3777,8 @@ function startAutoTrader(wallet, settings) {
           else if (qf.ch_flatlineSpike > 0.5 && !isVeryYoung) rugRejectReason = "flatline_spike";
           else if (qf.ch_flatlineSpike > 0.3 && qf._rg_zeroSellFlag > 0.3 && !isVeryYoung) rugRejectReason = "flatline_spike_no_sells";
           else if (qf.ch_flatlineSpike > 0.3 && qf._rg_freshWalletRatio > 0.5 && !isVeryYoung) rugRejectReason = "flatline_spike_fresh_wallets";
+          else if (qf._namePrevRugged && qf._devLaunchCount > 3) rugRejectReason = "serial_rugger";
+          else if (qf._devLaunchCount > 8) rugRejectReason = "serial_launcher";
           else if (t._artworkFlags?.includes("EXACT_DUPLICATE")) rugRejectReason = "stolen_art";
           else {
             const rugSignals = [
@@ -3825,8 +3961,16 @@ function startAutoTrader(wallet, settings) {
           walletAgePenalty = Math.round(qf._walletAgeFresh * 12);
         }
 
+        // Dev credibility bonus/penalty: fresh name + funded dev = up to +15, serial launcher = penalty
+        let devCredBonus = 0;
+        if (qf?._devCredScore != null) {
+          if (qf._devCredScore >= 0.8) devCredBonus = Math.round((qf._devCredScore - 0.5) * 30); // up to +15
+          else if (qf._devCredScore < 0.3) devCredBonus = -Math.round((0.3 - qf._devCredScore) * 25); // down to -8
+          if (qf._namePrevRugged) devCredBonus -= 10; // same name rugged before = big penalty
+        }
+
         t._apeScore = Math.max(0, Math.min(99, Math.round(
-          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus - sellPenalty - rugPenalty - artPenalty - walletAgePenalty
+          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus + devCredBonus - sellPenalty - rugPenalty - artPenalty - walletAgePenalty
         )));
 
         t._rugFlags = [
@@ -3847,12 +3991,18 @@ function startAutoTrader(wallet, settings) {
           t._artworkOriginal === false && "stolen_art",
           t._artworkFlags?.includes("SIMILAR_IMAGE") && "similar_art",
           t._artworkFlags?.includes("LOW_EFFORT_ART") && "low_effort_art",
+          qf?._namePrevRugged && "name_prev_rugged",
+          qf?._devLaunchCount > 5 && "serial_launcher",
+          qf?._nameUniqueness < 0.3 && "recycled_name",
         ].filter(Boolean);
         // Positive signals (not rug flags, but bullish indicators)
         t._bullishSignals = [
           ...(qf ? [
             qf._whaleBullish > 0.3 && `whale_bullish(${(qf._whaleBullish * 100).toFixed(0)}%)`,
             qf.rg_walletAgeScore > 0.7 && "aged_wallets",
+            qf._devCredScore >= 0.8 && `dev_credible(${Math.round(qf._devSolBalance)}sol)`,
+            qf._nameUniqueness >= 1.0 && "fresh_name",
+            qf._devLaunchCount === 0 && "first_launch",
           ] : []),
           dyn?.trend === "rocket" && "rocket_trend",
           dyn?.trend === "rising" && "rising_trend",
