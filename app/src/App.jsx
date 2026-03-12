@@ -822,115 +822,156 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 </div>
 <div style={{fontSize:11,color:T.ft,textAlign:"center"}}>{intelData?`${intelData.scorer?.trainCount||0} tokens scored · SOL $${intelData.solPrice?.toFixed(0)||"?"} · uptime ${intelData.uptime||"—"}`:"Connecting to intel engine..."}</div>
 
-{/* ═══ ORACLE ENGINE VISUALIZATION ═══ */}
-{engineState&&<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T.sf}88,${T.bg})`,border:"1px solid "+T.pu+"22",borderRadius:10,padding:mb?10:14,position:"relative",overflow:"hidden"}}>
-{/* Animated background grid */}
-<div style={{position:"absolute",inset:0,opacity:.04,backgroundImage:`linear-gradient(${T.pu} 1px,transparent 1px),linear-gradient(90deg,${T.pu} 1px,transparent 1px)`,backgroundSize:"24px 24px",animation:"scan 20s linear infinite"}}/>
-{/* Glow accent */}
-<div style={{position:"absolute",top:-40,right:-40,width:120,height:120,borderRadius:"50%",background:`radial-gradient(circle,${T.pu}15,transparent 70%)`,filter:"blur(20px)"}}/>
-<div style={{position:"absolute",bottom:-30,left:-30,width:100,height:100,borderRadius:"50%",background:`radial-gradient(circle,${T.cy}10,transparent 70%)`,filter:"blur(15px)"}}/>
+{/* ═══ ORACLE ENGINE — CIRCUIT WIRE DIAGRAM ═══ */}
+{engineState&&(()=>{
+const d=engineState.decisions||{ape:0,watch:0,skip:0,rug:0};
+const total=d.ape+d.watch+d.skip+d.rug||1;
+const topSignal=(engineState.signals||[])[0]?.signal||"SKIP";
+const fh=engineState.featureHeat||{};
+/* Which output wires are "hot" (have flow) */
+const hot={ape:d.ape>0,watch:d.watch>0,skip:d.skip>0,rug:d.rug>0};
+/* Wire colors per output */
+const wc={ape:T.gn,watch:T.yl,skip:T.ft,rug:T.rd};
+/* Determine which path is most active right now for the main pulse */
+const dominant=d.ape>=d.watch&&d.ape>=d.skip?"ape":d.watch>=d.skip?"watch":d.skip>d.rug?"skip":"rug";
+const domC=wc[dominant];
+/* Module activity levels 0-1 for glow intensity */
+const mods=engineState.modules||[];
+const modActive=id=>{const m=mods.find(x=>x.id===id);return m?.status==="active"?1:m?.status==="reconnecting"?.4:0};
+/* SVG dimensions */
+const W=mb?340:520;const H=mb?260:220;
+/* Node positions — layout: left-to-right circuit */
+const nx={pump:mb?30:40,scan:mb?105:155,score:mb?180:270,rugd:mb?180:270,social:mb?105:155,hub:mb?235:350,ape:mb?300:460,watch:mb?300:460,skip:mb?300:460,rug:mb?300:460};
+const ny={pump:mb?50:55,scan:mb?50:55,score:mb?50:55,rugd:mb?140:140,social:mb?140:140,hub:mb?95:98,ape:mb?30:28,watch:mb?75:68,skip:mb?140:128,rug:mb?185:168};
+const nw=mb?48:60;const nh=mb?24:22;
+return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T.sf}66,${T.bg})`,border:"1px solid "+T.pu+"22",borderRadius:10,padding:mb?"8px 4px":"12px 10px",position:"relative",overflow:"hidden"}}>
+{/* PCB background pattern */}
+<div style={{position:"absolute",inset:0,opacity:.03,backgroundImage:`radial-gradient(${T.cy} 1px,transparent 1px)`,backgroundSize:"16px 16px"}}/>
+{/* Corner glows */}
+<div style={{position:"absolute",top:-30,left:-30,width:100,height:100,borderRadius:"50%",background:`radial-gradient(circle,${domC}12,transparent 70%)`,filter:"blur(20px)",transition:"background 2s"}}/>
+<div style={{position:"absolute",bottom:-20,right:-20,width:80,height:80,borderRadius:"50%",background:`radial-gradient(circle,${T.pu}10,transparent 70%)`,filter:"blur(15px)"}}/>
 
 {/* Header */}
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,position:"relative",zIndex:1}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6,position:"relative",zIndex:2}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
-<div style={{width:8,height:8,borderRadius:"50%",background:T.cy,boxShadow:`0 0 8px ${T.cy}66`,animation:"gp 1.5s infinite"}}/>
-<span style={{fontSize:11,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:`linear-gradient(90deg,${T.cy},${T.pu})`,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Oracle Engine</span>
+<div style={{width:7,height:7,borderRadius:"50%",background:T.cy,boxShadow:`0 0 8px ${T.cy}66`,animation:"gp 1.5s infinite"}}/>
+<span style={{fontSize:10,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:`linear-gradient(90deg,${T.cy},${T.pu})`,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Oracle Engine</span>
 </div>
-<div style={{display:"flex",alignItems:"center",gap:8,fontSize:8,color:T.ft}}>
-<span style={{color:T.gn}}>{engineState.flow?.totalBuys||0} buys</span>
-<span style={{color:T.rd}}>{engineState.flow?.totalSells||0} sells</span>
-<span style={{color:T.yl}}>{engineState.flow?.totalVol||0} SOL vol</span>
+<div style={{display:"flex",alignItems:"center",gap:6,fontSize:7,color:T.ft}}>
+<span style={{color:T.gn}}>{engineState.flow?.totalBuys||0}<span style={{color:T.ft}}> buys</span></span>
+<span style={{color:T.rd}}>{engineState.flow?.totalSells||0}<span style={{color:T.ft}}> sells</span></span>
+<span style={{color:T.yl}}>{engineState.flow?.totalVol||0}<span style={{color:T.ft}}> SOL</span></span>
+<span style={{color:T.dm}}>|</span>
+<span style={{color:T.dm}}>{engineState.pool?.total||0} tokens</span>
 </div>
-</div>
-
-{/* Module status bar */}
-<div style={{display:"flex",gap:3,marginBottom:8,position:"relative",zIndex:1,flexWrap:"wrap"}}>
-{(engineState.modules||[]).map(m=>{const sc=m.status==="active"?T.gn:m.status==="reconnecting"?T.yl:T.ft;return<div key={m.id} style={{flex:mb?"1 1 calc(33% - 3px)":"1",background:T.bg,border:"1px solid "+sc+"22",borderRadius:5,padding:"4px 5px",position:"relative",overflow:"hidden"}}>
-<div style={{position:"absolute",bottom:0,left:0,width:m.status==="active"?"100%":"0%",height:2,background:`linear-gradient(90deg,${sc}44,${sc})`,transition:"width 1s"}}/>
-<div style={{fontSize:7,fontWeight:800,color:sc,textTransform:"uppercase",letterSpacing:.5,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{m.name}</div>
-<div style={{display:"flex",alignItems:"baseline",gap:2,marginTop:1}}>
-<span style={{fontSize:12,fontWeight:900,color:T.tx}}>{m.throughput}</span>
-<span style={{fontSize:6,color:sc}}>{m.status==="active"?"LIVE":m.status}</span>
-</div>
-</div>})}
 </div>
 
-{/* Signal flow + Decision matrix side by side */}
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:6,position:"relative",zIndex:1}}>
+{/* ═══ THE WIRE DIAGRAM ═══ */}
+<svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{position:"relative",zIndex:1,display:"block"}}>
+<defs>
+{/* Electricity pulse animation — a bright dot that travels along a path */}
+{["ape","watch","skip","rug"].map(k=>hot[k]&&<g key={k+"defs"}>
+<linearGradient id={"wg_"+k} x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stopColor={wc[k]} stopOpacity="0"/><stop offset="50%" stopColor={wc[k]} stopOpacity="1"/><stop offset="100%" stopColor={wc[k]} stopOpacity="0"/></linearGradient>
+</g>)}
+{/* Glow filter */}
+<filter id="wglow"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<filter id="nglow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
 
-{/* LEFT: Signal flow — animated data stream */}
-<div style={{background:T.bg+"cc",border:"1px solid "+T.bd,borderRadius:6,padding:8,position:"relative",overflow:"hidden"}}>
-<div style={{fontSize:8,fontWeight:800,color:T.cy,textTransform:"uppercase",letterSpacing:1,marginBottom:6,display:"flex",alignItems:"center",gap:4}}>
-<svg width={10} height={10} viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="none" stroke={T.cy} strokeWidth="1" opacity=".4"/><circle cx="5" cy="5" r="2" fill={T.cy}/></svg>
-Signal Flow
-<span style={{marginLeft:"auto",fontSize:7,color:T.ft}}>{(engineState.signals||[]).length} active</span>
-</div>
-{(engineState.signals||[]).slice(0,8).map((s,i)=>{const sc=s.signal==="APE"?T.gn:s.signal==="WATCH"?T.yl:T.ft;const w=Math.min(100,s.score);return<div key={s.ca+i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px 0",borderBottom:i<7?"1px solid "+T.bd+"33":"none",animation:`fu ${.15*(i+1)}s ease both`}}>
-<div style={{width:4,height:4,borderRadius:"50%",background:sc,boxShadow:s.signal==="APE"?`0 0 4px ${T.gn}66`:"none",flexShrink:0}}/>
-<span style={{fontSize:8,color:T.tx,fontWeight:700,width:mb?50:70,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{s.name}</span>
-<div style={{flex:1,height:4,borderRadius:2,background:T.sf,overflow:"hidden"}}>
-<div style={{width:w+"%",height:"100%",borderRadius:2,background:`linear-gradient(90deg,${sc}44,${sc})`,transition:"width .8s ease"}}/>
-</div>
-<span style={{fontSize:9,fontWeight:900,color:sc,width:18,textAlign:"right"}}>{s.score}</span>
-<span style={{fontSize:6,fontWeight:800,color:sc,padding:"1px 3px",borderRadius:2,background:sc+"15",letterSpacing:.5}}>{s.signal}</span>
-</div>})}
-{(engineState.signals||[]).length===0&&<div style={{fontSize:9,color:T.ft,textAlign:"center",padding:12}}>Waiting for signals...</div>}
-</div>
+{/* ── WIRE PATHS (background dim wires) ── */}
+{/* Pump → Scanner */}
+<path d={`M${nx.pump+nw} ${ny.pump+nh/2} L${nx.scan} ${ny.scan+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>
+{/* Scanner → Scorer */}
+<path d={`M${nx.scan+nw} ${ny.scan+nh/2} L${nx.score} ${ny.score+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>
+{/* Social → Hub */}
+<path d={`M${nx.social+nw} ${ny.social+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>
+{/* Rug Detector → Hub */}
+<path d={`M${nx.rugd+nw} ${ny.rugd+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>
+{/* Scorer → Hub */}
+<path d={`M${nx.score+nw} ${ny.score+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>
+{/* Hub → outputs */}
+{["ape","watch","skip","rug"].map(k=><path key={"w_"+k} d={`M${nx.hub+nw} ${ny.hub+nh/2} L${nx[k]} ${ny[k]+nh/2}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".15"/>)}
 
-{/* RIGHT: Feature heatmap + Decision donut */}
-<div style={{display:"flex",flexDirection:"column",gap:6}}>
+{/* ── LIT WIRES (active paths with electricity) ── */}
+{/* Input wires — always lit when online */}
+{modActive("pumpportal")>0&&<>
+<path d={`M${nx.pump+nw} ${ny.pump+nh/2} L${nx.scan} ${ny.scan+nh/2}`} fill="none" stroke={T.cy} strokeWidth="1.5" opacity=".6" filter="url(#wglow)"/>
+<circle r="3" fill={T.cy} filter="url(#wglow)"><animateMotion dur="1.2s" repeatCount="indefinite" path={`M${nx.pump+nw} ${ny.pump+nh/2} L${nx.scan} ${ny.scan+nh/2}`}/></circle>
+</>}
+{modActive("scorer")>0&&<>
+<path d={`M${nx.scan+nw} ${ny.scan+nh/2} L${nx.score} ${ny.score+nh/2}`} fill="none" stroke={T.pu} strokeWidth="1.5" opacity=".5" filter="url(#wglow)"/>
+<circle r="2.5" fill={T.pu} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite" path={`M${nx.scan+nw} ${ny.scan+nh/2} L${nx.score} ${ny.score+nh/2}`}/></circle>
+</>}
+{/* Scorer → Hub */}
+{modActive("scorer")>0&&<>
+<path d={`M${nx.score+nw} ${ny.score+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={domC} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
+<circle r="2.5" fill={domC} filter="url(#wglow)"><animateMotion dur="1.4s" repeatCount="indefinite" path={`M${nx.score+nw} ${ny.score+nh/2} L${nx.hub} ${ny.hub+nh/2}`}/></circle>
+</>}
+{/* Social → Hub */}
+{fh.socialSignals>.1&&<>
+<path d={`M${nx.social+nw} ${ny.social+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={T.or} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
+<circle r="2" fill={T.or} filter="url(#wglow)"><animateMotion dur="1.8s" repeatCount="indefinite" path={`M${nx.social+nw} ${ny.social+nh/2} L${nx.hub} ${ny.hub+nh/2}`}/></circle>
+</>}
+{/* Rug Det → Hub */}
+{fh.rugRisk>.05&&<>
+<path d={`M${nx.rugd+nw} ${ny.rugd+nh/2} L${nx.hub} ${ny.hub+nh/2}`} fill="none" stroke={T.rd} strokeWidth="1.5" opacity={Math.min(.7,fh.rugRisk+.2)} filter="url(#wglow)"/>
+<circle r="2" fill={T.rd} filter="url(#wglow)"><animateMotion dur="1.6s" repeatCount="indefinite" path={`M${nx.rugd+nw} ${ny.rugd+nh/2} L${nx.hub} ${ny.hub+nh/2}`}/></circle>
+</>}
+{/* Hub → output wires — lit per decision */}
+{["ape","watch","skip","rug"].map(k=>{if(!hot[k])return null;const speed=k===dominant?"1.0s":"2.0s";return<g key={"lit_"+k}>
+<path d={`M${nx.hub+nw} ${ny.hub+nh/2} L${nx[k]} ${ny[k]+nh/2}`} fill="none" stroke={wc[k]} strokeWidth={k===dominant?"2":"1.5"} opacity={k===dominant?.7:.35} filter="url(#wglow)"/>
+<circle r={k===dominant?"3":"2"} fill={wc[k]} opacity=".9" filter="url(#wglow)"><animateMotion dur={speed} repeatCount="indefinite" path={`M${nx.hub+nw} ${ny.hub+nh/2} L${nx[k]} ${ny[k]+nh/2}`}/></circle>
+</g>})}
 
-{/* Decision matrix donut */}
-<div style={{background:T.bg+"cc",border:"1px solid "+T.bd,borderRadius:6,padding:8}}>
-<div style={{fontSize:8,fontWeight:800,color:T.pu,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Decision Matrix</div>
-<div style={{display:"flex",alignItems:"center",gap:8}}>
-{/* SVG donut chart */}
-<svg width={mb?56:64} height={mb?56:64} viewBox="0 0 64 64" style={{flexShrink:0}}>
-{(()=>{const d=engineState.decisions||{ape:0,watch:0,skip:0,rug:0};const total=d.ape+d.watch+d.skip+d.rug||1;const segments=[{v:d.ape,c:T.gn},{v:d.watch,c:T.yl},{v:d.skip,c:T.ft},{v:d.rug,c:T.rd}];let offset=0;return<>{segments.map((s,i)=>{const pct=s.v/total;const dash=pct*157;const gap=157-dash;const el=<circle key={i} cx="32" cy="32" r="25" fill="none" stroke={s.c} strokeWidth="6" strokeDasharray={`${dash} ${gap}`} strokeDashoffset={-offset} transform="rotate(-90 32 32)" opacity={pct>0?.85:.1} style={{transition:"all 1s ease"}}/>;offset+=dash;return el})}<text x="32" y="30" textAnchor="middle" fill={T.tx} fontSize="14" fontWeight="900" fontFamily="monospace">{total}</text><text x="32" y="40" textAnchor="middle" fill={T.ft} fontSize="6" fontWeight="700">tokens</text></>})()}
+{/* ── NODES (circuit components) ── */}
+{[
+{id:"pump",x:nx.pump,y:ny.pump,label:"PumpPortal",sub:"WS Feed",c:T.cy,v:engineState.pool?.recent5m||0,active:modActive("pumpportal")},
+{id:"scan",x:nx.scan,y:ny.scan,label:"Scanner",sub:"Filter",c:T.pu,v:engineState.pool?.active||0,active:modActive("scorer")},
+{id:"score",x:nx.score,y:ny.score,label:"Scorer",sub:"Velocity",c:T.pu,v:total,active:modActive("scorer")},
+{id:"social",x:nx.social,y:ny.social,label:"Social",sub:"Signals",c:T.or,v:Math.round(fh.socialSignals*100)+"%",active:fh.socialSignals>.05?1:0},
+{id:"rugd",x:nx.rugd,y:ny.rugd,label:"Rug Detect",sub:"Safety",c:T.rd,v:d.rug,active:modActive("rug_detector")},
+{id:"hub",x:nx.hub,y:ny.hub,label:"Decision",sub:"Hub",c:domC,v:total,active:1,isHub:true},
+].map(n=><g key={n.id}>
+{/* Node glow */}
+{n.active>.5&&<rect x={n.x-2} y={n.y-2} width={nw+4} height={nh+4} rx="7" fill={n.c} opacity=".08" filter="url(#nglow)" style={{transition:"opacity 1s"}}/>}
+{/* Node body */}
+<rect x={n.x} y={n.y} width={nw} height={nh} rx="5" fill={T.bg} stroke={n.active>.5?n.c:T.ft} strokeWidth={n.isHub?"1.5":"1"} opacity={n.active>.5?1:.5} style={{transition:"all .8s"}}/>
+{/* Pulsing ring for hub */}
+{n.isHub&&<rect x={n.x-1} y={n.y-1} width={nw+2} height={nh+2} rx="6" fill="none" stroke={domC} strokeWidth=".5" opacity=".4" style={{animation:"gp 2s infinite"}}/>}
+{/* Activity indicator dot */}
+<circle cx={n.x+nw-4} cy={n.y+4} r="2" fill={n.active>.5?T.gn:T.ft} opacity={n.active>.5?1:.3}><animate attributeName="opacity" values={n.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
+{/* Label */}
+<text x={n.x+nw/2} y={n.y+nh/2-2} textAnchor="middle" fill={n.active>.5?n.c:T.ft} fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{n.label}</text>
+<text x={n.x+nw/2} y={n.y+nh/2+6} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6"} fontFamily="monospace">{n.sub} · {n.v}</text>
+</g>)}
+
+{/* ── OUTPUT NODES (APE/WATCH/SKIP/RUG) ── */}
+{[
+{id:"ape",label:"APE",c:T.gn,v:d.ape,x:nx.ape,y:ny.ape},
+{id:"watch",label:"WATCH",c:T.yl,v:d.watch,x:nx.watch,y:ny.watch},
+{id:"skip",label:"SKIP",c:T.ft,v:d.skip,x:nx.skip,y:ny.skip},
+{id:"rug",label:"RUG",c:T.rd,v:d.rug,x:nx.rug,y:ny.rug},
+].map(n=><g key={n.id}>
+{/* Output node glow when hot */}
+{hot[n.id]&&n.id===dominant&&<rect x={n.x-2} y={n.y-2} width={nw+4} height={nh+4} rx="7" fill={n.c} opacity=".15" filter="url(#nglow)"/>}
+<rect x={n.x} y={n.y} width={nw} height={nh} rx="5" fill={hot[n.id]?n.c+"12":T.bg} stroke={hot[n.id]?n.c:T.ft+"44"} strokeWidth={n.id===dominant?"1.5":"1"} style={{transition:"all .8s"}}/>
+<text x={n.x+nw/2} y={n.y+nh/2-1} textAnchor="middle" fill={hot[n.id]?n.c:T.ft} fontSize={mb?"7":"8"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{n.label}</text>
+<text x={n.x+nw/2} y={n.y+nh/2+7} textAnchor="middle" fill={hot[n.id]?n.c:T.ft} fontSize={mb?"7":"8"} fontWeight="900" fontFamily="monospace" opacity=".8">{n.v}</text>
+</g>)}
+
+{/* Pool stats bottom bar */}
+<text x={W/2} y={H-4} textAnchor="middle" fill={T.ft} fontSize="6" fontFamily="monospace">{engineState.pool?.total||0} pool · {engineState.pool?.active||0} active · {engineState.pool?.recent5m||0} 5m · {engineState.pool?.graduated||0} grad · {engineState.flow?.buyPressure||50}% buy pressure</text>
 </svg>
-{/* Legend */}
-<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3,flex:1}}>
-{[{l:"APE",v:engineState.decisions?.ape||0,c:T.gn},{l:"WATCH",v:engineState.decisions?.watch||0,c:T.yl},{l:"SKIP",v:engineState.decisions?.skip||0,c:T.ft},{l:"RUG",v:engineState.decisions?.rug||0,c:T.rd}].map(d=><div key={d.l} style={{background:d.c+"08",border:"1px solid "+d.c+"15",borderRadius:4,padding:"3px 5px",textAlign:"center"}}>
-<div style={{fontSize:14,fontWeight:900,color:d.c}}>{d.v}</div>
-<div style={{fontSize:6,fontWeight:800,color:d.c,letterSpacing:.5}}>{d.l}</div>
-</div>)}
-</div>
-</div>
-</div>
 
-{/* Feature activation heatmap */}
-<div style={{background:T.bg+"cc",border:"1px solid "+T.bd,borderRadius:6,padding:8}}>
-<div style={{fontSize:8,fontWeight:800,color:T.or,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Feature Activation</div>
-<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3}}>
-{Object.entries(engineState.featureHeat||{}).map(([k,v])=>{const heat=Math.round(v*100);const hue=heat>70?120:heat>40?60:heat>20?30:0;const c=`hsl(${hue},80%,${45+heat*.2}%)`;return<div key={k} style={{position:"relative",paddingTop:"100%",borderRadius:4,overflow:"hidden",border:"1px solid "+c+"33"}}>
-<div style={{position:"absolute",inset:0,background:`linear-gradient(135deg,${c}${Math.round(heat*.5+10).toString(16).padStart(2,"0")},${c}${Math.round(heat*.3+5).toString(16).padStart(2,"0")})`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
-<div style={{fontSize:13,fontWeight:900,color:c,textShadow:`0 0 8px ${c}44`}}>{heat}%</div>
-<div style={{fontSize:5,fontWeight:800,color:T.dm,textTransform:"uppercase",letterSpacing:.3,textAlign:"center",lineHeight:1.2,padding:"0 2px"}}>{k.replace(/([A-Z])/g," $1").trim()}</div>
-</div>
+{/* Feature heatmap strip below diagram */}
+<div style={{display:"flex",gap:2,marginTop:6,position:"relative",zIndex:1}}>
+{Object.entries(fh).map(([k,v])=>{const heat=Math.round(v*100);const c=heat>70?T.gn:heat>40?T.yl:heat>20?T.or:T.ft;return<div key={k} style={{flex:1,background:c+Math.round(heat*.4+5).toString(16).padStart(2,"0"),border:"1px solid "+c+"22",borderRadius:3,padding:"3px 2px",textAlign:"center",transition:"all 1s",position:"relative",overflow:"hidden"}}>
+{heat>50&&<div style={{position:"absolute",inset:0,background:`linear-gradient(180deg,${c}11,transparent)`,animation:"gp 3s infinite"}}/>}
+<div style={{fontSize:10,fontWeight:900,color:c,position:"relative"}}>{heat}</div>
+<div style={{fontSize:mb?4:5,fontWeight:700,color:T.dm,textTransform:"uppercase",letterSpacing:.2,lineHeight:1.1,position:"relative"}}>{k.replace(/([A-Z])/g," $1").trim()}</div>
 </div>})}
 </div>
-</div>
-</div>
-</div>
-
-{/* Bottom bar: buy pressure indicator */}
-<div style={{marginTop:8,position:"relative",zIndex:1}}>
-<div style={{display:"flex",justifyContent:"space-between",fontSize:7,fontWeight:700,marginBottom:2}}>
-<span style={{color:T.rd}}>SELL PRESSURE</span>
-<span style={{color:T.dm}}>{engineState.flow?.buyPressure||50}% buy dominance</span>
-<span style={{color:T.gn}}>BUY PRESSURE</span>
-</div>
-<div style={{height:6,borderRadius:3,background:T.sf,overflow:"hidden",position:"relative"}}>
-<div style={{position:"absolute",left:0,top:0,height:"100%",width:(engineState.flow?.buyPressure||50)+"%",borderRadius:3,background:`linear-gradient(90deg,${T.rd},${T.yl},${T.gn})`,transition:"width 1.5s ease",boxShadow:`0 0 6px ${T.gn}33`}}/>
-</div>
-<div style={{display:"flex",justifyContent:"space-between",marginTop:3,fontSize:7,color:T.ft}}>
-<span>Pool: {engineState.pool?.total||0} tokens</span>
-<span>Active: {engineState.pool?.active||0}</span>
-<span>5m: {engineState.pool?.recent5m||0}</span>
-<span>Graduated: {engineState.pool?.graduated||0}</span>
-</div>
-</div>
-</div>}
+</div>})()}
 
 {/* ═══ LIVE INTEL: Scores + Spotlight + Pulse (3 columns) ═══ */}
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginTop:6}}>
