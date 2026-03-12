@@ -213,10 +213,11 @@ if (process.env.OWNER_WALLET) registerOwner(process.env.OWNER_WALLET);
 // FIX: Replaces hardcoded * 170
 // ═══════════════════════════════════════
 let solUsdPrice = 135;
-// Pump.fun graduation: bonding curve fills at ~85 SOL virtual
-// MC at graduation ≈ 85 * solPrice * ~3 (token distribution multiplier)
-// Dynamic: recalculated as SOL price changes. Floor at 30K.
-function gradMcUsd() { return Math.max(30000, Math.round(85 * solUsdPrice * 3)); }
+// Pump.fun graduation: bonding curve fills at ~85 SOL virtual reserves
+// Total supply 1B, ~800M on curve. At graduation the price × supply ≈ 69K USD.
+// Formula: 85 SOL in curve × solPrice × ~5.4 (supply/curve distribution ratio)
+// Dynamic: recalculated as SOL price changes. Floor at 55K (graduation never below ~$55K MC).
+function gradMcUsd() { return Math.max(55000, Math.round(85 * solUsdPrice * 5.4)); }
 async function pollSolPrice() {
   try {
     const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
@@ -4990,6 +4991,86 @@ app.get("/api/intel/stats", (req, res) => {
         age: Math.round((Date.now() - w.gradTime) / 3600000),
       })),
     },
+  });
+});
+
+// ═══════════════════════════════════════
+// ROUTES: ENGINE STATE (live visualization data)
+// ═══════════════════════════════════════
+app.get("/api/engine-state", (req, res) => {
+  const tokens = [...radar.tokens.values()];
+  const now = Date.now();
+  const recent5m = tokens.filter(t => t.createdAt && (now - t.createdAt) < 5 * 60 * 1000);
+  const recent30m = tokens.filter(t => t.createdAt && (now - t.createdAt) < 30 * 60 * 1000);
+  const withBuys = tokens.filter(t => (t.buys || 0) > 0);
+  const graduated = tokens.filter(t => t.graduated || t.mcapUsd >= gradMcUsd());
+
+  // Aggregate signal flows
+  const totalBuys = tokens.reduce((s, t) => s + (t.buys || 0), 0);
+  const totalSells = tokens.reduce((s, t) => s + (t.sells || 0), 0);
+  const totalVol = tokens.reduce((s, t) => s + (t.volumeSol || 0), 0);
+
+  // Decision matrix: categorize recent tokens by decision outcome
+  const decisions = { ape: 0, watch: 0, skip: 0, rug: 0 };
+  const signalFlow = []; // Last 20 signal events for animation
+  recent30m.forEach(t => {
+    const buys = t.buys || 0;
+    const sells = t.sells || 0;
+    const mc = t.mcapUsd || 0;
+    const ub = t.uniqueBuyers?.size || 0;
+    // Simplified scoring for visualization
+    const score = Math.min(100, Math.round(
+      Math.min(15, Math.log2(buys + 1) * 2.5) +
+      Math.min(12, Math.log2(ub + 1) * 2) +
+      Math.min(10, Math.log10((t.volumeSol || 0) * 100 + 1) * 3) +
+      (mc >= gradMcUsd() ? 15 : mc >= 40000 ? 7 : mc >= 10000 ? 2 : 0) +
+      (t.twitter ? 2 : 0) + (t.website ? 1 : 0) + (t.telegram ? 1 : 0)
+    ));
+    if (score >= 50) decisions.ape++;
+    else if (score >= 25) decisions.watch++;
+    else decisions.skip++;
+    if (sells > buys * 0.7 && buys > 3) decisions.rug++;
+    signalFlow.push({
+      ca: t.ca, name: t.name || t.ticker || t.ca?.slice(0, 6),
+      score, mc, buys, sells,
+      signal: score >= 50 ? "APE" : score >= 25 ? "WATCH" : "SKIP",
+      age: Math.round((now - (t.createdAt || now)) / 60000),
+    });
+  });
+  signalFlow.sort((a, b) => b.score - a.score);
+
+  // Engine modules status
+  const modules = [
+    { id: "pumpportal", name: "PumpPortal WS", status: radar.online ? "active" : "reconnecting", throughput: recent5m.length },
+    { id: "scorer", name: "Velocity Scorer", status: "active", throughput: withBuys.length },
+    { id: "intelligence", name: "Meme Intelligence", status: "active", throughput: tokens.length },
+    { id: "rug_detector", name: "Rug Detector", status: "active", throughput: decisions.rug },
+    { id: "trade_router", name: "Trade Router", status: graduated.length > 0 ? "active" : "idle", throughput: graduated.length },
+    { id: "grad_watch", name: "Grad Watchlist", status: gradWatchlist.size > 0 ? "active" : "idle", throughput: gradWatchlist.size },
+  ];
+
+  // Feature activation heatmap (which scoring dimensions are firing)
+  const featureHeat = {
+    buyVelocity: Math.min(1, totalBuys / Math.max(1, tokens.length) / 5),
+    sellPressure: Math.min(1, totalSells / Math.max(1, totalBuys + 1)),
+    volumeFlow: Math.min(1, totalVol / Math.max(1, tokens.length * 2)),
+    socialSignals: Math.min(1, tokens.filter(t => t.twitter || t.website).length / Math.max(1, tokens.length)),
+    rugRisk: Math.min(1, decisions.rug / Math.max(1, recent30m.length)),
+    graduation: Math.min(1, graduated.length / Math.max(1, tokens.length) * 10),
+    diversity: Math.min(1, withBuys.reduce((s, t) => s + (t.uniqueBuyers?.size || 0), 0) / Math.max(1, withBuys.length * 5)),
+    momentum: Math.min(1, recent5m.length / 20),
+  };
+
+  res.json({
+    ts: now,
+    pool: { total: tokens.length, active: withBuys.length, recent5m: recent5m.length, graduated: graduated.length },
+    flow: { totalBuys, totalSells, totalVol: +totalVol.toFixed(2), buyPressure: totalBuys > 0 ? +((totalBuys / (totalBuys + totalSells)) * 100).toFixed(1) : 50 },
+    decisions,
+    signals: signalFlow.slice(0, 20),
+    modules,
+    featureHeat,
+    solPrice: solUsdPrice,
+    gradMc: gradMcUsd(),
   });
 });
 
