@@ -250,7 +250,7 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 // ═══ SIMULATION — pump.fun bonding curve simulator ═══
 function SimMode({mb,budget:extBudget,sniperCount,gradMc:gMc}){const T=uT();const cvRef=useRef(null);const frame=useRef(0);
 const st=useRef({p:.00001,pts:[],buys:[],sells:[],noise:[],mc:0,sig:"WAIT",ph:"idle",spent:0,back:0,bonded:false,bondProb:0,peakMc:0,roi:0,avgEntry:0,avgExit:0,maxDraw:0,phaseTime:{scan:0,accumulate:0,hold:0,distribute:0,sweep:0},runCount:0,history:[]});
-const[running,sR]=useState(false);const budget=extBudget||2;const[speed,sSpeed]=useState(1);const[tick,sTick]=useState(0);const snprs=sniperCount||2;const gradMc=gMc||34000;
+const[running,sR]=useState(false);const budget=extBudget||2;const[speed,sSpeed]=useState(1);const[tick,sTick]=useState(0);const snprs=sniperCount||2;const gradMc=gMc||69000;
 const[simOpen,sSimOpen]=useState(false);const[detailOpen,sDetailOpen]=useState(false);const[guideOpen,sGuideOpen]=useState(false);
 const PHASES={scan:"Scanning for entry — analyzing first trades",accumulate:"Fleet buying in — staggered Gaussian timing",hold:"Holding position — monitoring opponent behavior",distribute:"Selling into demand — taking profit",sweep:"Final sweep — recovering all SOL from fleet wallets",complete:"Session complete — all funds returned"};
 const SIM_DURATION={scan:40,accumulate:100,hold:80,distribute:130,sweep:70};const TOTAL_FRAMES=420;
@@ -429,13 +429,13 @@ const[held,sHeld]=useState(new Set());const[positions,sPos]=useState([]);
 const[tab,sTab]=useState("radar");const[cUser,sCU]=useState(null);
 const[toasts,sToasts]=useState([]);
 const[rt,sRT]=useState({new:[],hot:[],graduating:[],momentum:[]});
-const[rTab,sRTab]=useState("momentum");const[rLoad,sRL]=useState(true);const[rPool,sRP]=useState(0);const[gradMc,sGradMc]=useState(34000);
+const[rTab,sRTab]=useState("momentum");const[rLoad,sRL]=useState(true);const[rPool,sRP]=useState(0);const[gradMc,sGradMc]=useState(69000);
 const[rExp,sRExp]=useState(null);const[buying,sBuy]=useState(null);const[selling,sSell]=useState(null);const[rSearch,sRS]=useState("");
 const[rEnabled,sRE]=useState(true);const[autoTrade,sAutoTrade]=useState(null);const[img,sImg]=useState(null);const[showKeys,sShowKeys]=useState(false);const[aaAdvanced,sAAAdvanced]=useState(false);
 const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");const[refMsg,sRefMsg]=useState("");
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
-const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);
+const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);
 // Live sim state — must be declared here, NOT inside IIFEs (React Rules of Hooks / error #310)
 const[simExpanded,sSimExpanded]=useState(true);const[simDetailOpen,sSimDetailOpen]=useState(true);const[simGuideOpen,sSimGuideOpen]=useState(false);const[simRunning,sSimRunning]=useState(false);
 const[liveSim,sLiveSim]=useState(null);const[simStarting,sSimStarting]=useState(false);
@@ -463,6 +463,8 @@ useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null)sOl(d
 useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(d=>sFl(d)).catch(()=>{})},5000);return()=>clearInterval(iv)},[launched,lCA]);
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>r.json()).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
+// Engine state polling (for visualization)
+useEffect(()=>{if(tab!=="intel")return;const poll=()=>{a.ges().then(d=>sEngineState(d)).catch(()=>{})};poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?3000:10000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
 // Live sim polling — runs for all users when sim is active
 useEffect(()=>{if(tab!=="intel"||!liveSim?.active)return;const poll=()=>a.simst(user?.pubkey||"anon").then(d=>{if(d.active)sLiveSim(p=>({...p,...d}));else sLiveSim(null)}).catch(()=>{});poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab,liveSim?.active,user?.pubkey]);
@@ -819,6 +821,116 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 {[{l:"TOKENS",v:intelData?.memory?.total||"—",c:T.pu},{l:"ACCURACY",v:intelData?.scorer?.accuracy||"—",c:T.gn},{l:"GRAD RATE",v:intelData?.memory?.graduationRate||"—",c:T.yl},{l:"TRACKING",v:intelData?.monitor?.tracking||"—",c:T.or},{l:"RUG RISK",v:(intelData?.recentEvents||[]).filter(e=>(e.data?.rugScore||0)>50||(e.data?.rugFlags||[]).length>=2).length,c:"#ff1744"}].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 4px",textAlign:"center"}}><div style={{fontSize:18,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:9,color:T.ft,fontWeight:700,marginTop:1}}>{s.l}</div></div>)}
 </div>
 <div style={{fontSize:11,color:T.ft,textAlign:"center"}}>{intelData?`${intelData.scorer?.trainCount||0} tokens scored · SOL $${intelData.solPrice?.toFixed(0)||"?"} · uptime ${intelData.uptime||"—"}`:"Connecting to intel engine..."}</div>
+
+{/* ═══ ORACLE ENGINE VISUALIZATION ═══ */}
+{engineState&&<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T.sf}88,${T.bg})`,border:"1px solid "+T.pu+"22",borderRadius:10,padding:mb?10:14,position:"relative",overflow:"hidden"}}>
+{/* Animated background grid */}
+<div style={{position:"absolute",inset:0,opacity:.04,backgroundImage:`linear-gradient(${T.pu} 1px,transparent 1px),linear-gradient(90deg,${T.pu} 1px,transparent 1px)`,backgroundSize:"24px 24px",animation:"scan 20s linear infinite"}}/>
+{/* Glow accent */}
+<div style={{position:"absolute",top:-40,right:-40,width:120,height:120,borderRadius:"50%",background:`radial-gradient(circle,${T.pu}15,transparent 70%)`,filter:"blur(20px)"}}/>
+<div style={{position:"absolute",bottom:-30,left:-30,width:100,height:100,borderRadius:"50%",background:`radial-gradient(circle,${T.cy}10,transparent 70%)`,filter:"blur(15px)"}}/>
+
+{/* Header */}
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,position:"relative",zIndex:1}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}>
+<div style={{width:8,height:8,borderRadius:"50%",background:T.cy,boxShadow:`0 0 8px ${T.cy}66`,animation:"gp 1.5s infinite"}}/>
+<span style={{fontSize:11,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:`linear-gradient(90deg,${T.cy},${T.pu})`,WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Oracle Engine</span>
+</div>
+<div style={{display:"flex",alignItems:"center",gap:8,fontSize:8,color:T.ft}}>
+<span style={{color:T.gn}}>{engineState.flow?.totalBuys||0} buys</span>
+<span style={{color:T.rd}}>{engineState.flow?.totalSells||0} sells</span>
+<span style={{color:T.yl}}>{engineState.flow?.totalVol||0} SOL vol</span>
+</div>
+</div>
+
+{/* Module status bar */}
+<div style={{display:"flex",gap:3,marginBottom:8,position:"relative",zIndex:1,flexWrap:"wrap"}}>
+{(engineState.modules||[]).map(m=>{const sc=m.status==="active"?T.gn:m.status==="reconnecting"?T.yl:T.ft;return<div key={m.id} style={{flex:mb?"1 1 calc(33% - 3px)":"1",background:T.bg,border:"1px solid "+sc+"22",borderRadius:5,padding:"4px 5px",position:"relative",overflow:"hidden"}}>
+<div style={{position:"absolute",bottom:0,left:0,width:m.status==="active"?"100%":"0%",height:2,background:`linear-gradient(90deg,${sc}44,${sc})`,transition:"width 1s"}}/>
+<div style={{fontSize:7,fontWeight:800,color:sc,textTransform:"uppercase",letterSpacing:.5,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{m.name}</div>
+<div style={{display:"flex",alignItems:"baseline",gap:2,marginTop:1}}>
+<span style={{fontSize:12,fontWeight:900,color:T.tx}}>{m.throughput}</span>
+<span style={{fontSize:6,color:sc}}>{m.status==="active"?"LIVE":m.status}</span>
+</div>
+</div>})}
+</div>
+
+{/* Signal flow + Decision matrix side by side */}
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:6,position:"relative",zIndex:1}}>
+
+{/* LEFT: Signal flow — animated data stream */}
+<div style={{background:T.bg+"cc",border:"1px solid "+T.bd,borderRadius:6,padding:8,position:"relative",overflow:"hidden"}}>
+<div style={{fontSize:8,fontWeight:800,color:T.cy,textTransform:"uppercase",letterSpacing:1,marginBottom:6,display:"flex",alignItems:"center",gap:4}}>
+<svg width={10} height={10} viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="none" stroke={T.cy} strokeWidth="1" opacity=".4"/><circle cx="5" cy="5" r="2" fill={T.cy}/></svg>
+Signal Flow
+<span style={{marginLeft:"auto",fontSize:7,color:T.ft}}>{(engineState.signals||[]).length} active</span>
+</div>
+{(engineState.signals||[]).slice(0,8).map((s,i)=>{const sc=s.signal==="APE"?T.gn:s.signal==="WATCH"?T.yl:T.ft;const w=Math.min(100,s.score);return<div key={s.ca+i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px 0",borderBottom:i<7?"1px solid "+T.bd+"33":"none",animation:`fu ${.15*(i+1)}s ease both`}}>
+<div style={{width:4,height:4,borderRadius:"50%",background:sc,boxShadow:s.signal==="APE"?`0 0 4px ${T.gn}66`:"none",flexShrink:0}}/>
+<span style={{fontSize:8,color:T.tx,fontWeight:700,width:mb?50:70,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{s.name}</span>
+<div style={{flex:1,height:4,borderRadius:2,background:T.sf,overflow:"hidden"}}>
+<div style={{width:w+"%",height:"100%",borderRadius:2,background:`linear-gradient(90deg,${sc}44,${sc})`,transition:"width .8s ease"}}/>
+</div>
+<span style={{fontSize:9,fontWeight:900,color:sc,width:18,textAlign:"right"}}>{s.score}</span>
+<span style={{fontSize:6,fontWeight:800,color:sc,padding:"1px 3px",borderRadius:2,background:sc+"15",letterSpacing:.5}}>{s.signal}</span>
+</div>})}
+{(engineState.signals||[]).length===0&&<div style={{fontSize:9,color:T.ft,textAlign:"center",padding:12}}>Waiting for signals...</div>}
+</div>
+
+{/* RIGHT: Feature heatmap + Decision donut */}
+<div style={{display:"flex",flexDirection:"column",gap:6}}>
+
+{/* Decision matrix donut */}
+<div style={{background:T.bg+"cc",border:"1px solid "+T.bd,borderRadius:6,padding:8}}>
+<div style={{fontSize:8,fontWeight:800,color:T.pu,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Decision Matrix</div>
+<div style={{display:"flex",alignItems:"center",gap:8}}>
+{/* SVG donut chart */}
+<svg width={mb?56:64} height={mb?56:64} viewBox="0 0 64 64" style={{flexShrink:0}}>
+{(()=>{const d=engineState.decisions||{ape:0,watch:0,skip:0,rug:0};const total=d.ape+d.watch+d.skip+d.rug||1;const segments=[{v:d.ape,c:T.gn},{v:d.watch,c:T.yl},{v:d.skip,c:T.ft},{v:d.rug,c:T.rd}];let offset=0;return<>{segments.map((s,i)=>{const pct=s.v/total;const dash=pct*157;const gap=157-dash;const el=<circle key={i} cx="32" cy="32" r="25" fill="none" stroke={s.c} strokeWidth="6" strokeDasharray={`${dash} ${gap}`} strokeDashoffset={-offset} transform="rotate(-90 32 32)" opacity={pct>0?.85:.1} style={{transition:"all 1s ease"}}/>;offset+=dash;return el})}<text x="32" y="30" textAnchor="middle" fill={T.tx} fontSize="14" fontWeight="900" fontFamily="monospace">{total}</text><text x="32" y="40" textAnchor="middle" fill={T.ft} fontSize="6" fontWeight="700">tokens</text></>})()}
+</svg>
+{/* Legend */}
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:3,flex:1}}>
+{[{l:"APE",v:engineState.decisions?.ape||0,c:T.gn},{l:"WATCH",v:engineState.decisions?.watch||0,c:T.yl},{l:"SKIP",v:engineState.decisions?.skip||0,c:T.ft},{l:"RUG",v:engineState.decisions?.rug||0,c:T.rd}].map(d=><div key={d.l} style={{background:d.c+"08",border:"1px solid "+d.c+"15",borderRadius:4,padding:"3px 5px",textAlign:"center"}}>
+<div style={{fontSize:14,fontWeight:900,color:d.c}}>{d.v}</div>
+<div style={{fontSize:6,fontWeight:800,color:d.c,letterSpacing:.5}}>{d.l}</div>
+</div>)}
+</div>
+</div>
+</div>
+
+{/* Feature activation heatmap */}
+<div style={{background:T.bg+"cc",border:"1px solid "+T.bd,borderRadius:6,padding:8}}>
+<div style={{fontSize:8,fontWeight:800,color:T.or,textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Feature Activation</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:3}}>
+{Object.entries(engineState.featureHeat||{}).map(([k,v])=>{const heat=Math.round(v*100);const hue=heat>70?120:heat>40?60:heat>20?30:0;const c=`hsl(${hue},80%,${45+heat*.2}%)`;return<div key={k} style={{position:"relative",paddingTop:"100%",borderRadius:4,overflow:"hidden",border:"1px solid "+c+"33"}}>
+<div style={{position:"absolute",inset:0,background:`linear-gradient(135deg,${c}${Math.round(heat*.5+10).toString(16).padStart(2,"0")},${c}${Math.round(heat*.3+5).toString(16).padStart(2,"0")})`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+<div style={{fontSize:13,fontWeight:900,color:c,textShadow:`0 0 8px ${c}44`}}>{heat}%</div>
+<div style={{fontSize:5,fontWeight:800,color:T.dm,textTransform:"uppercase",letterSpacing:.3,textAlign:"center",lineHeight:1.2,padding:"0 2px"}}>{k.replace(/([A-Z])/g," $1").trim()}</div>
+</div>
+</div>})}
+</div>
+</div>
+</div>
+</div>
+
+{/* Bottom bar: buy pressure indicator */}
+<div style={{marginTop:8,position:"relative",zIndex:1}}>
+<div style={{display:"flex",justifyContent:"space-between",fontSize:7,fontWeight:700,marginBottom:2}}>
+<span style={{color:T.rd}}>SELL PRESSURE</span>
+<span style={{color:T.dm}}>{engineState.flow?.buyPressure||50}% buy dominance</span>
+<span style={{color:T.gn}}>BUY PRESSURE</span>
+</div>
+<div style={{height:6,borderRadius:3,background:T.sf,overflow:"hidden",position:"relative"}}>
+<div style={{position:"absolute",left:0,top:0,height:"100%",width:(engineState.flow?.buyPressure||50)+"%",borderRadius:3,background:`linear-gradient(90deg,${T.rd},${T.yl},${T.gn})`,transition:"width 1.5s ease",boxShadow:`0 0 6px ${T.gn}33`}}/>
+</div>
+<div style={{display:"flex",justifyContent:"space-between",marginTop:3,fontSize:7,color:T.ft}}>
+<span>Pool: {engineState.pool?.total||0} tokens</span>
+<span>Active: {engineState.pool?.active||0}</span>
+<span>5m: {engineState.pool?.recent5m||0}</span>
+<span>Graduated: {engineState.pool?.graduated||0}</span>
+</div>
+</div>
+</div>}
 
 {/* ═══ LIVE INTEL: Scores + Spotlight + Pulse (3 columns) ═══ */}
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginTop:6}}>

@@ -61,5 +61,6 @@ simst(w){return this.f(`/api/sim/status?wallet=${w}`)}
 simu(w,s){return this.f("/api/sim/update",{method:"POST",body:{wallet:w,settings:s}})}
 simg(w){return this.f("/api/sim/graduate",{method:"POST",body:{wallet:w}})}
 simbt(s){return this.f("/api/sim/backtest",{method:"POST",body:{settings:s}})}
+ges(){return this.f("/api/engine-state")}
 }
 export const a=new A();export default a;
