@@ -975,11 +975,12 @@ class OutcomeMonitor {
 // ═══ MAIN INTELLIGENCE CLASS ═══
 
 export class MemeIntelligence {
-  constructor(redis = null) {
+  constructor(redis = null, metaTracker = null) {
     this.redis = redis;
     this.scorer = new ScoringEngine();
     this.memory = new RAGMemory(10000);
     this.monitor = new OutcomeMonitor();
+    this.meta = metaTracker;  // MetaTracker from meta-engine.mjs (optional)
     this.eventLog = [];    // Last 100 events
     this.startTime = Date.now();
 
@@ -1007,11 +1008,26 @@ export class MemeIntelligence {
     scoreResult.similar = similar;
     scoreResult.features = features;
 
+    // ── META BOOST: adjust score based on current narrative heat ──
+    if (this.meta) {
+      const metaResult = this.meta.getMetaBoost(tokenData);
+      scoreResult.metaBoost = metaResult.boost;
+      scoreResult.narrative = metaResult.narrative;
+      scoreResult.narrativeName = metaResult.narrativeName;
+      scoreResult.metaHeat = metaResult.heat;
+      if (metaResult.boost > 0) {
+        scoreResult.score = Math.min(99, scoreResult.score + metaResult.boost);
+        scoreResult.bondProb = Math.min(99, scoreResult.bondProb + Math.round(metaResult.boost * 0.6));
+      }
+      // Record sighting for meta tracking
+      this.meta.recordSighting(tokenData);
+    }
+
     // Store in memory + monitor
     this.memory.add(tokenData.ca, features);
     this.monitor.track(tokenData.ca, features, scoreResult);
 
-    this._log("score", { ca: tokenData.ca, score: scoreResult.score, bondProb: scoreResult.bondProb });
+    this._log("score", { ca: tokenData.ca, score: scoreResult.score, bondProb: scoreResult.bondProb, meta: scoreResult.narrative });
 
     return scoreResult;
   }
@@ -1027,6 +1043,14 @@ export class MemeIntelligence {
       // Online learning
       const learnResult = this.scorer.learn(entry.features, outcome);
       this._log("learn", { ca, outcome, ...learnResult });
+
+      // Record outcome in meta tracker (narrative-level learning)
+      if (this.meta) {
+        this.meta.record(
+          { ca, name: entry.name || ca, ticker: entry.ticker || "", description: entry.description || "" },
+          { graduated: outcome.graduated, pnl: outcome.fleetPnl || 0, mcapMultiple: outcome.peakMcx || 0 }
+        );
+      }
 
       // Persist weights
       await this._persist();
@@ -1055,6 +1079,7 @@ export class MemeIntelligence {
       scorer: this.scorer.getStats(),
       memory: this.memory.getStats(),
       monitor: this.monitor.getStats(),
+      meta: this.meta ? this.meta.getCurrentMeta() : null,
       recentEvents: this.eventLog.slice(-20),
     };
   }
