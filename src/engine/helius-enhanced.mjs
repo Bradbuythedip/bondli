@@ -39,8 +39,8 @@ export async function getOptimalPriorityFee(accountKeys = []) {
       const data = await response.json();
       if (data.result?.priorityFeeEstimate) {
         const fee = Math.ceil(data.result.priorityFeeEstimate);
-        // Clamp between 50k and 2M microLamports
-        return Math.max(50_000, Math.min(2_000_000, fee));
+        // Clamp between 10k and 500k microLamports (at 200k CU, 500k = 0.1 SOL — already aggressive)
+        return Math.max(10_000, Math.min(500_000, fee));
       }
     }
   } catch (e) {

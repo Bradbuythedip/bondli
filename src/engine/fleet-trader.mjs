@@ -1305,13 +1305,17 @@ class FleetTrader extends EventEmitter {
         const tokenBalance = new BN(account.amount.toString());
         if (tokenBalance.isZero()) continue;
 
-        // Build the sell transaction (same logic as _executeSell but don't send)
+        // Build the sell transaction with 15% slippage protection (not 0 — MEV bots drain 0-minSolOut txs)
         const sellState = await this.onlineSdk.fetchSellState(session.mint, wallet.keypair.publicKey);
+        const { bondingCurve: bc } = sellState;
+        const ms = bc.tokenTotalSupply || global.tokenTotalSupply;
+        const estSolOut = getSellSolAmountFromTokenAmount({ global, feeConfig, mintSupply: ms, bondingCurve: bc, amount: tokenBalance });
+        const minSolOut = BigInt(Math.floor(Number(estSolOut) * 0.85));
         const tx = await this.onlineSdk.getSellTransaction(
           wallet.keypair.publicKey, session.mint, global, feeConfig,
           sellState.bondingCurveAccountInfo, sellState.bondingCurve,
-          tokenBalance, BigInt(0), // 0 minSolOut for speed
-          { units: 150000, microLamports: 100000 }
+          tokenBalance, minSolOut,
+          { units: 200_000, microLamports: 100000 }
         );
         sellTxs.push({ tx, signers: [wallet.keypair], wallet, tokens: tokenBalance });
       } catch (e) {
@@ -1524,12 +1528,11 @@ class FleetTrader extends EventEmitter {
           console.log(`[FLEET] Atomic close: ${atomicResult.sold}/${atomicResult.total} sold in ${atomicResult.atomic ? "one block" : "fallback mode"}`);
           // Wait for confirmation
           await sleep(2000);
-          // Update balances
+          // Update per-wallet balances (do NOT add to totalSolRecovered — skimSweep handles final accounting)
           for (const wallet of session.fleetWallets) {
             try {
               const bal = await this.connection.getBalance(wallet.keypair.publicKey);
               wallet.solRecovered = bal / LAMPORTS_PER_SOL;
-              session.totalSolRecovered += wallet.solRecovered;
             } catch {}
           }
         }
