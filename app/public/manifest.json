@@ -1,13 +1,20 @@
 {
   "name": "Bondli",
   "short_name": "Bondli",
-  "description": "Fleet trading engine for pump.fun",
+  "description": "Launchpad + trading engine for Pump.fun. Deploy tokens, run multi-wallet fleet trading, and trade bonding curves.",
   "start_url": "/",
+  "id": "/",
   "display": "standalone",
   "background_color": "#09090d",
   "theme_color": "#00e676",
   "orientation": "portrait",
+  "categories": ["finance", "crypto"],
   "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    },
     {
       "src": "/icon.svg",
       "sizes": "any",
