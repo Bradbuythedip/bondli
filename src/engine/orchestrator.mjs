@@ -262,9 +262,21 @@ export class Orchestrator {
     const results = [];
     for (const wallet of session.wallets) {
       try {
-        // Get token balance and sell all
-        // Simplified - actual impl would check ATA balance
-        const sellResult = await this.router.sell(wallet.keypair, ca, 0); // 0 = sell all
+        // Get actual token balance from ATA, then sell all
+        const { PublicKey: PK } = await import("@solana/web3.js");
+        const { getAssociatedTokenAddressSync, getAccount } = await import("@solana/spl-token");
+        const mintPk = new PK(ca);
+        const ata = getAssociatedTokenAddressSync(mintPk, wallet.keypair.publicKey, true);
+        let tokenBalance;
+        try {
+          const account = await getAccount(this.connection, ata);
+          tokenBalance = Number(account.amount);
+        } catch { tokenBalance = 0; }
+        if (tokenBalance <= 0) {
+          results.push({ wallet: wallet.index, skipped: true, reason: "no tokens" });
+          continue;
+        }
+        const sellResult = await this.router.sell(wallet.keypair, ca, tokenBalance);
         results.push({ wallet: wallet.index, ...sellResult });
         this.emit("trade", { ca, wallet: wallet.index, role: wallet.role, type: "exit", ...sellResult });
       } catch (e) {

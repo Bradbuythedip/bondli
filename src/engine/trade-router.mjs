@@ -9,18 +9,25 @@ export class TradeRouter {
     this.connection = new Connection(CONFIG.RPC_URL, "confirmed");
     this.pump = new PumpFunClient(this.connection);
     this.ray = new RaydiumClient(this.connection);
-    this.graduated = new Map(); // mint -> bool cache
+    this.graduated = new Map(); // mint -> { value, timestamp }
+    this.CACHE_TTL = 30_000; // 30s — re-check graduation status regularly
   }
 
   async isGraduated(mint) {
-    if (this.graduated.has(mint)) return this.graduated.get(mint);
+    const cached = this.graduated.get(mint);
+    // Only use cache if it's fresh AND the token was already graduated (graduation is permanent)
+    if (cached && (cached.value === true || Date.now() - cached.timestamp < this.CACHE_TTL)) {
+      return cached.value;
+    }
     try {
       const state = await this.pump.getCurveState(mint);
       const grad = state ? state.graduated : true;
-      this.graduated.set(mint, grad);
+      this.graduated.set(mint, { value: grad, timestamp: Date.now() });
       return grad;
     } catch {
-      return false;
+      // On error, assume NOT graduated only if we have no prior data
+      // If we previously saw it as not graduated, keep that (stale is better than wrong direction)
+      return cached?.value ?? false;
     }
   }
 

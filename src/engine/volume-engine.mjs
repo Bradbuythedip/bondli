@@ -194,12 +194,12 @@ export class ContinuousVolumeEngine extends EventEmitter {
 
     const instructions = await new PumpSdk().buyInstructions({
       global, bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo,
-      mint, user: wallet.keypair.publicKey, amount: tokenAmount, solAmount: solBN, slippage: 25,
+      mint, user: wallet.keypair.publicKey, amount: tokenAmount, solAmount: solBN, slippage: 15,
     });
 
     const tx = new Transaction();
     tx.add(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }),
       ...instructions,
     );
@@ -247,12 +247,12 @@ export class ContinuousVolumeEngine extends EventEmitter {
 
     const instructions = await new PumpSdk().sellInstructions({
       global, bondingCurveAccountInfo, bondingCurve,
-      mint, user: wallet.keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 50,
+      mint, user: wallet.keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 15,
     });
 
     const tx = new Transaction();
     tx.add(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }),
       ...instructions,
     );
@@ -420,14 +420,18 @@ export class AutoRugController extends EventEmitter {
         const tokenBalance = new BN(account.amount.toString());
         if (tokenBalance.isZero()) continue;
 
-        // Build sell tx — sell 100% of holdings, 0 minSolOut for speed
+        // Build sell tx — sell 100% of holdings with 15% slippage protection
         const sellState = await this.onlineSdk.fetchSellState(mint, wallet.keypair.publicKey);
         const { bondingCurveAccountInfo, bondingCurve } = sellState;
+        const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
+        const estSolOut = getSellSolAmountFromTokenAmount({ global, feeConfig, mintSupply, bondingCurve, amount: tokenBalance });
+        // Accept up to 15% slippage, not 100% — prevents MEV sandwich extracting all value
+        const minSolOut = BigInt(Math.floor(Number(estSolOut) * 0.85));
 
         const tx = await this.onlineSdk.getSellTransaction(
           wallet.keypair.publicKey, mint, global, feeConfig,
           sellState.bondingCurveAccountInfo, sellState.bondingCurve,
-          tokenBalance, BigInt(0), // 0 minSolOut — accept any price
+          tokenBalance, minSolOut,
           { units: 200_000, microLamports: 200_000 }
         );
 

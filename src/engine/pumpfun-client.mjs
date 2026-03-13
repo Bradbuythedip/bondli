@@ -123,8 +123,8 @@ export class PumpFunClient {
 
     // Priority fee via compute budget
     if (CONFIG.PRIORITY_FEE > 0) {
+      tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }));
       tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: CONFIG.PRIORITY_FEE }));
-      tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 100_000 }));
     }
 
     // Build pump.fun instruction data: discriminator(8) + amount(u64) + minOut(u64)

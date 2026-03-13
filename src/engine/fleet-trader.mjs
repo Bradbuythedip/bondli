@@ -206,6 +206,11 @@ class GameState {
     let sellMult = 1.0;
     let holdExt = 0;
 
+    // Count recent buys/sells for signal logic (decay-weighted counts)
+    const recentSellCount = external.filter(t => t.type === "sell" && (now - t.time) < 30000).length;
+    const recentBuyCount = external.filter(t => t.type === "buy" && (now - t.time) < 30000).length;
+    const recentSellersCount = new Set(external.filter(t => t.type === "sell" && (now - t.time) < 10000).map(t => t.wallet)).size;
+
     // ── SELL_NOW triggers (high priority) ──
     if (this.devSelling) {
       // Dev selling = trust collapse. In Nash equilibrium, everyone should defect.
@@ -218,8 +223,8 @@ class GameState {
       // Nash: if you believe others will sell, your best response is to sell first.
       signal = "SELL_NOW";
       sellMult = 2.5;
-      console.log(`[GAME] 🚨 DUMP CASCADE — ${uniqueSellers10} sellers in 10s`);
-    } else if (this.buyPressure < 0.25 && sells30 >= 5) {
+      console.log(`[GAME] 🚨 DUMP CASCADE — ${recentSellersCount} sellers in 10s`);
+    } else if (this.buyPressure < 0.25 && recentSellCount >= 5) {
       // Heavy sell pressure — market is exiting
       signal = "SELL_NOW";
       sellMult = 2.0;
@@ -234,7 +239,7 @@ class GameState {
       sellMult = 0.3; // delay sells significantly
       holdExt = 30;   // extend hold by 30s
       console.log(`[GAME] 🐋 WHALE DETECTED — riding momentum, extending hold 30s`);
-    } else if (this.buyPressure > 0.75 && buys30 >= 4) {
+    } else if (this.buyPressure > 0.75 && recentBuyCount >= 4) {
       // Strong buy pressure from multiple participants
       // Nash: cooperative equilibrium — everyone holds, price goes up
       signal = "RIDE";
@@ -1305,13 +1310,17 @@ class FleetTrader extends EventEmitter {
         const tokenBalance = new BN(account.amount.toString());
         if (tokenBalance.isZero()) continue;
 
-        // Build the sell transaction (same logic as _executeSell but don't send)
+        // Build the sell transaction with 15% slippage protection (not 0 — MEV bots drain 0-minSolOut txs)
         const sellState = await this.onlineSdk.fetchSellState(session.mint, wallet.keypair.publicKey);
+        const { bondingCurve: bc } = sellState;
+        const ms = bc.tokenTotalSupply || global.tokenTotalSupply;
+        const estSolOut = getSellSolAmountFromTokenAmount({ global, feeConfig, mintSupply: ms, bondingCurve: bc, amount: tokenBalance });
+        const minSolOut = BigInt(Math.floor(Number(estSolOut) * 0.85));
         const tx = await this.onlineSdk.getSellTransaction(
           wallet.keypair.publicKey, session.mint, global, feeConfig,
           sellState.bondingCurveAccountInfo, sellState.bondingCurve,
-          tokenBalance, BigInt(0), // 0 minSolOut for speed
-          { units: 150000, microLamports: 100000 }
+          tokenBalance, minSolOut,
+          { units: 200_000, microLamports: 100000 }
         );
         sellTxs.push({ tx, signers: [wallet.keypair], wallet, tokens: tokenBalance });
       } catch (e) {
@@ -1458,11 +1467,11 @@ class FleetTrader extends EventEmitter {
     const solBN = new BN(Math.floor(solAmount * 1e9));
     const tokenAmount = getBuyTokenAmountFromSolAmount({ global, feeConfig, mintSupply, bondingCurve, amount: solBN });
     if (tokenAmount.isZero()) return { ok: false, error: "Zero tokens" };
-    const instructions = await this.sdk.buyInstructions({ global, bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo, mint, user: keypair.publicKey, amount: tokenAmount, solAmount: solBN, slippage: 25 });
+    const instructions = await this.sdk.buyInstructions({ global, bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo, mint, user: keypair.publicKey, amount: tokenAmount, solAmount: solBN, slippage: 15 });
     // Dynamic priority fee from Helius
     const priorityFee = await getOptimalPriorityFee();
     const tx = new Transaction();
-    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
     // Use Jito for MEV protection on buys (most vulnerable to sandwich)
     const sig = await this._sendWithJito(tx, [keypair]);
     return { ok: true, sig, tokens: tokenAmount.toString() };
@@ -1480,11 +1489,11 @@ class FleetTrader extends EventEmitter {
     const { bondingCurveAccountInfo, bondingCurve } = sellState;
     const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
     const solOut = getSellSolAmountFromTokenAmount({ global, feeConfig, mintSupply, bondingCurve, amount: sellAmount });
-    const instructions = await this.sdk.sellInstructions({ global, bondingCurveAccountInfo, bondingCurve, mint, user: keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 50 });
+    const instructions = await this.sdk.sellInstructions({ global, bondingCurveAccountInfo, bondingCurve, mint, user: keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 15 });
     // Dynamic priority fee from Helius
     const priorityFee = await getOptimalPriorityFee();
     const tx = new Transaction();
-    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
     // Use Helius smart send for sells (staked connections + auto-retry)
     tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
     tx.feePayer = keypair.publicKey;
@@ -1524,12 +1533,11 @@ class FleetTrader extends EventEmitter {
           console.log(`[FLEET] Atomic close: ${atomicResult.sold}/${atomicResult.total} sold in ${atomicResult.atomic ? "one block" : "fallback mode"}`);
           // Wait for confirmation
           await sleep(2000);
-          // Update balances
+          // Update per-wallet balances (do NOT add to totalSolRecovered — skimSweep handles final accounting)
           for (const wallet of session.fleetWallets) {
             try {
               const bal = await this.connection.getBalance(wallet.keypair.publicKey);
               wallet.solRecovered = bal / LAMPORTS_PER_SOL;
-              session.totalSolRecovered += wallet.solRecovered;
             } catch {}
           }
         }
