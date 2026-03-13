@@ -194,12 +194,12 @@ export class ContinuousVolumeEngine extends EventEmitter {
 
     const instructions = await new PumpSdk().buyInstructions({
       global, bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo,
-      mint, user: wallet.keypair.publicKey, amount: tokenAmount, solAmount: solBN, slippage: 25,
+      mint, user: wallet.keypair.publicKey, amount: tokenAmount, solAmount: solBN, slippage: 15,
     });
 
     const tx = new Transaction();
     tx.add(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }),
       ...instructions,
     );
@@ -247,12 +247,12 @@ export class ContinuousVolumeEngine extends EventEmitter {
 
     const instructions = await new PumpSdk().sellInstructions({
       global, bondingCurveAccountInfo, bondingCurve,
-      mint, user: wallet.keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 50,
+      mint, user: wallet.keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 15,
     });
 
     const tx = new Transaction();
     tx.add(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }),
       ...instructions,
     );

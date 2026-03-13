@@ -1458,11 +1458,11 @@ class FleetTrader extends EventEmitter {
     const solBN = new BN(Math.floor(solAmount * 1e9));
     const tokenAmount = getBuyTokenAmountFromSolAmount({ global, feeConfig, mintSupply, bondingCurve, amount: solBN });
     if (tokenAmount.isZero()) return { ok: false, error: "Zero tokens" };
-    const instructions = await this.sdk.buyInstructions({ global, bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo, mint, user: keypair.publicKey, amount: tokenAmount, solAmount: solBN, slippage: 25 });
+    const instructions = await this.sdk.buyInstructions({ global, bondingCurveAccountInfo, bondingCurve, associatedUserAccountInfo, mint, user: keypair.publicKey, amount: tokenAmount, solAmount: solBN, slippage: 15 });
     // Dynamic priority fee from Helius
     const priorityFee = await getOptimalPriorityFee();
     const tx = new Transaction();
-    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
     // Use Jito for MEV protection on buys (most vulnerable to sandwich)
     const sig = await this._sendWithJito(tx, [keypair]);
     return { ok: true, sig, tokens: tokenAmount.toString() };
@@ -1480,11 +1480,11 @@ class FleetTrader extends EventEmitter {
     const { bondingCurveAccountInfo, bondingCurve } = sellState;
     const mintSupply = bondingCurve.tokenTotalSupply || global.tokenTotalSupply;
     const solOut = getSellSolAmountFromTokenAmount({ global, feeConfig, mintSupply, bondingCurve, amount: sellAmount });
-    const instructions = await this.sdk.sellInstructions({ global, bondingCurveAccountInfo, bondingCurve, mint, user: keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 50 });
+    const instructions = await this.sdk.sellInstructions({ global, bondingCurveAccountInfo, bondingCurve, mint, user: keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 15 });
     // Dynamic priority fee from Helius
     const priorityFee = await getOptimalPriorityFee();
     const tx = new Transaction();
-    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
     // Use Helius smart send for sells (staked connections + auto-retry)
     tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
     tx.feePayer = keypair.publicKey;
