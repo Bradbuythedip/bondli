@@ -1633,6 +1633,84 @@ setInterval(() => {
       artworkScore: t._artworkScore ?? null,
       artworkOriginal: t._artworkOriginal ?? null,
       artworkFlags: t._artworkFlags || [],
+      // ═══ ENTRY TIMING DATA — helps frontend show when to buy ═══
+      ...(() => {
+        const dyn = scoreDynamics.get(t.ca);
+        const ageMin = Math.max(0.3, (now - t.createdAt) / 60000);
+        const buysPerMin = (t.buys || 0) / ageMin;
+        const pressure = (t.buys || 0) / Math.max(1, (t.buys || 0) + (t.sells || 0));
+        // ── Price Phase Detection ──
+        // Analyze sparkline shape to classify: SPIKE / DIP / CONSOLIDATION / EARLY
+        let pricePhase = "EARLY";
+        if (spark.length >= 4) {
+          const recent = spark.slice(-4);
+          const older = spark.slice(-8, -4);
+          const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
+          const peak = Math.max(...spark);
+          const cur = spark[spark.length - 1];
+          const fromPeak = peak > 0 ? (peak - cur) / peak : 0;
+          const recentSlope = recent.length >= 2 ? (recent[recent.length - 1] - recent[0]) / Math.max(1, recent[0]) : 0;
+          if (recentSlope > 0.15 && cur >= peak * 0.95) {
+            pricePhase = "SPIKE"; // price actively spiking — bad entry
+          } else if (fromPeak > 0.08 && recentSlope <= 0.02) {
+            pricePhase = "DIP"; // pulled back from peak, stabilizing — good entry
+          } else if (fromPeak > 0.03 && fromPeak <= 0.08 && Math.abs(recentSlope) < 0.05) {
+            pricePhase = "CONSOLIDATION"; // sideways after move — okay entry
+          } else if (spark.length < 8 && ageMin < 2) {
+            pricePhase = "EARLY"; // too young to classify — early discovery
+          } else if (recentSlope > 0.05) {
+            pricePhase = "SPIKE";
+          } else {
+            pricePhase = "CONSOLIDATION";
+          }
+        }
+        // ── Buy Velocity Trend ──
+        // Is buys/min accelerating or decelerating?
+        let buyVelTrend = "steady";
+        if (t.trades && t.trades.length >= 4) {
+          const trades = t.trades;
+          const mid = Math.floor(trades.length / 2);
+          const firstHalf = trades.slice(0, mid).filter(tr => tr.side === "buy").length;
+          const secondHalf = trades.slice(mid).filter(tr => tr.side === "buy").length;
+          const firstSpan = Math.max(1, ((trades[mid]?.time || now) - (trades[0]?.time || now)) / 60000);
+          const secondSpan = Math.max(0.3, (now - (trades[mid]?.time || now)) / 60000);
+          const firstRate = firstHalf / firstSpan;
+          const secondRate = secondHalf / secondSpan;
+          if (secondRate > firstRate * 1.3) buyVelTrend = "accelerating";
+          else if (secondRate < firstRate * 0.7) buyVelTrend = "decelerating";
+        }
+        // ── Volume Spike Detection ──
+        const recentTrades = (t.trades || []).filter(tr => tr.time && now - tr.time < 60000);
+        const recentBuyVol = recentTrades.filter(tr => tr.side === "buy").reduce((s, tr) => s + (tr.sol || 0), 0);
+        const avgVolPerMin = t.volumeSol / Math.max(1, ageMin);
+        const volSpike = avgVolPerMin > 0 ? recentBuyVol / avgVolPerMin : 0;
+        // ── Entry Signal ──
+        // Combine phase + velocity + dynamics into a simple signal
+        let entrySignal = "WAIT";
+        if (pricePhase === "SPIKE" || buyVelTrend === "decelerating") {
+          entrySignal = "WAIT"; // don't chase spikes or fading velocity
+        } else if (pricePhase === "DIP" && (dyn?.trend === "rising" || dyn?.trend === "rocket")) {
+          entrySignal = "STRONG"; // dip + recovering score = best entry
+        } else if (pricePhase === "EARLY" && pressure > 0.6 && buyVelTrend !== "decelerating") {
+          entrySignal = "EARLY"; // early with good pressure = speculative entry
+        } else if (pricePhase === "CONSOLIDATION" && dyn?.velocity > 0) {
+          entrySignal = "READY"; // stable price + positive score momentum
+        } else if (dyn?.trend === "rising" || dyn?.trend === "rocket") {
+          entrySignal = "READY";
+        } else if (pressure > 0.5 && buyVelTrend !== "decelerating") {
+          entrySignal = "CAUTION";
+        }
+        return {
+          entrySignal,
+          pricePhase,
+          buyPressure: +pressure.toFixed(2),
+          buyVelTrend,
+          scoreTrend: dyn?.trend || "new",
+          scoreVelocity: dyn?.velocity || 0,
+          scoreMomentum: dyn?.momentum || "nascent",
+          volSpike: +(Math.min(10, volSpike).toFixed(1)),
+        };
+      })(),
     };
   };
 
@@ -4251,12 +4329,91 @@ function startAutoTrader(wallet, settings) {
         return Math.round(baseSol * mult * 1000) / 1000;
       }
 
-      // Ape into top 2 candidates per cycle — meme tokens move fast
+      // ═══ ENTRY TIMING ENGINE — prevent buying at wrong time ═══
+      // Score stability: track which tokens have been above threshold consecutively
+      if (!state._scoreStability) state._scoreStability = new Map(); // ca → { aboveCount, firstSeen }
+      const stabilityMap = state._scoreStability;
+      // Update stability for all scored tokens this cycle
+      const adj2 = tradeLearner.getAdjustments();
+      const effMin = Math.min(state.settings.minScore, adj2.minScoreShift || state.settings.minScore);
+      for (const t of hot) {
+        const prev = stabilityMap.get(t.ca) || { aboveCount: 0, firstSeen: Date.now() };
+        prev.aboveCount++;
+        prev.lastSeen = Date.now();
+        stabilityMap.set(t.ca, prev);
+      }
+      // Prune tokens not seen in 30s
+      for (const [ca, s] of stabilityMap) { if (Date.now() - s.lastSeen > 30000) stabilityMap.delete(ca); }
+
+      // Ape into top 2 candidates per cycle — with entry timing gates
       for (const t of hot.slice(0, 2)) {
         if (state.positions.size >= state.settings.maxPositions) break;
+
+        // ── ENTRY TIMING GATE 1: Score Stability ──
+        // Require score above threshold for 2+ consecutive cycles (8+ seconds)
+        // Exception: early movers (<2 min, MC <$30K) get 1-cycle pass
+        const stability = stabilityMap.get(t.ca);
+        const ageMin = Math.max(0.3, (Date.now() - t.createdAt) / 60000);
+        const isEarly = ageMin < 2 && t.mcapUsd <= 30000;
+        if (!isEarly && (!stability || stability.aboveCount < 2)) {
+          if (stability?.aboveCount === 1) {
+            log(`TIMING WAIT ${t.name||t.ca.slice(0,6)} | score:${t._apeScore} — need 1 more cycle for stability`);
+          }
+          continue;
+        }
+
+        // ── ENTRY TIMING GATE 2: Price Phase Detection ──
+        // Don't buy into active spikes — wait for dip or consolidation
+        const spark = t.spark || [];
+        let pricePhase = "EARLY";
+        if (spark.length >= 4) {
+          const recent = spark.slice(-4);
+          const peak = Math.max(...spark);
+          const cur = spark[spark.length - 1];
+          const fromPeak = peak > 0 ? (peak - cur) / peak : 0;
+          const recentSlope = recent.length >= 2 ? (recent[recent.length - 1] - recent[0]) / Math.max(1, recent[0]) : 0;
+          if (recentSlope > 0.15 && cur >= peak * 0.95) pricePhase = "SPIKE";
+          else if (fromPeak > 0.08 && recentSlope <= 0.02) pricePhase = "DIP";
+          else if (Math.abs(recentSlope) < 0.05) pricePhase = "CONSOLIDATION";
+          else if (recentSlope > 0.05) pricePhase = "SPIKE";
+        }
+        // Block SPIKE entries unless score is extremely high (>70 = strong conviction override)
+        if (pricePhase === "SPIKE" && (t._apeScore || 0) < 70) {
+          log(`TIMING SKIP ${t.name||t.ca.slice(0,6)} | score:${t._apeScore} phase:SPIKE — waiting for pullback`);
+          continue;
+        }
+
+        // ── ENTRY TIMING GATE 3: Buy Velocity Trend ──
+        // If buy rate is decelerating, we'd be buying the tail end of the pump
+        let buyVelTrend = "steady";
+        if (t.trades && t.trades.length >= 6) {
+          const trades = t.trades;
+          const mid = Math.floor(trades.length / 2);
+          const firstBuys = trades.slice(0, mid).filter(tr => tr.side === "buy").length;
+          const secondBuys = trades.slice(mid).filter(tr => tr.side === "buy").length;
+          const firstSpan = Math.max(1, ((trades[mid]?.time || Date.now()) - (trades[0]?.time || Date.now())) / 60000);
+          const secondSpan = Math.max(0.3, (Date.now() - (trades[mid]?.time || Date.now())) / 60000);
+          if (secondBuys / secondSpan < (firstBuys / firstSpan) * 0.5) buyVelTrend = "decelerating";
+          else if (secondBuys / secondSpan > (firstBuys / firstSpan) * 1.3) buyVelTrend = "accelerating";
+        }
+        // Block decelerating entries unless early mover or very high score
+        if (buyVelTrend === "decelerating" && !isEarly && (t._apeScore || 0) < 65) {
+          log(`TIMING SKIP ${t.name||t.ca.slice(0,6)} | score:${t._apeScore} buyVel:DECEL — buy rate fading`);
+          continue;
+        }
+
+        // ── Size adjustment based on entry quality ──
+        // Better entry timing = bigger size, worse = smaller
+        let timingMult = 1.0;
+        if (pricePhase === "DIP") timingMult = 1.15;        // best entry — reward
+        else if (pricePhase === "SPIKE") timingMult = 0.7;    // forced through (high score) — reduce size
+        if (buyVelTrend === "accelerating") timingMult *= 1.1; // momentum building — slight boost
+        const phaseTag = pricePhase !== "EARLY" ? ` phase:${pricePhase}` : "";
+        const velTag = buyVelTrend !== "steady" ? ` buyVel:${buyVelTrend}` : "";
+
         // Score-based sizing
         const rugFlagCount = t._rugFlags?.length || 0;
-        const tradeSol = calcPositionSize(t._apeScore || 0, t._scoreTrend, rugFlagCount, state.settings.solPerTrade);
+        const tradeSol = Math.round(calcPositionSize(t._apeScore || 0, t._scoreTrend, rugFlagCount, state.settings.solPerTrade) * timingMult * 1000) / 1000;
         // Check balance
         let balance = 0;
         try { balance = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL; } catch { continue; }
@@ -4268,7 +4425,7 @@ function startAutoTrader(wallet, settings) {
         const earlyTag = t._earlyApe ? " [EARLY-APE]" : "";
         const bullishStr = t._bullishSignals?.length > 0 ? ` [BULLISH: ${t._bullishSignals.join(",")}]` : "";
         const walletAgeStr = t._walletAgeData ? ` wallets:${Math.round(t._walletAgeData.walletAgeScore * 100)}%aged` : "";
-        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag}${earlyTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
+        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag}${earlyTag}${phaseTag}${velTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -4280,10 +4437,10 @@ function startAutoTrader(wallet, settings) {
               const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
               tx.sign([kp]);
               const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: tradeSol, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2) });
+              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: tradeSol, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, entryBuyVel: buyVelTrend });
               trackBuy(wallet, t.ca, tradeSol); // instant wallet visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
-              broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: tradeSol, mcap: t.mcapUsd, wallet, score: t._apeScore, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2) } });
+              broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: tradeSol, mcap: t.mcapUsd, wallet, score: t._apeScore, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, buyVelTrend } });
             }
           }
         } catch (e) { log(`Buy error: ${e.message}`); }
