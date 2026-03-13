@@ -62,5 +62,9 @@ simu(w,s){return this.f("/api/sim/update",{method:"POST",body:{wallet:w,settings
 simg(w){return this.f("/api/sim/graduate",{method:"POST",body:{wallet:w}})}
 simbt(s){return this.f("/api/sim/backtest",{method:"POST",body:{settings:s}})}
 ges(){return this.f("/api/engine-state")}
+// VIP referral dashboard
+vrd(w){return this.f(`/api/vip/referral-dashboard/${w}`)}
+vcrc(w,c){return this.f("/api/vip/custom-ref-code",{method:"POST",body:{wallet:w,code:c}})}
+vcl(w){return this.f("/api/vip/claim-referral",{method:"POST",body:{wallet:w}})}
 }
 export const a=new A();export default a;

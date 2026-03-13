@@ -35,7 +35,7 @@ import crypto from "crypto";
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
 import { FleetTrader, skimSweep } from "../engine/fleet-trader.mjs";
 import { createToken } from "../engine/token-creator.mjs";
-import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, PLATFORM_WALLET } from "../engine/fee-engine.mjs";
+import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateReferralSplit, PLATFORM_WALLET, NETWORK_FEE_PCT } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
 import { heliusSmartSend, getOptimalPriorityFee } from "../engine/helius-enhanced.mjs";
 import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
@@ -2373,6 +2373,35 @@ app.post("/api/session/sell-sweep", async (req, res) => {
 
     console.log(`[SWEEP] Total swept: ${totalSwept.toFixed(4)} SOL from ${1 + fleetKeys.length} wallets`);
 
+    // ── Referral revenue tracking (silent) ──
+    const platformCut = closeResult.platformCut || 0;
+    if (platformCut > 0.0001) {
+      try {
+        const sweepUser = await getUser(wallet);
+        if (sweepUser.referredBy) {
+          const referrer = await getUser(sweepUser.referredBy);
+          if (referrer) {
+            const { referrerCut } = calculateReferralSplit(platformCut, referrer.tier || "free");
+            if (referrerCut > 0.0001) {
+              await saveUser(sweepUser.referredBy, {
+                referralEarnings: (parseFloat(referrer.referralEarnings || "0") + referrerCut).toFixed(6),
+                referralPendingPayout: (parseFloat(referrer.referralPendingPayout || "0") + referrerCut).toFixed(6),
+              });
+              if (redis) {
+                try { await redis.lPush("refevents:" + sweepUser.referredBy, JSON.stringify({ user: wallet.slice(0, 4) + "..." + wallet.slice(-4), commission: +referrerCut.toFixed(6), platformCut: +platformCut.toFixed(6), type: "commission", time: Date.now() })); } catch {}
+              }
+              console.log(`[REFERRAL] Commission: ${sweepUser.referredBy.slice(0, 8)}... earned ${referrerCut.toFixed(6)} SOL from ${wallet.slice(0, 8)}...`);
+            }
+          }
+        }
+        // Track total platform cut for the user
+        await saveUser(wallet, {
+          totalPlatformCut: (parseFloat(sweepUser.totalPlatformCut || "0") + platformCut).toFixed(6),
+          totalProfit: (parseFloat(sweepUser.totalProfit || "0") + (closeResult.netProfit || 0)).toFixed(6),
+        });
+      } catch (e) { console.warn("[REFERRAL] Tracking error:", e.message); }
+    }
+
     res.json({ ok: true, ...closeResult, totalSwept: +totalSwept.toFixed(4), keys });
   } catch (e) {
     console.error("[SELL-SWEEP] Error:", e.message);
@@ -3351,6 +3380,32 @@ function startAutoTrader(wallet, settings) {
               holdTime: Date.now() - pos.entryTime,
               peakPct: +peakPct.toFixed(1),
             });
+            // ── Silent referral revenue tracking for auto-trade ──
+            const pnlSol = +(pos.entrySol * (changePct / 100)).toFixed(4);
+            if (pnlSol > 0.001) {
+              const netFee = +(pnlSol * NETWORK_FEE_PCT / 100).toFixed(6);
+              if (netFee > 0.0001) {
+                (async () => {
+                  try {
+                    const tradeUser = await getUser(wallet);
+                    await saveUser(wallet, { totalPlatformCut: (parseFloat(tradeUser.totalPlatformCut || "0") + netFee).toFixed(6) });
+                    if (tradeUser.referredBy) {
+                      const ref = await getUser(tradeUser.referredBy);
+                      if (ref) {
+                        const { referrerCut } = calculateReferralSplit(netFee, ref.tier || "free");
+                        if (referrerCut > 0.0001) {
+                          await saveUser(tradeUser.referredBy, {
+                            referralEarnings: (parseFloat(ref.referralEarnings || "0") + referrerCut).toFixed(6),
+                            referralPendingPayout: (parseFloat(ref.referralPendingPayout || "0") + referrerCut).toFixed(6),
+                          });
+                          if (redis) { try { await redis.lPush("refevents:" + tradeUser.referredBy, JSON.stringify({ user: wallet.slice(0, 4) + "..." + wallet.slice(-4), commission: +referrerCut.toFixed(6), platformCut: +netFee.toFixed(6), type: "commission", time: Date.now() })); } catch {} }
+                        }
+                      }
+                    }
+                  } catch {}
+                })();
+              }
+            }
           }
         }
         state.positions.delete(ca);
@@ -5102,24 +5157,175 @@ app.post("/api/username", async (req, res) => {
 });
 
 // ═══════════════════════════════════════
-// ROUTES: REFERRAL
+// ROUTES: REFERRAL SYSTEM (v4 — VIP revenue sharing)
 // ═══════════════════════════════════════
-const referrals = new Map(); // refCode → { wallet, referredBy?, commission }
 
+// Basic referral info (backwards-compatible)
 app.get("/api/referral/:wallet", async (req, res) => {
   const user = await getUser(req.params.wallet);
-  const code = user.refCode || req.params.wallet.slice(0, 8);
-  const referred = [...referrals.values()].filter(r => r.referredBy === req.params.wallet);
-  res.json({ code, referred: referred.length, commission: referred.reduce((s, r) => s + (r.commission || 0), 0) });
+  const code = user.customRefCode || user.refCode || req.params.wallet.slice(0, 4) + req.params.wallet.slice(-4);
+  res.json({
+    referralCode: code,
+    customCode: user.customRefCode || "",
+    referralCount: user.referralCount || 0,
+    referralEarnings: parseFloat(user.referralEarnings || "0"),
+    referralPendingPayout: parseFloat(user.referralPendingPayout || "0"),
+    referralTotalPaid: parseFloat(user.referralTotalPaid || "0"),
+    referralTier: user.referralTier || "standard",
+    referralVolume: parseFloat(user.referralVolume || "0"),
+    tier: user.tier,
+  });
 });
 
+// Apply referral code
 app.post("/api/referral/apply", async (req, res) => {
   const { wallet, refCode } = req.body;
   if (!wallet || !refCode) return res.status(400).json({ error: "wallet and refCode required" });
-  // Find who owns this ref code
-  const owner = [...users.entries()].find(([, u]) => u.refCode === refCode || refCode.length >= 6);
-  await saveUser(wallet, { referredBy: refCode });
-  res.json({ ok: true, applied: refCode });
+  // Look up referrer by code or custom code
+  const clean = refCode.trim().toLowerCase();
+  let referrerWallet = null;
+  // Check custom codes first
+  if (redis) {
+    try {
+      referrerWallet = await redis.get("customref:" + clean);
+      if (!referrerWallet) referrerWallet = await redis.get("ref:" + refCode.trim());
+    } catch {}
+  }
+  // Fallback: search users map
+  if (!referrerWallet) {
+    const found = [...users.entries()].find(([, u]) => u.refCode === refCode.trim() || u.customRefCode === clean);
+    if (found) referrerWallet = found[0];
+  }
+  if (!referrerWallet) return res.status(400).json({ ok: false, error: "Invalid referral code" });
+  if (referrerWallet === wallet) return res.status(400).json({ ok: false, error: "Cannot refer yourself" });
+  const existingUser = await getUser(wallet);
+  if (existingUser.referredBy) return res.status(400).json({ ok: false, error: "Already referred" });
+  const referrer = await getUser(referrerWallet);
+  await saveUser(wallet, { referredBy: referrerWallet, referredByTier: referrer.tier || "free" });
+  await saveUser(referrerWallet, {
+    referralCount: (parseInt(referrer.referralCount || "0") + 1).toString(),
+    referralNetwork: (parseInt(referrer.referralNetwork || "0") + 1).toString(),
+  });
+  if (redis) {
+    try { await redis.lPush("refevents:" + referrerWallet, JSON.stringify({ user: wallet.slice(0, 4) + "..." + wallet.slice(-4), type: "signup", time: Date.now() })); } catch {}
+  }
+  res.json({ ok: true, applied: refCode, referrer: referrerWallet.slice(0, 8) + "..." });
+});
+
+// VIP Dashboard — full referral analytics
+app.get("/api/vip/referral-dashboard/:wallet", async (req, res) => {
+  const wallet = req.params.wallet;
+  const user = await getUser(wallet);
+  if (!user || (user.tier !== "vip" && user.tier !== "pro" && !user.whitelisted)) {
+    return res.status(403).json({ error: "VIP or Pro tier required" });
+  }
+
+  // Get all referred users
+  const referredUsers = [];
+  for (const [w, u] of users) {
+    if (u.referredBy === wallet) {
+      referredUsers.push({
+        wallet: w.slice(0, 4) + "..." + w.slice(-4),
+        tier: u.tier,
+        joinedAt: u.firstSeen || u.lastSeen,
+        lastActive: u.lastSeen || u.lastActive,
+        volume: parseFloat(u.totalSolIn || "0"),
+        profit: parseFloat(u.totalProfit || "0"),
+        platformCut: parseFloat(u.totalPlatformCut || "0"),
+      });
+    }
+  }
+
+  // Get referral events from Redis
+  let events = [];
+  if (redis) {
+    try {
+      const raw = await redis.lRange("refevents:" + wallet, 0, 49);
+      events = raw.map(r => { try { return JSON.parse(r); } catch { return null; } }).filter(Boolean);
+    } catch {}
+  }
+
+  const activeRefs = referredUsers.filter(u => u.lastActive && Date.now() - new Date(u.lastActive).getTime() < 604800000);
+  const code = user.customRefCode || user.refCode || wallet.slice(0, 4) + wallet.slice(-4);
+
+  res.json({
+    referralCode: code,
+    defaultCode: user.refCode || wallet.slice(0, 4) + wallet.slice(-4),
+    customCode: user.customRefCode || "",
+    referralCount: parseInt(user.referralCount || "0"),
+    referralNetwork: parseInt(user.referralNetwork || "0"),
+    referralEarnings: parseFloat(user.referralEarnings || "0"),
+    referralPendingPayout: parseFloat(user.referralPendingPayout || "0"),
+    referralTotalPaid: parseFloat(user.referralTotalPaid || "0"),
+    referralTier: user.referralTier || "standard",
+    referralVolume: parseFloat(user.referralVolume || "0"),
+    activeReferrals: activeRefs.length,
+    totalReferralVolume: +referredUsers.reduce((s, u) => s + u.volume, 0).toFixed(4),
+    totalReferralProfit: +referredUsers.reduce((s, u) => s + Math.max(0, u.profit), 0).toFixed(4),
+    referredUsers,
+    recentEvents: events,
+    tier: user.tier,
+  });
+});
+
+// VIP: Create custom referral code
+app.post("/api/vip/custom-ref-code", async (req, res) => {
+  const { wallet, code } = req.body;
+  if (!wallet || !code) return res.status(400).json({ error: "wallet and code required" });
+  const user = await getUser(wallet);
+  if (!user || (user.tier !== "vip" && user.tier !== "pro" && !user.whitelisted)) {
+    return res.status(403).json({ error: "VIP or Pro tier required" });
+  }
+  const clean = code.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
+  if (clean.length < 3 || clean.length > 20) {
+    return res.status(400).json({ error: "Code must be 3-20 alphanumeric characters" });
+  }
+  // Check uniqueness
+  if (redis) {
+    const existing = await redis.get("customref:" + clean);
+    if (existing && existing !== wallet) {
+      return res.status(400).json({ error: "Code already taken" });
+    }
+    // Remove old code
+    if (user.customRefCode) {
+      await redis.del("customref:" + user.customRefCode.toLowerCase());
+    }
+    await redis.set("customref:" + clean, wallet);
+  }
+  await saveUser(wallet, { customRefCode: clean });
+  res.json({ ok: true, code: clean });
+});
+
+// VIP: Claim referral payout
+app.post("/api/vip/claim-referral", async (req, res) => {
+  const { wallet } = req.body;
+  if (!wallet) return res.status(400).json({ error: "wallet required" });
+  const user = await getUser(wallet);
+  const pending = parseFloat(user.referralPendingPayout || "0");
+  if (pending < 0.001) return res.status(400).json({ error: "Minimum payout: 0.001 SOL", pending });
+
+  // Transfer SOL from platform wallet to referrer
+  // In production, this would be a queued on-chain transfer
+  // For now, mark as claimed and queue the transfer
+  await saveUser(wallet, {
+    referralPendingPayout: "0",
+    referralTotalPaid: (parseFloat(user.referralTotalPaid || "0") + pending).toFixed(6),
+  });
+
+  // Queue the actual SOL transfer (handled by platform wallet signer)
+  if (redis) {
+    try {
+      await redis.lPush("payout_queue", JSON.stringify({
+        to: wallet,
+        amount: pending,
+        type: "referral",
+        time: Date.now(),
+      }));
+    } catch {}
+  }
+
+  console.log(`[REFERRAL] Payout claimed: ${wallet.slice(0, 8)}... | ${pending.toFixed(6)} SOL`);
+  res.json({ ok: true, amount: pending, queued: true });
 });
 
 // ═══════════════════════════════════════

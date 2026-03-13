@@ -433,6 +433,7 @@ const[rTab,sRTab]=useState("momentum");const[rLoad,sRL]=useState(true);const[rPo
 const[rExp,sRExp]=useState(null);const[buying,sBuy]=useState(null);const[selling,sSell]=useState(null);const[rSearch,sRS]=useState("");
 const[rEnabled,sRE]=useState(true);const[autoTrade,sAutoTrade]=useState(null);const[img,sImg]=useState(null);const[showKeys,sShowKeys]=useState(false);const[aaAdvanced,sAAAdvanced]=useState(false);
 const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");const[refMsg,sRefMsg]=useState("");
+const[vipDash,sVipDash]=useState(null);const[vipCustomCode,sVipCustomCode]=useState("");const[vipClaiming,sVipClaiming]=useState(false);
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);const[showModel,sShowModel]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
 const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);
@@ -471,6 +472,8 @@ useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>
 useEffect(()=>{if(tab!=="intel"||!liveSim?.active)return;const poll=()=>a.simst(user?.pubkey||"anon").then(d=>{if(d.active)sLiveSim(p=>({...p,...d}));else sLiveSim(null)}).catch(()=>{});poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab,liveSim?.active,user?.pubkey]);
 useEffect(()=>{if(tab!=="intel")return;a.gcp().then(d=>sChartPatterns(d)).catch(()=>{});const iv=setInterval(()=>a.gcp().then(d=>sChartPatterns(d)).catch(()=>{}),30000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs)sRT(d.tabs);if(d.poolSize!=null)sRP(d.poolSize);if(d.gradMc)sGradMc(d.gradMc);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,5000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
+// VIP Dashboard polling
+useEffect(()=>{if(tab!=="vip"||!user?.pubkey||user.demo)return;if(user.tier!=="vip"&&user.tier!=="pro"&&!user.whitelisted&&!isOwner)return;const poll=()=>a.vrd(user.pubkey).then(d=>sVipDash(d)).catch(()=>{});poll();const iv=setInterval(poll,15000);return()=>clearInterval(iv)},[tab,user?.pubkey,user?.tier]);
 useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){const onChainMints=new Set(d.positions.map(p=>p.mint));const serverPositions=d.positions.map(p=>{if(p.pending&&p.time&&(Date.now()-p.time)>120000)return{...p,pending:false,pendingExpired:true};return p});sPos(prev=>{const recentPending=prev.filter(p=>p.pending&&p.pendingSince&&!onChainMints.has(p.mint)&&(Date.now()-p.pendingSince)<30000);return[...serverPositions,...recentPending]});sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,8000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.grf(user.pubkey).then(d=>sRefData(d)).catch(()=>{})},[user?.pubkey]);
 // CA lookup effect — must be before early return to satisfy Rules of Hooks
@@ -1799,22 +1802,129 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 </div>
 <div style={{padding:8,background:T.bg,borderRadius:6,border:"1px solid "+T.yl+"18"}}>
 <div style={{fontSize:13,fontWeight:800,color:T.yl,marginBottom:4}}>VIP</div>
-<div style={{fontSize:11,color:T.dm,lineHeight:1.4}}>• All Pro features{"\n"}• Admin panel{"\n"}• API access{"\n"}• Custom scoring rules{"\n"}• Priority fleet execution</div>
+<div style={{fontSize:11,color:T.dm,lineHeight:1.4}}>• All Pro features{"\n"}• Referral revenue sharing{"\n"}• Custom referral codes{"\n"}• VIP Dashboard{"\n"}• Priority fleet execution</div>
 </div>
 </div>
 </div>
 
-{/* Admin panel — owner only */}
+</div></EB>}
+
+{/* ═══ VIP DASHBOARD ═══ */}
+{tab==="vip"&&(user?.tier==="vip"||user?.tier==="pro"||user?.whitelisted||isOwner)&&<EB l="VIP Dashboard"><div style={{animation:"si .2s ease"}} className="st">
+
+{/* Header */}
+<div style={{background:"linear-gradient(135deg,"+T.yl+"12,"+T.yl+"04)",border:"1px solid "+T.yl+"22",borderRadius:12,padding:mb?12:16,marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}><IC.crown s={22} c={T.yl}/><span style={{fontSize:mb?18:22,fontWeight:900,color:T.yl}}>VIP Dashboard</span></div>
+<div style={{fontSize:12,color:T.dm}}>Earn SOL from every profitable trade your referrals make. Your referral tier: <b style={{color:T.yl}}>{(vipDash?.referralTier||"standard").toUpperCase()}</b></div>
+</div>
+
+{/* Revenue Stats */}
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"repeat(4,1fr)",gap:6,marginBottom:8}}>
+{[
+{label:"Total Earned",value:fs(vipDash?.referralEarnings||0,4)+" SOL",color:T.gn},
+{label:"Pending Payout",value:fs(vipDash?.referralPendingPayout||0,4)+" SOL",color:T.yl},
+{label:"Total Referrals",value:vipDash?.referralCount||0,color:T.pu},
+{label:"Active (7d)",value:vipDash?.activeReferrals||0,color:T.cy||"#00bcd4"},
+].map((s,i)=><div key={i} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:8,padding:"10px 12px",textAlign:"center"}}>
+<div style={{fontSize:20,fontWeight:900,color:s.color}}>{s.value}</div>
+<div style={{fontSize:10,color:T.ft,textTransform:"uppercase",letterSpacing:".05em",marginTop:2}}>{s.label}</div>
+</div>)}
+</div>
+
+{/* Claim Payout */}
+{(vipDash?.referralPendingPayout||0)>=0.001&&<div style={{background:T.gn+"08",border:"1px solid "+T.gn+"22",borderRadius:10,padding:12,marginBottom:8,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+<div><div style={{fontSize:14,fontWeight:800,color:T.gn}}>{fs(vipDash.referralPendingPayout,4)} SOL available</div><div style={{fontSize:10,color:T.dm}}>Claim your referral earnings</div></div>
+<button disabled={vipClaiming} onClick={async()=>{sVipClaiming(true);try{const r=await a.vcl(user.pubkey);if(r.ok){toast(`Claimed ${r.amount?.toFixed(4)} SOL!`,"success");sVipDash(d=>d?{...d,referralPendingPayout:0,referralTotalPaid:(d.referralTotalPaid||0)+r.amount}:d)}else toast(r.error||"Failed","error")}catch(e){toast(e.message,"error")}sVipClaiming(false)}} style={{padding:"10px 20px",background:T.gn,border:"none",borderRadius:8,fontSize:14,fontWeight:800,color:T.bg,cursor:vipClaiming?"wait":"pointer",opacity:vipClaiming?.5:1}}>{vipClaiming?"Claiming...":"Claim SOL"}</button>
+</div>}
+
+{/* Referral Link & Custom Code */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:14,marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><IC.users s={16} c={T.yl}/><span style={{fontSize:14,fontWeight:800}}>Your Referral Link</span></div>
+<div style={{display:"flex",gap:4,marginBottom:8}}>
+<div style={{flex:1,background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 12px",fontSize:13,color:T.gn,fontWeight:700,wordBreak:"break-all"}}>{window.location.origin+"?ref="+(vipDash?.customCode||vipDash?.referralCode||"...")}</div>
+<button onClick={()=>{navigator.clipboard?.writeText(window.location.origin+"?ref="+(vipDash?.customCode||vipDash?.referralCode||""));toast("Referral link copied!","success")}} style={{padding:"8px 14px",background:T.gn+"08",border:"1px solid "+T.gn+"22",borderRadius:6,fontSize:11,fontWeight:700,color:T.gn,cursor:"pointer",whiteSpace:"nowrap"}}>Copy</button>
+</div>
+
+{/* Custom Code */}
+<div style={{fontSize:11,fontWeight:700,color:T.ft,textTransform:"uppercase",marginBottom:4}}>Custom Referral Code</div>
+<div style={{display:"flex",gap:4}}>
+<input value={vipCustomCode} onChange={e=>sVipCustomCode(e.target.value.replace(/[^a-zA-Z0-9_-]/g,"").slice(0,20))} placeholder={vipDash?.customCode||"your-custom-code"} style={{flex:1,padding:"8px 12px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,color:T.tx,fontSize:13,fontFamily:"monospace",outline:"none"}}/>
+<button onClick={async()=>{if(!vipCustomCode.trim()){toast("Enter a code","error");return}try{const r=await a.vcrc(user.pubkey,vipCustomCode.trim());if(r.ok){toast(`Custom code set: ${r.code}`,"success");sVipCustomCode("");sVipDash(d=>d?{...d,customCode:r.code,referralCode:r.code}:d)}else toast(r.error||"Failed","error")}catch(e){toast(e.message,"error")}}} style={{padding:"8px 14px",background:T.yl+"08",border:"1px solid "+T.yl+"22",borderRadius:6,fontSize:11,fontWeight:700,color:T.yl,cursor:"pointer",whiteSpace:"nowrap"}}>Set Code</button>
+</div>
+{vipDash?.customCode&&<div style={{fontSize:10,color:T.dm,marginTop:4}}>Current: <b style={{color:T.gn}}>{vipDash.customCode}</b> | Default: {vipDash.defaultCode}</div>}
+</div>
+
+{/* Referral Tier Progress */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:14,marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><IC.star s={16} c={T.yl}/><span style={{fontSize:14,fontWeight:800}}>Referral Tier</span></div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4}}>
+{[
+{name:"Standard",min:"0",color:T.ft,req:"Start"},
+{name:"Silver",min:"5 refs / 10 SOL vol",color:"#c0c0c0",req:"5+ refs"},
+{name:"Gold",min:"20 refs / 100 SOL vol",color:T.yl,req:"20+ refs"},
+{name:"Diamond",min:"50 refs / 1K SOL vol",color:"#00bcd4",req:"50+ refs"},
+].map((t,i)=>{const active=(vipDash?.referralTier||"standard")===t.name.toLowerCase();return<div key={i} style={{padding:8,background:active?t.color+"12":T.bg,border:"1px solid "+(active?t.color+"44":T.bd),borderRadius:6,textAlign:"center"}}>
+<div style={{fontSize:12,fontWeight:800,color:active?t.color:T.ft}}>{t.name}</div>
+<div style={{fontSize:9,color:T.dm,marginTop:2}}>{t.req}</div>
+{active&&<div style={{fontSize:8,color:t.color,marginTop:2,fontWeight:700}}>CURRENT</div>}
+</div>})}
+</div>
+<div style={{fontSize:10,color:T.dm,marginTop:6}}>Higher tiers earn larger commission rates from referred users' trading activity.</div>
+</div>
+
+{/* Network Volume */}
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:6,marginBottom:8}}>
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:12}}>
+<div style={{fontSize:10,color:T.ft,textTransform:"uppercase",marginBottom:4}}>Network Volume</div>
+<div style={{fontSize:22,fontWeight:900,color:T.gn}}>{fs(vipDash?.totalReferralVolume||0,2)} SOL</div>
+<div style={{fontSize:10,color:T.dm}}>Total trading volume from your referrals</div>
+</div>
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:12}}>
+<div style={{fontSize:10,color:T.ft,textTransform:"uppercase",marginBottom:4}}>Network Profit</div>
+<div style={{fontSize:22,fontWeight:900,color:(vipDash?.totalReferralProfit||0)>=0?T.gn:"#ff4444"}}>{fs(vipDash?.totalReferralProfit||0,2)} SOL</div>
+<div style={{fontSize:10,color:T.dm}}>Total profit generated by referrals</div>
+</div>
+</div>
+
+{/* Referred Users Table */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:14,marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><IC.users s={16} c={T.pu}/><span style={{fontSize:14,fontWeight:800}}>Referred Users</span><span style={{fontSize:11,color:T.dm}}>({vipDash?.referredUsers?.length||0})</span></div>
+{vipDash?.referredUsers?.length>0?<div style={{maxHeight:300,overflowY:"auto"}}>
+{vipDash.referredUsers.map((u,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:i<vipDash.referredUsers.length-1?"1px solid "+T.bd+"44":"none",fontSize:12}}>
+<span style={{color:T.dm,fontFamily:"monospace",width:90}}>{u.wallet}</span>
+<span style={{padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:700,background:u.tier==="vip"?T.yl+"18":u.tier==="pro"?T.pu+"18":T.gn+"18",color:u.tier==="vip"?T.yl:u.tier==="pro"?T.pu:T.gn}}>{(u.tier||"free").toUpperCase()}</span>
+<span style={{flex:1}}/>
+<span style={{color:T.gn,fontWeight:700}}>{fs(u.volume||0,2)} SOL</span>
+<span style={{color:(u.profit||0)>=0?T.gn:"#ff4444",fontWeight:700,fontSize:11}}>{(u.profit||0)>=0?"+":""}{fs(u.profit||0,3)}</span>
+</div>)}
+</div>:<div style={{fontSize:11,color:T.ft,textAlign:"center",padding:16}}>No referrals yet. Share your link to start earning!</div>}
+</div>
+
+{/* Recent Events Feed */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:14,marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><IC.zap s={14} c={T.gn}/><span style={{fontSize:14,fontWeight:800}}>Recent Activity</span></div>
+{vipDash?.recentEvents?.length>0?<div style={{maxHeight:200,overflowY:"auto"}}>
+{vipDash.recentEvents.slice(0,20).map((ev,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",borderBottom:"1px solid "+T.bd+"22",fontSize:11}}>
+<span style={{color:T.dm,fontSize:10}}>{new Date(ev.time).toLocaleTimeString()}</span>
+<span style={{color:T.dm}}>{ev.user}</span>
+{ev.type==="commission"&&<><span style={{color:T.gn,fontWeight:700}}>+{fs(ev.commission||0,4)} SOL</span><span style={{color:T.ft,fontSize:9}}>({fs(ev.platformCut||0,4)} platform cut)</span></>}
+{ev.type==="signup"&&<span style={{color:T.pu,fontWeight:700}}>New referral!</span>}
+</div>)}
+</div>:<div style={{fontSize:11,color:T.ft,textAlign:"center",padding:8}}>Activity will appear here as your referrals trade</div>}
+</div>
+
+{/* Admin panel — owner only (moved here from intel tab) */}
 {isOwner&&<div style={{background:T.sf,border:"1px solid "+T.yl+"18",borderRadius:10,padding:mb?8:12,marginTop:6}}>
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}><IC.crown s={14} c={T.yl}/><span style={{fontSize:12,fontWeight:800,color:T.yl}}>Admin Panel</span></div>
-<div style={{fontSize:8,color:T.dm,marginBottom:8}}>Platform owner tools. Visible only to whitelisted wallets.</div>
+<div style={{fontSize:8,color:T.dm,marginBottom:8}}>Platform owner tools.</div>
 <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
 <button onClick={async()=>{try{const r=await fetch(API+"/api/admin/stats",{headers:{"x-admin-secret":"bondli_default"}});const d=await r.json();if(d.ok)toast(`Users: ${d.totalUsers} | Active: ${d.activeUsers} | Free: ${d.tiers?.free} Pro: ${d.tiers?.pro} VIP: ${d.tiers?.vip} | Sessions: ${d.activeSessions}`,"success");else toast(d.error||"Failed","error")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 12px",background:T.yl+"08",border:"1px solid "+T.yl+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.yl,cursor:"pointer"}}>Platform Stats</button>
-<button onClick={async()=>{try{const r=await fetch(API+"/api/sol-price");const d=await r.json();toast(`SOL: $${d.price?.toFixed(2)||"??"}`,"success")}catch(e){toast("Add /api/sol-price route","error")}}} style={{padding:"6px 12px",background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.gn,cursor:"pointer"}}>SOL Price</button>
 <button onClick={()=>{const w=prompt("Wallet address to whitelist as VIP:");if(!w||w.length<32)return;fetch(API+"/api/admin/whitelist",{method:"POST",headers:{"Content-Type":"application/json","x-admin-secret":"bondli_default"},body:JSON.stringify({wallet:w})}).then(r=>r.json()).then(d=>d.ok?toast(`${w.slice(0,8)}… → VIP`,"success"):toast(d.error||"Failed","error")).catch(e=>toast(e.message,"error"))}} style={{padding:"6px 12px",background:T.pu+"08",border:"1px solid "+T.pu+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.pu,cursor:"pointer"}}>Whitelist VIP</button>
-<button onClick={async()=>{try{toast("Exporting session logs...","info");const r=await fetch(API+"/api/auto-trade/export-session?wallet="+(user?.pubkey||""));const d=await r.json();const blob=new Blob([JSON.stringify(d,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="bondli-session-"+Date.now()+".json";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);toast(`Exported: ${d.learner?.history?.length||0} trades, ${d.radarSnapshot?.length||0} radar tokens, scorer weights`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 12px",background:T.cy+"08",border:"1px solid "+T.cy+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.cy,cursor:"pointer"}}>Export Session Logs</button>
+<button onClick={async()=>{try{toast("Exporting session logs...","info");const r=await fetch(API+"/api/auto-trade/export-session?wallet="+(user?.pubkey||""));const d=await r.json();const blob=new Blob([JSON.stringify(d,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const el=document.createElement("a");el.href=url;el.download="bondli-session-"+Date.now()+".json";document.body.appendChild(el);el.click();document.body.removeChild(el);URL.revokeObjectURL(url);toast(`Exported: ${d.learner?.history?.length||0} trades`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 12px",background:T.cy+"08",border:"1px solid "+T.cy+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.cy||"#00bcd4",cursor:"pointer"}}>Export Session Logs</button>
 </div></div>}
+
 </div></EB>}
+
 </div></>}
 
 {showKeys&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.6)",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center",padding:10,animation:"fi .1s ease"}} onClick={()=>sShowKeys(false)}><div onClick={e=>e.stopPropagation()} style={{background:T.sf,border:"1px solid "+T.gn+"18",borderRadius:14,padding:18,maxWidth:440,width:"100%",maxHeight:"85vh",overflowY:"auto",animation:"si .15s ease"}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}><span style={{fontWeight:800,fontSize:16}}>Settings</span><button onClick={()=>sShowKeys(false)} style={{background:"none",border:"none",color:T.ft,fontSize:16,cursor:"pointer"}}>×</button></div>
@@ -1827,7 +1937,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 </div></div>}
 
 {mb&&!launched&&<div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:15,background:T.bg+"f6",backdropFilter:"blur(10px)",borderTop:"1px solid "+T.bd,paddingBottom:"max(2px,env(safe-area-inset-bottom,2px))"}}>
-<div style={{display:"flex"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim}].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"8px 0 4px",background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"pointer"}}><t.ic s={20} c={ac?T.gn:T.ft}/><span style={{fontSize:11,fontWeight:ac?700:400,color:ac?T.gn:T.ft}}>{t.l}</span></button>})}</div>
+<div style={{display:"flex"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},...((user?.tier==="vip"||user?.tier==="pro"||user?.whitelisted||isOwner)?[{id:"vip",l:"VIP",ic:IC.crown}]:[])].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"8px 0 4px",background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"pointer"}}><t.ic s={20} c={ac?(t.id==="vip"?T.yl:T.gn):T.ft}/><span style={{fontSize:11,fontWeight:ac?700:400,color:ac?(t.id==="vip"?T.yl:T.gn):T.ft}}>{t.l}</span></button>})}</div>
 <div style={{textAlign:"center",padding:"2px 0 4px"}}><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:3,color:T.dm,textDecoration:"none",fontSize:10}}><IC.tw s={10} c={T.dm}/>@Bondlifun</a></div>
 </div>}
 {!mb&&<footer style={{padding:"8px 16px",borderTop:"1px solid "+T.bd,marginTop:12,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:T.ft}}><span>BONDLI v4</span><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"flex",alignItems:"center",gap:4,color:T.dm,textDecoration:"none",fontSize:13,fontWeight:700}}><IC.tw s={16} c={T.dm}/>@Bondlifun</a><span>{launched?"ACTIVE":"IDLE"}</span></footer>}
