@@ -3380,6 +3380,28 @@ function startAutoTrader(wallet, settings) {
               holdTime: Date.now() - pos.entryTime,
               peakPct: +peakPct.toFixed(1),
             });
+            // ── MEME INTEL FEEDBACK: wire trade outcomes to scorer learning ──
+            // This is the critical missing link — without this, the AI never learns from trades
+            try {
+              const features = typeof extractQuickFeatures === "function" ? extractQuickFeatures(token) : null;
+              if (features) {
+                const peakMcx = pos.entryMcap > 0 ? (pos.peakMcap || currentMcap) / pos.entryMcap : 1;
+                const mcapDropPct = pos.peakMcap > 0 ? ((pos.peakMcap - currentMcap) / pos.peakMcap) * 100 : 0;
+                const outcome = {
+                  graduated: !!(token?.graduated || token?.raydiumPool),
+                  peakMcx,
+                  fleetPnl: +(pos.entrySol * (changePct / 100)).toFixed(4),
+                  rugged: mcapDropPct > 80 || exitReason === "SL2" || exitReason === "CRASH",
+                  mcapDropPct,
+                  devDumped: exitReason === "rug-detected",
+                  alive: currentMcap > 3000,
+                };
+                memeIntel.learn(features, outcome);
+                console.log(`[INTEL-FEEDBACK] Learned from ${ca.slice(0,6)}: score=${pos.entryScore||0} pnl=${changePct.toFixed(1)}% exit=${exitReason} trainCount=${memeIntel.scorer.trainCount}`);
+              }
+            } catch (e) {
+              console.log(`[INTEL-FEEDBACK] Error: ${e.message}`);
+            }
             // ── Silent referral revenue tracking for auto-trade ──
             const pnlSol = +(pos.entrySol * (changePct / 100)).toFixed(4);
             if (pnlSol > 0.001) {
@@ -4435,6 +4457,23 @@ app.post("/api/auto-trade/exit-position", async (req, res) => {
       entryBondPct: pos.entryBondPct || 0, exitReason: "manual-exit",
       holdTime: Date.now() - pos.entryTime, peakPct: +peakPct.toFixed(1),
     });
+    // ── MEME INTEL FEEDBACK: learn from manual exits too ──
+    try {
+      const features = typeof extractQuickFeatures === "function" ? extractQuickFeatures(token) : null;
+      if (features) {
+        const peakMcx = pos.entryMcap > 0 ? (pos.peakMcap || currentMcap) / pos.entryMcap : 1;
+        const mcapDropPctM = pos.peakMcap > 0 ? ((pos.peakMcap - currentMcap) / pos.peakMcap) * 100 : 0;
+        memeIntel.learn(features, {
+          graduated: !!(token?.graduated || token?.raydiumPool),
+          peakMcx,
+          fleetPnl: +(pos.entrySol * (changePct / 100)).toFixed(4),
+          rugged: mcapDropPctM > 80,
+          mcapDropPct: mcapDropPctM,
+          alive: currentMcap > 3000,
+        });
+        console.log(`[INTEL-FEEDBACK] Manual exit learn: ${ca.slice(0,6)} pnl=${changePct.toFixed(1)}%`);
+      }
+    } catch {}
     // Remove position, add cooldown
     state.positions.delete(ca);
     const cd = soldCooldowns.get(wallet) || new Map();
