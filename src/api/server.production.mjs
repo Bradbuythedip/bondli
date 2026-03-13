@@ -264,6 +264,28 @@ async function enrichDevCredibility(token) {
     }
   }
 
+  // 1b. Local radar check — catch same-name tokens in current session that DexScreener hasn't indexed yet
+  let localDupes = 0;
+  for (const [ca, t] of radar.tokens) {
+    if (ca === token.ca) continue;
+    if ((t.name || "").trim().toLowerCase() === name) localDupes++;
+  }
+  if (localDupes > 0) {
+    result.namePrevLaunches = Math.max(result.namePrevLaunches, localDupes);
+    result.nameUnique = false;
+    // If local dupes exist and any has low MC or high sell ratio, mark as prev rugged
+    if (!result.namePrevRugged) {
+      for (const [ca, t] of radar.tokens) {
+        if (ca === token.ca) continue;
+        if ((t.name || "").trim().toLowerCase() !== name) continue;
+        const mc = t.mcapUsd || 0;
+        const sells = t.sells || 0;
+        const buys = t.buys || 0;
+        if (mc < 3000 && sells > buys * 0.5 && buys > 3) { result.namePrevRugged = true; break; }
+      }
+    }
+  }
+
   // 2. Check dev wallet SOL balance
   const devCached = devCredCache.get(devW);
   if (devCached && Date.now() - devCached.ts < 300000) { // 5 min cache
@@ -3788,14 +3810,14 @@ function startAutoTrader(wallet, settings) {
         let rugRejectReason = null;
         const isVeryYoung = ageMin < 3; // tokens under 3 min get benefit of the doubt
         if (qf) {
-          if (qf.rg_devSellSpeed > 0.4) rugRejectReason = "dev_sell";
+          if (qf.rg_devSellSpeed > 0.6) rugRejectReason = "dev_sell"; // relaxed from 0.4 — partial dev sells are common on pumpfun
           else if (qf._rg_devSelfSnipe > 0) rugRejectReason = "dev_snipe";
-          else if (qf.rg_mcapDropRate > 0.4 && !isVeryYoung) rugRejectReason = "mcap_crash";
-          else if (qf.rg_coordDumpScore > 0.35) rugRejectReason = "coord_dump";
-          else if (qf._rg_pumpDump > 0.5 && !isVeryYoung) rugRejectReason = "pump_dump";
-          else if (qf._rg_sybilScore > 0.4) rugRejectReason = "sybil";
-          else if (qf._rg_earlyDump > 0.5 && ageMin < 5) rugRejectReason = "early_dump"; // raised from 0.3 to 0.5
-          else if (qf._rg_quickFlipRate > 0.25) rugRejectReason = "quick_flip";
+          else if (qf.rg_mcapDropRate > 0.5 && !isVeryYoung) rugRejectReason = "mcap_crash"; // relaxed from 0.4
+          else if (qf.rg_coordDumpScore > 0.5) rugRejectReason = "coord_dump"; // relaxed from 0.35 — fast sells common on pumpfun
+          else if (qf._rg_pumpDump > 0.6 && !isVeryYoung) rugRejectReason = "pump_dump"; // relaxed from 0.5
+          else if (qf._rg_sybilScore > 0.5) rugRejectReason = "sybil"; // relaxed from 0.4
+          else if (qf._rg_earlyDump > 0.6 && ageMin < 5) rugRejectReason = "early_dump"; // relaxed from 0.5
+          else if (qf._rg_quickFlipRate > 0.35) rugRejectReason = "quick_flip"; // relaxed from 0.25
           else if (qf.rg_holderConcentration > 0.7 && buys > 5 && !(qf._whaleBullish > 0.3)) rugRejectReason = "whale_heavy";
           else if (qf.rg_liqRemovalSpeed > 0.65 && !isVeryYoung) rugRejectReason = "liq_removal";
           else if (qf.ch_smoothGrind > 0.6 && !isVeryYoung) rugRejectReason = "smooth_grind";
@@ -3817,20 +3839,20 @@ function startAutoTrader(wallet, settings) {
           else if (t._artworkFlags?.includes("EXACT_DUPLICATE")) rugRejectReason = "stolen_art";
           else {
             const rugSignals = [
-              qf.rg_devSellSpeed > 0.25, qf.rg_coordDumpScore > 0.2,
-              qf._rg_sybilScore > 0.25, qf._rg_quickFlipRate > 0.15,
-              qf.rg_holderConcentration > 0.6, qf._rg_earlyDump > 0.2,
-              qf.rg_mcapDropRate > 0.25 && !isVeryYoung, qf._rg_pumpDump > 0.3 && !isVeryYoung,
-              qf.ch_smoothGrind > 0.35 && !isVeryYoung, qf.ch_dipRatio < 0.1 && !isVeryYoung,
-              qf._rg_zeroSellFlag > 0.4 && !isVeryYoung,  // skip for young tokens
-              qf._rg_buySellImbalance > 0.5 && !isVeryYoung,
-              qf.ch_staircaseScore > 0.3 && !isVeryYoung,
-              qf._rg_freshWalletRatio > 0.6 && !isVeryYoung,
-              qf.ch_flatlineSpike > 0.25 && !isVeryYoung,
+              qf.rg_devSellSpeed > 0.35, qf.rg_coordDumpScore > 0.3,
+              qf._rg_sybilScore > 0.3, qf._rg_quickFlipRate > 0.2,
+              qf.rg_holderConcentration > 0.65, qf._rg_earlyDump > 0.3,
+              qf.rg_mcapDropRate > 0.3 && !isVeryYoung, qf._rg_pumpDump > 0.35 && !isVeryYoung,
+              qf.ch_smoothGrind > 0.4 && !isVeryYoung, qf.ch_dipRatio < 0.08 && !isVeryYoung,
+              qf._rg_zeroSellFlag > 0.5 && !isVeryYoung,
+              qf._rg_buySellImbalance > 0.6 && !isVeryYoung,
+              qf.ch_staircaseScore > 0.4 && !isVeryYoung,
+              qf._rg_freshWalletRatio > 0.7 && !isVeryYoung,
+              qf.ch_flatlineSpike > 0.3 && !isVeryYoung,
               t._artworkOriginal === false,
             ].filter(Boolean).length;
-            // Young tokens need more signals to reject (4 instead of 3)
-            const minSignals = isVeryYoung ? 4 : 3;
+            // Young tokens need more signals to reject (5 instead of 4)
+            const minSignals = isVeryYoung ? 5 : 4;
             if (rugSignals >= minSignals) rugRejectReason = "multi_rug_" + rugSignals;
           }
           if (rugRejectReason) {

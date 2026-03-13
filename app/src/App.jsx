@@ -1114,7 +1114,7 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 {n:scan,label:"Scanner",sub:"Filter",c:T.pu,v:engineState.pool?.active||0,active:modActive("scorer"),ico:"S"},
 {n:score,label:"Scorer",sub:"Velocity",c:T.pu,v:total,active:modActive("scorer"),ico:"V"},
 {n:social,label:"Social",sub:"Signals",c:T.or,v:Math.round(fh.socialSignals*100)+"%",active:fh.socialSignals>.05?1:0,ico:"W"},
-{n:hub,label:"BONDLI",sub:"Brain",c:domC,v:total,active:1,isHub:true},
+{n:hub,label:"CORTEX",sub:"Inference",c:domC,v:total,active:1,isHub:true},
 {n:rugd,label:"Rug Detect",sub:"Safety",c:T.rd,v:d.rug,active:modActive("rug_detector"),ico:"R"},
 ].map((nd,i)=>nd.isHub?<g key={"n"+i}>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+6} fill="url(#hubGlow)"/>
