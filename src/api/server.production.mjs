@@ -55,6 +55,7 @@ const RPC_URL = process.env.RPC_URL || CONFIG.RPC_URL || "https://api.mainnet-be
 const heliusSendRawTx = heliusSmartSend;
 const REDIS_URL = process.env.REDIS_URL || null;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
+const DEFAULT_REFERRAL_CODE = "ilikethetech"; // owner's referral code — applied to all new users unless they have another referrer
 const PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data";
 
 // ═══════════════════════════════════════
@@ -1894,6 +1895,37 @@ async function saveUser(wallet, data) {
   }
 }
 
+// Auto-apply default referral code for new users who weren't referred by someone else
+async function applyDefaultReferral(wallet) {
+  try {
+    const user = await getUser(wallet);
+    if (user.referredBy) return; // already referred by someone
+    // Look up the default referral code owner
+    let referrerWallet = null;
+    if (redis) {
+      referrerWallet = await redis.get("customref:" + DEFAULT_REFERRAL_CODE);
+      if (!referrerWallet) referrerWallet = await redis.get("ref:" + DEFAULT_REFERRAL_CODE);
+    }
+    if (!referrerWallet) {
+      const found = [...users.entries()].find(([, u]) => u.customRefCode === DEFAULT_REFERRAL_CODE || u.refCode === DEFAULT_REFERRAL_CODE);
+      if (found) referrerWallet = found[0];
+    }
+    if (!referrerWallet || referrerWallet === wallet) return; // owner not found or self-referral
+    const referrer = await getUser(referrerWallet);
+    await saveUser(wallet, { referredBy: referrerWallet, referredByTier: referrer.tier || "free" });
+    await saveUser(referrerWallet, {
+      referralCount: (parseInt(referrer.referralCount || "0") + 1).toString(),
+      referralNetwork: (parseInt(referrer.referralNetwork || "0") + 1).toString(),
+    });
+    if (redis) {
+      try { await redis.lPush("refevents:" + referrerWallet, JSON.stringify({ user: wallet.slice(0, 4) + "..." + wallet.slice(-4), type: "signup", time: Date.now() })); } catch {}
+    }
+    console.log(`[REFERRAL] Default referral applied: ${wallet.slice(0, 8)}... → ${DEFAULT_REFERRAL_CODE}`);
+  } catch (e) {
+    console.error("[REFERRAL] Failed to apply default referral:", e.message);
+  }
+}
+
 // ═══════════════════════════════════════
 // MIDDLEWARE
 // ═══════════════════════════════════════
@@ -1989,6 +2021,8 @@ app.post("/api/access/activate-free", async (req, res) => {
     return res.json({ ok: true, tier: tierInfo.tier, message: "Already " + tierInfo.tier });
   }
   await saveUser(wallet, { tier: "free", activatedAt: new Date().toISOString() });
+  // Auto-apply default referral for new users without a referrer
+  applyDefaultReferral(wallet);
   res.json({ ok: true, tier: "free" });
 });
 
@@ -2018,6 +2052,7 @@ app.post("/api/access/activate-pro", async (req, res) => {
     return res.status(400).json({ error: err.message });
   }
   await saveUser(wallet, { tier: "pro", paid: true, proTx: txSig });
+  applyDefaultReferral(wallet);
   res.json({ ok: true, tier: "pro" });
 });
 
@@ -2030,6 +2065,7 @@ app.post("/api/access/activate-vip", async (req, res) => {
     return res.status(400).json({ error: err.message });
   }
   await saveUser(wallet, { tier: "vip", paid: true, whitelisted: true, vipTx: txSig });
+  applyDefaultReferral(wallet);
   res.json({ ok: true, tier: "vip" });
 });
 
