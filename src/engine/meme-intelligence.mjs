@@ -585,9 +585,11 @@ class ScoringEngine {
     };
 
     // Online learning state — higher rate to adapt faster from rug losses
-    this.learningRate = 0.03;
+    this.learningRate = 0.08; // Increased from 0.03 — adapt faster to rug patterns and market shifts
     this.trainCount = 0;
     this.accuracy = { correct: 0, total: 0 };
+    // Score bracket accuracy: tracks win rate per score range (0-10, 10-20, ..., 90-100)
+    this.bracketAccuracy = {};
   }
 
   // Rebuild multiplier cache after weight changes — one Float64Array lookup per feature
@@ -760,11 +762,12 @@ class ScoringEngine {
     const actual = outcomeToLabel(outcome);
     const error = actual - predicted.score / 100;
 
-    // Gradient update per feature
+    // Gradient update per feature — losses teach 2x faster (asymmetric learning)
+    const lossMultiplier = error < 0 ? 2.0 : 1.0;
     for (const key of FEATURE_KEYS) {
       const val = features[key] || 0;
       if (val > 0) {
-        this.weights[key] += this.learningRate * error * val;
+        this.weights[key] += this.learningRate * lossMultiplier * error * val;
         this.weights[key] = Math.max(0.1, Math.min(5.0, this.weights[key]));
       }
     }
@@ -779,6 +782,13 @@ class ScoringEngine {
     if (predBool === actualBool) this.accuracy.correct++;
     this.accuracy.total++;
 
+    // Track per-bracket accuracy (which score ranges actually predict winners?)
+    const bracket = Math.floor(predicted.score / 10) * 10; // 0, 10, 20, ..., 90
+    if (!this.bracketAccuracy[bracket]) this.bracketAccuracy[bracket] = { wins: 0, losses: 0, totalPnl: 0 };
+    if (actualBool) this.bracketAccuracy[bracket].wins++;
+    else this.bracketAccuracy[bracket].losses++;
+    if (outcome.fleetPnl != null) this.bracketAccuracy[bracket].totalPnl += outcome.fleetPnl;
+
     return {
       trainCount: this.trainCount,
       error: Math.abs(error),
@@ -792,6 +802,12 @@ class ScoringEngine {
       accuracy: this.accuracy.total > 10 ? (this.accuracy.correct / this.accuracy.total * 100).toFixed(1) + "%" : "calibrating",
       topFeatures: this.getTopFeatures(10),
       weights: { ...this.weights },
+      bracketAccuracy: Object.entries(this.bracketAccuracy).map(([b, d]) => ({
+        range: `${b}-${+b + 10}`,
+        trades: d.wins + d.losses,
+        winRate: d.wins + d.losses > 0 ? +((d.wins / (d.wins + d.losses)) * 100).toFixed(1) : 0,
+        totalPnl: +d.totalPnl.toFixed(4),
+      })).sort((a, b) => +a.range.split("-")[0] - +b.range.split("-")[0]),
     };
   }
 
@@ -803,7 +819,7 @@ class ScoringEngine {
   }
 
   export() {
-    return { weights: this.weights, groupWeights: this.groupWeights, trainCount: this.trainCount, accuracy: this.accuracy };
+    return { weights: this.weights, groupWeights: this.groupWeights, trainCount: this.trainCount, accuracy: this.accuracy, bracketAccuracy: this.bracketAccuracy };
   }
 
   import(data) {
@@ -811,6 +827,7 @@ class ScoringEngine {
     if (data.groupWeights) this.groupWeights = data.groupWeights;
     if (data.trainCount) this.trainCount = data.trainCount;
     if (data.accuracy) this.accuracy = data.accuracy;
+    if (data.bracketAccuracy) this.bracketAccuracy = data.bracketAccuracy;
     this._mCache = null; // invalidate cache
   }
 }
