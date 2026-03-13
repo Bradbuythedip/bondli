@@ -206,6 +206,11 @@ class GameState {
     let sellMult = 1.0;
     let holdExt = 0;
 
+    // Count recent buys/sells for signal logic (decay-weighted counts)
+    const recentSellCount = external.filter(t => t.type === "sell" && (now - t.time) < 30000).length;
+    const recentBuyCount = external.filter(t => t.type === "buy" && (now - t.time) < 30000).length;
+    const recentSellersCount = new Set(external.filter(t => t.type === "sell" && (now - t.time) < 10000).map(t => t.wallet)).size;
+
     // ── SELL_NOW triggers (high priority) ──
     if (this.devSelling) {
       // Dev selling = trust collapse. In Nash equilibrium, everyone should defect.
@@ -218,8 +223,8 @@ class GameState {
       // Nash: if you believe others will sell, your best response is to sell first.
       signal = "SELL_NOW";
       sellMult = 2.5;
-      console.log(`[GAME] 🚨 DUMP CASCADE — ${uniqueSellers10} sellers in 10s`);
-    } else if (this.buyPressure < 0.25 && sells30 >= 5) {
+      console.log(`[GAME] 🚨 DUMP CASCADE — ${recentSellersCount} sellers in 10s`);
+    } else if (this.buyPressure < 0.25 && recentSellCount >= 5) {
       // Heavy sell pressure — market is exiting
       signal = "SELL_NOW";
       sellMult = 2.0;
@@ -234,7 +239,7 @@ class GameState {
       sellMult = 0.3; // delay sells significantly
       holdExt = 30;   // extend hold by 30s
       console.log(`[GAME] 🐋 WHALE DETECTED — riding momentum, extending hold 30s`);
-    } else if (this.buyPressure > 0.75 && buys30 >= 4) {
+    } else if (this.buyPressure > 0.75 && recentBuyCount >= 4) {
       // Strong buy pressure from multiple participants
       // Nash: cooperative equilibrium — everyone holds, price goes up
       signal = "RIDE";
