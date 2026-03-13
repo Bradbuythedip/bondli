@@ -18,6 +18,8 @@
     <!-- Ghost B watermark -->
     <text x="15" y="23" text-anchor="middle" dominant-baseline="central" font-family="Arial Black,Arial,sans-serif" font-weight="900" font-size="18" fill="#ffffff" opacity="0.06">B</text>
   </g>
-  <!-- BL text under the pill -->
-  <text x="32" y="55" text-anchor="middle" font-family="Arial Black,Arial,sans-serif" font-weight="900" font-size="14" letter-spacing="2" fill="#ffffff">BL</text>
+  <!-- 3 white lines under the pill -->
+  <line x1="22" y1="42" x2="42" y2="42" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+  <line x1="25" y1="47" x2="39" y2="47" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.7"/>
+  <line x1="28" y1="52" x2="36" y2="52" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.4"/>
 </svg>
