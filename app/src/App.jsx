@@ -1203,17 +1203,19 @@ return<div style={{display:"flex",alignItems:"center",gap:mb?4:8,padding:"4px 8p
 </div>})()}
 </div>
 
-{/* How it works — always visible */}
-<div style={{padding:"8px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,marginBottom:6}}>
+{/* How it works — collapsible */}
+<div onClick={()=>sShowHow(!showHow)} style={{padding:"8px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,marginBottom:6,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
 <span style={{fontSize:12,fontWeight:700,color:T.dm}}>How scoring works</span>
+<span style={{fontSize:10,color:T.ft}}>{showHow?"▾":"▸"}</span>
 </div>
-<>
+{showHow&&<>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:4,marginBottom:6}}>
 {[{name:"Tipping Point (Gladwell)",color:T.gn,items:["Law of the Few — whale/influencer concentration","Stickiness Factor — meme phrase memorability","Power of Context — trending topic + market mood","Maven/Connector/Salesman — wallet archetype signals","10K Hour Rule — token pattern maturity depth"]},
 {name:"Thinking Fast & Slow (Kahneman)",color:T.yl,items:["Cognitive Ease — name pronounceability score","Anchoring Bias — first price vs current price drift","Availability Heuristic — recency of similar rugs","Loss Aversion — 2x weight on sell pressure vs buys","Herd Signal — System 1 buy acceleration cascade","Peak-End Rule — chart shape memory at peak + now","Prospect Theory — framing effect on holder behavior"]},
 {name:"Blink + Outliers (Gladwell)",color:"#ff9800",items:["Thin-Slicing — first 30s pattern = 80% accuracy","Outlier Detection — 3σ deviation from normal launches","Rapid Cognition — sub-second rug signature match","Accumulative Advantage — early mover wallet clustering"]},
 {name:"On-Chain Velocity",color:T.or,items:["Buy velocity 1m/5m","Unique buyers in 5 min","Gini coefficient of buys","Dev wallet hold %"]},
-{name:"Social Signals",color:T.pu,items:["Twitter/Telegram/Website presence","Name length + ticker length","Description sentiment","Emoji density + type analysis"]}
+{name:"Social Signals",color:T.pu,items:["Twitter/Telegram/Website presence","Name length + ticker length","Description sentiment","Emoji density + type analysis"]},
+{name:"Mimetic + Reflexivity (Girard/Soros)",color:T.cy,items:["Mimetic Desire — copy-wallet clustering rate","Reflexivity Loop — price↔narrative feedback strength","Schelling Point — ticker/name cultural focal magnetism","Contagion R0 — buyer-to-buyer spread velocity","Antifragile Signal — dip recovery stronger than prior ATH"]}
 ].map(fw=><div key={fw.name} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:6,padding:8}}>
 <div style={{fontSize:11,fontWeight:800,color:fw.color,marginBottom:4}}>{fw.name}</div>
 {fw.items.map(it=><div key={it} style={{fontSize:10,color:T.dm,padding:"1px 0",display:"flex",alignItems:"center",gap:3}}><span style={{width:3,height:3,borderRadius:"50%",background:fw.color+"44",flexShrink:0}}/>{it}</div>)}
@@ -1227,7 +1229,7 @@ return<div style={{display:"flex",alignItems:"center",gap:mb?4:8,padding:"4px 8p
 <span style={{fontSize:8,color:l.c,fontWeight:700}}>{l.st}</span>
 </div>)}
 </div>
-</>
+</>}
 
 {/* Live ML Behavior — Pro/VIP only — collapsible */}
 {(user?.tier==="pro"||user?.tier==="vip"||user?.whitelisted)&&intelData?.scorer?.topFeatures?.length>0&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,marginTop:6}}>
