@@ -3259,7 +3259,7 @@ function startAutoTrader(wallet, settings) {
   if (!soldCooldowns.has(wallet)) soldCooldowns.set(wallet, new Map());
   const state = {
     settings: {
-      minScore: settings.minScore || 45,
+      minScore: settings.minScore || 55,
       solPerTrade: settings.solPerTrade || 0.05,
       maxPositions: settings.maxPositions || 5,
       // ═══ POWER-LAW OPTIMIZED TP/SL ═══
@@ -3268,16 +3268,20 @@ function startAutoTrader(wallet, settings) {
       //   ~25% hit TP1-TP2 → take partial profits
       //   ~5% become 10-100x runners → let the moonbag ride the fat tail
       // Key insight: the 5% of runners generate >50% of total returns
-      tp1: settings.tp1 || 20,         // TP1: +20% (lock in partial early — most memes peak under 30%)
-      tp1Sell: settings.tp1Sell || 40,  // sell 40% at TP1 (secure more profit early)
-      tp2: settings.tp2 || 80,         // TP2: +80%
-      tp2Sell: settings.tp2Sell || 30,  // sell 30% of remaining at TP2 (keep 49% as moonbag potential)
-      tp3: settings.tp3 || 200,        // TP3: +200% (true runner — sell small, hold moonbag)
-      tp3Sell: settings.tp3Sell || 40,  // sell 40% of remaining, 29% rides as moonbag forever
-      // TIGHT stop losses — most tokens rug, cut losses aggressively
-      sl1: settings.sl1 || 8,          // SL1: -8% (cut fast — meme tokens that drop 8% rarely recover)
-      sl1Sell: settings.sl1Sell || 70,  // sell 70% to reduce exposure aggressively
-      sl2: settings.sl2 || 15,         // SL2: -15% full exit — capital preservation is #1
+      // ═══ REBALANCED TP/SL — asymmetric in OUR favor ═══
+      // Old: TP1=20% SL2=15% → need 75% win rate to break even. Actual win rate ~25%. Math doesn't work.
+      // New: TP1=35% SL2=12% → need 25% win rate to break even. Much more achievable.
+      // Key insight: let winners run MORE, cut losers FASTER and SMALLER.
+      tp1: settings.tp1 || 35,         // TP1: +35% (was 20% — too tight, winners got clipped)
+      tp1Sell: settings.tp1Sell || 30,  // sell 30% at TP1 (was 40% — keep more for runners)
+      tp2: settings.tp2 || 100,        // TP2: +100% (was 80%)
+      tp2Sell: settings.tp2Sell || 30,  // sell 30% of remaining
+      tp3: settings.tp3 || 250,        // TP3: +250% (was 200% — let fat tails ride)
+      tp3Sell: settings.tp3Sell || 40,  // sell 40% of remaining, rest = moonbag
+      // TIGHTER stop losses with FASTER cuts — max loss per trade capped
+      sl1: settings.sl1 || 6,          // SL1: -6% (was 8% — cut faster)
+      sl1Sell: settings.sl1Sell || 80,  // sell 80% at SL1 (was 70% — more aggressive risk reduction)
+      sl2: settings.sl2 || 12,         // SL2: -12% full exit (was 15% — tighter cap on max loss)
       requireBoosted: settings.requireBoosted || false,
       momentumExit: settings.momentumExit !== false, // default ON — auto-tighten stops on score drop
       reentryDips: settings.reentryDips !== false,    // default ON — re-enter on dips, sell into volume
@@ -3583,8 +3587,15 @@ function startAutoTrader(wallet, settings) {
               }
 
               // ── ABSOLUTE SCORE DROP (existing logic, kept as safety net) ──
-              if (scoreDrop >= 30) {
-                log(`MOMENTUM EXIT ${ca.slice(0,6)}: score ${pos.entryScore}→${currentScore} (−${scoreDrop}) — FULL SELL`);
+              // PROTECTED: tokens with strong fundamentals (high UB, rising on-chain activity)
+              // get a wider buffer before momentum exit — don't kill winners early
+              const tokenData = radar.tokens.get(ca);
+              const liveUB = tokenData?.uniqueBuyers?.size || 0;
+              const liveBuys = tokenData?.buys || 0;
+              const hasStrongFundamentals = liveUB >= 20 && liveBuys >= 30 && changePct > 0;
+              const momentumExitThreshold = hasStrongFundamentals ? 40 : 30; // wider buffer for strong tokens
+              if (scoreDrop >= momentumExitThreshold) {
+                log(`MOMENTUM EXIT ${ca.slice(0,6)}: score ${pos.entryScore}→${currentScore} (−${scoreDrop}) UB:${liveUB} — FULL SELL`);
                 const sig = await execSell(ca, 100, kp, "momentum-exit");
                 if (sig) {
                   broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MOMENTUM", reason: "score-crash" } });
@@ -3910,19 +3921,24 @@ function startAutoTrader(wallet, settings) {
         // Low-velocity early entry: token has few buys but healthy buy/sell ratio
         // and is in the pre-discovery FDV range ($4K-$30K). These are the tokens
         // we SHOULD be aping — before velocity picks up.
-        const isLowVelocity = mc >= 4000 && mc <= 30000 && buys >= 1 && sells <= buys && ub >= 1 && ageMin >= 0.2 && ageMin <= 30;
+        // TIGHTENED: was buys>=1 ub>=1 — require actual activity proof
+        const isLowVelocity = mc >= 4000 && mc <= 30000 && buys >= 5 && sells >= 1 && sells <= buys && ub >= 3 && ageMin >= 0.5 && ageMin <= 30;
         // DexPaid early entry: boosted tokens get relaxed filters — paid = conviction
         const isDexPaid = !!radar.dexBoosted.get(t.ca);
-        // Very early tokens (< 2 min) in pre-discovery range — let through with minimal filters
-        const isVeryEarly = ageMin < 2 && mc >= 4000 && mc <= 25000 && buys >= 2 && ub >= 2 && sells <= buys;
+        // Very early tokens (< 2 min) in pre-discovery range — still require minimum activity
+        // TIGHTENED: was buys>=2 ub>=2 — too loose, let 6-second-old zero-sell tokens through
+        const isVeryEarly = ageMin >= 0.5 && ageMin < 2 && mc >= 4000 && mc <= 25000 && buys >= 5 && ub >= 3 && sells >= 1;
+        // HARD MINIMUM: no token enters without at least 3 unique buyers and 30 seconds of age
+        // This alone would have prevented the BURDISH trade (3 UB, 6 seconds old, 0 sells)
+        if (ub < 3 || ageMin < 0.5) { pipeline.baseFilter++; return false; }
         if (isAccelerating) {
-          if (!(mc > 3000 && buys >= 2 && ub >= 1 && ageMin >= 0.2 && sells <= buys * 1.5)) { pipeline.baseFilter++; return false; }
+          if (!(mc > 3000 && buys >= 5 && ub >= 3 && ageMin >= 0.5 && sells >= 1 && sells <= buys * 1.5)) { pipeline.baseFilter++; return false; }
           return true;
         }
-        if (isDexPaid && mc >= 4000 && buys >= 1 && sells <= buys * 2) return true;
-        if (isVeryEarly) return true; // fast-track very early movers
+        if (isDexPaid && mc >= 4000 && buys >= 3 && ub >= 3 && sells >= 1 && sells <= buys * 2) return true;
+        if (isVeryEarly) return true; // fast-track very early movers (already tightened above)
         if (isLowVelocity) return true;
-        if (!(mc > 5000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) { pipeline.baseFilter++; return false; }
+        if (!(mc > 5000 && buys >= 5 && ub >= 3 && ageMin >= 0.5 && sells >= 1 && sells <= buys * 1.2)) { pipeline.baseFilter++; return false; }
         return true;
       });
       // ═══ BACKGROUND WALLET AGE ENRICHMENT — non-blocking on-chain wallet age checks ═══
@@ -3959,7 +3975,9 @@ function startAutoTrader(wallet, settings) {
         // are NORMAL at launch. Only hard-reject on dev activity signals for young tokens.
         const qf = extractQuickFeatures(t);
         let rugRejectReason = null;
-        const isVeryYoung = ageMin < 3; // tokens under 3 min get benefit of the doubt
+        // TIGHTENED: was < 3 min unconditional — now require at least some sell activity to qualify
+        // Tokens with ZERO sells don't get young exemption (zero sells = classic rug setup)
+        const isVeryYoung = ageMin < 2 && sells >= 1; // was ageMin < 3 with no sell requirement
         if (qf) {
           if (qf.rg_devSellSpeed > 0.6) rugRejectReason = "dev_sell"; // relaxed from 0.4 — partial dev sells are common on pumpfun
           else if (qf._rg_devSelfSnipe > 0) rugRejectReason = "dev_snipe";
@@ -4221,7 +4239,7 @@ function startAutoTrader(wallet, settings) {
         // Apply learner-recommended min score (if enough data)
         const adj = tradeLearner.getAdjustments();
         const effectiveMin = adj.minScoreShift || state.settings.minScore;
-        const threshold = Math.min(state.settings.minScore, effectiveMin);
+        const threshold = Math.max(45, Math.min(state.settings.minScore, effectiveMin)); // never drop below 45
         if (t._apeScore < threshold) {
           pipeline.scoreLow++;
           // Track near misses: within 10 pts of threshold
@@ -4331,7 +4349,7 @@ function startAutoTrader(wallet, settings) {
       const stabilityMap = state._scoreStability;
       // Update stability for all scored tokens this cycle
       const adj2 = tradeLearner.getAdjustments();
-      const effMin = Math.min(state.settings.minScore, adj2.minScoreShift || state.settings.minScore);
+      const effMin = Math.max(45, Math.min(state.settings.minScore, adj2.minScoreShift || state.settings.minScore));
       for (const t of hot) {
         const prev = stabilityMap.get(t.ca) || { aboveCount: 0, firstSeen: Date.now() };
         prev.aboveCount++;
@@ -4437,6 +4455,29 @@ function startAutoTrader(wallet, settings) {
               trackBuy(wallet, t.ca, tradeSol); // instant wallet visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
               broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: tradeSol, mcap: t.mcapUsd, wallet, score: t._apeScore, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, buyVelTrend } });
+              // ═══ RAPID POST-ENTRY DUMP CHECK — catches instant rugs ═══
+              // The 4s main loop interval lets dumps grow from -12% to -40%+.
+              // This 2s rapid check catches tokens that dump immediately after our buy.
+              setTimeout(async () => {
+                try {
+                  const pos = state.positions.get(t.ca);
+                  if (!pos) return;
+                  const freshToken = radar.tokens.get(t.ca);
+                  if (!freshToken) return;
+                  const freshMcap = freshToken.mcapUsd || 0;
+                  if (pos.entryMcap <= 0 || freshMcap <= 0) return;
+                  const rapidDrop = ((freshMcap - pos.entryMcap) / pos.entryMcap) * 100;
+                  if (rapidDrop <= -8) { // already down 8% in 2 seconds = rug
+                    log(`RAPID EXIT ${t.ca.slice(0,6)}: ${rapidDrop.toFixed(0)}% in 2s — emergency sell`);
+                    const emergSig = await execSell(t.ca, 100, kp, "rapid-dump");
+                    if (emergSig) {
+                      broadcastWS({ event: "auto-sell", data: { ca: t.ca, pnl: rapidDrop.toFixed(1), wallet, tier: "RAPID", reason: "instant-dump" } });
+                      exitPosition(t.ca, 100, "rapid-dump");
+                      trackSell(wallet, t.ca);
+                    }
+                  }
+                } catch {}
+              }, 2000);
             }
           }
         } catch (e) { log(`Buy error: ${e.message}`); }
@@ -6022,7 +6063,7 @@ function createLiveSim(id, settings) {
   if (liveSims.has(id)) stopLiveSim(id);
   const state = {
     settings: {
-      minScore: settings.minScore || 45,
+      minScore: settings.minScore || 55,
       solPerTrade: settings.solPerTrade || 0.05,
       maxPositions: settings.maxPositions || 5,
       tp1: settings.tp1 || 25, tp1Sell: settings.tp1Sell || 35,
