@@ -21,7 +21,7 @@ fr(s,w){return this.f("/api/session/force-recover",{method:"POST",body:{sessionI
 gtw(w){return this.f(`/api/trading-wallet/${w}`)}
 ctw(w){return this.f("/api/trading-wallet/create",{method:"POST",body:{wallet:w}})}
 etw(w){return this.f("/api/trading-wallet/export",{method:"POST",body:{wallet:w}})}
-qb(w,c,s){return this.f("/api/quick-ape",{method:"POST",body:{wallet:w,ca:c,solAmount:s}})}
+qb(w,c,s,slip,tip){return this.f("/api/quick-ape",{method:"POST",body:{wallet:w,ca:c,solAmount:s,...(slip!=null?{slippage:slip}:{}),...(tip!=null?{priorityFee:tip}:{})}})}
 qs(w,c,p){return this.f("/api/quick-sell",{method:"POST",body:{wallet:w,ca:c,percent:p}})}
 sa(w){return this.f("/api/sell-all",{method:"POST",body:{wallet:w}})}
 gp(w){return this.f(`/api/positions/${w}`)}

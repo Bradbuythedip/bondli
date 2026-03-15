@@ -1,4 +1,4 @@
-import{useState,useEffect,useRef,useCallback,Component}from"react";
+import React,{useState,useEffect,useRef,useCallback,Component}from"react";
 import{TC,D,L,css,uT}from"./lib/t.js";
 import{M,S,API,WS_URL}from"./lib/c.js";
 import{hW,wN,fm,fs,tp,dbp,wc,hp}from"./lib/u.js";
@@ -452,6 +452,10 @@ const[vipDash,sVipDash]=useState(null);const[vipCustomCode,sVipCustomCode]=useSt
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);const[showModel,sShowModel]=useState(false);
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
 const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);
+// Intel trade settings — slippage, tip, buy amount, auto mode
+const[iTrade,sITrade]=useState({ca:null,slip:25,tip:0.005,amt:0.1,auto:false});
+// Auto-trade settings calculator (shared between intel trade panel and auto-ape section)
+const autoSettings=(solPerTrade)=>{const sol=solPerTrade||0.1;const aggr=sol<=0.1?1.2:sol<=0.25?1.0:sol<=0.5?0.85:sol<=1?0.7:sol<=2?0.6:0.5;return{minScore:Math.round(sol<=0.1?22:sol<=0.25?28:sol<=0.5?35:sol<=1?42:50),maxPositions:Math.round(sol<=0.1?5:sol<=0.25?4:sol<=0.5?3:sol<=1?2:2),tp1:Math.round(30*aggr),tp1Sell:30,tp2:Math.round(80*aggr),tp2Sell:30,tp3:Math.round(200*aggr),tp3Sell:40,sl1:Math.round(10/aggr),sl1Sell:60,sl2:Math.round(20/aggr),momentumExit:true,reentryDips:true}};
 // Live sim state — must be declared here, NOT inside IIFEs (React Rules of Hooks / error #310)
 const[simExpanded,sSimExpanded]=useState(true);const[simDetailOpen,sSimDetailOpen]=useState(true);const[simGuideOpen,sSimGuideOpen]=useState(false);const[simRunning,sSimRunning]=useState(false);
 const[liveSim,sLiveSim]=useState(null);const[simStarting,sSimStarting]=useState(false);
@@ -501,7 +505,7 @@ useEffect(()=>{const q=rSearch.trim();const isCA=/^[1-9A-HJ-NP-Za-km-z]{32,44}$/
 const disconnect=async()=>{try{const p=window?.phantom?.solana||window?.solana;await p?.disconnect()}catch{}sU(null)};
 const ensurePhantom=async()=>{const p=window?.phantom?.solana||window?.solana;if(!p?.isPhantom){toast("Install Phantom","error");return false}if(p.isConnected&&p.publicKey)return true;try{const r=await p.connect({onlyIfTrusted:true});if(r?.publicKey){sU(u=>({...u,pubkey:r.publicKey.toString()}));return true}}catch{}try{const r=await p.connect();if(r?.publicKey){sU(u=>({...u,pubkey:r.publicKey.toString()}));return true}}catch(e){toast(e.code===4001?"Rejected":"Reconnect wallet","error")}return false};
 const resetHome=()=>{sLd(false);sLCA("");sAsid("");sFl(null)};
-const quickBuy=async(ca,s)=>{if(!user?.pubkey||user.demo){toast("Connect wallet first","error");return}const p=window?.phantom?.solana||window?.solana;if(!p?.isPhantom||!p?.isConnected||!p?.publicKey){toast("Sign in with Phantom first","error");return}if(!await ensurePhantom())return;if(!trW){toast("Create trading key","error");return}if(trB<s){toast(`Need ${s} SOL`,"error");return}const r=await a.qb(user.pubkey,ca,s);if(r.signature){sTrB(b=>b-s);hp([6,15,6]);toast("Bought "+s+" SOL","success");sTab("wallet");sRExp(null);if(r.position){sPos(prev=>{if(prev.some(p=>p.mint===ca))return prev;return[{mint:ca,name:r.position.name,ticker:r.position.ticker,image:r.position.image,mcapUsd:r.position.mcapUsd,mcapSol:r.position.mcapSol,marketCapSol:r.position.mcapSol,valueSol:s,valueUsd:s*solP,amount:0,holdPct:0,pnlSol:0,pnlPct:0,pending:true,pendingSince:Date.now()},...prev]});sHeld(prev=>new Set([...prev,ca]))}const rb=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){sPos(prev=>{const pending=prev.filter(p=>p.pending&&p.pendingSince&&!d.positions.some(dp=>dp.mint===p.mint)&&(Date.now()-p.pendingSince)<30000);return[...d.positions,...pending]});sHeld(new Set([...d.positions.map(p=>p.mint),...(d.positions.some(p2=>p2.mint===ca)?[]:[ca])]));if(d.positions.some(p=>p.mint===ca))return}}catch{}if(n<6)setTimeout(()=>rb(n+1),(n+1)*1500)};setTimeout(()=>rb(0),1000);setTimeout(refreshWallet,1500);setTimeout(refreshWallet,4000);setTimeout(()=>{sPos(prev=>prev.map(p=>p.mint===ca&&p.pending&&(Date.now()-(p.pendingSince||0))>=30000?{...p,pending:false,pendingExpired:true}:p))},32000);return r.signature}throw new Error(r.error||"Failed")};
+const quickBuy=async(ca,s,opts)=>{if(!user?.pubkey||user.demo){toast("Connect wallet first","error");return}const p=window?.phantom?.solana||window?.solana;if(!p?.isPhantom||!p?.isConnected||!p?.publicKey){toast("Sign in with Phantom first","error");return}if(!await ensurePhantom())return;if(!trW){toast("Create trading key","error");return}if(trB<s){toast(`Need ${s} SOL`,"error");return}const r=await a.qb(user.pubkey,ca,s,opts?.slippage,opts?.tip);if(r.signature){sTrB(b=>b-s);hp([6,15,6]);toast("Bought "+s+" SOL","success");sTab("wallet");sRExp(null);if(r.position){sPos(prev=>{if(prev.some(p=>p.mint===ca))return prev;return[{mint:ca,name:r.position.name,ticker:r.position.ticker,image:r.position.image,mcapUsd:r.position.mcapUsd,mcapSol:r.position.mcapSol,marketCapSol:r.position.mcapSol,valueSol:s,valueUsd:s*solP,amount:0,holdPct:0,pnlSol:0,pnlPct:0,pending:true,pendingSince:Date.now()},...prev]});sHeld(prev=>new Set([...prev,ca]))}const rb=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){sPos(prev=>{const pending=prev.filter(p=>p.pending&&p.pendingSince&&!d.positions.some(dp=>dp.mint===p.mint)&&(Date.now()-p.pendingSince)<30000);return[...d.positions,...pending]});sHeld(new Set([...d.positions.map(p=>p.mint),...(d.positions.some(p2=>p2.mint===ca)?[]:[ca])]));if(d.positions.some(p=>p.mint===ca))return}}catch{}if(n<6)setTimeout(()=>rb(n+1),(n+1)*1500)};setTimeout(()=>rb(0),1000);setTimeout(refreshWallet,1500);setTimeout(refreshWallet,4000);setTimeout(()=>{sPos(prev=>prev.map(p=>p.mint===ca&&p.pending&&(Date.now()-(p.pendingSince||0))>=30000?{...p,pending:false,pendingExpired:true}:p))},32000);return r.signature}throw new Error(r.error||"Failed")};
 const quickSell=async(ca,pct)=>{if(!user?.pubkey)throw new Error("Connect wallet");const p=window?.phantom?.solana||window?.solana;if(!p?.isPhantom||!p?.isConnected||!p?.publicKey)throw new Error("Sign in with Phantom first");if(!await ensurePhantom())throw new Error("Wallet disconnected");let lastErr="";for(let attempt=0;attempt<3;attempt++){try{const r=await a.qs(user.pubkey,ca,pct);if(r.error&&!r.signature)throw new Error(r.error);if(!r.signature)throw new Error("No signature returned");if(pct>=100){sPos(prev=>prev.map(p=>p.mint===ca?{...p,selling:true}:p));sHeld(prev=>{const n=new Set(prev);n.delete(ca);return n})}else{sPos(prev=>prev.map(p=>p.mint===ca?{...p,valueSol:p.valueSol?(p.valueSol*(100-pct)/100):p.valueSol,valueUsd:p.valueUsd?(p.valueUsd*(100-pct)/100):p.valueUsd,partialSell:true}:p))}const refreshPos=async(n)=>{try{const d=await a.gp(user.pubkey);if(d.positions){sPos(d.positions);sHeld(new Set(d.positions.map(p=>p.mint)));return}}catch{}if(n<5)setTimeout(()=>refreshPos(n+1),(n+1)*1500)};setTimeout(()=>refreshPos(0),800);setTimeout(refreshWallet,1000);setTimeout(refreshWallet,3000);return r.signature}catch(e){lastErr=e.message;if(attempt<2)await new Promise(r=>setTimeout(r,500))}}throw new Error(lastErr||"Sell failed")};
 
 if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHeight:"100dvh",background:T.bg,fontFamily:M,overflow:"auto"}}>
@@ -855,7 +859,7 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 {(()=>{const events=intelData?.recentEvents||[];const allT=[...(rt.momentum||[]),...(rt.hot||[]),...(rt.new||[]),...(rt.graduating||[])];const topTokens=events.slice(0,4).map(e=>e.data).filter(Boolean);if(!topTokens.length)return<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:T.ft}}>Scanning...</div>;
 return<div style={{display:"flex",flexDirection:"column",gap:4}}>
 {topTokens.map((top,ti)=>{const match=allT.find(t=>t.ca===top.ca);const sc=top.score>=50?T.gn:top.score>=25?T.yl:T.pu;const fullCA=top.ca||"";const mES=match?.entrySignal||"";const mESc=mES==="STRONG"?T.gn:mES==="READY"?T.gn:mES==="EARLY"?T.yl:mES==="CAUTION"?"#ff8800":"#ff4444";
-return<div key={fullCA+ti} onClick={()=>{if(fullCA.length>=20){sTab("radar");sRS(fullCA);sRExp(fullCA);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",gap:8,alignItems:"center",padding:"6px 4px",borderRadius:6,border:"1px solid "+(ti===0?sc+"33":T.bd+"44"),background:ti===0?sc+"06":"transparent",cursor:"pointer"}}>
+return<React.Fragment key={fullCA+ti}><div onClick={()=>{if(fullCA.length>=20){sTab("radar");sRS(fullCA);sRExp(fullCA);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",gap:8,alignItems:"center",padding:"6px 4px",borderRadius:6,border:"1px solid "+(ti===0?sc+"33":T.bd+"44"),background:ti===0?sc+"06":"transparent",cursor:"pointer"}}>
 <div style={{position:"relative",width:38,height:38,borderRadius:6,overflow:"hidden",background:T.sf,flexShrink:0}}>{match?.image?<img src={imgProxy(match.image)} style={{width:"100%",height:"100%",objectFit:"cover"}} alt="" onError={e=>e.target.style.display="none"}/>:<div style={{width:"100%",height:"100%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,color:T.pu+"66",fontWeight:900}}>{(top.name||"?")[0]}</div>}
 <div style={{position:"absolute",top:2,left:2,fontSize:8,fontWeight:900,color:"#fff",background:sc,borderRadius:3,padding:"0 3px",lineHeight:"14px"}}>#{ti+1}</div>{mES&&<div style={{position:"absolute",bottom:1,right:1,fontSize:6,fontWeight:900,color:"#fff",background:mESc+"cc",borderRadius:2,padding:"0 2px",lineHeight:"12px"}}>{mES==="STRONG"?"GO":mES==="READY"?"OK":mES==="EARLY"?"NEW":mES==="CAUTION"?"!":"X"}</div>}</div>
 <div style={{flex:1,minWidth:0}}>
@@ -872,9 +876,22 @@ return<div key={fullCA+ti} onClick={()=>{if(fullCA.length>=20){sTab("radar");sRS
 </div>
 </div>
 {(user?.tier==="pro"||user?.whitelisted)&&trW&&fullCA.length>=20&&top.score>=40&&<div style={{display:"flex",flexDirection:"column",gap:2,flexShrink:0}}>
-{[0.05,0.1].map(amt=><button key={amt} onClick={async(ev)=>{ev.stopPropagation();try{hp([6,15,6]);toast(`Aping ${top.name||"token"} ${amt} SOL...`,"info");await quickBuy(fullCA,amt)}catch(e){toast(e.message,"error")}}} style={{padding:"3px 8px",background:T.gn+"0a",border:"1px solid "+T.gn+"22",borderRadius:4,fontSize:9,fontWeight:800,color:T.gn,cursor:"pointer"}}>{amt}</button>)}
+<button onClick={(ev)=>{ev.stopPropagation();sITrade(p=>({...p,ca:p.ca===fullCA?null:fullCA}))}} style={{padding:"3px 8px",background:iTrade.ca===fullCA?T.gn:T.gn+"0a",border:"1px solid "+T.gn+"22",borderRadius:4,fontSize:9,fontWeight:800,color:iTrade.ca===fullCA?"#0a0a0f":T.gn,cursor:"pointer"}}>BUY</button>
 </div>}
-</div>})}
+</div>
+{/* Inline trade settings panel */}
+{iTrade.ca===fullCA&&<div onClick={ev=>ev.stopPropagation()} style={{padding:"8px 6px",background:T.bg,border:"1px solid "+T.gn+"33",borderRadius:6,marginTop:4}}>
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,marginBottom:6}}>
+<div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginBottom:2}}>BUY AMT</div><div style={{display:"flex",alignItems:"center",background:T.sf,borderRadius:4,border:"1px solid "+T.bd,overflow:"hidden"}}><button onClick={()=>sITrade(p=>({...p,amt:Math.max(0.01,+(p.amt-0.05).toFixed(2))}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>-</button><span style={{flex:1,textAlign:"center",fontSize:10,fontWeight:800,color:T.gn}}>{iTrade.amt}</span><button onClick={()=>sITrade(p=>({...p,amt:Math.min(10,+(p.amt+0.05).toFixed(2))}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>+</button></div></div>
+<div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginBottom:2}}>SLIP %</div><div style={{display:"flex",alignItems:"center",background:T.sf,borderRadius:4,border:"1px solid "+T.bd,overflow:"hidden"}}><button onClick={()=>sITrade(p=>({...p,slip:Math.max(1,p.slip-5)}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>-</button><span style={{flex:1,textAlign:"center",fontSize:10,fontWeight:800,color:T.yl}}>{iTrade.slip}</span><button onClick={()=>sITrade(p=>({...p,slip:Math.min(50,p.slip+5)}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>+</button></div></div>
+<div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginBottom:2}}>TIP SOL</div><div style={{display:"flex",alignItems:"center",background:T.sf,borderRadius:4,border:"1px solid "+T.bd,overflow:"hidden"}}><button onClick={()=>sITrade(p=>({...p,tip:Math.max(0.001,+(p.tip-0.001).toFixed(3))}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>-</button><span style={{flex:1,textAlign:"center",fontSize:10,fontWeight:800,color:T.or}}>{iTrade.tip}</span><button onClick={()=>sITrade(p=>({...p,tip:Math.min(0.5,+(p.tip+0.001).toFixed(3))}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>+</button></div></div>
+</div>
+<div style={{display:"flex",gap:4,alignItems:"center"}}>
+<button onClick={()=>sITrade(p=>({...p,auto:!p.auto}))} style={{padding:"4px 8px",borderRadius:4,border:"1px solid "+(iTrade.auto?T.cy:T.bd),background:iTrade.auto?T.cy+"22":"none",color:iTrade.auto?T.cy:T.ft,fontWeight:800,fontSize:9,cursor:"pointer"}}>{iTrade.auto?"AUTO ON":"AUTO"}</button>
+<button onClick={async()=>{if(iTrade.auto){try{const eff={...autoSettings(iTrade.amt),solPerTrade:iTrade.amt};const r=await a.ats(user.pubkey,eff);sAutoTrade({open:true,active:true,settings:r.settings,positions:[],log:[]});toast("Auto-ape started","success");sITrade(p=>({...p,ca:null}))}catch(e){toast(e.message,"error")}return}try{hp([6,15,6]);toast(`Buying ${iTrade.amt} SOL...`,"info");await quickBuy(fullCA,iTrade.amt,{slippage:iTrade.slip,tip:iTrade.tip});sITrade(p=>({...p,ca:null}))}catch(e){toast(e.message,"error")}}} style={{flex:1,padding:"6px 0",background:"linear-gradient(135deg,#00c853,#00e676)",border:"none",borderRadius:4,fontSize:10,fontWeight:900,color:"#0a0a0f",cursor:"pointer"}}>{iTrade.auto?"START AUTO":"BUY "+iTrade.amt+" SOL"}</button>
+</div>
+</div>}
+</React.Fragment>})}
 </div>})()}
 </div>
 
@@ -916,11 +933,23 @@ return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16p
 <span style={{fontSize:9,color:T.ft}}>${mcapStr}</span>
 </div>
 <div style={{textAlign:"center",display:"flex",justifyContent:"center",gap:2}}>
-{canApe?<button onClick={async(ev)=>{ev.stopPropagation();try{hp([6,15,6]);toast(`Aping ${name} 0.05 SOL...`,"info");await quickBuy(fullCA,0.05)}catch(err){toast(err.message,"error")}}} style={{fontSize:7,fontWeight:800,color:"#0a0a0f",background:T.gn,border:"none",borderRadius:3,padding:"2px 6px",cursor:"pointer",lineHeight:1.2}}>APE</button>
+{canApe?<button onClick={(ev)=>{ev.stopPropagation();sITrade(p=>({...p,ca:p.ca===fullCA?null:fullCA}))}} style={{fontSize:7,fontWeight:800,color:iTrade.ca===fullCA?"#0a0a0f":T.gn,background:iTrade.ca===fullCA?T.gn:T.gn+"22",border:"none",borderRadius:3,padding:"2px 6px",cursor:"pointer",lineHeight:1.2}}>BUY</button>
 :isRug?<span style={{fontSize:7,color:"#ff1744",fontWeight:800,padding:"1px 4px",borderRadius:3,background:"#ff174415"}} title={rugFlags.join(", ")}>RUG</span>
 :score>=25?<span style={{fontSize:7,color:T.yl,fontWeight:800,padding:"1px 4px",borderRadius:3,background:T.yl+"15"}}>WATCH</span>
 :null}
 </div>
+{/* Inline trade panel for radar pulse row */}
+{iTrade.ca===fullCA&&<div onClick={ev=>ev.stopPropagation()} style={{gridColumn:"1/-1",padding:"6px 8px",background:T.bg,border:"1px solid "+T.gn+"33",borderRadius:6,marginTop:2}}>
+<div style={{display:"flex",gap:4,alignItems:"center",marginBottom:4}}>
+<div style={{flex:1}}><div style={{fontSize:7,color:T.ft,fontWeight:700}}>AMT</div><div style={{display:"flex",alignItems:"center",background:T.sf,borderRadius:3,border:"1px solid "+T.bd}}><button onClick={()=>sITrade(p=>({...p,amt:Math.max(0.01,+(p.amt-0.05).toFixed(2))}))} style={{padding:"2px 4px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:9}}>-</button><span style={{flex:1,textAlign:"center",fontSize:9,fontWeight:800,color:T.gn}}>{iTrade.amt}</span><button onClick={()=>sITrade(p=>({...p,amt:Math.min(10,+(p.amt+0.05).toFixed(2))}))} style={{padding:"2px 4px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:9}}>+</button></div></div>
+<div style={{flex:1}}><div style={{fontSize:7,color:T.ft,fontWeight:700}}>SLIP</div><div style={{display:"flex",alignItems:"center",background:T.sf,borderRadius:3,border:"1px solid "+T.bd}}><button onClick={()=>sITrade(p=>({...p,slip:Math.max(1,p.slip-5)}))} style={{padding:"2px 4px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:9}}>-</button><span style={{flex:1,textAlign:"center",fontSize:9,fontWeight:800,color:T.yl}}>{iTrade.slip}%</span><button onClick={()=>sITrade(p=>({...p,slip:Math.min(50,p.slip+5)}))} style={{padding:"2px 4px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:9}}>+</button></div></div>
+<div style={{flex:1}}><div style={{fontSize:7,color:T.ft,fontWeight:700}}>TIP</div><div style={{display:"flex",alignItems:"center",background:T.sf,borderRadius:3,border:"1px solid "+T.bd}}><button onClick={()=>sITrade(p=>({...p,tip:Math.max(0.001,+(p.tip-0.001).toFixed(3))}))} style={{padding:"2px 4px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:9}}>-</button><span style={{flex:1,textAlign:"center",fontSize:9,fontWeight:800,color:T.or}}>{iTrade.tip}</span><button onClick={()=>sITrade(p=>({...p,tip:Math.min(0.5,+(p.tip+0.001).toFixed(3))}))} style={{padding:"2px 4px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:9}}>+</button></div></div>
+</div>
+<div style={{display:"flex",gap:3}}>
+<button onClick={()=>sITrade(p=>({...p,auto:!p.auto}))} style={{padding:"3px 6px",borderRadius:3,border:"1px solid "+(iTrade.auto?T.cy:T.bd),background:iTrade.auto?T.cy+"22":"none",color:iTrade.auto?T.cy:T.ft,fontWeight:800,fontSize:8,cursor:"pointer"}}>{iTrade.auto?"AUTO":"AUTO"}</button>
+<button onClick={async()=>{if(iTrade.auto){try{const eff={...autoSettings(iTrade.amt),solPerTrade:iTrade.amt};const r=await a.ats(user.pubkey,eff);sAutoTrade({open:true,active:true,settings:r.settings,positions:[],log:[]});toast("Auto-ape started","success");sITrade(p=>({...p,ca:null}))}catch(e){toast(e.message,"error")}return}try{hp([6,15,6]);toast(`Buying ${iTrade.amt} SOL...`,"info");await quickBuy(fullCA,iTrade.amt,{slippage:iTrade.slip,tip:iTrade.tip});sITrade(p=>({...p,ca:null}))}catch(e){toast(e.message,"error")}}} style={{flex:1,padding:"4px 0",background:"linear-gradient(135deg,#00c853,#00e676)",border:"none",borderRadius:3,fontSize:9,fontWeight:900,color:"#0a0a0f",cursor:"pointer"}}>{iTrade.auto?"START AUTO":"BUY "+iTrade.amt+" SOL"}</button>
+</div>
+</div>}
 </div>})}
 </div>
 {intelData?.gradWatch?.count>0&&<div style={{marginTop:6,paddingTop:6,borderTop:"1px solid "+T.bd}}>
@@ -1279,24 +1308,7 @@ return<div style={{display:"flex",alignItems:"center",gap:mb?4:8,padding:"4px 8p
 {user?.pubkey&&!user.demo&&trW&&(()=>{
 const aaOpen=autoTrade?.open||autoTrade?.active;
 const aaActive=autoTrade?.active;
-/* Auto-compute optimal TP/SL from bet size using power-law math:
-   Small bets → wider stops (can afford variance), Big bets → tighter stops (capital preservation) */
-const autoSettings=(solPerTrade)=>{
-  const sol=solPerTrade||0.1;
-  // Aggression scales inversely with bet size: small bets = aggressive, big bets = conservative
-  const aggr=sol<=0.1?1.2:sol<=0.25?1.0:sol<=0.5?0.85:sol<=1?0.7:sol<=2?0.6:0.5;
-  return{
-    minScore:Math.round(sol<=0.1?22:sol<=0.25?28:sol<=0.5?35:sol<=1?42:50),
-    maxPositions:Math.round(sol<=0.1?5:sol<=0.25?4:sol<=0.5?3:sol<=1?2:2),
-    tp1:Math.round(30*aggr),tp1Sell:30,
-    tp2:Math.round(80*aggr),tp2Sell:30,
-    tp3:Math.round(200*aggr),tp3Sell:40,
-    sl1:Math.round(10/aggr),sl1Sell:60,
-    sl2:Math.round(20/aggr),
-    momentumExit:true,
-    reentryDips:true,
-  };
-};
+// autoSettings is defined at component level (shared with intel trade panel)
 const S=autoTrade?.settings||{solPerTrade:0.1,...autoSettings(0.1)};
 const computed=autoSettings(S.solPerTrade);
 // Use computed values unless user has customized via advanced
