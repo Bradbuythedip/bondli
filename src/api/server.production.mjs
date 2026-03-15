@@ -2721,9 +2721,11 @@ app.post("/api/sessions/clear", async (req, res) => {
 // ═══════════════════════════════════════
 app.post("/api/quick-ape", async (req, res) => {
   try {
-    const { wallet, ca, solAmount } = req.body;
+    const { wallet, ca, solAmount, slippage: userSlippage, priorityFee: userPriorityFee } = req.body;
     if (!wallet || !ca || !solAmount) return res.status(400).json({ error: "wallet, ca, solAmount required" });
     if (solAmount <= 0 || solAmount > 100) return res.status(400).json({ error: "Invalid SOL amount (0-100)" });
+    const apeSlippage = (userSlippage != null && userSlippage >= 1 && userSlippage <= 50) ? userSlippage : 25;
+    const apePriorityFee = (userPriorityFee != null && userPriorityFee >= 0.0001 && userPriorityFee <= 0.5) ? userPriorityFee : 0.008;
 
     const tw = await getTradingWallet(wallet);
     if (!tw) return res.status(400).json({ error: "No trading wallet — create one first" });
@@ -2753,7 +2755,7 @@ app.post("/api/quick-ape", async (req, res) => {
         body: JSON.stringify({
           publicKey: tw.pubkey, action: "buy", mint: ca,
           amount: solAmount, denominatedInSol: "true",
-          slippage: 25, priorityFee: 0.008, pool,
+          slippage: apeSlippage, priorityFee: apePriorityFee, pool,
         }),
         signal: AbortSignal.timeout(8000),
       });
