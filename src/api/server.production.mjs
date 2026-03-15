@@ -3259,7 +3259,7 @@ function startAutoTrader(wallet, settings) {
   if (!soldCooldowns.has(wallet)) soldCooldowns.set(wallet, new Map());
   const state = {
     settings: {
-      minScore: settings.minScore || 28,
+      minScore: settings.minScore || 45,
       solPerTrade: settings.solPerTrade || 0.05,
       maxPositions: settings.maxPositions || 5,
       // ═══ POWER-LAW OPTIMIZED TP/SL ═══
@@ -3268,16 +3268,16 @@ function startAutoTrader(wallet, settings) {
       //   ~25% hit TP1-TP2 → take partial profits
       //   ~5% become 10-100x runners → let the moonbag ride the fat tail
       // Key insight: the 5% of runners generate >50% of total returns
-      tp1: settings.tp1 || 30,         // TP1: +30% (lock in partial early)
-      tp1Sell: settings.tp1Sell || 30,  // sell 30% at TP1 (keep 70% for bigger move)
+      tp1: settings.tp1 || 20,         // TP1: +20% (lock in partial early — most memes peak under 30%)
+      tp1Sell: settings.tp1Sell || 40,  // sell 40% at TP1 (secure more profit early)
       tp2: settings.tp2 || 80,         // TP2: +80%
       tp2Sell: settings.tp2Sell || 30,  // sell 30% of remaining at TP2 (keep 49% as moonbag potential)
       tp3: settings.tp3 || 200,        // TP3: +200% (true runner — sell small, hold moonbag)
       tp3Sell: settings.tp3Sell || 40,  // sell 40% of remaining, 29% rides as moonbag forever
       // TIGHT stop losses — most tokens rug, cut losses aggressively
-      sl1: settings.sl1 || 10,         // SL1: -10% (faster cut — meme tokens that drop 10% rarely recover)
-      sl1Sell: settings.sl1Sell || 60,  // sell 60% to reduce exposure
-      sl2: settings.sl2 || 20,         // SL2: -20% full exit — capital preservation is #1
+      sl1: settings.sl1 || 8,          // SL1: -8% (cut fast — meme tokens that drop 8% rarely recover)
+      sl1Sell: settings.sl1Sell || 70,  // sell 70% to reduce exposure aggressively
+      sl2: settings.sl2 || 15,         // SL2: -15% full exit — capital preservation is #1
       requireBoosted: settings.requireBoosted || false,
       momentumExit: settings.momentumExit !== false, // default ON — auto-tighten stops on score drop
       reentryDips: settings.reentryDips !== false,    // default ON — re-enter on dips, sell into volume
@@ -3689,14 +3689,48 @@ function startAutoTrader(wallet, settings) {
           pos.tpHit = 1;
         }
         // Trailing stop: dropped from peak while still green and hasn't hit TP1 yet
-        // Wider trail for bigger gains (trailing stop widening)
-        else if (fromPeak > (changePct >= 50 ? 40 : 30) && changePct > 10 && pos.tpHit === 0) {
-          log(`Trailing ${ca.slice(0,6)}: +${changePct.toFixed(0)}% (down ${fromPeak.toFixed(0)}% from peak) — selling ${s.tp1Sell}%`);
-          const sig = await execSell(ca, s.tp1Sell, kp, "trailing");
-          if (sig) {
-            broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "TRAIL", sellPct: s.tp1Sell } });
+        // Tighter trail to lock in gains early — don't give back profits
+        // If peaked 15%+: trail at 25% from peak (was 30%) — e.g., peaked at +50%, sell at +37.5%
+        // If peaked 30%+: trail at 20% from peak — e.g., peaked at +60%, sell at +48%
+        else if (pos.tpHit === 0 && changePct > 5) {
+          const peakPctFromEntry = pos.peakMcap > 0 && pos.entryMcap > 0 ? ((pos.peakMcap - pos.entryMcap) / pos.entryMcap) * 100 : 0;
+          const trailThreshold = peakPctFromEntry >= 30 ? 20 : peakPctFromEntry >= 15 ? 25 : 35;
+          if (fromPeak > trailThreshold && peakPctFromEntry >= 12) {
+            log(`Trailing ${ca.slice(0,6)}: +${changePct.toFixed(0)}% (peaked +${peakPctFromEntry.toFixed(0)}%, down ${fromPeak.toFixed(0)}% from peak, trail=${trailThreshold}%) — selling ${s.tp1Sell}%`);
+            const sig = await execSell(ca, s.tp1Sell, kp, "trailing");
+            if (sig) {
+              broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "TRAIL", sellPct: s.tp1Sell } });
+            }
+            pos.tpHit = 1;
           }
-          pos.tpHit = 1;
+        }
+
+        // ═══ POST-TP1 TRAILING STOP — protect profits after partial take ═══
+        // After TP1 hit (sold 30%), if remaining position drops back near breakeven → full exit
+        // Don't let a winning trade turn into a loser
+        if (pos.tpHit >= 1 && !pos.isMoonbag && pos.tpHit < 3) {
+          // After TP1: if price drops back to only +5% from entry, exit remaining
+          if (changePct <= 5) {
+            log(`POST-TP1 EXIT ${ca.slice(0,6)}: +${changePct.toFixed(0)}% after TP1 — protecting profits, full exit`);
+            const sig = await execSell(ca, 100, kp, "post-tp1-exit");
+            if (sig) {
+              broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "POST-TP1", reason: "protect-profit" } });
+              exitPosition(ca, 100, "post-tp1-exit");
+              trackSell(wallet, ca);
+            }
+            continue;
+          }
+          // After TP1: tighter trailing — if dropped 30% from peak, exit remaining
+          if (fromPeak > 30 && changePct > 5) {
+            log(`POST-TP1 TRAIL ${ca.slice(0,6)}: +${changePct.toFixed(0)}% (${fromPeak.toFixed(0)}% from peak after TP1) — full exit`);
+            const sig = await execSell(ca, 100, kp, "post-tp1-trail");
+            if (sig) {
+              broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "POST-TP1-TRAIL", reason: "trailing-after-tp" } });
+              exitPosition(ca, 100, "post-tp1-trail");
+              trackSell(wallet, ca);
+            }
+            continue;
+          }
         }
 
         // ═══ STOP LOSS — 2 tiers ═══
@@ -5988,14 +6022,14 @@ function createLiveSim(id, settings) {
   if (liveSims.has(id)) stopLiveSim(id);
   const state = {
     settings: {
-      minScore: settings.minScore || 28,
+      minScore: settings.minScore || 45,
       solPerTrade: settings.solPerTrade || 0.05,
       maxPositions: settings.maxPositions || 5,
       tp1: settings.tp1 || 25, tp1Sell: settings.tp1Sell || 35,
       tp2: settings.tp2 || 70, tp2Sell: settings.tp2Sell || 35,
       tp3: settings.tp3 || 150, tp3Sell: settings.tp3Sell || 50,
-      sl1: settings.sl1 || 12, sl1Sell: settings.sl1Sell || 70,
-      sl2: settings.sl2 || 22,
+      sl1: settings.sl1 || 8, sl1Sell: settings.sl1Sell || 70,
+      sl2: settings.sl2 || 15,
       momentumExit: settings.momentumExit !== false,
     },
     positions: new Map(),
