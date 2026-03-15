@@ -44,6 +44,7 @@ import { XSocialIntel } from "../engine/x-social-intel.mjs";
 import { MetaTracker } from "../engine/meta-engine.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
 import SurvivorshipBias from "../engine/survivorship-bias.mjs";
+import { SmartMoneyTracker } from "../engine/smart-money-tracker.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -106,6 +107,22 @@ const historicalMovers = new HistoricalMovers(redis);
 const artworkScanner = new ArtworkScanner(5000);
 const xSocial = new XSocialIntel();
 const survivorBias = new SurvivorshipBias(redis);
+
+// Smart Money Tracker — monitors profitable wallets, emits signals for new buys
+const smartMoneyTracker = new SmartMoneyTracker({
+  redis,
+  heliusApiKey: CONFIG.HELIUS_API_KEY,
+  onSignal: (signal) => {
+    // When a smart wallet buys a token we're not tracking yet, fast-track it onto radar
+    const mint = signal.mint;
+    if (!radar.tokens.has(mint)) {
+      console.log(`[SMART-MONEY] New token from tracked wallet: ${mint.slice(0, 8)} — subscribing`);
+      subscribeToToken(mint);
+    }
+    // Broadcast to connected dashboards
+    broadcastWS({ event: "smart_money_signal", data: signal });
+  },
+});
 
 // Restore artwork scanner state from Redis
 if (redis) {
@@ -822,6 +839,8 @@ function processRadarMessage(data) {
         token.uniqueBuyers.add(trader);
         // Smart wallet tracking: record this buy
         smartWallets.recordBuy(trader.slice(0, 8), mint);
+        // Smart money tracker: record full address for watchlist building
+        smartMoneyTracker.recordObservedTrade(trader, mint, "buy", sol);
       }
     } else {
       token.sells++;
@@ -872,6 +891,7 @@ function processRadarMessage(data) {
       console.log(`[RADAR] Token graduated: ${token.name || mint.slice(0, 8)} — MC: $${token.mcapUsd}`);
       // Smart wallet: resolve outcome as win for all buyers
       smartWallets.resolveOutcome(mint, true);
+      smartMoneyTracker.recordOutcome(mint, true);
       // Fetch live MC from DexScreener since PumpPortal stops sending data after graduation
       // Retry with delay since Raydium pool takes seconds to index
       refreshGraduatedMcap(mint).catch(() => {});
@@ -1384,8 +1404,16 @@ function extractQuickFeatures(t) {
 
     // ═══ SMART WALLET SIGNAL ═══
     // How many known-winning wallets are buying this token
-    tp_mavenScore: Math.min(1, smartWallets.getSmartBuyerCount(t) * 0.25),
-    tp_connectorScore: t.knownInfluencerBuys ? Math.min(1, t.knownInfluencerBuys * 0.2) : 0,
+    // Layer 1: existing smartWallets (prefix-based, passive)
+    // Layer 2: smartMoneyTracker (full address, active polling, tiered scoring)
+    tp_mavenScore: Math.min(1,
+      smartWallets.getSmartBuyerCount(t) * 0.25 +
+      smartMoneyTracker.getSmartMoneyScore(t.ca || ca)?.score * 0.75
+    ),
+    tp_connectorScore: Math.min(1,
+      (t.knownInfluencerBuys ? t.knownInfluencerBuys * 0.2 : 0) +
+      (smartMoneyTracker.getSmartMoneyScore(t.ca || ca)?.convergence ? 0.5 : 0)
+    ),
   };
 
   // Compute divergence after other fields are set
@@ -5912,6 +5940,7 @@ app.get("/api/intel/stats", (req, res) => {
         buys: t.buys || 0, sells: tok?.sells || 0, ub: t.ub || 0, ageMin,
         dexBoosted: t.dexBoosted, boostAmount: t.boostAmount || 0,
         devCred: tok?._devCredData ? { score: tok._devCredData.devCredScore, launches: tok._devCredData.devLaunchCount, sol: tok._devCredData.devSolBalance } : null,
+        smartMoney: smartMoneyTracker.getSmartMoneyScore(t.ca),
       };
     }),
     recentEvents: unique.slice(0, 10).map(t => ({
@@ -5921,6 +5950,7 @@ app.get("/api/intel/stats", (req, res) => {
     })),
     artwork: artworkScanner ? artworkScanner.getStats() : null,
     survivorship: survivorBias.getStats(),
+    smartMoney: smartMoneyTracker.summary(),
     solPrice: solUsdPrice,
     gradMc: gradMcUsd(),
     gradWatch: {
@@ -6096,6 +6126,40 @@ app.get("/api/intel/survivor-check/:ca", (req, res) => {
   if (!qf) return res.status(500).json({ error: "Cannot extract features" });
   const result = survivorBias.evaluate(qf);
   res.json({ ca: req.params.ca, name: token.name, ...result });
+});
+
+// ═══ SMART MONEY — Wallet Leaderboard, Signals, Watch Management ═══
+app.get("/api/intel/smart-money", (req, res) => {
+  const summary = smartMoneyTracker.summary();
+  const leaderboard = smartMoneyTracker.getLeaderboard(parseInt(req.query.limit) || 50);
+  const signals = smartMoneyTracker.getRecentSignals(parseInt(req.query.signals) || 20);
+  res.json({ ...summary, leaderboard, signals });
+});
+
+app.get("/api/intel/smart-money/leaderboard", (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  res.json(smartMoneyTracker.getLeaderboard(limit));
+});
+
+app.get("/api/intel/smart-money/signals", (req, res) => {
+  const limit = parseInt(req.query.limit) || 20;
+  res.json(smartMoneyTracker.getRecentSignals(limit));
+});
+
+app.get("/api/intel/smart-money/score/:ca", (req, res) => {
+  const result = smartMoneyTracker.getSmartMoneyScore(req.params.ca);
+  res.json({ ca: req.params.ca, ...result });
+});
+
+app.post("/api/intel/smart-money/watch", express.json(), (req, res) => {
+  const { address, action } = req.body || {};
+  if (!address) return res.status(400).json({ error: "address required" });
+  if (action === "remove") {
+    smartMoneyTracker.removeManualWatch(address);
+    return res.json({ ok: true, action: "removed", watching: smartMoneyTracker.watchlist.size });
+  }
+  const added = smartMoneyTracker.addManualWatch(address);
+  res.json({ ok: added, action: "added", watching: smartMoneyTracker.watchlist.size });
 });
 
 // Meme Intelligence deep score for a specific token
@@ -6744,9 +6808,19 @@ server.listen(PORT, async () => {
   // Load smart wallet profiles from Redis
   await smartWallets.load();
 
+  // Load smart money tracker from Redis + start polling
+  await smartMoneyTracker.load();
+  // Initial sync from existing smartWallets data
+  smartMoneyTracker.syncFromSmartWallets(smartWallets.walletStats);
+  smartMoneyTracker.start();
+  console.log(`[SMART-MONEY] Tracker started: ${smartMoneyTracker.summary().totalWallets} wallets, watching ${smartMoneyTracker.summary().watching}`);
+
   // Periodic smart wallet save + cleanup (every 10 minutes)
   setInterval(() => {
     smartWallets.cleanup();
     smartWallets.save();
+    // Sync tracker from latest smartWallet data + save
+    smartMoneyTracker.syncFromSmartWallets(smartWallets.walletStats);
+    smartMoneyTracker.save();
   }, 600000);
 });

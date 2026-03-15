@@ -1,0 +1,591 @@
+/**
+ * ═══════════════════════════════════════════════════════════════
+ * SMART MONEY TRACKER — Follow Profitable Wallets, Find Tokens Early
+ * ═══════════════════════════════════════════════════════════════
+ *
+ * The gap: the existing smartWallets system only tracks wallets it
+ * happens to see on tokens already on radar. It never asks:
+ *   "What is wallet X buying RIGHT NOW?"
+ *
+ * This engine closes that loop:
+ *   1. LEADERBOARD: ranks wallets by win rate, avg return, consistency
+ *   2. WATCHLIST: monitors top wallets via Helius for new buys
+ *   3. SIGNALS: emits "smart money alert" when a tracked wallet apes
+ *      into a token we haven't seen yet — BEFORE the radar picks it up
+ *   4. COPY SCORING: feeds signals into the scoring pipeline so tokens
+ *      with smart money get a massive boost
+ *
+ * Data flow:
+ *   smartWallets (existing) → feeds wallet stats into leaderboard
+ *   Helius tx polling → detects new buys from top wallets
+ *   Signal emitted → token gets fast-tracked onto radar with boost
+ *
+ * ═══════════════════════════════════════════════════════════════
+ */
+
+import CONFIG from "./config.mjs";
+
+// pump.fun program ID
+const PUMP_FUN_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+
+export class SmartMoneyTracker {
+  constructor({ redis = null, heliusApiKey = "", onSignal = null } = {}) {
+    this.redis = redis;
+    this.heliusApiKey = heliusApiKey || CONFIG.HELIUS_API_KEY || "";
+    this.heliusBase = "https://api.helius.xyz/v0";
+    this.onSignal = onSignal; // callback: (signal) => {} — emits to radar/scoring
+
+    // ── Wallet leaderboard ──
+    // fullAddress → { prefix, wins, losses, totalReturn, score, avgReturn,
+    //                 winRate, consistency, lastSeen, recentTokens: [{ca, time, graduated}],
+    //                 tracked: bool, tier: "s"|"a"|"b"|"c" }
+    this.wallets = new Map();
+
+    // ── Active watch list (top wallets we poll) ──
+    this.watchlist = new Set(); // full addresses
+    this.MAX_WATCH = 50;       // max wallets to actively poll
+
+    // ── Signal dedup ──
+    // ca → { time, wallets: Set, signalCount }
+    this.recentSignals = new Map();
+    this.SIGNAL_DEDUP_MS = 300000; // 5 min dedup window
+
+    // ── Polling state ──
+    this.pollInterval = null;
+    this.POLL_INTERVAL_MS = 15000; // poll every 15s
+    this.lastPollSignatures = new Map(); // wallet → last seen signature
+
+    // ── Manual watch (user-added wallets) ──
+    this.manualWatch = new Set();
+
+    // ── Stats ──
+    this.stats = {
+      totalSignals: 0,
+      signalsToday: 0,
+      lastSignalTime: 0,
+      pollCount: 0,
+      pollErrors: 0,
+    };
+  }
+
+  // ═══════════════════════════════════════
+  // INGEST — Feed from existing smartWallets system
+  // ═══════════════════════════════════════
+
+  /**
+   * Import wallet stats from the existing smartWallets Map.
+   * Called periodically (e.g., every 60s) to sync.
+   * @param {Map} walletStats - from smartWallets.walletStats (prefix → stats)
+   * @param {Map} fullAddressMap - optional: prefix → full address (built from trade history)
+   */
+  syncFromSmartWallets(walletStats, fullAddressMap = null) {
+    for (const [prefix, stats] of walletStats) {
+      const totalTrades = stats.wins + stats.losses;
+      if (totalTrades < 2) continue; // need some history
+
+      const winRate = totalTrades > 0 ? stats.wins / totalTrades : 0;
+      const avgReturn = totalTrades > 0 ? stats.totalReturn / totalTrades : 0;
+
+      // Try to find full address
+      const fullAddr = fullAddressMap?.get(prefix) || null;
+      const key = fullAddr || prefix;
+
+      let wallet = this.wallets.get(key);
+      if (!wallet) {
+        wallet = {
+          prefix,
+          fullAddress: fullAddr,
+          wins: 0,
+          losses: 0,
+          totalReturn: 0,
+          score: 0,
+          avgReturn: 0,
+          winRate: 0,
+          consistency: 0,
+          lastSeen: 0,
+          recentTokens: [],
+          tracked: false,
+          tier: "c",
+        };
+        this.wallets.set(key, wallet);
+      }
+
+      // Update stats
+      wallet.wins = stats.wins;
+      wallet.losses = stats.losses;
+      wallet.totalReturn = stats.totalReturn;
+      wallet.winRate = winRate;
+      wallet.avgReturn = avgReturn;
+      wallet.lastSeen = stats.lastSeen;
+
+      // Score: composite of win rate, consistency, and returns
+      // Win rate (40%) + avg return (30%) + consistency (30%)
+      const consistencyScore = totalTrades >= 5 ? Math.min(1, winRate * 1.2) : winRate * 0.5;
+      wallet.consistency = consistencyScore;
+      wallet.score = Math.min(1, Math.max(0,
+        winRate * 0.40 +
+        Math.min(0.30, avgReturn * 0.05) +
+        consistencyScore * 0.30
+      ));
+
+      // Tier assignment
+      if (wallet.score >= 0.7 && totalTrades >= 5) wallet.tier = "s";
+      else if (wallet.score >= 0.5 && totalTrades >= 4) wallet.tier = "a";
+      else if (wallet.score >= 0.35 && totalTrades >= 3) wallet.tier = "b";
+      else wallet.tier = "c";
+    }
+
+    this._updateWatchlist();
+  }
+
+  /**
+   * Record a trade we observed — builds full address mapping.
+   * Called from processRadarMessage when we see a buy.
+   */
+  recordObservedTrade(fullAddress, ca, side, solAmount) {
+    if (!fullAddress || fullAddress.length < 20) return;
+    const prefix = fullAddress.slice(0, 8);
+
+    let wallet = this.wallets.get(fullAddress) || this.wallets.get(prefix);
+    if (wallet && !wallet.fullAddress) {
+      // Upgrade prefix-only entry to full address
+      if (this.wallets.has(prefix)) {
+        this.wallets.delete(prefix);
+      }
+      wallet.fullAddress = fullAddress;
+      this.wallets.set(fullAddress, wallet);
+    }
+
+    if (!wallet) {
+      wallet = {
+        prefix,
+        fullAddress,
+        wins: 0, losses: 0, totalReturn: 0,
+        score: 0, avgReturn: 0, winRate: 0,
+        consistency: 0, lastSeen: Date.now(),
+        recentTokens: [],
+        tracked: false, tier: "c",
+      };
+      this.wallets.set(fullAddress, wallet);
+    }
+
+    wallet.lastSeen = Date.now();
+
+    if (side === "buy") {
+      // Track recent token buys (keep last 20)
+      wallet.recentTokens.push({ ca, time: Date.now(), solAmount, graduated: null });
+      if (wallet.recentTokens.length > 20) wallet.recentTokens.shift();
+    }
+  }
+
+  /**
+   * Record outcome for a token — propagates to all wallets that bought it.
+   */
+  recordOutcome(ca, graduated) {
+    for (const [, wallet] of this.wallets) {
+      for (const token of wallet.recentTokens) {
+        if (token.ca === ca && token.graduated === null) {
+          token.graduated = graduated;
+        }
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════
+  // WATCHLIST — Pick top wallets to monitor
+  // ═══════════════════════════════════════
+
+  _updateWatchlist() {
+    // Rank all wallets by score, pick top N with full addresses
+    const ranked = [...this.wallets.values()]
+      .filter(w => w.fullAddress && w.score >= 0.35 && (w.wins + w.losses) >= 3)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, this.MAX_WATCH);
+
+    this.watchlist.clear();
+    for (const w of ranked) {
+      w.tracked = true;
+      this.watchlist.add(w.fullAddress);
+    }
+
+    // Also include manually added wallets
+    for (const addr of this.manualWatch) {
+      this.watchlist.add(addr);
+    }
+  }
+
+  /**
+   * Manually add a wallet to watch (e.g., known alpha caller).
+   */
+  addManualWatch(address) {
+    if (!address || address.length < 20) return false;
+    this.manualWatch.add(address);
+    this.watchlist.add(address);
+
+    if (!this.wallets.has(address)) {
+      this.wallets.set(address, {
+        prefix: address.slice(0, 8),
+        fullAddress: address,
+        wins: 0, losses: 0, totalReturn: 0,
+        score: 0.5, avgReturn: 0, winRate: 0,
+        consistency: 0, lastSeen: Date.now(),
+        recentTokens: [],
+        tracked: true, tier: "a", // assume A-tier for manual adds
+      });
+    }
+    return true;
+  }
+
+  removeManualWatch(address) {
+    this.manualWatch.delete(address);
+    this._updateWatchlist();
+  }
+
+  // ═══════════════════════════════════════
+  // POLLING — Helius transaction monitoring
+  // ═══════════════════════════════════════
+
+  start() {
+    if (this.pollInterval) return;
+    if (!this.heliusApiKey) {
+      console.log("[SMART-MONEY] No Helius API key — polling disabled (passive mode only)");
+      return;
+    }
+    console.log(`[SMART-MONEY] Starting wallet poll (${this.watchlist.size} wallets, ${this.POLL_INTERVAL_MS / 1000}s interval)`);
+    this.pollInterval = setInterval(() => this._pollWatchlist(), this.POLL_INTERVAL_MS);
+    // First poll immediately
+    this._pollWatchlist();
+  }
+
+  stop() {
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+      this.pollInterval = null;
+    }
+  }
+
+  async _pollWatchlist() {
+    if (this.watchlist.size === 0) return;
+    this.stats.pollCount++;
+
+    // Poll in batches of 5 to avoid rate limits
+    const addresses = [...this.watchlist];
+    const batchSize = 5;
+
+    for (let i = 0; i < addresses.length; i += batchSize) {
+      const batch = addresses.slice(i, i + batchSize);
+      const promises = batch.map(addr => this._pollWallet(addr).catch(() => null));
+      await Promise.all(promises);
+
+      // Small delay between batches to respect rate limits
+      if (i + batchSize < addresses.length) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+  }
+
+  async _pollWallet(address) {
+    try {
+      const url = `${this.heliusBase}/addresses/${address}/transactions?api-key=${this.heliusApiKey}&limit=5&type=SWAP`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return;
+
+      const txs = await res.json();
+      if (!txs || !txs.length) return;
+
+      const lastSig = this.lastPollSignatures.get(address);
+
+      for (const tx of txs) {
+        // Skip already-seen transactions
+        if (tx.signature === lastSig) break;
+
+        // Look for pump.fun buys
+        const isPumpBuy = this._isPumpFunBuy(tx);
+        if (isPumpBuy) {
+          this._emitSignal({
+            type: "smart_money_buy",
+            wallet: address,
+            walletPrefix: address.slice(0, 8),
+            mint: isPumpBuy.mint,
+            solAmount: isPumpBuy.solAmount,
+            walletTier: this.wallets.get(address)?.tier || "b",
+            walletScore: this.wallets.get(address)?.score || 0,
+            walletWinRate: this.wallets.get(address)?.winRate || 0,
+            walletWins: this.wallets.get(address)?.wins || 0,
+            timestamp: tx.timestamp * 1000,
+          });
+        }
+      }
+
+      // Update last seen signature
+      if (txs[0]?.signature) {
+        this.lastPollSignatures.set(address, txs[0].signature);
+      }
+    } catch (e) {
+      this.stats.pollErrors++;
+    }
+  }
+
+  _isPumpFunBuy(tx) {
+    if (!tx.instructions) return null;
+
+    // Look for pump.fun program interaction
+    const pumpIx = tx.instructions.find(i => i.programId === PUMP_FUN_PROGRAM);
+    if (!pumpIx) return null;
+
+    // Check token transfers — buying = SOL out, tokens in
+    const transfers = tx.tokenTransfers || [];
+    const nativeTransfers = tx.nativeTransfers || [];
+
+    // Find SOL spent (native transfer out from this wallet)
+    const solOut = nativeTransfers
+      .filter(t => t.fromUserAccount === tx.feePayer)
+      .reduce((s, t) => s + (t.amount || 0), 0) / 1e9;
+
+    // Find token received
+    const tokenIn = transfers.find(t =>
+      t.toUserAccount === tx.feePayer && t.mint && t.mint !== "So11111111111111111111111111111111111111112"
+    );
+
+    if (solOut > 0.005 && tokenIn?.mint) {
+      return { mint: tokenIn.mint, solAmount: solOut };
+    }
+
+    return null;
+  }
+
+  // ═══════════════════════════════════════
+  // SIGNALS — Emit when smart wallet buys
+  // ═══════════════════════════════════════
+
+  _emitSignal(signal) {
+    const { mint } = signal;
+
+    // Dedup check
+    let existing = this.recentSignals.get(mint);
+    if (existing && Date.now() - existing.time < this.SIGNAL_DEDUP_MS) {
+      existing.wallets.add(signal.wallet);
+      existing.signalCount++;
+      signal.convergence = existing.wallets.size; // multiple smart wallets = stronger
+    } else {
+      existing = { time: Date.now(), wallets: new Set([signal.wallet]), signalCount: 1 };
+      this.recentSignals.set(mint, existing);
+    }
+
+    signal.convergence = existing.wallets.size;
+    signal.isConvergence = existing.wallets.size >= 2; // 2+ smart wallets = convergence signal
+
+    this.stats.totalSignals++;
+    this.stats.signalsToday++;
+    this.stats.lastSignalTime = Date.now();
+
+    console.log(`[SMART-MONEY] Signal: ${signal.walletPrefix}... (tier:${signal.walletTier} wr:${(signal.walletWinRate * 100).toFixed(0)}%) → ${signal.mint.slice(0, 8)} | ${signal.solAmount.toFixed(3)} SOL${signal.isConvergence ? ` | CONVERGENCE (${signal.convergence} wallets)` : ""}`);
+
+    // Emit to callback (radar/scoring integration)
+    if (this.onSignal) {
+      try { this.onSignal(signal); } catch {}
+    }
+
+    // Cleanup old signals
+    if (this.recentSignals.size > 500) {
+      const cutoff = Date.now() - this.SIGNAL_DEDUP_MS;
+      for (const [ca, s] of this.recentSignals) {
+        if (s.time < cutoff) this.recentSignals.delete(ca);
+      }
+    }
+  }
+
+  // ═══════════════════════════════════════
+  // SCORING BOOST — For the scoring pipeline
+  // ═══════════════════════════════════════
+
+  /**
+   * Get smart money boost for a token.
+   * Called from extractQuickFeatures or the scoring pipeline.
+   * Returns 0-1 normalized score.
+   */
+  getSmartMoneyScore(ca) {
+    const signal = this.recentSignals.get(ca);
+    if (!signal) return { score: 0, walletCount: 0, topTier: null, convergence: false };
+
+    const walletCount = signal.wallets.size;
+    let topTier = "c";
+    let bestScore = 0;
+
+    for (const addr of signal.wallets) {
+      const w = this.wallets.get(addr);
+      if (w) {
+        if (w.score > bestScore) {
+          bestScore = w.score;
+          topTier = w.tier;
+        }
+      }
+    }
+
+    // Score: wallet count * tier multiplier
+    const tierMult = { s: 1.0, a: 0.7, b: 0.4, c: 0.15 }[topTier] || 0.15;
+    const rawScore = Math.min(1, walletCount * 0.25 * tierMult + bestScore * 0.5);
+
+    return {
+      score: +rawScore.toFixed(3),
+      walletCount,
+      topTier,
+      convergence: walletCount >= 2,
+      bestWalletScore: +bestScore.toFixed(3),
+    };
+  }
+
+  // ═══════════════════════════════════════
+  // LEADERBOARD — Ranked wallet list
+  // ═══════════════════════════════════════
+
+  getLeaderboard(limit = 50) {
+    return [...this.wallets.values()]
+      .filter(w => (w.wins + w.losses) >= 2)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(w => ({
+        address: w.fullAddress || w.prefix + "...",
+        prefix: w.prefix,
+        tier: w.tier,
+        score: +w.score.toFixed(3),
+        wins: w.wins,
+        losses: w.losses,
+        winRate: +(w.winRate * 100).toFixed(1),
+        avgReturn: +w.avgReturn.toFixed(2),
+        totalReturn: +w.totalReturn.toFixed(2),
+        tracked: w.tracked,
+        lastSeen: w.lastSeen,
+        recentTokens: w.recentTokens.slice(-5).map(t => ({
+          ca: t.ca,
+          time: t.time,
+          graduated: t.graduated,
+          solAmount: t.solAmount,
+        })),
+      }));
+  }
+
+  /**
+   * Get recent smart money signals (for dashboard display).
+   */
+  getRecentSignals(limit = 20) {
+    return [...this.recentSignals.entries()]
+      .sort((a, b) => b[1].time - a[1].time)
+      .slice(0, limit)
+      .map(([ca, s]) => ({
+        ca,
+        time: s.time,
+        walletCount: s.wallets.size,
+        wallets: [...s.wallets].map(addr => {
+          const w = this.wallets.get(addr);
+          return {
+            address: addr.slice(0, 8) + "...",
+            tier: w?.tier || "c",
+            winRate: +((w?.winRate || 0) * 100).toFixed(1),
+            score: +(w?.score || 0).toFixed(3),
+          };
+        }),
+        convergence: s.wallets.size >= 2,
+        signalCount: s.signalCount,
+      }));
+  }
+
+  // ═══════════════════════════════════════
+  // PERSISTENCE — Redis save/load
+  // ═══════════════════════════════════════
+
+  async save() {
+    if (!this.redis) return;
+    try {
+      // Save wallet data (compressed)
+      const walletData = {};
+      for (const [key, w] of this.wallets) {
+        if ((w.wins + w.losses) < 2) continue; // skip noisy entries
+        walletData[key] = {
+          p: w.prefix,
+          f: w.fullAddress || null,
+          w: w.wins,
+          l: w.losses,
+          r: +w.totalReturn.toFixed(2),
+          s: +w.score.toFixed(3),
+          t: w.lastSeen,
+          tier: w.tier,
+          rt: w.recentTokens.slice(-10), // last 10 tokens
+        };
+      }
+      await this.redis.set("smart:money:wallets", JSON.stringify(walletData), { EX: 604800 }); // 7 days
+
+      // Save manual watch list
+      if (this.manualWatch.size > 0) {
+        await this.redis.set("smart:money:manual", JSON.stringify([...this.manualWatch]), { EX: 2592000 }); // 30 days
+      }
+
+      console.log(`[SMART-MONEY] Saved ${Object.keys(walletData).length} wallets to Redis`);
+    } catch (e) {
+      console.error("[SMART-MONEY] Save error:", e.message);
+    }
+  }
+
+  async load() {
+    if (!this.redis) return;
+    try {
+      // Load wallets
+      const raw = await this.redis.get("smart:money:wallets");
+      if (raw) {
+        const data = JSON.parse(raw);
+        for (const [key, d] of Object.entries(data)) {
+          this.wallets.set(key, {
+            prefix: d.p,
+            fullAddress: d.f,
+            wins: d.w,
+            losses: d.l,
+            totalReturn: d.r,
+            score: d.s,
+            avgReturn: (d.w + d.l) > 0 ? d.r / (d.w + d.l) : 0,
+            winRate: (d.w + d.l) > 0 ? d.w / (d.w + d.l) : 0,
+            consistency: 0,
+            lastSeen: d.t,
+            recentTokens: d.rt || [],
+            tracked: false,
+            tier: d.tier || "c",
+          });
+        }
+        console.log(`[SMART-MONEY] Loaded ${this.wallets.size} wallets from Redis`);
+      }
+
+      // Load manual watch
+      const manualRaw = await this.redis.get("smart:money:manual");
+      if (manualRaw) {
+        const addrs = JSON.parse(manualRaw);
+        for (const addr of addrs) this.manualWatch.add(addr);
+        console.log(`[SMART-MONEY] Loaded ${this.manualWatch.size} manual watch wallets`);
+      }
+
+      this._updateWatchlist();
+    } catch (e) {
+      console.error("[SMART-MONEY] Load error:", e.message);
+    }
+  }
+
+  // ═══════════════════════════════════════
+  // SUMMARY — For logging/debugging
+  // ═══════════════════════════════════════
+
+  summary() {
+    const tiers = { s: 0, a: 0, b: 0, c: 0 };
+    for (const w of this.wallets.values()) tiers[w.tier]++;
+
+    return {
+      totalWallets: this.wallets.size,
+      watching: this.watchlist.size,
+      manualWatch: this.manualWatch.size,
+      tiers,
+      recentSignals: this.recentSignals.size,
+      stats: { ...this.stats },
+      polling: !!this.pollInterval,
+      heliusEnabled: !!this.heliusApiKey,
+    };
+  }
+}
+
+export default SmartMoneyTracker;

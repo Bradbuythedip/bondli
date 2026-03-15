@@ -178,6 +178,8 @@ export default function IntelDashboard({ apiBase }) {
   const API = apiBase || "https://bondli-production.up.railway.app";
   const [stats, setStats] = useState(null);
   const [tab, setTab] = useState("live");
+  const [smartMoney, setSmartMoney] = useState(null);
+  const [watchInput, setWatchInput] = useState("");
 
   // Poll stats
   useEffect(() => {
@@ -191,6 +193,20 @@ export default function IntelDashboard({ apiBase }) {
     const iv = setInterval(f, 10000);
     return () => clearInterval(iv);
   }, [API]);
+
+  // Poll smart money data when on that tab
+  useEffect(() => {
+    if (tab !== "smart") return;
+    const f = async () => {
+      try {
+        const r = await fetch(API + "/api/intel/smart-money");
+        if (r.ok) setSmartMoney(await r.json());
+      } catch {}
+    };
+    f();
+    const iv = setInterval(f, 15000);
+    return () => clearInterval(iv);
+  }, [API, tab]);
 
   // Simulated stats for demo when API isn't available
   const demoStats = {
@@ -248,7 +264,7 @@ export default function IntelDashboard({ apiBase }) {
           </h1>
         </div>
         <div style={{ display: "flex", gap: 4 }}>
-          {["live", "model", "memory"].map(t => (
+          {["live", "model", "memory", "smart"].map(t => (
             <button key={t} onClick={() => setTab(t)} style={{
               padding: "5px 12px", borderRadius: 6, border: "1px solid " + (tab === t ? COLORS.gn + "33" : COLORS.bd),
               background: tab === t ? COLORS.gn + "0a" : "transparent",
@@ -390,6 +406,141 @@ export default function IntelDashboard({ apiBase }) {
                 <span style={{ fontSize: 12, color: COLORS.yl, fontWeight: 700 }}>{l.pct}</span>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* SMART MONEY TAB */}
+      {tab === "smart" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 12 }}>
+          {/* Leaderboard */}
+          <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, overflow: "hidden" }}>
+            <div style={{ padding: "10px 14px", borderBottom: "1px solid " + COLORS.bd, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 16, fontWeight: 800 }}>Wallet Leaderboard</span>
+              <span style={{ fontSize: 11, color: COLORS.dm }}>{smartMoney?.totalWallets || 0} tracked</span>
+            </div>
+            <div style={{ display: "flex", padding: "6px 14px", borderBottom: "1px solid " + COLORS.bd, fontSize: 11, color: COLORS.ft, fontWeight: 700 }}>
+              <span style={{ width: 32 }}>#</span>
+              <span style={{ flex: 1 }}>WALLET</span>
+              <span style={{ width: 40, textAlign: "center" }}>TIER</span>
+              <span style={{ width: 55, textAlign: "right" }}>WIN%</span>
+              <span style={{ width: 40, textAlign: "right" }}>W</span>
+              <span style={{ width: 40, textAlign: "right" }}>L</span>
+              <span style={{ width: 55, textAlign: "right" }}>AVG R</span>
+              <span style={{ width: 55, textAlign: "right" }}>SCORE</span>
+            </div>
+            <div style={{ maxHeight: 400, overflowY: "auto" }}>
+              {(smartMoney?.leaderboard || []).map((w, i) => {
+                const tierColor = { s: COLORS.gn, a: COLORS.yl, b: COLORS.or, c: COLORS.ft }[w.tier] || COLORS.ft;
+                return (
+                  <div key={w.prefix + i} style={{ display: "flex", padding: "5px 14px", borderBottom: "1px solid " + COLORS.bd, fontSize: 12, alignItems: "center", animation: "slideIn 0.3s ease" }}>
+                    <span style={{ width: 32, color: COLORS.dm }}>{i + 1}</span>
+                    <span style={{ flex: 1, fontFamily: M, color: w.tracked ? COLORS.gn : COLORS.tx }}>{w.address.slice(0, 12)}...{w.tracked ? " *" : ""}</span>
+                    <span style={{ width: 40, textAlign: "center", color: tierColor, fontWeight: 800, fontSize: 13 }}>{w.tier.toUpperCase()}</span>
+                    <span style={{ width: 55, textAlign: "right", color: w.winRate >= 60 ? COLORS.gn : w.winRate >= 40 ? COLORS.yl : COLORS.rd, fontWeight: 700 }}>{w.winRate}%</span>
+                    <span style={{ width: 40, textAlign: "right", color: COLORS.gn }}>{w.wins}</span>
+                    <span style={{ width: 40, textAlign: "right", color: COLORS.rd }}>{w.losses}</span>
+                    <span style={{ width: 55, textAlign: "right", color: w.avgReturn > 0 ? COLORS.gn : COLORS.rd }}>{w.avgReturn > 0 ? "+" : ""}{w.avgReturn.toFixed(1)}x</span>
+                    <span style={{ width: 55, textAlign: "right", color: tierColor, fontWeight: 700 }}>{(w.score * 100).toFixed(0)}</span>
+                  </div>
+                );
+              })}
+              {(!smartMoney?.leaderboard || smartMoney.leaderboard.length === 0) && (
+                <div style={{ padding: 20, textAlign: "center", color: COLORS.dm, fontSize: 12 }}>
+                  Collecting wallet data... leaderboard populates as trades are observed.
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right column: signals + watch management */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {/* Stats */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+              <StatBox label="WATCHING" value={smartMoney?.watching || 0} color={COLORS.cy} sub="wallets" />
+              <StatBox label="SIGNALS" value={smartMoney?.stats?.totalSignals || 0} color={COLORS.gn} sub="total" />
+            </div>
+
+            {/* Recent signals */}
+            <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, overflow: "hidden", flex: 1 }}>
+              <div style={{ padding: "8px 12px", borderBottom: "1px solid " + COLORS.bd }}>
+                <span style={{ fontSize: 14, fontWeight: 800 }}>Smart Money Signals</span>
+              </div>
+              <div style={{ maxHeight: 250, overflowY: "auto" }}>
+                {(smartMoney?.signals || []).map((sig, i) => {
+                  const age = Math.round((Date.now() - sig.time) / 60000);
+                  return (
+                    <div key={sig.ca + i} style={{ padding: "6px 12px", borderBottom: "1px solid " + COLORS.bd, animation: "slideIn 0.3s ease" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: 12, fontFamily: M, color: sig.convergence ? COLORS.gn : COLORS.tx }}>{sig.ca.slice(0, 8)}</span>
+                        <span style={{ fontSize: 11, color: COLORS.ft }}>{age}m ago</span>
+                      </div>
+                      <div style={{ display: "flex", gap: 4, marginTop: 3 }}>
+                        {sig.wallets.map((w, j) => (
+                          <span key={j} style={{ fontSize: 10, padding: "1px 4px", borderRadius: 3, background: ({ s: COLORS.gn, a: COLORS.yl, b: COLORS.or }[w.tier] || COLORS.ft) + "15", color: ({ s: COLORS.gn, a: COLORS.yl, b: COLORS.or }[w.tier] || COLORS.ft), fontWeight: 700 }}>
+                            {w.address} ({w.tier.toUpperCase()} {w.winRate}%)
+                          </span>
+                        ))}
+                      </div>
+                      {sig.convergence && <span style={{ fontSize: 10, color: COLORS.gn, fontWeight: 800, marginTop: 2, display: "block" }}>CONVERGENCE — {sig.walletCount} smart wallets</span>}
+                    </div>
+                  );
+                })}
+                {(!smartMoney?.signals || smartMoney.signals.length === 0) && (
+                  <div style={{ padding: 16, textAlign: "center", color: COLORS.dm, fontSize: 12 }}>
+                    No signals yet — watching for smart wallet buys...
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Watch wallet */}
+            <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Watch a Wallet</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <input
+                  value={watchInput}
+                  onChange={e => setWatchInput(e.target.value)}
+                  placeholder="Paste wallet address..."
+                  style={{ flex: 1, padding: "6px 8px", background: COLORS.bg, border: "1px solid " + COLORS.bd, borderRadius: 5, color: COLORS.tx, fontSize: 12, fontFamily: M, outline: "none" }}
+                />
+                <button onClick={async () => {
+                  if (!watchInput.trim()) return;
+                  try {
+                    await fetch(API + "/api/intel/smart-money/watch", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ address: watchInput.trim() }),
+                    });
+                    setWatchInput("");
+                  } catch {}
+                }} style={{ padding: "6px 10px", background: COLORS.gn + "15", border: "1px solid " + COLORS.gn + "33", borderRadius: 5, color: COLORS.gn, fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                  ADD
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: COLORS.dm, marginTop: 4 }}>
+                Add known alpha wallets to track. Their buys get fast-tracked + scored.
+              </div>
+              {smartMoney?.manualWatch > 0 && (
+                <div style={{ fontSize: 11, color: COLORS.cy, marginTop: 3 }}>{smartMoney.manualWatch} manual wallets watched</div>
+              )}
+            </div>
+
+            {/* Tiers explanation */}
+            <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6 }}>Wallet Tiers</div>
+              {[
+                { tier: "S", color: COLORS.gn, desc: "70%+ score, 5+ trades — elite alpha" },
+                { tier: "A", color: COLORS.yl, desc: "50%+ score, 4+ trades — consistent winner" },
+                { tier: "B", color: COLORS.or, desc: "35%+ score, 3+ trades — above average" },
+                { tier: "C", color: COLORS.ft, desc: "Below threshold — still tracking" },
+              ].map(t => (
+                <div key={t.tier} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 0" }}>
+                  <span style={{ width: 20, fontSize: 13, fontWeight: 900, color: t.color, textAlign: "center" }}>{t.tier}</span>
+                  <span style={{ fontSize: 11, color: COLORS.dm }}>{t.desc}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
