@@ -121,16 +121,21 @@ function calcPotential(token) {
   }
 
   // 5. Buy/sell ratio — more buys than sells = accumulation
+  //    BUT: extreme ratios (all buys, zero sells) are a rug pattern, not organic
   const txns = token.txns24h || {};
   const buys = txns.buys || 0;
   const sells = txns.sells || 0;
   if (buys > 0 && sells > 0) {
     const bsRatio = buys / sells;
-    if (bsRatio > 2.0) p += 15;      // strong accumulation
+    if (bsRatio > 10.0 && buys >= 10) p -= 10; // extreme imbalance = likely self-bought trap
+    else if (bsRatio > 2.0) p += 15;      // strong accumulation
     else if (bsRatio > 1.3) p += 10;  // healthy buying
     else if (bsRatio > 1.0) p += 5;   // slight edge to buyers
     else if (bsRatio > 0.7) p += 2;   // balanced
     else p += 0;                       // selling pressure
+  } else if (buys >= 10 && sells === 0) {
+    // All buys, zero sells with significant activity = classic rug trap
+    p -= 15;
   }
 
   return Math.min(100, p);

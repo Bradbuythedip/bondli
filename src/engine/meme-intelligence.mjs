@@ -74,6 +74,7 @@ const FEATURE_KEYS = [
   "rg_zeroSellFlag",    // token has zero or near-zero organic sells (0=has sells, 1=no sells = likely self-bought rug)
   "rg_buySellImbalance",// extreme buy/sell count imbalance (0=balanced, 1=all buys no sells)
   "rg_fakeVolumeScore", // volume from very few unique wallets recycling SOL (0=organic, 1=fake)
+  "rg_gradualRugScore", // gradual buy-only chart over extended period with uniform timing (0=normal, 1=classic bot trap)
 
   // Chart shape analysis
   "ch_healthScore",     // overall chart health (0=crash, 0.5=neutral, 1=healthy growth)
@@ -309,6 +310,41 @@ function extractFeatures(token) {
     f.rg_fakeVolumeScore = 0.3;
   } else {
     f.rg_fakeVolumeScore = 0;
+  }
+
+  // ─── Gradual rug pattern: sustained buy-only activity with uniform timing ───
+  // The classic bot trap: dev self-buys from multiple wallets at regular intervals over 5-10+ min.
+  // Creates a smooth uptrend that looks like organic momentum but has zero sell pressure.
+  // Real organic buying comes in WAVES (FOMO clusters) with intermixed profit-taking.
+  // Bot-trap buying comes at REGULAR INTERVALS like a metronome.
+  const buyTimes = buys.map(b => b.time || 0).filter(t => t > 0).sort((a, b) => a - b);
+  f.rg_gradualRugScore = 0;
+  if (buyTimes.length >= 6 && sells.length <= 1) {
+    const intervals = [];
+    for (let i = 1; i < buyTimes.length; i++) {
+      intervals.push(buyTimes[i] - buyTimes[i - 1]);
+    }
+    const spreadMs = buyTimes[buyTimes.length - 1] - buyTimes[0];
+    const spreadMin = spreadMs / 60000;
+    // Timing uniformity: low coefficient of variation = suspiciously regular
+    const avgInt = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+    let timingUniformity = 0;
+    if (avgInt > 0) {
+      const variance = intervals.reduce((s, d) => s + (d - avgInt) ** 2, 0) / intervals.length;
+      const cv = Math.sqrt(variance) / avgInt;
+      timingUniformity = Math.max(0, Math.min(1, 1 - cv));
+    }
+    // Also check that price is monotonically increasing (from spark data)
+    const isMonoUp = spark.length >= 5 && spark.every((v, i) => i === 0 || v >= spark[i - 1] * 0.97);
+
+    // Score: long duration + uniform timing + no sells + monotonic up = trap
+    if (spreadMin >= 5 && buys.length >= 10 && sells.length === 0 && timingUniformity > 0.4 && isMonoUp) {
+      f.rg_gradualRugScore = Math.min(1, 0.7 + timingUniformity * 0.2 + Math.min(0.1, spreadMin / 60));
+    } else if (spreadMin >= 3 && buys.length >= 8 && sells.length <= 1 && timingUniformity > 0.3) {
+      f.rg_gradualRugScore = Math.min(0.7, 0.4 + timingUniformity * 0.2 + (isMonoUp ? 0.1 : 0));
+    } else if (spreadMin >= 2 && buys.length >= 6 && sells.length === 0 && timingUniformity > 0.5 && isMonoUp) {
+      f.rg_gradualRugScore = 0.5;
+    }
   }
 
   // ─── Chart shape analysis: gradual-up-no-dips detection ───
@@ -707,6 +743,8 @@ class ScoringEngine {
     if ((features.rg_zeroSellFlag || 0) > 0.5) rugFlags.push("zero_organic_sells");
     if ((features.rg_buySellImbalance || 0) > 0.5) rugFlags.push("extreme_buy_sell_imbalance");
     if ((features.rg_fakeVolumeScore || 0) > 0.4) rugFlags.push("fake_volume_wash_trading");
+    if ((features.rg_gradualRugScore || 0) > 0.5) rugFlags.push("gradual_rug_bot_trap");
+    if ((features.rg_gradualRugScore || 0) > 0.3 && (features.ch_smoothGrind || 0) > 0.3) rugFlags.push("gradual_rug_smooth_chart");
 
     // ── Zero sell hard penalty ──
     // A token with many buys and zero sells is the #1 rug pattern
@@ -716,8 +754,16 @@ class ScoringEngine {
         ? Math.round((features.rg_buySellImbalance) * 20)
         : 0;
 
+    // ── Gradual rug penalty ──
+    // Sustained buy-only activity with uniform timing over minutes = bot trap
+    const gradualRugPenalty = (features.rg_gradualRugScore || 0) >= 0.7
+      ? Math.round(features.rg_gradualRugScore * 35) // severe: near-certain trap
+      : (features.rg_gradualRugScore || 0) >= 0.4
+        ? Math.round(features.rg_gradualRugScore * 20)
+        : 0;
+
     const finalScore = (rawScore * 100 + 0.5) | 0;
-    const clamped = finalScore - rugPenalty - chartPenalty - zeroSellPenalty;
+    const clamped = finalScore - rugPenalty - chartPenalty - zeroSellPenalty - gradualRugPenalty;
 
     // ── Hard reject: 3+ moderate rug signals = instant block ──
     // This is the CRITICAL safety gate — prevents buying into obvious rugs
@@ -726,7 +772,11 @@ class ScoringEngine {
       || ((features.rg_zeroSellFlag || 0) >= 0.5 && (features.ch_smoothGrind || 0) > 0.3)
       || ((features.rg_zeroSellFlag || 0) >= 0.5 && (features.ch_staircaseScore || 0) > 0.3)
       || ((features.rg_buySellImbalance || 0) >= 0.7 && (features.rg_fakeVolumeScore || 0) > 0.3)
-      || ((features.ch_staircaseScore || 0) >= 0.6 && (features.rg_buySellImbalance || 0) > 0.5);
+      || ((features.ch_staircaseScore || 0) >= 0.6 && (features.rg_buySellImbalance || 0) > 0.5)
+      // Gradual rug: sustained buy-only chart with uniform timing = classic bot trap
+      || (features.rg_gradualRugScore || 0) >= 0.7
+      || ((features.rg_gradualRugScore || 0) >= 0.5 && (features.ch_smoothGrind || 0) > 0.3)
+      || ((features.rg_gradualRugScore || 0) >= 0.5 && (features.rg_zeroSellFlag || 0) >= 0.5);
 
     return {
       score: clamped < 0 ? 0 : clamped > 99 ? 99 : clamped,
@@ -736,6 +786,7 @@ class ScoringEngine {
       hardReject,
       rugFlags,
       zeroSellPenalty,
+      gradualRugPenalty,
       subScores: {
         tippingPoint: (s_tp * 100 + 0.5) | 0,
         kahneman: (s_k * 100 + 0.5) | 0,

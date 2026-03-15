@@ -60,6 +60,15 @@ export class RugScanner {
           results.flags.push("WASH_TRADING_FEW_WALLETS");
           results.score -= 25;
         }
+        // Gradual rug pattern: steady buys over minutes with no sells, uniform timing
+        // This is the classic bot trap — designed to look like organic momentum
+        if (txProfile.gradualRugScore >= 0.6) {
+          results.flags.push("GRADUAL_RUG_PATTERN");
+          results.score -= 35; // severe — this pattern almost always ends in a rug
+        } else if (txProfile.gradualRugScore >= 0.4) {
+          results.flags.push("GRADUAL_RUG_SUSPECT");
+          results.score -= 20;
+        }
       }
 
       // 5. Check creator history
@@ -105,6 +114,7 @@ export class RugScanner {
       let totalSells = 0;
       const buyers = new Set();
       const sellers = new Set();
+      const buyTimestamps = []; // track timing for gradual rug detection
 
       for (const tx of txs) {
         // Detect swap transactions (buys and sells on pump.fun or Raydium)
@@ -120,6 +130,7 @@ export class RugScanner {
                 // Received tokens = buy
                 totalBuys++;
                 if (tx.feePayer) buyers.add(tx.feePayer);
+                if (tx.timestamp) buyTimestamps.push(tx.timestamp);
               } else {
                 // Sent tokens = sell
                 totalSells++;
@@ -130,9 +141,48 @@ export class RugScanner {
         } else if (isBuy) {
           totalBuys++;
           if (tx.feePayer) buyers.add(tx.feePayer);
+          if (tx.timestamp) buyTimestamps.push(tx.timestamp);
         } else if (isSell) {
           totalSells++;
           if (tx.feePayer) sellers.add(tx.feePayer);
+        }
+      }
+
+      // ── Gradual rug pattern detection ──
+      // Classic trap: steady buys at regular intervals over minutes with zero/near-zero sells.
+      // Real organic activity has clustered buys (FOMO waves) + intermixed sells (profit-taking).
+      // Bot-trap charts show evenly-spaced buys like a metronome — designed to lure momentum bots.
+      let gradualRugScore = 0;
+      let buyTimingUniformity = 0;
+      let buySpreadMinutes = 0;
+
+      if (buyTimestamps.length >= 6 && totalSells <= 1) {
+        buyTimestamps.sort((a, b) => a - b);
+        const intervals = [];
+        for (let i = 1; i < buyTimestamps.length; i++) {
+          intervals.push(buyTimestamps[i] - buyTimestamps[i - 1]);
+        }
+        // Time spread: how long has the buy-only activity been going on?
+        buySpreadMinutes = (buyTimestamps[buyTimestamps.length - 1] - buyTimestamps[0]) / 60;
+
+        // Buy timing uniformity: coefficient of variation of intervals
+        // Low CV = regular spacing = bot/script, High CV = organic clustering
+        const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+        if (avgInterval > 0) {
+          const variance = intervals.reduce((s, d) => s + (d - avgInterval) ** 2, 0) / intervals.length;
+          const cv = Math.sqrt(variance) / avgInterval;
+          // CV < 0.5 = suspiciously uniform timing (real humans cluster, bots space evenly)
+          buyTimingUniformity = Math.max(0, Math.min(1, 1 - cv));
+        }
+
+        // Score the gradual rug pattern:
+        // - Many buys (10+) over a long period (5+ min) with near-zero sells + uniform timing
+        if (buySpreadMinutes >= 5 && totalBuys >= 10 && totalSells === 0 && buyTimingUniformity > 0.4) {
+          gradualRugScore = Math.min(1, 0.6 + buyTimingUniformity * 0.3 + Math.min(0.1, buySpreadMinutes / 100));
+        } else if (buySpreadMinutes >= 3 && totalBuys >= 8 && totalSells <= 1 && buyTimingUniformity > 0.3) {
+          gradualRugScore = Math.min(0.7, 0.4 + buyTimingUniformity * 0.2 + Math.min(0.1, buySpreadMinutes / 100));
+        } else if (buySpreadMinutes >= 2 && totalBuys >= 6 && totalSells === 0 && buyTimingUniformity > 0.5) {
+          gradualRugScore = 0.5;
         }
       }
 
@@ -142,6 +192,9 @@ export class RugScanner {
         uniqueBuyers: buyers.size,
         uniqueSellers: sellers.size,
         txCount: txs.length,
+        gradualRugScore,
+        buyTimingUniformity,
+        buySpreadMinutes,
       };
     } catch {
       return { totalBuys: 0, totalSells: 0, uniqueBuyers: 0, uniqueSellers: 0 };
