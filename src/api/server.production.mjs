@@ -45,6 +45,7 @@ import { MetaTracker } from "../engine/meta-engine.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
 import SurvivorshipBias from "../engine/survivorship-bias.mjs";
 import { SmartMoneyTracker } from "../engine/smart-money-tracker.mjs";
+import { DevWalletTracker } from "../engine/dev-wallet-tracker.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -123,6 +124,17 @@ const smartMoneyTracker = new SmartMoneyTracker({
     broadcastWS({ event: "smart_money_signal", data: signal });
   },
 });
+
+// Dev Wallet Tracker — maps every dev wallet on radar, checks balances, profiles funded devs
+const devWalletTracker = new DevWalletTracker({ redis, connection });
+// Load persisted dev wallet data from Redis
+if (redis) { devWalletTracker.load().catch(() => {}); }
+// Start background balance polling
+devWalletTracker.start();
+// Alert on high-value dev launches
+devWalletTracker.onHighValueDev = (alert) => {
+  broadcastWS({ event: "high_value_dev", data: alert });
+};
 
 // Restore artwork scanner state from Redis
 if (redis) {
@@ -747,6 +759,18 @@ function processRadarMessage(data) {
 
     radar.tokens.set(mint, token);
     subscribeToToken(mint);
+
+    // Register dev wallet for balance tracking & profiling
+    if (trader) {
+      devWalletTracker.register(trader, {
+        ca: mint,
+        name: data.name || "",
+        ticker: data.symbol || "",
+        mcap: Math.round(mcSol * solUsdPrice),
+      });
+      // Kick off immediate balance check for this dev (non-blocking)
+      devWalletTracker.checkBalance(trader).catch(() => {});
+    }
 
     // Fetch image from uri (IPFS metadata JSON → image URL)
     if (data.uri) {
@@ -4250,6 +4274,26 @@ function startAutoTrader(wallet, settings) {
           if (qf._namePrevRugged) devCredBonus -= 10; // same name rugged before = big penalty
         }
 
+        // ═══ DEV WALLET BALANCE BOOST — funded devs pump charts ═══
+        // Devs with a lot of SOL have resources to sustain buy pressure.
+        // This is a huge signal: whale_dev (50+ SOL) = +20, funded_dev (10+) = +15,
+        // broke_dev (<0.5 SOL) = -15. Overrides the weaker devCredBonus when available.
+        let devBalanceBoost = 0;
+        const devScore = devWalletTracker.getDevScore(t.ca);
+        if (devScore.mapped && devScore.solBalance >= 0) {
+          devBalanceBoost = devScore.scoringBoost;
+          // If dev tracker has stronger data, let it override the basic devCredBonus
+          if (Math.abs(devBalanceBoost) > Math.abs(devCredBonus)) {
+            devCredBonus = devBalanceBoost;
+          } else {
+            // Both have data — combine them, cap at ±25
+            devCredBonus = Math.max(-25, Math.min(25, devCredBonus + Math.round(devBalanceBoost * 0.5)));
+          }
+          t._devTier = devScore.devTier;
+          t._devSolBal = devScore.solBalance;
+          t._devHighValue = devScore.isHighValue;
+        }
+
         t._apeScore = Math.max(0, Math.min(99, Math.round(
           buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus + devCredBonus - sellPenalty - rugPenalty - artPenalty - walletAgePenalty
         )));
@@ -4295,6 +4339,8 @@ function startAutoTrader(wallet, settings) {
           qf?._namePrevRugged && "name_prev_rugged",
           qf?._devLaunchCount > 5 && "serial_launcher",
           qf?._nameUniqueness < 0.3 && "recycled_name",
+          t._devTier === "broke_dev" && "broke_dev",
+          devScore.isSerialLauncher && "serial_dev",
         ].filter(Boolean);
         // Positive signals (not rug flags, but bullish indicators)
         t._bullishSignals = [
@@ -4305,6 +4351,9 @@ function startAutoTrader(wallet, settings) {
             qf._nameUniqueness >= 1.0 && "fresh_name",
             qf._devLaunchCount === 0 && "first_launch",
           ] : []),
+          t._devTier === "whale_dev" && `whale_dev(${Math.round(t._devSolBal || 0)}sol)`,
+          t._devTier === "funded_dev" && `funded_dev(${Math.round(t._devSolBal || 0)}sol)`,
+          t._devHighValue && "high_value_dev",
           dyn?.trend === "rocket" && "rocket_trend",
           dyn?.trend === "rising" && "rising_trend",
           earlyApeBonus > 0 && "early_discovery",
@@ -5940,6 +5989,7 @@ app.get("/api/intel/stats", (req, res) => {
         buys: t.buys || 0, sells: tok?.sells || 0, ub: t.ub || 0, ageMin,
         dexBoosted: t.dexBoosted, boostAmount: t.boostAmount || 0,
         devCred: tok?._devCredData ? { score: tok._devCredData.devCredScore, launches: tok._devCredData.devLaunchCount, sol: tok._devCredData.devSolBalance } : null,
+        devWalletProfile: devWalletTracker.getDevScore(t.ca),
         smartMoney: smartMoneyTracker.getSmartMoneyScore(t.ca),
       };
     }),
@@ -5951,6 +6001,7 @@ app.get("/api/intel/stats", (req, res) => {
     artwork: artworkScanner ? artworkScanner.getStats() : null,
     survivorship: survivorBias.getStats(),
     smartMoney: smartMoneyTracker.summary(),
+    devWallets: devWalletTracker.summary(),
     solPrice: solUsdPrice,
     gradMc: gradMcUsd(),
     gradWatch: {
@@ -6160,6 +6211,50 @@ app.post("/api/intel/smart-money/watch", express.json(), (req, res) => {
   }
   const added = smartMoneyTracker.addManualWatch(address);
   res.json({ ok: added, action: "added", watching: smartMoneyTracker.watchlist.size });
+});
+
+// ═══ DEV WALLET TRACKER API ═══
+app.get("/api/intel/dev-wallets", (req, res) => {
+  const limit = parseInt(req.query.limit || "100");
+  res.json({
+    summary: devWalletTracker.summary(),
+    tiers: devWalletTracker.getTierDistribution(),
+    devs: devWalletTracker.getDevMap(limit),
+  });
+});
+
+app.get("/api/intel/dev-wallets/score/:ca", (req, res) => {
+  const score = devWalletTracker.getDevScore(req.params.ca);
+  const dev = devWalletTracker.getDevForToken(req.params.ca);
+  res.json({
+    ...score,
+    dev: dev ? {
+      address: dev.address,
+      solBalance: dev.solBalance,
+      tier: dev.tier,
+      launchCount: dev.launchCount,
+      pumpRate: +(dev.pumpRate * 100).toFixed(1),
+      rugRate: +(dev.rugRate * 100).toFixed(1),
+      tokens: dev.tokens.slice(-5),
+    } : null,
+  });
+});
+
+app.get("/api/intel/dev-wallets/:address", (req, res) => {
+  const dev = devWalletTracker.devs.get(req.params.address);
+  if (!dev) return res.status(404).json({ error: "Dev wallet not tracked" });
+  res.json({
+    address: dev.address,
+    solBalance: dev.solBalance,
+    tier: dev.tier,
+    launchCount: dev.launchCount,
+    pumpRate: +(dev.pumpRate * 100).toFixed(1),
+    rugRate: +(dev.rugRate * 100).toFixed(1),
+    bestTokenMcap: dev.bestTokenMcap,
+    tokens: dev.tokens,
+    firstSeen: dev.firstSeen,
+    score: devWalletTracker.getDevScore(dev.address),
+  });
 });
 
 // Meme Intelligence deep score for a specific token
@@ -6822,5 +6917,6 @@ server.listen(PORT, async () => {
     // Sync tracker from latest smartWallet data + save
     smartMoneyTracker.syncFromSmartWallets(smartWallets.walletStats);
     smartMoneyTracker.save();
+    devWalletTracker.save();
   }, 600000);
 });
