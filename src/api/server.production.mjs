@@ -43,6 +43,7 @@ import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
 import { XSocialIntel } from "../engine/x-social-intel.mjs";
 import { MetaTracker } from "../engine/meta-engine.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
+import SurvivorshipBias from "../engine/survivorship-bias.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -104,6 +105,7 @@ const scoreDynamics = new ScoreDynamics(5000);
 const historicalMovers = new HistoricalMovers(redis);
 const artworkScanner = new ArtworkScanner(5000);
 const xSocial = new XSocialIntel();
+const survivorBias = new SurvivorshipBias(redis);
 
 // Restore artwork scanner state from Redis
 if (redis) {
@@ -3247,6 +3249,20 @@ tradeLearner.load();
 // Recompute insights every 60s
 setInterval(() => { if (tradeLearner.history.length >= 5) tradeLearner.compute(); }, 60000);
 
+// ── SURVIVORSHIP BIAS: log survivor profile every 5 min when enough data ──
+setInterval(() => {
+  if (survivorBias.survivors.size >= 5) {
+    const profile = survivorBias.getSurvivorProfile();
+    if (profile.ready && profile.insights.length > 0) {
+      console.log(`[SURVIVOR] Profile (${survivorBias.survivors.size}W/${survivorBias.dead.size}L): ${profile.insights.slice(0, 3).join(" | ")}`);
+      const disc = survivorBias.getTopDiscriminants(3);
+      if (disc.length > 0) {
+        console.log(`[SURVIVOR] Top discriminants: ${disc.map(d => `${d.feature}(${d.direction}:${d.power})`).join(", ")}`);
+      }
+    }
+  }
+}, 300000);
+
 // ═══════════════════════════════════════
 // AUTO-APE ENGINE — walk-away auto-trading
 // Monitors intel scores, auto-buys green tokens, auto-sells on profit/loss
@@ -3442,6 +3458,17 @@ function startAutoTrader(wallet, settings) {
                 };
                 memeIntel.learn(features, outcome);
                 console.log(`[INTEL-FEEDBACK] Learned from ${ca.slice(0,6)}: score=${pos.entryScore||0} pnl=${changePct.toFixed(1)}% exit=${exitReason} trainCount=${memeIntel.scorer.trainCount}`);
+                // ── SURVIVORSHIP BIAS: record outcome with entry-time features ──
+                // Uses the feature snapshot taken at buy time (not current features)
+                // This is the Kahneman insight: what did winners look like AT BIRTH?
+                const sbFeatures = pos.entryFeatures || features;
+                survivorBias.recordOutcome(ca, sbFeatures, {
+                  won: changePct > 5,
+                  pnlPct: +changePct.toFixed(1),
+                  graduated: outcome.graduated,
+                  peakMcx: outcome.peakMcx,
+                });
+                console.log(`[SURVIVOR] Recorded ${changePct > 5 ? 'WINNER' : 'LOSER'} ${ca.slice(0,6)}: pnl=${changePct.toFixed(1)}% survivors=${survivorBias.survivors.size} dead=${survivorBias.dead.size}`);
               }
             } catch (e) {
               console.log(`[INTEL-FEEDBACK] Error: ${e.message}`);
@@ -4199,6 +4226,26 @@ function startAutoTrader(wallet, settings) {
           buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus + devCredBonus - sellPenalty - rugPenalty - artPenalty - walletAgePenalty
         )));
 
+        // ═══ SURVIVORSHIP BIAS FILTER (Kahneman) ═══
+        // "We don't ask what makes tokens pump. We ask what surviving tokens
+        //  looked like at birth — then reject anything that doesn't match."
+        // This is the inverse of traditional scoring: instead of scoring UP for
+        // good signals, we filter OUT tokens that don't match the winner archetype.
+        let survivorAdj = 0;
+        let survivorKilled = false;
+        if (qf && survivorBias.survivors.size >= 5) {
+          const sbResult = survivorBias.getScoreAdjustment(qf);
+          survivorAdj = sbResult.adjustment;
+          t._apeScore = Math.max(0, Math.min(99, t._apeScore + survivorAdj));
+          t._survivorMatch = sbResult.eval.matchPct;
+          t._survivorNet = sbResult.eval.netScore;
+          t._survivorKills = sbResult.eval.killSignals?.map(k => k.feature.replace(/^(oc_|rg_|ch_|cs_|sir_|gf_|tp_|k_|apd_)/, "")).slice(0, 3);
+          // Hard filter: survivorship engine says this looks nothing like winners
+          if (!sbResult.eval.shouldApe && sbResult.eval.confidence > 40) {
+            survivorKilled = true;
+          }
+        }
+
         t._rugFlags = [
           ...(qf ? [
             qf.rg_devSellSpeed > 0.3 && "dev_selling",
@@ -4233,9 +4280,23 @@ function startAutoTrader(wallet, settings) {
           dyn?.trend === "rocket" && "rocket_trend",
           dyn?.trend === "rising" && "rising_trend",
           earlyApeBonus > 0 && "early_discovery",
+          survivorAdj > 5 && `survivor_match(${t._survivorMatch || 0}%)`,
         ].filter(Boolean);
         t._scoreTrend = dyn?.trend || "new";
         t._earlyApe = earlyApeBonus > 0; // flag for logging
+        // ── SURVIVORSHIP KILL GATE — Kahneman: if it doesn't look like a winner, skip ──
+        if (survivorKilled) {
+          pipeline.rugGate++;
+          if (!pipeline.survivorRejects) pipeline.survivorRejects = [];
+          pipeline.survivorRejects.push({
+            name: t.name || t.ca?.slice(0, 8),
+            score: t._apeScore,
+            survivorMatch: t._survivorMatch || 0,
+            survivorNet: t._survivorNet || 0,
+            kills: t._survivorKills || [],
+          });
+          return false;
+        }
         // Apply learner-recommended min score (if enough data)
         const adj = tradeLearner.getAdjustments();
         const effectiveMin = adj.minScoreShift || state.settings.minScore;
@@ -4290,7 +4351,9 @@ function startAutoTrader(wallet, settings) {
         state._pipelineStats.lastLog = Date.now();
         const p = pipeline;
         const nmStr = p.nearMisses.length > 0 ? ` | NEAR: ${p.nearMisses.map(n => `${n.name}(${n.score}/${n.needed})`).join(", ")}` : "";
-        log(`SCAN: ${p.total} tokens → ${p.total-p.baseFilter} pass base → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown} new → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate} pass rug → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate-p.trendReject} pass trend → ${p.passed} READY (need ${state.settings.minScore}+)${nmStr}`);
+        const survStr = p.survivorRejects?.length > 0 ? ` | SURVIVOR-KILLED: ${p.survivorRejects.map(s => `${s.name}(match:${s.survivorMatch}%)`).join(", ")}` : "";
+        const sbStats = survivorBias.survivors.size > 0 ? ` [SB:${survivorBias.survivors.size}W/${survivorBias.dead.size}L]` : "";
+        log(`SCAN: ${p.total} tokens → ${p.total-p.baseFilter} pass base → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown} new → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate} pass rug → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate-p.trendReject} pass trend → ${p.passed} READY (need ${state.settings.minScore}+)${sbStats}${nmStr}${survStr}`);
       }
 
       // ═══ SCORE-BASED POSITION SIZING (Kelly Criterion + Kahneman Loss Aversion) ═══
@@ -4439,7 +4502,8 @@ function startAutoTrader(wallet, settings) {
         const earlyTag = t._earlyApe ? " [EARLY-APE]" : "";
         const bullishStr = t._bullishSignals?.length > 0 ? ` [BULLISH: ${t._bullishSignals.join(",")}]` : "";
         const walletAgeStr = t._walletAgeData ? ` wallets:${Math.round(t._walletAgeData.walletAgeScore * 100)}%aged` : "";
-        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag}${earlyTag}${phaseTag}${velTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
+        const survivorStr = t._survivorMatch != null ? ` surv:${t._survivorMatch}%` : "";
+        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag}${earlyTag}${phaseTag}${velTag}${survivorStr} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -4451,7 +4515,9 @@ function startAutoTrader(wallet, settings) {
               const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
               tx.sign([kp]);
               const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: tradeSol, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, entryBuyVel: buyVelTrend });
+              // Snapshot features at entry for survivorship bias learning
+              const _entryFeatures = typeof extractQuickFeatures === "function" ? extractQuickFeatures(t) : null;
+              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: tradeSol, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, entryBuyVel: buyVelTrend, entryFeatures: _entryFeatures });
               trackBuy(wallet, t.ca, tradeSol); // instant wallet visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
               broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: tradeSol, mcap: t.mcapUsd, wallet, score: t._apeScore, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, buyVelTrend } });
@@ -5854,6 +5920,7 @@ app.get("/api/intel/stats", (req, res) => {
       time: t.time,
     })),
     artwork: artworkScanner ? artworkScanner.getStats() : null,
+    survivorship: survivorBias.getStats(),
     solPrice: solUsdPrice,
     gradMc: gradMcUsd(),
     gradWatch: {
@@ -6011,6 +6078,24 @@ app.get("/api/intel/artwork/:ca", async (req, res) => {
 // Artwork stats
 app.get("/api/intel/artwork-stats", (req, res) => {
   res.json(artworkScanner ? artworkScanner.getStats() : { error: "not initialized" });
+});
+
+// ═══ SURVIVORSHIP BIAS — Kahneman Winner/Loser Analysis ═══
+app.get("/api/intel/survivor-stats", (req, res) => {
+  res.json(survivorBias.getStats());
+});
+
+app.get("/api/intel/survivor-profile", (req, res) => {
+  res.json(survivorBias.getSurvivorProfile());
+});
+
+app.get("/api/intel/survivor-check/:ca", (req, res) => {
+  const token = radar.tokens.get(req.params.ca);
+  if (!token) return res.status(404).json({ error: "Token not in radar" });
+  const qf = typeof extractQuickFeatures === "function" ? extractQuickFeatures(token) : null;
+  if (!qf) return res.status(500).json({ error: "Cannot extract features" });
+  const result = survivorBias.evaluate(qf);
+  res.json({ ca: req.params.ca, name: token.name, ...result });
 });
 
 // Meme Intelligence deep score for a specific token
@@ -6337,11 +6422,17 @@ function createLiveSim(id, settings) {
       t._artworkFlags?.includes("LOW_EFFORT_ART") && "low_effort_art",
     ].filter(Boolean);
 
-    const total = Math.max(0, Math.min(99, Math.round(
+    let total = Math.max(0, Math.min(99, Math.round(
       buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore +
       boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus -
       sellPenalty - rugPenalty - artPenalty - walletAgePenalty
     )));
+
+    // ── SURVIVORSHIP BIAS ADJUSTMENT (sim mirrors auto-ape) ──
+    if (qf && survivorBias.survivors.size >= 5) {
+      const sbAdj = survivorBias.getScoreAdjustment(qf);
+      total = Math.max(0, Math.min(99, total + sbAdj.adjustment));
+    }
 
     return total;
   }
