@@ -1156,10 +1156,10 @@ export class MemeIntelligence {
   async _persist() {
     if (!this.redis) return;
     try {
-      await this.redis.set("intel:weights", JSON.stringify(this.scorer.export()), "EX", 604800);
+      await this.redis.set("intel:weights", JSON.stringify(this.scorer.export()), { EX: 604800 });
       // Memory is large — persist only last 1000
       const recent = this.memory.store.slice(-1000).map(e => ({ ca: e.ca, features: e.features, outcome: e.outcome, timestamp: e.timestamp }));
-      await this.redis.set("intel:memory", JSON.stringify(recent), "EX", 604800);
+      await this.redis.set("intel:memory", JSON.stringify(recent), { EX: 604800 });
     } catch (e) {
       console.error("[INTEL] Persist error:", e.message);
     }

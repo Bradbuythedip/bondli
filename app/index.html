@@ -66,6 +66,10 @@
     </script>
     <style>
       body { margin: 0; background: #0a0a0a; }
+      /* Scale up for desktop — makes 100% zoom look like 200% */
+      @media (min-width: 701px) {
+        html { zoom: 2; }
+      }
       @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
       @keyframes glow { 0%, 100% { box-shadow: 0 0 20px #00ff8822; } 50% { box-shadow: 0 0 40px #00ff8844; } }
     </style>

@@ -181,8 +181,8 @@ async function initServices() {
       scoreDynamics.prune();
       // Persist artwork scanner + meta tracker
       if (redis) {
-        try { await redis.set("intel:artwork", JSON.stringify(artworkScanner.export()), "EX", 604800); } catch {}
-        try { await redis.set("meta:state", JSON.stringify(metaTracker.export()), "EX", 604800); } catch {}
+        try { await redis.set("intel:artwork", JSON.stringify(artworkScanner.export()), { EX: 604800 }); } catch {}
+        try { await redis.set("meta:state", JSON.stringify(metaTracker.export()), { EX: 604800 }); } catch {}
       }
     } catch (e) {
       console.error("[INTEL] Feedback loop error:", e.message);

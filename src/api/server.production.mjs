@@ -35,7 +35,7 @@ import crypto from "crypto";
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
 import { FleetTrader, skimSweep } from "../engine/fleet-trader.mjs";
 import { createToken } from "../engine/token-creator.mjs";
-import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateReferralSplit, PLATFORM_WALLET, NETWORK_FEE_PCT } from "../engine/fee-engine.mjs";
+import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateFee, calculateReferralSplit, PLATFORM_WALLET, NETWORK_FEE_PCT } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
 import { heliusSmartSend, getOptimalPriorityFee } from "../engine/helius-enhanced.mjs";
 import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
@@ -150,7 +150,7 @@ if (redis) {
 // Persist artwork scanner every 10 min
 setInterval(async () => {
   if (!redis) return;
-  try { await redis.set("intel:artwork", JSON.stringify(artworkScanner.export()), "EX", 604800); } catch {}
+  try { await redis.set("intel:artwork", JSON.stringify(artworkScanner.export()), { EX: 604800 }); } catch {}
 }, 10 * 60 * 1000);
 
 // ═══ WALLET AGE CACHE — check how old buyer wallets are on-chain ═══
@@ -534,7 +534,7 @@ const smartWallets = {
           data[wp] = { b: stats.buys, w: stats.wins, l: stats.losses, r: +stats.totalReturn.toFixed(2), s: +stats.score.toFixed(3), t: stats.lastSeen };
         }
       }
-      await redis.set("smart:wallets", JSON.stringify(data), "EX", 604800); // 7 days
+      await redis.set("smart:wallets", JSON.stringify(data), { EX: 604800 }); // 7 days
     } catch {}
   },
 
@@ -1790,14 +1790,72 @@ setInterval(() => {
   }
   if (scoreDynamics._pruneCounter === undefined) scoreDynamics._pruneCounter = 0;
 
-  // ── NEW: Fresh launches (last 10 min) ──
-  radar.tabs.new = deduped
+  // ═══ UNIVERSAL RUG FILTER — removes obvious rugs from ALL radar tabs ═══
+  // Computes a composite rug score for each token; tokens above threshold get excluded.
+  // This prevents rug chart patterns from landing in ANY tab (new, hot, momentum, grad).
+  const rugScoreCache = new Map(); // ca → { rugScore, filtered }
+  function isRugFiltered(t) {
+    if (rugScoreCache.has(t.ca)) return rugScoreCache.get(t.ca).filtered;
+    let rugScore = 0;
+    try {
+      const qf = extractQuickFeatures(t);
+      if (qf) {
+        // Zero sells: the #1 rug signal
+        if (qf._rg_zeroSellFlag >= 0.8) rugScore += 40;
+        else if (qf._rg_zeroSellFlag >= 0.5) rugScore += 25;
+        // Buy/sell imbalance
+        if (qf._rg_buySellImbalance >= 0.7) rugScore += 20;
+        else if (qf._rg_buySellImbalance >= 0.4) rugScore += 10;
+        // Staircase chart (uniform step up pattern)
+        if (qf.ch_staircaseScore > 0.5) rugScore += 25;
+        else if (qf.ch_staircaseScore > 0.3) rugScore += 12;
+        // Smooth grind (no natural dips)
+        if (qf.ch_smoothGrind > 0.5) rugScore += 20;
+        else if (qf.ch_smoothGrind > 0.35) rugScore += 10;
+        // Flatline spike (dead chart then pump)
+        if (qf.ch_flatlineSpike > 0.4) rugScore += 25;
+        else if (qf.ch_flatlineSpike > 0.25) rugScore += 12;
+        // Pump and dump pattern
+        if (qf.ch_pumpDump > 0.6) rugScore += 20;
+        else if (qf.ch_pumpDump > 0.3) rugScore += 10;
+        // Fresh wallet buyers (dev self-buying)
+        if (qf._rg_freshWalletRatio > 0.8) rugScore += 15;
+        else if (qf._rg_freshWalletRatio > 0.6) rugScore += 8;
+        // Dev self-snipe
+        if (qf._rg_devSelfSnipe > 0) rugScore += 15;
+        // Early dump by dev
+        if (qf._rg_earlyDump > 0.5) rugScore += 15;
+        // Quick flip rate (buy then sell within 60s)
+        if (qf._rg_quickFlipRate > 0.5) rugScore += 10;
+        // Sybil score (many identical-size buys from fresh wallets)
+        if (qf._rg_sybilScore > 0.5) rugScore += 10;
+        // MC crash from peak
+        if (qf.rg_mcapDropRate > 0.7) rugScore += 15;
+        // Combined killer: zero sells + staircase = definitely a rug
+        if (qf._rg_zeroSellFlag >= 0.5 && qf.ch_staircaseScore > 0.2) rugScore += 20;
+        // Combined: zero sells + fresh wallets = dev self-buying rug
+        if (qf._rg_zeroSellFlag >= 0.5 && qf._rg_freshWalletRatio > 0.6) rugScore += 15;
+      }
+    } catch {}
+    // Tokens with enough buys for analysis that score high = rug
+    // Young tokens with < 3 buys get a pass (not enough data yet)
+    const hasSufficientData = (t.buys || 0) >= 3;
+    const filtered = hasSufficientData && rugScore >= 45;
+    rugScoreCache.set(t.ca, { rugScore, filtered });
+    return filtered;
+  }
+
+  // Pre-filter: remove obvious rugs from the deduped pool
+  const rugFiltered = deduped.filter(t => !isRugFiltered(t));
+
+  // ── NEW: Fresh launches (last 10 min) — now with rug filtering ──
+  radar.tabs.new = rugFiltered
     .filter(t => (now - t.createdAt) < 600000)
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 50).map(serialize);
 
   // ── HOT: Tokens with actual buy activity ──
-  radar.tabs.hot = deduped
+  radar.tabs.hot = rugFiltered
     .filter(t => t.buys >= 2)
     .map(t => {
       const ageMin = Math.max(0.3, (now - t.createdAt) / 60000);
@@ -1821,7 +1879,7 @@ setInterval(() => {
 
   // ── GRAD: Real traction MC ($10K+) or graduated ($69K+) ──
   // $2.4K = launch, $3-5K = dev buy, $10K+ = real traction, $69K = graduated
-  radar.tabs.graduating = deduped
+  radar.tabs.graduating = rugFiltered
     .filter(t => t.mcapUsd >= 10000 || t.graduated)
     .map(t => ({
       ...t,
@@ -1836,7 +1894,7 @@ setInterval(() => {
     });
 
   // ── MOMENTUM: Sustained buying pressure ──
-  radar.tabs.momentum = deduped
+  radar.tabs.momentum = rugFiltered
     .filter(t => t.buys >= 2 && (now - t.createdAt) > 30000 && t.mcapUsd >= 3000)
     .map(t => {
       const ageMin = Math.max(0.5, (now - t.createdAt) / 60000);
@@ -1918,7 +1976,7 @@ async function getTradingWallet(userPubkey) {
 async function saveTradingWallet(userPubkey, tw) {
   tradingWallets.set(userPubkey, tw);
   if (redis) {
-    try { await redis.set("tw:" + userPubkey, JSON.stringify(tw), "EX", 2592000); } catch {} // 30d
+    try { await redis.set("tw:" + userPubkey, JSON.stringify(tw), { EX: 2592000 }); } catch {} // 30d
   }
 }
 
@@ -1945,7 +2003,7 @@ async function saveUser(wallet, data) {
   const merged = { ...existing, ...data, lastSeen: new Date().toISOString() };
   users.set(wallet, merged);
   if (redis) {
-    try { await redis.set("user:" + wallet, JSON.stringify(merged), "EX", 2592000); } catch {}
+    try { await redis.set("user:" + wallet, JSON.stringify(merged), { EX: 2592000 }); } catch {}
   }
 }
 
@@ -2138,10 +2196,31 @@ app.get("/api/pricing", (req, res) => {
 app.get("/api/trading-wallet/:wallet", async (req, res) => {
   const tw = await getTradingWallet(req.params.wallet);
   if (!tw) return res.json({ ok: false, tradingWallet: null });
-  // Check balance
-  let balance = 0;
-  try { balance = await connection.getBalance(new PublicKey(tw.pubkey)) / LAMPORTS_PER_SOL; } catch {}
-  res.json({ ok: true, tradingWallet: tw.pubkey, balance });
+  // Check SOL balance
+  let solBalance = 0;
+  try { solBalance = await connection.getBalance(new PublicKey(tw.pubkey)) / LAMPORTS_PER_SOL; } catch {}
+  // Calculate total token value in SOL across all held positions
+  let tokenValueSol = 0;
+  try {
+    const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+    const accts = await connection.getParsedTokenAccountsByOwner(new PublicKey(tw.pubkey), { programId: TOKEN_PROGRAM });
+    for (const ta of accts.value) {
+      const info = ta.account.data.parsed.info;
+      const amount = parseFloat(info.tokenAmount.uiAmountString || "0");
+      if (amount <= 0) continue;
+      const mint = info.mint;
+      const radarToken = radar.tokens.get(mint);
+      if (radarToken) {
+        const totalSupply = 1_000_000_000;
+        const holdPct = amount / totalSupply;
+        const mcUsd = radarToken.mcapUsd || 0;
+        const valueUsd = mcUsd > 0 ? holdPct * mcUsd : 0;
+        tokenValueSol += solUsdPrice > 0 ? valueUsd / solUsdPrice : 0;
+      }
+    }
+  } catch {}
+  const totalBalance = +(solBalance + tokenValueSol).toFixed(6);
+  res.json({ ok: true, tradingWallet: tw.pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6) });
 });
 
 app.post("/api/trading-wallet/create", async (req, res) => {
@@ -2282,7 +2361,7 @@ app.post("/api/trading-wallet/import", async (req, res) => {
 // ═══════════════════════════════════════
 app.post("/api/session/create", async (req, res) => {
   try {
-    const { totalSol, tokenConfig, wallet, fleetConfig, masterSeed } = req.body;
+    const { totalSol, tokenConfig, wallet, fleetConfig } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
     const user = await getUser(wallet);
     const tierInfo = resolveTier(wallet, user);
@@ -2293,7 +2372,6 @@ app.post("/api/session/create", async (req, res) => {
       tokenConfig: tokenConfig || {},
       tier: tierInfo.tier,
       fleetConfig: fleetConfig || {},
-      masterSeed: masterSeed || null,
     });
 
     res.json(session);
@@ -2377,7 +2455,7 @@ app.post("/api/session/launch", async (req, res) => {
     // Store fleet wallet keys
     if (launchResult.walletKeys) {
       if (redis) {
-        try { await redis.set("fleetkeys:" + sessionId, JSON.stringify(launchResult.walletKeys), "EX", 172800); } catch {}
+        try { await redis.set("fleetkeys:" + sessionId, JSON.stringify(launchResult.walletKeys), { EX: 172800 }); } catch {}
       }
     }
 
@@ -2907,6 +2985,10 @@ app.post("/api/quick-sell", async (req, res) => {
       .then(r => r.ok ? r.json() : null).then(dd => { if (dd?.pairs?.length > 0) isGraduated = true; }).catch(() => {}) : Promise.resolve();
     await gradCheckPromise;
 
+    // Capture pre-sell SOL balance for accurate profit skim (only skim actual profit)
+    let preSellSolBalance = 0;
+    try { preSellSolBalance = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL; } catch {}
+
     let sig = null;
     let method = "";
     let errors = []; // collect all errors for debugging
@@ -3084,7 +3166,6 @@ app.post("/api/quick-sell", async (req, res) => {
 
     if (!confirmed) {
       console.log(`[SELL] Confirmation timed out but tx was sent: ${sig} for ${ca.slice(0,8)}`);
-      // Return success with signature — tx was sent, likely will land
       // Background: schedule a delayed check to log final status
       setTimeout(async () => {
         try {
@@ -3094,6 +3175,43 @@ app.post("/api/quick-sell", async (req, res) => {
         } catch {}
       }, 30000);
     }
+
+    // ═══ PROFIT SKIM — transfer profits above threshold to owner wallet ═══
+    // Runs in background after sell to avoid blocking the response.
+    // Checks post-sell SOL balance vs tracked spend; if profit > threshold, skims %.
+    const PROFIT_SKIM_THRESHOLD = 0.05; // SOL — only skim if profit > this
+    (async () => {
+      try {
+        // Wait for sell to settle
+        await new Promise(r => setTimeout(r, 5000));
+        const postBalance = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL;
+        const user = await getUser(wallet);
+        const tierInfo = resolveTier(wallet, user);
+        // Owner wallet doesn't get skimmed
+        if (tierInfo.tier === "vip" && isOwnerWallet(wallet)) return;
+        const feeInfo = calculateFee(preSellSolBalance, postBalance, wallet, tierInfo.tier);
+        if (feeInfo.net > PROFIT_SKIM_THRESHOLD && feeInfo.fee > 0.001) {
+          const skimLamports = Math.floor(feeInfo.fee * LAMPORTS_PER_SOL);
+          if (skimLamports > 1000) {
+            const { SystemProgram, Transaction } = await import("@solana/web3.js");
+            const tx = new Transaction().add(
+              SystemProgram.transfer({
+                fromPubkey: kp.publicKey,
+                toPubkey: new PublicKey(PLATFORM_WALLET),
+                lamports: skimLamports,
+              })
+            );
+            tx.feePayer = kp.publicKey;
+            tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+            tx.sign(kp);
+            const skimSig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+            console.log(`[PROFIT-SKIM] ${wallet.slice(0,8)} → ${PLATFORM_WALLET.slice(0,8)} | ${feeInfo.fee.toFixed(4)} SOL (${feeInfo.rate}% of ${feeInfo.net.toFixed(4)}) | tx: ${skimSig.slice(0,12)}`);
+          }
+        }
+      } catch (e) {
+        console.log(`[PROFIT-SKIM] Error: ${e.message}`);
+      }
+    })();
 
     res.json({ ok: true, signature: sig, percent: pct, method, confirmed, tokenBalance: +tokenBalance.toFixed(2) });
   } catch (e) {
@@ -3110,6 +3228,10 @@ app.post("/api/sell-all", async (req, res) => {
     if (!tw) return res.status(400).json({ error: "No trading wallet" });
 
     const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+    // Capture pre-sell SOL balance for accurate profit skim
+    let preSellSolBalance = 0;
+    try { preSellSolBalance = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL; } catch {}
+
     // Scan both SPL Token and Token-2022 programs
     const [splAccounts, t22Accounts] = await Promise.all([
       connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") }).catch(() => ({ value: [] })),
@@ -3138,10 +3260,44 @@ app.post("/api/sell-all", async (req, res) => {
           tx.sign([kp]);
           await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
           sold++;
+          trackSell(wallet, info.mint);
         }
       } catch {}
       await new Promise(r => setTimeout(r, 500));
     }
+
+    // ═══ PROFIT SKIM after sell-all ═══
+    if (sold > 0) {
+      (async () => {
+        try {
+          await new Promise(r => setTimeout(r, 5000));
+          const postBalance = await connection.getBalance(kp.publicKey) / LAMPORTS_PER_SOL;
+          const user = await getUser(wallet);
+          const tierInfo = resolveTier(wallet, user);
+          if (tierInfo.tier === "vip" && isOwnerWallet(wallet)) return;
+          const feeInfo = calculateFee(preSellSolBalance, postBalance, wallet, tierInfo.tier);
+          if (feeInfo.net > 0.05 && feeInfo.fee > 0.001) {
+            const skimLamports = Math.floor(feeInfo.fee * LAMPORTS_PER_SOL);
+            if (skimLamports > 1000) {
+              const { SystemProgram, Transaction } = await import("@solana/web3.js");
+              const tx = new Transaction().add(
+                SystemProgram.transfer({
+                  fromPubkey: kp.publicKey,
+                  toPubkey: new PublicKey(PLATFORM_WALLET),
+                  lamports: skimLamports,
+                })
+              );
+              tx.feePayer = kp.publicKey;
+              tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+              tx.sign(kp);
+              const skimSig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+              console.log(`[PROFIT-SKIM] sell-all ${wallet.slice(0,8)} → ${PLATFORM_WALLET.slice(0,8)} | ${feeInfo.fee.toFixed(4)} SOL (${feeInfo.rate}% of ${feeInfo.net.toFixed(4)}) | tx: ${skimSig.slice(0,12)}`);
+            }
+          }
+        } catch (e) { console.log(`[PROFIT-SKIM] sell-all error: ${e.message}`); }
+      })();
+    }
+
     res.json({ ok: true, sold });
   } catch (e) {
     res.status(500).json({ error: e.message });

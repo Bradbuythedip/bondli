@@ -527,7 +527,7 @@ export class SurvivorshipBias {
         dead: this.dead.export(),
         stats: this.stats,
       };
-      await this.redis.set("survivorship:data", JSON.stringify(data), "EX", 604800); // 7 day TTL
+      await this.redis.set("survivorship:data", JSON.stringify(data), { EX: 604800 }); // 7 day TTL
     } catch (e) {
       console.error("[SURVIVORSHIP] Persist error:", e.message);
     }

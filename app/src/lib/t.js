@@ -5,8 +5,8 @@ export const TC=createContext(D);
 export const uT=()=>useContext(TC);
 export function css(T){return`
 *{box-sizing:border-box;margin:0;padding:0}
-html{-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent;scroll-behavior:smooth;font-size:16px}
-body{background:${T.bg};color:${T.tx};overflow-x:hidden;-webkit-font-smoothing:antialiased;overscroll-behavior:none;font-size:16px}
+html{-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent;scroll-behavior:smooth}
+body{background:${T.bg};color:${T.tx};overflow-x:hidden;-webkit-font-smoothing:antialiased;overscroll-behavior:none}
 input,button,textarea,select{font-family:inherit;-webkit-appearance:none}
 ::selection{background:${T.gn}22}
 ::-webkit-scrollbar{width:2px;height:2px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:${T.bl};border-radius:4px}

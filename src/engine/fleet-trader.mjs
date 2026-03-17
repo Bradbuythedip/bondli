@@ -579,7 +579,7 @@ class FleetTrader extends EventEmitter {
     // ═══ CRITICAL: Persist wallet keys to Redis — NEVER lose user funds ═══
     if (this.redis) {
       try {
-        await this.redis.set("walletkeys:" + session.id, JSON.stringify(walletKeys), "EX", 7 * 86400); // 7 day TTL
+        await this.redis.set("walletkeys:" + session.id, JSON.stringify(walletKeys), { EX: 7 * 86400 }); // 7 day TTL
         console.log(`[SESSION] Wallet keys persisted for ${session.id} (${walletKeys.length} wallets)`);
       } catch (e) { console.error(`[SESSION] FAILED to persist wallet keys:`, e.message); }
     }
@@ -589,7 +589,7 @@ class FleetTrader extends EventEmitter {
       try {
         const sessionWithWallets = { ...session, fleetWalletPubkeys: walletKeys.map(w => w.pubkey) };
         delete sessionWithWallets._walletKeys; // don't double-store
-        await this.redis.set("session:" + session.id, JSON.stringify(sessionWithWallets), "EX", 7 * 86400); // extend to 7 days
+        await this.redis.set("session:" + session.id, JSON.stringify(sessionWithWallets), { EX: 7 * 86400 }); // extend to 7 days
       } catch {}
     }
 
