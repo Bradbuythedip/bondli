@@ -105,15 +105,19 @@ const _balCache = new Map();
 const BAL_CACHE_TTL = 15_000;
 function getCachedBalance(key) {
   const entry = _balCache.get(key);
-  if (entry && Date.now() - entry.ts < BAL_CACHE_TTL) return entry.data;
+  if (!entry) return null;
+  if (Date.now() - entry.ts < BAL_CACHE_TTL) return entry.data;
   return null;
+}
+function getStaleCachedBalance(key) {
+  const entry = _balCache.get(key);
+  return entry ? entry.data : null;
 }
 function setCachedBalance(key, data) {
   _balCache.set(key, { data, ts: Date.now() });
-  // Prune old entries periodically
   if (_balCache.size > 200) {
     const now = Date.now();
-    for (const [k, v] of _balCache) { if (now - v.ts > BAL_CACHE_TTL * 2) _balCache.delete(k); }
+    for (const [k, v] of _balCache) { if (now - v.ts > BAL_CACHE_TTL * 4) _balCache.delete(k); }
   }
 }
 
@@ -2244,6 +2248,7 @@ app.get("/api/trading-wallet/:wallet", async (req, res) => {
 
   // Fetch SOL balance with retry + timeout
   let solBalance = 0;
+  let rpcFailed = false;
   try {
     const bal = await rpcRetry(() => {
       const p = connection.getBalance(new PublicKey(pubkey));
@@ -2252,7 +2257,11 @@ app.get("/api/trading-wallet/:wallet", async (req, res) => {
     }, "getBalance:" + pubkey.slice(0, 8));
     solBalance = bal / LAMPORTS_PER_SOL;
   } catch (e) {
+    rpcFailed = true;
     console.log(`[WALLET-BAL] getBalance failed for ${pubkey.slice(0,8)}: ${e.message}`);
+    // On RPC failure, serve last known good balance instead of 0
+    const stale = getStaleCachedBalance(cacheKey);
+    if (stale) { console.log(`[WALLET-BAL] Serving stale cache for ${pubkey.slice(0,8)}`); return res.json(stale); }
   }
   // Calculate total token value in SOL across all held positions
   let tokenValueSol = 0;
@@ -2300,10 +2309,16 @@ app.get("/api/trading-wallet/:wallet", async (req, res) => {
     }
   } catch (e) {
     console.log(`[WALLET-BAL] token scan failed for ${pubkey.slice(0,8)}: ${e.message}`);
+    // If token scan also failed, serve stale cache
+    if (!rpcFailed) {
+      const stale = getStaleCachedBalance(cacheKey);
+      if (stale) { console.log(`[WALLET-BAL] Serving stale cache for ${pubkey.slice(0,8)} (token scan failed)`); return res.json(stale); }
+    }
   }
   const totalBalance = +(solBalance + tokenValueSol).toFixed(6);
   const result = { ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails };
-  setCachedBalance(cacheKey, result);
+  // Only cache successful results (don't cache 0 balance from RPC failures)
+  if (!rpcFailed) setCachedBalance(cacheKey, result);
   console.log(`[WALLET-BAL] ${pubkey.slice(0,8)}: ${solBalance.toFixed(4)} SOL + ${tokenValueSol.toFixed(4)} tokens = ${totalBalance} total (${tokenDetails.length} tokens)`);
   res.json(result);
 });
