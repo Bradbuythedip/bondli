@@ -1113,68 +1113,68 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 {/* RUG → Patterns: straight down */}
 <path d={bezier(nb(rug),nt(patterns))} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 
-{/* ── LIT WIRES (active paths with electricity pulses — using mpath for reliable tracking) ── */}
+{/* ── LIT WIRES (always animate — bright when active, dim ambient pulse when idle) ── */}
 {/* Pump → Scan */}
-{modActive("pumpportal")>0&&<>
-<path id="wp2s" d={bezier(nr(pump),nl(scan))} fill="none" stroke={T.cy} strokeWidth="1.5" opacity=".6" filter="url(#wglow)"/>
-<circle r="3" fill={T.cy} filter="url(#wglow)"><animateMotion dur="1.2s" repeatCount="indefinite"><mpath href="#wp2s"/></animateMotion></circle>
-</>}
+{(()=>{const act=modActive("pumpportal")>0;return<>
+<path id="wp2s" d={bezier(nr(pump),nl(scan))} fill="none" stroke={T.cy} strokeWidth={act?"1.5":"1"} opacity={act?".6":".15"} filter="url(#wglow)"/>
+<circle r={act?"3":"2"} fill={T.cy} opacity={act?"1":".4"} filter="url(#wglow)"><animateMotion dur={act?"1.2s":"3s"} repeatCount="indefinite"><mpath href="#wp2s"/></animateMotion></circle>
+</>})()}
 {/* Scan → Score */}
-{modActive("scorer")>0&&<>
-<path id="ws2sc" d={bezier(nr(scan),nl(score))} fill="none" stroke={T.pu} strokeWidth="1.5" opacity=".5" filter="url(#wglow)"/>
-<circle r="2.5" fill={T.pu} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite"><mpath href="#ws2sc"/></animateMotion></circle>
-</>}
+{(()=>{const act=modActive("scorer")>0;return<>
+<path id="ws2sc" d={bezier(nr(scan),nl(score))} fill="none" stroke={T.pu} strokeWidth={act?"1.5":"1"} opacity={act?".5":".12"} filter="url(#wglow)"/>
+<circle r={act?"2.5":"1.5"} fill={T.pu} opacity={act?"1":".35"} filter="url(#wglow)"><animateMotion dur={act?"1s":"3.5s"} repeatCount="indefinite"><mpath href="#ws2sc"/></animateMotion></circle>
+</>})()}
 {/* Scan → Hub (main flow down) */}
-{modActive("scorer")>0&&<>
-<path id="ws2h" d={bezier(nb(scan),nt(hub))} fill="none" stroke={domC} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
-<circle r="2.5" fill={domC} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite"><mpath href="#ws2h"/></animateMotion></circle>
-</>}
+{(()=>{const act=modActive("scorer")>0;return<>
+<path id="ws2h" d={bezier(nb(scan),nt(hub))} fill="none" stroke={domC} strokeWidth={act?"1.5":"1"} opacity={act?".4":".1"} filter="url(#wglow)"/>
+<circle r={act?"2.5":"1.5"} fill={domC} opacity={act?"1":".3"} filter="url(#wglow)"><animateMotion dur={act?"1s":"4s"} repeatCount="indefinite"><mpath href="#ws2h"/></animateMotion></circle>
+</>})()}
 {/* Social → Hub */}
-{fh.socialSignals>.1&&<>
-<path id="wso2h" d={bezier(nr(social),nl(hub))} fill="none" stroke={T.or} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
-<circle r="2" fill={T.or} filter="url(#wglow)"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#wso2h"/></animateMotion></circle>
-</>}
+{(()=>{const act=fh.socialSignals>.1;return<>
+<path id="wso2h" d={bezier(nr(social),nl(hub))} fill="none" stroke={T.or} strokeWidth={act?"1.5":"1"} opacity={act?".4":".1"} filter="url(#wglow)"/>
+<circle r={act?"2":"1.5"} fill={T.or} opacity={act?"1":".3"} filter="url(#wglow)"><animateMotion dur={act?"1.6s":"4.5s"} repeatCount="indefinite"><mpath href="#wso2h"/></animateMotion></circle>
+</>})()}
 {/* Rug → Hub */}
-{fh.rugRisk>.05&&<>
-<path id="wr2h" d={bezier(nl(rugd),nr(hub))} fill="none" stroke={T.rd} strokeWidth="1.5" opacity={Math.min(.7,fh.rugRisk+.2)} filter="url(#wglow)"/>
-<circle r="2" fill={T.rd} filter="url(#wglow)"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#wr2h"/></animateMotion></circle>
-</>}
-{/* Hub → output wires (fanned out from hub) */}
-{[{k:"ape",n:ape,off:-6},{k:"watch",n:watch,off:-2},{k:"skip",n:skip,off:2},{k:"rug",n:rug,off:6}].map(({k,n,off})=>{if(!hot[k])return null;const spd=k===dominant?"0.8s":"1.8s";const from={x:nb(hub).x+off,y:nb(hub).y};const pid="wh2"+k;const pth=`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(n).x} ${nt(n).y-14},${nt(n).x} ${nt(n).y}`;return<g key={"lit_"+k}>
-<path id={pid} d={pth} fill="none" stroke={wc[k]} strokeWidth={k===dominant?"2":"1.5"} opacity={k===dominant?.7:.3} filter="url(#wglow)"/>
-<circle r={k===dominant?"3":"2"} fill={wc[k]} opacity=".9" filter="url(#wglow)"><animateMotion dur={spd} repeatCount="indefinite"><mpath href={"#"+pid}/></animateMotion></circle>
+{(()=>{const act=fh.rugRisk>.05;return<>
+<path id="wr2h" d={bezier(nl(rugd),nr(hub))} fill="none" stroke={T.rd} strokeWidth={act?"1.5":"1"} opacity={act?String(Math.min(.7,fh.rugRisk+.2)):".1"} filter="url(#wglow)"/>
+<circle r={act?"2":"1.5"} fill={T.rd} opacity={act?"1":".3"} filter="url(#wglow)"><animateMotion dur={act?"1.5s":"4s"} repeatCount="indefinite"><mpath href="#wr2h"/></animateMotion></circle>
+</>})()}
+{/* Hub → output wires (always animate all 4 — bright when hot, dim ambient when idle) */}
+{[{k:"ape",n:ape,off:-6},{k:"watch",n:watch,off:-2},{k:"skip",n:skip,off:2},{k:"rug",n:rug,off:6}].map(({k,n,off})=>{const act=hot[k];const spd=act?(k===dominant?"0.8s":"1.8s"):(k===dominant?"2.5s":"4s");const from={x:nb(hub).x+off,y:nb(hub).y};const pid="wh2"+k;const pth=`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(n).x} ${nt(n).y-14},${nt(n).x} ${nt(n).y}`;return<g key={"lit_"+k}>
+<path id={pid} d={pth} fill="none" stroke={wc[k]} strokeWidth={act&&k===dominant?"2":"1"} opacity={act?(k===dominant?.7:.3):".08"} filter="url(#wglow)"/>
+<circle r={act&&k===dominant?"3":"1.5"} fill={wc[k]} opacity={act?".9":".3"} filter="url(#wglow)"><animateMotion dur={spd} repeatCount="indefinite"><mpath href={"#"+pid}/></animateMotion></circle>
 </g>})}
 
-{/* ── FEEDBACK LOOP WIRES (lit when active — reverse flow) ── */}
+{/* ── FEEDBACK LOOP WIRES (always animate — bright when active, dim ambient when idle) ── */}
 {/* APE outcomes → Learner (straight down) */}
-{hasLearner&&hot.ape&&<>
-<path id="wfa2l" d={bezier(nb(ape),nt(learner))} fill="none" stroke={T.gn} strokeWidth="1" opacity=".3" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="2" fill={T.gn} opacity=".7" filter="url(#fbglow)"><animateMotion dur="2.5s" repeatCount="indefinite"><mpath href="#wfa2l"/></animateMotion></circle>
-</>}
+{(()=>{const act=hasLearner&&hot.ape;return<>
+<path id="wfa2l" d={bezier(nb(ape),nt(learner))} fill="none" stroke={T.gn} strokeWidth="1" opacity={act?".3":".08"} strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r={act?"2":"1"} fill={T.gn} opacity={act?".7":".25"} filter="url(#fbglow)"><animateMotion dur={act?"2.5s":"5s"} repeatCount="indefinite"><mpath href="#wfa2l"/></animateMotion></circle>
+</>})()}
 {/* Learner → Scorer (feedback: route along left edge to avoid crossings) */}
-{hasLearner&&(()=>{const p=`M${nl(learner).x} ${nl(learner).y} C${nl(learner).x-20} ${nl(learner).y},${nl(learner).x-20} ${nb(pump).y+nh+8},${nb(pump).x} ${nb(pump).y}`;return<>
-<path id="wfl2s" d={p} fill="none" stroke={T.cy} strokeWidth="1" opacity=".25" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.cy} opacity=".6" filter="url(#fbglow)"><animateMotion dur="3s" repeatCount="indefinite"><mpath href="#wfl2s"/></animateMotion></circle>
+{(()=>{const act=hasLearner;const p=`M${nl(learner).x} ${nl(learner).y} C${nl(learner).x-20} ${nl(learner).y},${nl(learner).x-20} ${nb(pump).y+nh+8},${nb(pump).x} ${nb(pump).y}`;return<>
+<path id="wfl2s" d={p} fill="none" stroke={T.cy} strokeWidth="1" opacity={act?".25":".06"} strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r={act?"1.5":"1"} fill={T.cy} opacity={act?".6":".2"} filter="url(#fbglow)"><animateMotion dur={act?"3s":"6s"} repeatCount="indefinite"><mpath href="#wfl2s"/></animateMotion></circle>
 </>})()}
 {/* WATCH → Grad Watch (graduated tokens monitored) */}
-{hasGradWatch&&<>
-<path id="wfw2g" d={bezier(nb(watch),nt(gradW))} fill="none" stroke={T.yl} strokeWidth="1" opacity=".3" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.yl} opacity=".7" filter="url(#fbglow)"><animateMotion dur="2s" repeatCount="indefinite"><mpath href="#wfw2g"/></animateMotion></circle>
-</>}
+{(()=>{const act=hasGradWatch;return<>
+<path id="wfw2g" d={bezier(nb(watch),nt(gradW))} fill="none" stroke={T.yl} strokeWidth="1" opacity={act?".3":".08"} strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r={act?"1.5":"1"} fill={T.yl} opacity={act?".7":".25"} filter="url(#fbglow)"><animateMotion dur={act?"2s":"5s"} repeatCount="indefinite"><mpath href="#wfw2g"/></animateMotion></circle>
+</>})()}
 {/* Grad Watch → Hub (post-grad intel feeds back) */}
-{hasGradWatch&&<>
-<path id="wfg2h" d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.yl} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.yl} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.5s" repeatCount="indefinite"><mpath href="#wfg2h"/></animateMotion></circle>
-</>}
+{(()=>{const act=hasGradWatch;return<>
+<path id="wfg2h" d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.yl} strokeWidth="1" opacity={act?".2":".06"} strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r={act?"1.5":"1"} fill={T.yl} opacity={act?".5":".2"} filter="url(#fbglow)"><animateMotion dur={act?"3.5s":"6s"} repeatCount="indefinite"><mpath href="#wfg2h"/></animateMotion></circle>
+</>})()}
 {/* RUG → Patterns (straight down) */}
-{hasPatterns&&hot.rug&&<>
-<path id="wfr2p" d={bezier(nb(rug),nt(patterns))} fill="none" stroke={T.rd} strokeWidth="1" opacity=".25" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.rd} opacity=".6" filter="url(#fbglow)"><animateMotion dur="2.8s" repeatCount="indefinite"><mpath href="#wfr2p"/></animateMotion></circle>
-</>}
+{(()=>{const act=hasPatterns&&hot.rug;return<>
+<path id="wfr2p" d={bezier(nb(rug),nt(patterns))} fill="none" stroke={T.rd} strokeWidth="1" opacity={act?".25":".06"} strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r={act?"1.5":"1"} fill={T.rd} opacity={act?".6":".2"} filter="url(#fbglow)"><animateMotion dur={act?"2.8s":"5.5s"} repeatCount="indefinite"><mpath href="#wfr2p"/></animateMotion></circle>
+</>})()}
 {/* Patterns → RugDetect (route along right edge) */}
-{hasPatterns&&(()=>{const fbOff=mb?35:80;const p=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+fbOff} ${nr(patterns).y},${nr(rugd).x+fbOff} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;return<>
-<path id="wfp2r" d={p} fill="none" stroke={T.or} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.or} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.2s" repeatCount="indefinite"><mpath href="#wfp2r"/></animateMotion></circle>
+{(()=>{const act=hasPatterns;const fbOff=mb?35:80;const p=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+fbOff} ${nr(patterns).y},${nr(rugd).x+fbOff} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;return<>
+<path id="wfp2r" d={p} fill="none" stroke={T.or} strokeWidth="1" opacity={act?".2":".06"} strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r={act?"1.5":"1"} fill={T.or} opacity={act?".5":".2"} filter="url(#fbglow)"><animateMotion dur={act?"3.2s":"6s"} repeatCount="indefinite"><mpath href="#wfp2r"/></animateMotion></circle>
 </>})()}
 
 {/* ── PROCESS NODES (Tier 1 + 2) ── */}
