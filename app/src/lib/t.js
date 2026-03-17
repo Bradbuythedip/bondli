@@ -20,6 +20,7 @@ input,button,textarea,select{font-family:inherit;-webkit-appearance:none}
 @keyframes pf{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
 @keyframes su{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
 @keyframes scan{0%{transform:translateX(-100%)}100%{transform:translateX(200%)}}
+@keyframes bpm{0%{offset-distance:0%}100%{offset-distance:100%}}
 input[type=range]{-webkit-appearance:none;height:3px;border-radius:2px;background:${T.bl};outline:none;margin:6px 0}
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:${T.gn};cursor:pointer;box-shadow:0 0 4px ${T.gn}44;border:2px solid ${T.bg}}
 input[type=range]::-webkit-slider-thumb:active{box-shadow:0 0 8px ${T.gn}66}
