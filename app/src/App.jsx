@@ -1113,51 +1113,43 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 {/* RUG → Patterns: straight down */}
 <path d={bezier(nb(rug),nt(patterns))} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 
-{/* ── LIT WIRES + PARTICLES (animateMotion with fully static SVG attrs — only style changes) ── */}
+{/* ── LIT WIRES + PARTICLES (particles on mobile only — desktop gets clean glowing wires) ── */}
 {(()=>{
 const actPump=modActive("pumpportal")>0;const actScore=modActive("scorer")>0;const actSocial=fh.socialSignals>.1;const actRug=fh.rugRisk>.05;
 const fbOff=mb?35:80;
 const l2sPath=`M${nl(learner).x} ${nl(learner).y} C${nl(learner).x-20} ${nl(learner).y},${nl(learner).x-20} ${nb(pump).y+nh+8},${nb(pump).x} ${nb(pump).y}`;
 const p2rPath=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+fbOff} ${nr(patterns).y},${nr(rugd).x+fbOff} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;
 return<>
-{/* Forward flow: Pump→Scan */}
+{/* Forward flow wires */}
 <path id="bp2s" d={bezier(nr(pump),nl(scan))} fill="none" stroke={T.cy} strokeWidth="1.5" style={{opacity:actPump?.6:.15,transition:"opacity .8s"}} filter="url(#wglow)"/>
-<circle r="2.5" filter="url(#wglow)" style={{fill:T.cy,opacity:actPump?1:.4,transition:"opacity .8s"}}><animateMotion dur="2s" repeatCount="indefinite"><mpath href="#bp2s"/></animateMotion></circle>
-{/* Scan→Score */}
 <path id="bs2sc" d={bezier(nr(scan),nl(score))} fill="none" stroke={T.pu} strokeWidth="1.5" style={{opacity:actScore?.5:.12,transition:"opacity .8s"}} filter="url(#wglow)"/>
-<circle r="2" filter="url(#wglow)" style={{fill:T.pu,opacity:actScore?1:.35,transition:"opacity .8s"}}><animateMotion dur="2s" repeatCount="indefinite"><mpath href="#bs2sc"/></animateMotion></circle>
-{/* Scan→Hub */}
 <path id="bs2h" d={bezier(nb(scan),nt(hub))} fill="none" stroke={domC} strokeWidth="1.5" style={{opacity:actScore?.4:.1,transition:"opacity .8s"}} filter="url(#wglow)"/>
-<circle r="2" filter="url(#wglow)" style={{fill:domC,opacity:actScore?1:.3,transition:"opacity .8s"}}><animateMotion dur="2.5s" repeatCount="indefinite"><mpath href="#bs2h"/></animateMotion></circle>
-{/* Social→Hub */}
 <path id="bso2h" d={bezier(nr(social),nl(hub))} fill="none" stroke={T.or} strokeWidth="1.5" style={{opacity:actSocial?.4:.1,transition:"opacity .8s"}} filter="url(#wglow)"/>
-<circle r="1.8" filter="url(#wglow)" style={{fill:T.or,opacity:actSocial?1:.3,transition:"opacity .8s"}}><animateMotion dur="3s" repeatCount="indefinite"><mpath href="#bso2h"/></animateMotion></circle>
-{/* Rug→Hub */}
 <path id="br2h" d={bezier(nl(rugd),nr(hub))} fill="none" stroke={T.rd} strokeWidth="1.5" style={{opacity:actRug?Math.min(.7,(fh.rugRisk||0)+.2):.1,transition:"opacity .8s"}} filter="url(#wglow)"/>
-<circle r="1.8" filter="url(#wglow)" style={{fill:T.rd,opacity:actRug?1:.3,transition:"opacity .8s"}}><animateMotion dur="2.5s" repeatCount="indefinite"><mpath href="#br2h"/></animateMotion></circle>
-{/* Hub → outputs */}
-{[{k:"ape",n:ape,off:-6},{k:"watch",n:watch,off:-2},{k:"skip",n:skip,off:2},{k:"rug",n:rug,off:6}].map(({k,n,off})=>{const act=hot[k];const isDom=k===dominant;const from={x:nb(hub).x+off,y:nb(hub).y};const pid="bh2"+k;const pth=`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(n).x} ${nt(n).y-14},${nt(n).x} ${nt(n).y}`;return<g key={pid}>
-<path id={pid} d={pth} fill="none" stroke={wc[k]} strokeWidth="1.5" style={{opacity:act?(isDom?.7:.3):.08,transition:"opacity .8s"}} filter="url(#wglow)"/>
-<circle r="2" filter="url(#wglow)" style={{fill:wc[k],opacity:act?.9:.3,transition:"opacity .8s"}}><animateMotion dur="2s" repeatCount="indefinite"><mpath href={"#"+pid}/></animateMotion></circle>
-</g>})}
-{/* Feedback: APE→Learner */}
+{/* Hub → output wires */}
+{[{k:"ape",n:ape,off:-6},{k:"watch",n:watch,off:-2},{k:"skip",n:skip,off:2},{k:"rug",n:rug,off:6}].map(({k,n,off})=>{const act=hot[k];const isDom=k===dominant;const from={x:nb(hub).x+off,y:nb(hub).y};const pid="bh2"+k;const pth=`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(n).x} ${nt(n).y-14},${nt(n).x} ${nt(n).y}`;return<path key={pid} id={pid} d={pth} fill="none" stroke={wc[k]} strokeWidth="1.5" style={{opacity:act?(isDom?.7:.3):.08,transition:"opacity .8s"}} filter="url(#wglow)"/>})}
+{/* Feedback wires */}
 <path id="bfa2l" d={bezier(nb(ape),nt(learner))} fill="none" stroke={T.gn} strokeWidth="1" strokeDasharray="4 2" style={{opacity:hasLearner&&hot.ape?.3:.08,transition:"opacity .8s"}} filter="url(#fbglow)"/>
-<circle r="1.5" filter="url(#fbglow)" style={{fill:T.gn,opacity:hasLearner&&hot.ape?.7:.25,transition:"opacity .8s"}}><animateMotion dur="3.5s" repeatCount="indefinite"><mpath href="#bfa2l"/></animateMotion></circle>
-{/* Learner→Scorer */}
 <path id="bfl2s" d={l2sPath} fill="none" stroke={T.cy} strokeWidth="1" strokeDasharray="4 2" style={{opacity:hasLearner?.25:.06,transition:"opacity .8s"}} filter="url(#fbglow)"/>
-<circle r="1.2" filter="url(#fbglow)" style={{fill:T.cy,opacity:hasLearner?.6:.2,transition:"opacity .8s"}}><animateMotion dur="4.5s" repeatCount="indefinite"><mpath href="#bfl2s"/></animateMotion></circle>
-{/* WATCH→GradWatch */}
 <path id="bfw2g" d={bezier(nb(watch),nt(gradW))} fill="none" stroke={T.yl} strokeWidth="1" strokeDasharray="4 2" style={{opacity:hasGradWatch?.3:.08,transition:"opacity .8s"}} filter="url(#fbglow)"/>
-<circle r="1.2" filter="url(#fbglow)" style={{fill:T.yl,opacity:hasGradWatch?.7:.25,transition:"opacity .8s"}}><animateMotion dur="3.5s" repeatCount="indefinite"><mpath href="#bfw2g"/></animateMotion></circle>
-{/* GradWatch→Hub */}
 <path id="bfg2h" d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.yl} strokeWidth="1" strokeDasharray="4 2" style={{opacity:hasGradWatch?.2:.06,transition:"opacity .8s"}} filter="url(#fbglow)"/>
-<circle r="1.2" filter="url(#fbglow)" style={{fill:T.yl,opacity:hasGradWatch?.5:.2,transition:"opacity .8s"}}><animateMotion dur="4.5s" repeatCount="indefinite"><mpath href="#bfg2h"/></animateMotion></circle>
-{/* RUG→Patterns */}
 <path id="bfr2p" d={bezier(nb(rug),nt(patterns))} fill="none" stroke={T.rd} strokeWidth="1" strokeDasharray="4 2" style={{opacity:hasPatterns&&hot.rug?.25:.06,transition:"opacity .8s"}} filter="url(#fbglow)"/>
-<circle r="1.2" filter="url(#fbglow)" style={{fill:T.rd,opacity:hasPatterns&&hot.rug?.6:.2,transition:"opacity .8s"}}><animateMotion dur="4s" repeatCount="indefinite"><mpath href="#bfr2p"/></animateMotion></circle>
-{/* Patterns→RugDetect */}
 <path id="bfp2r" d={p2rPath} fill="none" stroke={T.or} strokeWidth="1" strokeDasharray="4 2" style={{opacity:hasPatterns?.2:.06,transition:"opacity .8s"}} filter="url(#fbglow)"/>
+{/* Particles — mobile only (animateMotion breaks on desktop due to SVG viewBox scaling) */}
+{mb&&<>
+<circle r="2.5" filter="url(#wglow)" style={{fill:T.cy,opacity:actPump?1:.4,transition:"opacity .8s"}}><animateMotion dur="2s" repeatCount="indefinite"><mpath href="#bp2s"/></animateMotion></circle>
+<circle r="2" filter="url(#wglow)" style={{fill:T.pu,opacity:actScore?1:.35,transition:"opacity .8s"}}><animateMotion dur="2s" repeatCount="indefinite"><mpath href="#bs2sc"/></animateMotion></circle>
+<circle r="2" filter="url(#wglow)" style={{fill:domC,opacity:actScore?1:.3,transition:"opacity .8s"}}><animateMotion dur="2.5s" repeatCount="indefinite"><mpath href="#bs2h"/></animateMotion></circle>
+<circle r="1.8" filter="url(#wglow)" style={{fill:T.or,opacity:actSocial?1:.3,transition:"opacity .8s"}}><animateMotion dur="3s" repeatCount="indefinite"><mpath href="#bso2h"/></animateMotion></circle>
+<circle r="1.8" filter="url(#wglow)" style={{fill:T.rd,opacity:actRug?1:.3,transition:"opacity .8s"}}><animateMotion dur="2.5s" repeatCount="indefinite"><mpath href="#br2h"/></animateMotion></circle>
+{[{k:"ape",c:wc.ape},{k:"watch",c:wc.watch},{k:"skip",c:wc.skip},{k:"rug",c:wc.rug}].map(({k,c})=><circle key={"p_"+k} r="2" filter="url(#wglow)" style={{fill:c,opacity:hot[k]?.9:.3,transition:"opacity .8s"}}><animateMotion dur="2s" repeatCount="indefinite"><mpath href={"#bh2"+k}/></animateMotion></circle>)}
+<circle r="1.5" filter="url(#fbglow)" style={{fill:T.gn,opacity:hasLearner&&hot.ape?.7:.25,transition:"opacity .8s"}}><animateMotion dur="3.5s" repeatCount="indefinite"><mpath href="#bfa2l"/></animateMotion></circle>
+<circle r="1.2" filter="url(#fbglow)" style={{fill:T.cy,opacity:hasLearner?.6:.2,transition:"opacity .8s"}}><animateMotion dur="4.5s" repeatCount="indefinite"><mpath href="#bfl2s"/></animateMotion></circle>
+<circle r="1.2" filter="url(#fbglow)" style={{fill:T.yl,opacity:hasGradWatch?.7:.25,transition:"opacity .8s"}}><animateMotion dur="3.5s" repeatCount="indefinite"><mpath href="#bfw2g"/></animateMotion></circle>
+<circle r="1.2" filter="url(#fbglow)" style={{fill:T.yl,opacity:hasGradWatch?.5:.2,transition:"opacity .8s"}}><animateMotion dur="4.5s" repeatCount="indefinite"><mpath href="#bfg2h"/></animateMotion></circle>
+<circle r="1.2" filter="url(#fbglow)" style={{fill:T.rd,opacity:hasPatterns&&hot.rug?.6:.2,transition:"opacity .8s"}}><animateMotion dur="4s" repeatCount="indefinite"><mpath href="#bfr2p"/></animateMotion></circle>
 <circle r="1.2" filter="url(#fbglow)" style={{fill:T.or,opacity:hasPatterns?.5:.2,transition:"opacity .8s"}}><animateMotion dur="4.5s" repeatCount="indefinite"><mpath href="#bfp2r"/></animateMotion></circle>
+</>}
 </>})()}
 
 {/* ── PROCESS NODES (Tier 1 + 2) ── */}
