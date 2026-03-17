@@ -2330,6 +2330,8 @@ app.get("/api/trading-wallet/:wallet/debug", async (req, res) => {
     res.json({ ok: false, diag });
   }
 });
+
+app.post("/api/trading-wallet/create", async (req, res) => {
   const { wallet } = req.body;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const existing = await getTradingWallet(wallet);
