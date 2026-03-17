@@ -603,7 +603,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <div style={{minHeight:"100dvh",background:T.bg,color:T.tx,fontFamily:M,paddingBottom:mb?80:16}}>
 <header style={{padding:mb?"5px 8px":"6px 20px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",justifyContent:"space-between",background:T.bg}}><div onClick={resetHome} style={{display:"flex",alignItems:"center",gap:mb?4:7,cursor:"pointer"}}><Logo s={mb?20:24}/><span style={{fontWeight:800,fontSize:mb?20:24}}>{mb?"B":"BOND"}<span style={{color:T.rd}}>{mb?"L":"LI"}</span></span>{wsOn&&(launched||pSess.length>0)&&<span style={{width:4,height:4,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}</div>{trW&&<div style={{display:"flex",flexDirection:"column",alignItems:mb?"center":"flex-end"}}><div style={{display:"flex",alignItems:"center",gap:3}}><span style={{fontSize:mb?26:32,fontWeight:900,color:trB>.01?T.gn:T.ft}}>{solFmt(trB)}</span><IC.sol s={mb?16:20}/></div>{trTok>0.001&&<span style={{fontSize:9,color:T.dm,whiteSpace:"nowrap"}}>{solFmt(trSol)} SOL + {solFmt(trTok)} in tokens</span>}</div>}<div style={{display:"flex",alignItems:"center",gap:mb?2:5}}>{launched&&<button onClick={async()=>{if(!confirm("STOP ALL?"))return;try{for(const s of pSess)try{await a.ss(s.id,user.pubkey)}catch{};sPS([]);toast("Stopped","success");resetHome()}catch(e){toast(e.message,"error")}}} style={{background:T.rd+"12",border:"1px solid "+T.rd+"22",borderRadius:6,padding:"3px 7px",cursor:"pointer",color:T.rd,display:"flex",alignItems:"center",gap:2,fontSize:14,fontWeight:700}}><IC.stop s={14}/>STOP</button>}<button onClick={tog} style={{background:"none",border:"1px solid "+T.bd,borderRadius:6,padding:"3px 5px",cursor:"pointer",color:T.dm,display:"flex"}}>{isDark?<IC.sun/>:<IC.moon/>}</button><button onClick={()=>sShowKeys(!showKeys)} style={{background:"none",border:"1px solid "+T.bd,borderRadius:6,padding:"3px 5px",cursor:"pointer",color:T.dm,display:"flex"}}><IC.gear s={13}/></button><div onClick={disconnect} style={{display:"flex",alignItems:"center",gap:3,padding:"2px 5px",background:T.sf,borderRadius:6,border:"1px solid "+T.bd,cursor:"pointer"}}><span style={{padding:"2px 6px",borderRadius:3,fontSize:12,fontWeight:800,background:tierColor+"18",color:tierColor,border:"1px solid "+tierColor+"22"}}>{tierLabel}</span><Av pk={user.pubkey||""} s={18}/><span style={{fontSize:13,color:T.dm,maxWidth:mb?50:80,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user.demo?"demo":(cUser||wN(user.pubkey||""))}</span></div></div></header>
 
-{trW?<div style={{padding:"6px 12px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",gap:6,fontSize:14,color:T.ft}}><IC.zap s={13}/><span onClick={()=>{navigator.clipboard?.writeText(trW);toast("Copied","success")}} style={{cursor:"pointer"}}>{tp(trW,6,4)}</span>{online>0&&<span style={{color:T.gn+"77"}}>{online} online</span>}<div style={{marginLeft:"auto",display:"flex",gap:2}}><button onClick={()=>{refreshWallet();toast("Refreshing...","success")}} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:4,padding:"3px 8px",cursor:"pointer",color:T.dm,fontSize:13,fontWeight:600}}>refresh</button><button onClick={()=>{navigator.clipboard?.writeText(trW);toast("Deposit address copied","success")}} style={{background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:4,padding:"3px 8px",cursor:"pointer",color:T.gn,fontSize:13,fontWeight:700}}>deposit</button></div></div>:user&&!user.demo&&<div style={{padding:"8px 10px",borderBottom:"1px solid "+T.bd,textAlign:"center"}}><B onClick={async()=>{try{const r=await a.ctw(a.w);if(r.ok){sTrW(r.tradingWallet);sTrK(r);toast("Key created","success")}}catch(e){toast(e.message,"error")}}} small><IC.key s={12} c="#0a0a0f"/> Create Trading Key</B></div>}
+{trW?<div style={{padding:"6px 12px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",gap:6,fontSize:14,color:T.ft}}><IC.zap s={13}/><span onClick={()=>{navigator.clipboard?.writeText(trW);toast("Copied","success")}} style={{cursor:"pointer"}}>{tp(trW,6,4)}</span>{online>0&&<span style={{color:T.gn+"77"}}>{online} online</span>}<div style={{marginLeft:"auto",display:"flex",gap:2}}><button onClick={()=>{refreshWallet();toast("Refreshing...","success")}} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:4,padding:"3px 8px",cursor:"pointer",color:T.dm,fontSize:13,fontWeight:600}}>refresh</button><button onClick={async()=>{try{const d=await a.f(`/api/trading-wallet/${user.pubkey}/debug`);const msg=d.errors?.length>0?`ERRORS: ${d.errors.join(", ")}`:`OK: ${d.steps?.find(s=>s.step==="getBalance")?.sol?.toFixed(4)||0} SOL, ${d.steps?.find(s=>s.step==="getTokenAccounts")?.count||0} tokens, RPC slot ${d.steps?.find(s=>s.step==="rpcHealth")?.slot||"?"}`;toast(msg,d.errors?.length?"error":"success")}catch(e){toast("Debug: "+e.message,"error")}}} style={{background:T.pu+"08",border:"1px solid "+T.pu+"18",borderRadius:4,padding:"3px 8px",cursor:"pointer",color:T.pu,fontSize:13,fontWeight:600}}>debug</button><button onClick={()=>{navigator.clipboard?.writeText(trW);toast("Deposit address copied","success")}} style={{background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:4,padding:"3px 8px",cursor:"pointer",color:T.gn,fontSize:13,fontWeight:700}}>deposit</button></div></div>:user&&!user.demo&&<div style={{padding:"8px 10px",borderBottom:"1px solid "+T.bd,textAlign:"center"}}><B onClick={async()=>{try{const r=await a.ctw(a.w);if(r.ok){sTrW(r.tradingWallet);sTrK(r);toast("Key created","success")}}catch(e){toast(e.message,"error")}}} small><IC.key s={12} c="#0a0a0f"/> Create Trading Key</B></div>}
 
 {launched&&lCA?<EB l="War Room"><div style={{padding:mb?4:8,animation:"fu .2s ease"}}>
 {/* ═══ WAR ROOM HEADER ═══ */}
@@ -1113,69 +1113,68 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 {/* RUG → Patterns: straight down */}
 <path d={bezier(nb(rug),nt(patterns))} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 
-{/* ── LIT WIRES (active paths with electricity pulses — bezier curves) ── */}
+{/* ── LIT WIRES (active paths with electricity pulses — using mpath for reliable tracking) ── */}
 {/* Pump → Scan */}
 {modActive("pumpportal")>0&&<>
-<path d={bezier(nr(pump),nl(scan))} fill="none" stroke={T.cy} strokeWidth="1.5" opacity=".6" filter="url(#wglow)"/>
-<circle r="3" fill={T.cy} filter="url(#wglow)"><animateMotion dur="1.2s" repeatCount="indefinite" path={bezier(nr(pump),nl(scan))}/></circle>
+<path id="wp2s" d={bezier(nr(pump),nl(scan))} fill="none" stroke={T.cy} strokeWidth="1.5" opacity=".6" filter="url(#wglow)"/>
+<circle r="3" fill={T.cy} filter="url(#wglow)"><animateMotion dur="1.2s" repeatCount="indefinite"><mpath href="#wp2s"/></animateMotion></circle>
 </>}
 {/* Scan → Score */}
 {modActive("scorer")>0&&<>
-<path d={bezier(nr(scan),nl(score))} fill="none" stroke={T.pu} strokeWidth="1.5" opacity=".5" filter="url(#wglow)"/>
-<circle r="2.5" fill={T.pu} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite" path={bezier(nr(scan),nl(score))}/></circle>
+<path id="ws2sc" d={bezier(nr(scan),nl(score))} fill="none" stroke={T.pu} strokeWidth="1.5" opacity=".5" filter="url(#wglow)"/>
+<circle r="2.5" fill={T.pu} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite"><mpath href="#ws2sc"/></animateMotion></circle>
 </>}
 {/* Scan → Hub (main flow down) */}
 {modActive("scorer")>0&&<>
-<path d={bezier(nb(scan),nt(hub))} fill="none" stroke={domC} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
-<circle r="2.5" fill={domC} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite" path={bezier(nb(scan),nt(hub))}/></circle>
+<path id="ws2h" d={bezier(nb(scan),nt(hub))} fill="none" stroke={domC} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
+<circle r="2.5" fill={domC} filter="url(#wglow)"><animateMotion dur="1s" repeatCount="indefinite"><mpath href="#ws2h"/></animateMotion></circle>
 </>}
 {/* Social → Hub */}
 {fh.socialSignals>.1&&<>
-<path d={bezier(nr(social),nl(hub))} fill="none" stroke={T.or} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
-<circle r="2" fill={T.or} filter="url(#wglow)"><animateMotion dur="1.6s" repeatCount="indefinite" path={bezier(nr(social),nl(hub))}/></circle>
+<path id="wso2h" d={bezier(nr(social),nl(hub))} fill="none" stroke={T.or} strokeWidth="1.5" opacity=".4" filter="url(#wglow)"/>
+<circle r="2" fill={T.or} filter="url(#wglow)"><animateMotion dur="1.6s" repeatCount="indefinite"><mpath href="#wso2h"/></animateMotion></circle>
 </>}
 {/* Rug → Hub */}
 {fh.rugRisk>.05&&<>
-<path d={bezier(nl(rugd),nr(hub))} fill="none" stroke={T.rd} strokeWidth="1.5" opacity={Math.min(.7,fh.rugRisk+.2)} filter="url(#wglow)"/>
-<circle r="2" fill={T.rd} filter="url(#wglow)"><animateMotion dur="1.5s" repeatCount="indefinite" path={bezier(nl(rugd),nr(hub))}/></circle>
+<path id="wr2h" d={bezier(nl(rugd),nr(hub))} fill="none" stroke={T.rd} strokeWidth="1.5" opacity={Math.min(.7,fh.rugRisk+.2)} filter="url(#wglow)"/>
+<circle r="2" fill={T.rd} filter="url(#wglow)"><animateMotion dur="1.5s" repeatCount="indefinite"><mpath href="#wr2h"/></animateMotion></circle>
 </>}
 {/* Hub → output wires (fanned out from hub) */}
-{[{k:"ape",n:ape,off:-6},{k:"watch",n:watch,off:-2},{k:"skip",n:skip,off:2},{k:"rug",n:rug,off:6}].map(({k,n,off})=>{if(!hot[k])return null;const spd=k===dominant?"0.8s":"1.8s";const from={x:nb(hub).x+off,y:nb(hub).y};const pth=`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(n).x} ${nt(n).y-14},${nt(n).x} ${nt(n).y}`;return<g key={"lit_"+k}>
-<path d={pth} fill="none" stroke={wc[k]} strokeWidth={k===dominant?"2":"1.5"} opacity={k===dominant?.7:.3} filter="url(#wglow)"/>
-<circle r={k===dominant?"3":"2"} fill={wc[k]} opacity=".9" filter="url(#wglow)"><animateMotion dur={spd} repeatCount="indefinite" path={pth}/></circle>
+{[{k:"ape",n:ape,off:-6},{k:"watch",n:watch,off:-2},{k:"skip",n:skip,off:2},{k:"rug",n:rug,off:6}].map(({k,n,off})=>{if(!hot[k])return null;const spd=k===dominant?"0.8s":"1.8s";const from={x:nb(hub).x+off,y:nb(hub).y};const pid="wh2"+k;const pth=`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(n).x} ${nt(n).y-14},${nt(n).x} ${nt(n).y}`;return<g key={"lit_"+k}>
+<path id={pid} d={pth} fill="none" stroke={wc[k]} strokeWidth={k===dominant?"2":"1.5"} opacity={k===dominant?.7:.3} filter="url(#wglow)"/>
+<circle r={k===dominant?"3":"2"} fill={wc[k]} opacity=".9" filter="url(#wglow)"><animateMotion dur={spd} repeatCount="indefinite"><mpath href={"#"+pid}/></animateMotion></circle>
 </g>})}
 
 {/* ── FEEDBACK LOOP WIRES (lit when active — reverse flow) ── */}
 {/* APE outcomes → Learner (straight down) */}
 {hasLearner&&hot.ape&&<>
-<path d={bezier(nb(ape),nt(learner))} fill="none" stroke={T.gn} strokeWidth="1" opacity=".3" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="2" fill={T.gn} opacity=".7" filter="url(#fbglow)"><animateMotion dur="2.5s" repeatCount="indefinite" path={bezier(nb(ape),nt(learner))}/></circle>
+<path id="wfa2l" d={bezier(nb(ape),nt(learner))} fill="none" stroke={T.gn} strokeWidth="1" opacity=".3" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="2" fill={T.gn} opacity=".7" filter="url(#fbglow)"><animateMotion dur="2.5s" repeatCount="indefinite"><mpath href="#wfa2l"/></animateMotion></circle>
 </>}
 {/* Learner → Scorer (feedback: route along left edge to avoid crossings) */}
 {hasLearner&&(()=>{const p=`M${nl(learner).x} ${nl(learner).y} C${nl(learner).x-20} ${nl(learner).y},${nl(learner).x-20} ${nb(pump).y+nh+8},${nb(pump).x} ${nb(pump).y}`;return<>
-<path d={p} fill="none" stroke={T.cy} strokeWidth="1" opacity=".25" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.cy} opacity=".6" filter="url(#fbglow)"><animateMotion dur="3s" repeatCount="indefinite" path={p}/></circle>
+<path id="wfl2s" d={p} fill="none" stroke={T.cy} strokeWidth="1" opacity=".25" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.cy} opacity=".6" filter="url(#fbglow)"><animateMotion dur="3s" repeatCount="indefinite"><mpath href="#wfl2s"/></animateMotion></circle>
 </>})()}
 {/* WATCH → Grad Watch (graduated tokens monitored) */}
 {hasGradWatch&&<>
-<path d={bezier(nb(watch),nt(gradW))} fill="none" stroke={T.yl} strokeWidth="1" opacity=".3" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.yl} opacity=".7" filter="url(#fbglow)"><animateMotion dur="2s" repeatCount="indefinite" path={bezier(nb(watch),nt(gradW))}/></circle>
+<path id="wfw2g" d={bezier(nb(watch),nt(gradW))} fill="none" stroke={T.yl} strokeWidth="1" opacity=".3" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.yl} opacity=".7" filter="url(#fbglow)"><animateMotion dur="2s" repeatCount="indefinite"><mpath href="#wfw2g"/></animateMotion></circle>
 </>}
 {/* Grad Watch → Hub (post-grad intel feeds back) */}
 {hasGradWatch&&<>
-<path d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.yl} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.yl} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.5s" repeatCount="indefinite" path={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})}/></circle>
+<path id="wfg2h" d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.yl} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.yl} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.5s" repeatCount="indefinite"><mpath href="#wfg2h"/></animateMotion></circle>
 </>}
 {/* RUG → Patterns (straight down) */}
 {hasPatterns&&hot.rug&&<>
-<path d={bezier(nb(rug),nt(patterns))} fill="none" stroke={T.rd} strokeWidth="1" opacity=".25" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.rd} opacity=".6" filter="url(#fbglow)"><animateMotion dur="2.8s" repeatCount="indefinite" path={bezier(nb(rug),nt(patterns))}/></circle>
+<path id="wfr2p" d={bezier(nb(rug),nt(patterns))} fill="none" stroke={T.rd} strokeWidth="1" opacity=".25" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.rd} opacity=".6" filter="url(#fbglow)"><animateMotion dur="2.8s" repeatCount="indefinite"><mpath href="#wfr2p"/></animateMotion></circle>
 </>}
-{/* Patterns → Rug Detect (pattern memory improves detection) */}
 {/* Patterns → RugDetect (route along right edge) */}
 {hasPatterns&&(()=>{const fbOff=mb?35:80;const p=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+fbOff} ${nr(patterns).y},${nr(rugd).x+fbOff} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;return<>
-<path d={p} fill="none" stroke={T.or} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
-<circle r="1.5" fill={T.or} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.2s" repeatCount="indefinite" path={p}/></circle>
+<path id="wfp2r" d={p} fill="none" stroke={T.or} strokeWidth="1" opacity=".2" strokeDasharray="4 2" filter="url(#fbglow)"/>
+<circle r="1.5" fill={T.or} opacity=".5" filter="url(#fbglow)"><animateMotion dur="3.2s" repeatCount="indefinite"><mpath href="#wfp2r"/></animateMotion></circle>
 </>})()}
 
 {/* ── PROCESS NODES (Tier 1 + 2) ── */}
