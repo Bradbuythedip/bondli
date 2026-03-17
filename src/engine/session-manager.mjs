@@ -73,23 +73,11 @@ export class SessionManager {
   }
 
   // Create a new launch session
-  async create({ userWallet, totalSol, tokenConfig, tier, fleetConfig, masterSeed }) {
-    let devKeypair, devWallet, devSecret;
-    if (masterSeed) {
-      try {
-        devKeypair = Keypair.fromSecretKey(bs58.decode(masterSeed));
-        devWallet = devKeypair.publicKey.toString();
-        devSecret = masterSeed;
-      } catch (e) {
-        devKeypair = Keypair.generate();
-        devWallet = devKeypair.publicKey.toString();
-        devSecret = bs58.encode(devKeypair.secretKey);
-      }
-    } else {
-      devKeypair = Keypair.generate();
-      devWallet = devKeypair.publicKey.toString();
-      devSecret = bs58.encode(devKeypair.secretKey);
-    }
+  async create({ userWallet, totalSol, tokenConfig, tier, fleetConfig }) {
+    // Always generate a fresh keypair for the dev wallet
+    const devKeypair = Keypair.generate();
+    const devWallet = devKeypair.publicKey.toString();
+    const devSecret = bs58.encode(devKeypair.secretKey);
 
     const isApe = !!(tokenConfig?.existingCA);
     const isDeployOnly = !!(fleetConfig?.deployOnly);
@@ -125,9 +113,9 @@ export class SessionManager {
         duration: fleetConfig?.duration || 60,
         jitoTip: fleetConfig?.jitoTip || 0.001,
       },
-      useMaster: !!masterSeed,
-      status: masterSeed ? "funded" : "awaiting_deposit",
-      funded: !!masterSeed,
+      useMaster: false,
+      status: "awaiting_deposit",
+      funded: false,
       depositTx: null,
       tokenCA: tokenConfig.existingCA || null,
       createdAt: new Date().toISOString(),
@@ -139,7 +127,7 @@ export class SessionManager {
     this.sessions.set(session.id, session);
     if (this.redis) {
       try {
-        await this.redis.set("session:" + session.id, JSON.stringify(session), "EX", 86400);
+        await this.redis.set("session:" + session.id, JSON.stringify(session), { EX: 86400 });
       } catch {}
     }
 
@@ -154,9 +142,9 @@ export class SessionManager {
       creationFee: devBuyInfo.creationFee,
       fleetBudget: devBuyInfo.fleetBudget,
       devBuyPercent: devBuyInfo.devBuyPercent,
-      useMaster: !!masterSeed,
-      funded: !!masterSeed,
-      status: masterSeed ? "funded" : "awaiting_deposit",
+      useMaster: false,
+      funded: false,
+      status: "awaiting_deposit",
     };
   }
 
@@ -187,7 +175,7 @@ export class SessionManager {
     Object.assign(session, updates);
     this.sessions.set(sessionId, session);
     if (this.redis) {
-      try { await this.redis.set("session:" + sessionId, JSON.stringify(session), "EX", 86400); } catch {}
+      try { await this.redis.set("session:" + sessionId, JSON.stringify(session), { EX: 86400 }); } catch {}
     }
     return session;
   }
@@ -237,8 +225,7 @@ export class SessionManager {
         await this.redis.set(
           "fleetkeys:" + sessionId,
           JSON.stringify(walletKeys),
-          "EX",
-          172800 // 48 hours
+          { EX: 172800 } // 48 hours
         );
       } catch {}
     }
