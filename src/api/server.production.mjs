@@ -82,6 +82,41 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 const connection = new Connection(RPC_URL, "confirmed");
 
+// ── RPC helper: retry with exponential backoff on 429 ──
+async function rpcRetry(fn, label = "rpc", maxRetries = 3) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const is429 = e.message?.includes("429") || e.message?.includes("Too Many Requests") || e.message?.includes("max usage");
+      if (is429 && attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 8000); // 1s, 2s, 4s, 8s
+        console.warn(`[RPC-RETRY] ${label} got 429, retry ${attempt + 1}/${maxRetries} in ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
+// ── Balance cache (15s TTL) to avoid hammering RPC on every poll ──
+const _balCache = new Map();
+const BAL_CACHE_TTL = 15_000;
+function getCachedBalance(key) {
+  const entry = _balCache.get(key);
+  if (entry && Date.now() - entry.ts < BAL_CACHE_TTL) return entry.data;
+  return null;
+}
+function setCachedBalance(key, data) {
+  _balCache.set(key, { data, ts: Date.now() });
+  // Prune old entries periodically
+  if (_balCache.size > 200) {
+    const now = Date.now();
+    for (const [k, v] of _balCache) { if (now - v.ts > BAL_CACHE_TTL * 2) _balCache.delete(k); }
+  }
+}
+
 // Redis (optional — in-memory fallback)
 let redis = null;
 if (REDIS_URL) {
@@ -2196,18 +2231,26 @@ app.get("/api/pricing", (req, res) => {
 app.get("/api/trading-wallet/:wallet", async (req, res) => {
   const tw = await getTradingWallet(req.params.wallet);
   if (!tw) return res.json({ ok: false, tradingWallet: null });
-  // Derive pubkey from secret key as fallback (handles legacy wallets without pubkey field)
   let pubkey = tw.pubkey;
   if (!pubkey && tw.secret) {
     try { pubkey = Keypair.fromSecretKey(bs58.decode(tw.secret)).publicKey.toBase58(); } catch {}
   }
   if (!pubkey) return res.json({ ok: false, tradingWallet: null, error: "invalid wallet" });
-  // Check SOL balance with timeout
+
+  // Return cached balance if fresh (avoids RPC 429 on frequent polls)
+  const cacheKey = "bal:" + pubkey;
+  const cached = getCachedBalance(cacheKey);
+  if (cached) return res.json(cached);
+
+  // Fetch SOL balance with retry + timeout
   let solBalance = 0;
   try {
-    const balPromise = connection.getBalance(new PublicKey(pubkey));
-    const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000));
-    solBalance = await Promise.race([balPromise, timeoutPromise]) / LAMPORTS_PER_SOL;
+    const bal = await rpcRetry(() => {
+      const p = connection.getBalance(new PublicKey(pubkey));
+      const t = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000));
+      return Promise.race([p, t]);
+    }, "getBalance:" + pubkey.slice(0, 8));
+    solBalance = bal / LAMPORTS_PER_SOL;
   } catch (e) {
     console.log(`[WALLET-BAL] getBalance failed for ${pubkey.slice(0,8)}: ${e.message}`);
   }
@@ -2216,7 +2259,7 @@ app.get("/api/trading-wallet/:wallet", async (req, res) => {
   const tokenDetails = [];
   try {
     const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-    const accts = await connection.getParsedTokenAccountsByOwner(new PublicKey(pubkey), { programId: TOKEN_PROGRAM });
+    const accts = await rpcRetry(() => connection.getParsedTokenAccountsByOwner(new PublicKey(pubkey), { programId: TOKEN_PROGRAM }), "getTokenAccounts:" + pubkey.slice(0, 8));
     const mintsToPrice = [];
     for (const ta of accts.value) {
       const info = ta.account.data.parsed.info;
@@ -2236,7 +2279,6 @@ app.get("/api/trading-wallet/:wallet", async (req, res) => {
         mintsToPrice.push({ mint, amount });
       }
     }
-    // Price tokens not in radar via Jupiter price API (batch up to 10)
     if (mintsToPrice.length > 0) {
       try {
         const batch = mintsToPrice.slice(0, 10);
@@ -2260,8 +2302,10 @@ app.get("/api/trading-wallet/:wallet", async (req, res) => {
     console.log(`[WALLET-BAL] token scan failed for ${pubkey.slice(0,8)}: ${e.message}`);
   }
   const totalBalance = +(solBalance + tokenValueSol).toFixed(6);
+  const result = { ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails };
+  setCachedBalance(cacheKey, result);
   console.log(`[WALLET-BAL] ${pubkey.slice(0,8)}: ${solBalance.toFixed(4)} SOL + ${tokenValueSol.toFixed(4)} tokens = ${totalBalance} total (${tokenDetails.length} tokens)`);
-  res.json({ ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails });
+  res.json(result);
 });
 
 // ── WALLET DEBUG: detailed diagnostic for deposit issues ──
@@ -2285,19 +2329,19 @@ app.get("/api/trading-wallet/:wallet/debug", async (req, res) => {
     if (!pubkey) { diag.errors.push("No pubkey available"); return res.json({ ok: false, diag }); }
     diag.pubkey = pubkey;
 
-    // Step 2: Check SOL balance
+    // Step 2: Check SOL balance (with retry for 429)
     try {
-      const bal = await connection.getBalance(new PublicKey(pubkey));
+      const bal = await rpcRetry(() => connection.getBalance(new PublicKey(pubkey)), "debug:getBalance");
       diag.steps.push({ step: "getBalance", lamports: bal, sol: bal / LAMPORTS_PER_SOL });
     } catch (e) {
       diag.steps.push({ step: "getBalance", error: e.message });
       diag.errors.push("getBalance failed: " + e.message);
     }
 
-    // Step 3: Check token accounts
+    // Step 3: Check token accounts (with retry for 429)
     try {
       const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-      const accts = await connection.getParsedTokenAccountsByOwner(new PublicKey(pubkey), { programId: TOKEN_PROGRAM });
+      const accts = await rpcRetry(() => connection.getParsedTokenAccountsByOwner(new PublicKey(pubkey), { programId: TOKEN_PROGRAM }), "debug:getTokenAccounts");
       const tokens = accts.value.map(ta => {
         const info = ta.account.data.parsed.info;
         return { mint: info.mint.slice(0,12), amount: info.tokenAmount.uiAmountString, decimals: info.tokenAmount.decimals };
@@ -2308,9 +2352,9 @@ app.get("/api/trading-wallet/:wallet/debug", async (req, res) => {
       diag.errors.push("getTokenAccounts failed: " + e.message);
     }
 
-    // Step 4: Check RPC health
+    // Step 4: Check RPC health (with retry for 429)
     try {
-      const slot = await connection.getSlot();
+      const slot = await rpcRetry(() => connection.getSlot(), "debug:getSlot");
       diag.steps.push({ step: "rpcHealth", slot, rpcUrl: RPC_URL.slice(0, 40) });
     } catch (e) {
       diag.steps.push({ step: "rpcHealth", error: e.message });
