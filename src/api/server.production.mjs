@@ -2264,7 +2264,72 @@ app.get("/api/trading-wallet/:wallet", async (req, res) => {
   res.json({ ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails });
 });
 
-app.post("/api/trading-wallet/create", async (req, res) => {
+// ── WALLET DEBUG: detailed diagnostic for deposit issues ──
+app.get("/api/trading-wallet/:wallet/debug", async (req, res) => {
+  const diag = { steps: [], errors: [], wallet: req.params.wallet };
+  try {
+    // Step 1: Look up trading wallet
+    const tw = await getTradingWallet(req.params.wallet);
+    diag.steps.push({ step: "getTradingWallet", found: !!tw, pubkey: tw?.pubkey?.slice(0,12) || null, hasSecret: !!tw?.secret });
+    if (!tw) {
+      // Check if user record has tradingWallet reference
+      const user = await getUser(req.params.wallet);
+      diag.steps.push({ step: "getUser_fallback", user: user ? { tier: user.tier, tradingWallet: user.tradingWallet?.slice(0,12) || null } : null });
+      diag.errors.push("No trading wallet found in tw: store or Redis");
+      return res.json({ ok: false, diag });
+    }
+    let pubkey = tw.pubkey;
+    if (!pubkey && tw.secret) {
+      try { pubkey = Keypair.fromSecretKey(bs58.decode(tw.secret)).publicKey.toBase58(); diag.steps.push({ step: "derive_pubkey", pubkey: pubkey.slice(0,12) }); } catch (e) { diag.errors.push("derive_pubkey failed: " + e.message); }
+    }
+    if (!pubkey) { diag.errors.push("No pubkey available"); return res.json({ ok: false, diag }); }
+    diag.pubkey = pubkey;
+
+    // Step 2: Check SOL balance
+    try {
+      const bal = await connection.getBalance(new PublicKey(pubkey));
+      diag.steps.push({ step: "getBalance", lamports: bal, sol: bal / LAMPORTS_PER_SOL });
+    } catch (e) {
+      diag.steps.push({ step: "getBalance", error: e.message });
+      diag.errors.push("getBalance failed: " + e.message);
+    }
+
+    // Step 3: Check token accounts
+    try {
+      const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+      const accts = await connection.getParsedTokenAccountsByOwner(new PublicKey(pubkey), { programId: TOKEN_PROGRAM });
+      const tokens = accts.value.map(ta => {
+        const info = ta.account.data.parsed.info;
+        return { mint: info.mint.slice(0,12), amount: info.tokenAmount.uiAmountString, decimals: info.tokenAmount.decimals };
+      });
+      diag.steps.push({ step: "getTokenAccounts", count: accts.value.length, tokens });
+    } catch (e) {
+      diag.steps.push({ step: "getTokenAccounts", error: e.message });
+      diag.errors.push("getTokenAccounts failed: " + e.message);
+    }
+
+    // Step 4: Check RPC health
+    try {
+      const slot = await connection.getSlot();
+      diag.steps.push({ step: "rpcHealth", slot, rpcUrl: RPC_URL.slice(0, 40) });
+    } catch (e) {
+      diag.steps.push({ step: "rpcHealth", error: e.message });
+      diag.errors.push("RPC unhealthy: " + e.message);
+    }
+
+    // Step 5: Redis status
+    diag.steps.push({ step: "redis", connected: !!redis });
+
+    // Step 6: solUsdPrice
+    diag.steps.push({ step: "solUsdPrice", price: solUsdPrice });
+
+    diag.ok = diag.errors.length === 0;
+    res.json(diag);
+  } catch (e) {
+    diag.errors.push("Unexpected: " + e.message);
+    res.json({ ok: false, diag });
+  }
+});
   const { wallet } = req.body;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const existing = await getTradingWallet(wallet);
