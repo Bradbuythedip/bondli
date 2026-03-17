@@ -2196,14 +2196,28 @@ app.get("/api/pricing", (req, res) => {
 app.get("/api/trading-wallet/:wallet", async (req, res) => {
   const tw = await getTradingWallet(req.params.wallet);
   if (!tw) return res.json({ ok: false, tradingWallet: null });
-  // Check SOL balance
+  // Derive pubkey from secret key as fallback (handles legacy wallets without pubkey field)
+  let pubkey = tw.pubkey;
+  if (!pubkey && tw.secret) {
+    try { pubkey = Keypair.fromSecretKey(bs58.decode(tw.secret)).publicKey.toBase58(); } catch {}
+  }
+  if (!pubkey) return res.json({ ok: false, tradingWallet: null, error: "invalid wallet" });
+  // Check SOL balance with timeout
   let solBalance = 0;
-  try { solBalance = await connection.getBalance(new PublicKey(tw.pubkey)) / LAMPORTS_PER_SOL; } catch {}
+  try {
+    const balPromise = connection.getBalance(new PublicKey(pubkey));
+    const timeoutPromise = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000));
+    solBalance = await Promise.race([balPromise, timeoutPromise]) / LAMPORTS_PER_SOL;
+  } catch (e) {
+    console.log(`[WALLET-BAL] getBalance failed for ${pubkey.slice(0,8)}: ${e.message}`);
+  }
   // Calculate total token value in SOL across all held positions
   let tokenValueSol = 0;
+  const tokenDetails = [];
   try {
     const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-    const accts = await connection.getParsedTokenAccountsByOwner(new PublicKey(tw.pubkey), { programId: TOKEN_PROGRAM });
+    const accts = await connection.getParsedTokenAccountsByOwner(new PublicKey(pubkey), { programId: TOKEN_PROGRAM });
+    const mintsToPrice = [];
     for (const ta of accts.value) {
       const info = ta.account.data.parsed.info;
       const amount = parseFloat(info.tokenAmount.uiAmountString || "0");
@@ -2215,12 +2229,39 @@ app.get("/api/trading-wallet/:wallet", async (req, res) => {
         const holdPct = amount / totalSupply;
         const mcUsd = radarToken.mcapUsd || 0;
         const valueUsd = mcUsd > 0 ? holdPct * mcUsd : 0;
-        tokenValueSol += solUsdPrice > 0 ? valueUsd / solUsdPrice : 0;
+        const valueSol = solUsdPrice > 0 ? valueUsd / solUsdPrice : 0;
+        tokenValueSol += valueSol;
+        tokenDetails.push({ mint, name: radarToken.name || mint.slice(0,8), amount, valueSol: +valueSol.toFixed(6) });
+      } else {
+        mintsToPrice.push({ mint, amount });
       }
     }
-  } catch {}
+    // Price tokens not in radar via Jupiter price API (batch up to 10)
+    if (mintsToPrice.length > 0) {
+      try {
+        const batch = mintsToPrice.slice(0, 10);
+        const ids = batch.map(m => m.mint).join(",");
+        const priceResp = await fetch(`https://api.jup.ag/price/v2?ids=${ids}`, { signal: AbortSignal.timeout(5000) });
+        if (priceResp.ok) {
+          const priceData = await priceResp.json();
+          for (const item of batch) {
+            const p = priceData?.data?.[item.mint];
+            if (p?.price) {
+              const valueUsd = item.amount * parseFloat(p.price);
+              const valueSol = solUsdPrice > 0 ? valueUsd / solUsdPrice : 0;
+              tokenValueSol += valueSol;
+              tokenDetails.push({ mint: item.mint, name: item.mint.slice(0,8), amount: item.amount, valueSol: +valueSol.toFixed(6) });
+            }
+          }
+        }
+      } catch {}
+    }
+  } catch (e) {
+    console.log(`[WALLET-BAL] token scan failed for ${pubkey.slice(0,8)}: ${e.message}`);
+  }
   const totalBalance = +(solBalance + tokenValueSol).toFixed(6);
-  res.json({ ok: true, tradingWallet: tw.pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6) });
+  console.log(`[WALLET-BAL] ${pubkey.slice(0,8)}: ${solBalance.toFixed(4)} SOL + ${tokenValueSol.toFixed(4)} tokens = ${totalBalance} total (${tokenDetails.length} tokens)`);
+  res.json({ ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails });
 });
 
 app.post("/api/trading-wallet/create", async (req, res) => {

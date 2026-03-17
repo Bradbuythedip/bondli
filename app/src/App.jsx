@@ -479,7 +479,7 @@ useEffect(()=>{const p=window?.phantom?.solana||window?.solana;if(p?.isPhantom&&
 useEffect(()=>{if(!hasAccess)return;let ws,dead=false;const conn=()=>{if(dead)return;try{ws=new WebSocket(WS_URL);ws.onopen=()=>sWs(true);ws.onmessage=(e)=>{try{const msg=JSON.parse(e.data);if(msg.event==="mcap-update"&&msg.data){const{ca,mcap,mcapSol}=msg.data;sRT(prev=>{const update=tab=>[...tab].map(t=>t.ca===ca?{...t,mcapUsd:mcap,mcapSol:mcapSol||t.mcapSol}:t);return{new:update(prev.new||[]),hot:update(prev.hot||[]),graduating:update(prev.graduating||[]),momentum:update(prev.momentum||[])}})}}catch{}};ws.onclose=()=>{sWs(false);if(!dead)setTimeout(conn,3000)};ws.onerror=()=>{}}catch{}};conn();return()=>{dead=true;if(ws)ws.close()}},[hasAccess]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.ls(user.pubkey).then(d=>{if(d.sessions)sPS(d.sessions.filter(s=>s.tokenCA&&s.status!=="closed"&&s.status!=="swept"&&s.status!=="recovered").slice(0,8))}).catch(()=>{})},[user?.pubkey]);
 const refreshWallet=useCallback(()=>{if(!user?.pubkey||user.demo)return;a.gtw(user.pubkey).then(d=>{if(d.tradingWallet){sTrW(d.tradingWallet);sTrB(d.balance||0);sTrSol(d.solBalance||0);sTrTok(d.tokenValueSol||0)}}).catch(()=>{})},[user?.pubkey]);
-useEffect(()=>{if(!user?.pubkey||user.demo)return;refreshWallet();const iv=setInterval(refreshWallet,15000);a.etw(user.pubkey).then(d=>{if(d.ok&&d.privateKey)sTrK(d)}).catch(()=>{});return()=>clearInterval(iv)},[user?.pubkey,refreshWallet]);
+useEffect(()=>{if(!user?.pubkey||user.demo)return;refreshWallet();const iv=setInterval(refreshWallet,5000);a.etw(user.pubkey).then(d=>{if(d.ok&&d.privateKey)sTrK(d)}).catch(()=>{});return()=>clearInterval(iv)},[user?.pubkey,refreshWallet]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.gu(user.pubkey).then(d=>{if(d.username)sCU(d.username)}).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null){const real=d.online;const inflated=Math.max(real,Math.round(real*1.3+Math.floor(Math.random()*5)+3));sOl(inflated)}}).catch(()=>{})},15000);return()=>clearInterval(iv)},[]);
 useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(d=>sFl(d)).catch(()=>{})},5000);return()=>clearInterval(iv)},[launched,lCA]);
@@ -603,7 +603,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <div style={{minHeight:"100dvh",background:T.bg,color:T.tx,fontFamily:M,paddingBottom:mb?80:16}}>
 <header style={{padding:mb?"5px 8px":"6px 20px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",justifyContent:"space-between",background:T.bg}}><div onClick={resetHome} style={{display:"flex",alignItems:"center",gap:mb?4:7,cursor:"pointer"}}><Logo s={mb?20:24}/><span style={{fontWeight:800,fontSize:mb?20:24}}>{mb?"B":"BOND"}<span style={{color:T.rd}}>{mb?"L":"LI"}</span></span>{wsOn&&(launched||pSess.length>0)&&<span style={{width:4,height:4,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}</div>{trW&&<div style={{display:"flex",flexDirection:"column",alignItems:mb?"center":"flex-end"}}><div style={{display:"flex",alignItems:"center",gap:3}}><span style={{fontSize:mb?26:32,fontWeight:900,color:trB>.01?T.gn:T.ft}}>{solFmt(trB)}</span><IC.sol s={mb?16:20}/></div>{trTok>0.001&&<span style={{fontSize:9,color:T.dm,whiteSpace:"nowrap"}}>{solFmt(trSol)} SOL + {solFmt(trTok)} in tokens</span>}</div>}<div style={{display:"flex",alignItems:"center",gap:mb?2:5}}>{launched&&<button onClick={async()=>{if(!confirm("STOP ALL?"))return;try{for(const s of pSess)try{await a.ss(s.id,user.pubkey)}catch{};sPS([]);toast("Stopped","success");resetHome()}catch(e){toast(e.message,"error")}}} style={{background:T.rd+"12",border:"1px solid "+T.rd+"22",borderRadius:6,padding:"3px 7px",cursor:"pointer",color:T.rd,display:"flex",alignItems:"center",gap:2,fontSize:14,fontWeight:700}}><IC.stop s={14}/>STOP</button>}<button onClick={tog} style={{background:"none",border:"1px solid "+T.bd,borderRadius:6,padding:"3px 5px",cursor:"pointer",color:T.dm,display:"flex"}}>{isDark?<IC.sun/>:<IC.moon/>}</button><button onClick={()=>sShowKeys(!showKeys)} style={{background:"none",border:"1px solid "+T.bd,borderRadius:6,padding:"3px 5px",cursor:"pointer",color:T.dm,display:"flex"}}><IC.gear s={13}/></button><div onClick={disconnect} style={{display:"flex",alignItems:"center",gap:3,padding:"2px 5px",background:T.sf,borderRadius:6,border:"1px solid "+T.bd,cursor:"pointer"}}><span style={{padding:"2px 6px",borderRadius:3,fontSize:12,fontWeight:800,background:tierColor+"18",color:tierColor,border:"1px solid "+tierColor+"22"}}>{tierLabel}</span><Av pk={user.pubkey||""} s={18}/><span style={{fontSize:13,color:T.dm,maxWidth:mb?50:80,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user.demo?"demo":(cUser||wN(user.pubkey||""))}</span></div></div></header>
 
-{trW?<div style={{padding:"6px 12px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",gap:6,fontSize:14,color:T.ft}}><IC.zap s={13}/><span onClick={()=>{navigator.clipboard?.writeText(trW);toast("Copied","success")}} style={{cursor:"pointer"}}>{tp(trW,6,4)}</span>{online>0&&<span style={{color:T.gn+"77"}}>{online} online</span>}<div style={{marginLeft:"auto",display:"flex",gap:2}}><button onClick={()=>{navigator.clipboard?.writeText(trW);toast("Deposit address copied","success")}} style={{background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:4,padding:"3px 8px",cursor:"pointer",color:T.gn,fontSize:13,fontWeight:700}}>deposit</button></div></div>:user&&!user.demo&&<div style={{padding:"8px 10px",borderBottom:"1px solid "+T.bd,textAlign:"center"}}><B onClick={async()=>{try{const r=await a.ctw(a.w);if(r.ok){sTrW(r.tradingWallet);sTrK(r);toast("Key created","success")}}catch(e){toast(e.message,"error")}}} small><IC.key s={12} c="#0a0a0f"/> Create Trading Key</B></div>}
+{trW?<div style={{padding:"6px 12px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",gap:6,fontSize:14,color:T.ft}}><IC.zap s={13}/><span onClick={()=>{navigator.clipboard?.writeText(trW);toast("Copied","success")}} style={{cursor:"pointer"}}>{tp(trW,6,4)}</span>{online>0&&<span style={{color:T.gn+"77"}}>{online} online</span>}<div style={{marginLeft:"auto",display:"flex",gap:2}}><button onClick={()=>{refreshWallet();toast("Refreshing...","success")}} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:4,padding:"3px 8px",cursor:"pointer",color:T.dm,fontSize:13,fontWeight:600}}>refresh</button><button onClick={()=>{navigator.clipboard?.writeText(trW);toast("Deposit address copied","success")}} style={{background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:4,padding:"3px 8px",cursor:"pointer",color:T.gn,fontSize:13,fontWeight:700}}>deposit</button></div></div>:user&&!user.demo&&<div style={{padding:"8px 10px",borderBottom:"1px solid "+T.bd,textAlign:"center"}}><B onClick={async()=>{try{const r=await a.ctw(a.w);if(r.ok){sTrW(r.tradingWallet);sTrK(r);toast("Key created","success")}}catch(e){toast(e.message,"error")}}} small><IC.key s={12} c="#0a0a0f"/> Create Trading Key</B></div>}
 
 {launched&&lCA?<EB l="War Room"><div style={{padding:mb?4:8,animation:"fu .2s ease"}}>
 {/* ═══ WAR ROOM HEADER ═══ */}
@@ -1001,38 +1001,38 @@ const hasGradWatch=(intelData?.gradWatch?.count||0)>0;
 const hasPatterns=(chartPatterns?.total||0)>0;
 /* Bezier curve helper: creates smooth S-curve between two points */
 const bezier=(a,b)=>{const dx=b.x-a.x;const dy=b.y-a.y;if(Math.abs(dy)>Math.abs(dx)){const cy1=a.y+dy*0.4;const cy2=b.y-dy*0.4;return`M${a.x} ${a.y} C${a.x} ${cy1},${b.x} ${cy2},${b.x} ${b.y}`}const cx1=a.x+dx*0.4;const cx2=b.x-dx*0.4;return`M${a.x} ${a.y} C${cx1} ${a.y},${cx2} ${b.y},${b.x} ${b.y}`};
-/* SVG dimensions — generous spacing to avoid overlaps */
-const W=mb?360:540;const H=mb?230:280;
+/* SVG dimensions — compact to avoid bloat at 2x zoom */
+const W=mb?360:440;const H=mb?230:240;
 /* Node sizes */
-const nw=mb?44:56;const nh=mb?20:20;
+const nw=mb?44:54;const nh=mb?20:24;
 const cx=W/2;/* center x */
-const hubR=mb?20:28;/* Hub circle radius — bigger for brain */
-/* Tier 1: inputs (top row, spread wide) — shifted down to make room for pill icon */
-const t1sp=mb?62:100;/* input spacing */
-const t1cx=mb?cx+14:cx;/* mobile: shift input row right to clear tier labels */
-const pump={x:t1cx-nw/2-t1sp,y:28};
-const scan={x:t1cx-nw/2,y:28};
-const score={x:t1cx-nw/2+t1sp,y:28};
-/* Tier 2: process — hub centered, sides brought closer to center */
-const t2y=mb?68:78;
-const t2cx=mb?cx+14:cx;/* mobile: shift right to clear labels */
-const t2sp=mb?78:105;/* tighter gap from hub — more centered */
+const hubR=mb?20:26;/* Hub circle radius */
+/* Tier 1: inputs (top row) */
+const t1sp=mb?62:88;
+const t1cx=mb?cx+14:cx;
+const pump={x:t1cx-nw/2-t1sp,y:22};
+const scan={x:t1cx-nw/2,y:22};
+const score={x:t1cx-nw/2+t1sp,y:22};
+/* Tier 2: process — hub centered */
+const t2y=mb?68:68;
+const t2cx=mb?cx+14:cx;
+const t2sp=mb?78:92;
 const social={x:t2cx-nw/2-t2sp,y:t2y};
 const hub={x:t2cx-nw/2,y:t2y};
 const rugd={x:t2cx-nw/2+t2sp,y:t2y};
-/* Tier 3: outputs (4 across, asymmetric margins — left needs room for tier labels) */
-const outY=mb?120:135;
-const outL=mb?36:50;/* left margin — clears tier labels on mobile */
-const outR=mb?8:50;/* right margin */
-const outSpan=W-outL-outR-nw;/* distributable space for card left edges */
+/* Tier 3: outputs */
+const outY=mb?120:118;
+const outL=mb?36:40;
+const outR=mb?8:40;
+const outSpan=W-outL-outR-nw;
 const outGap=outSpan/3;
 const outStart=outL;
 const ape={x:outStart,y:outY};
 const watch={x:outStart+outGap,y:outY};
 const skip={x:outStart+outGap*2,y:outY};
 const rug={x:outStart+outGap*3,y:outY};
-/* Tier 4: feedback (bottom, aligned under their connected outputs) */
-const fbY=mb?172:205;
+/* Tier 4: feedback */
+const fbY=mb?172:170;
 const learner={x:ape.x,y:fbY};
 const gradW={x:watch.x,y:fbY};
 const patterns={x:rug.x,y:fbY};
@@ -1052,9 +1052,9 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4,position:"relative",zIndex:2}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
 <div style={{width:8,height:8,borderRadius:"50%",background:`linear-gradient(135deg,#9945FF,#14F195)`,boxShadow:"0 0 10px #9945FF66,0 0 20px #14F19533",animation:"gp 1.5s infinite"}}/>
-<span style={{fontSize:10,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:"linear-gradient(90deg,#9945FF,#14F195)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Bondli Brain</span>
+<span style={{fontSize:11,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:"linear-gradient(90deg,#9945FF,#14F195)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Bondli Brain</span>
 </div>
-<div style={{display:"flex",alignItems:"center",gap:6,fontSize:7,color:T.ft}}>
+<div style={{display:"flex",alignItems:"center",gap:6,fontSize:8,color:T.ft}}>
 <span style={{color:T.gn}}>{engineState.flow?.totalBuys||0}<span style={{color:T.ft}}> buys</span></span>
 <span style={{color:T.rd}}>{engineState.flow?.totalSells||0}<span style={{color:T.ft}}> sells</span></span>
 <span style={{color:T.yl}}>{engineState.flow?.totalVol||0}<span style={{color:T.ft}}> SOL</span></span>
@@ -1078,10 +1078,10 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 {/* ── PUMPFUN PILL inside PumpPortal card (left of text) ── */}
 
 {/* ── TIER LABELS ── */}
-<text x="6" y={pump.y+nh/2+1} fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".5">INPUT</text>
-<text x="6" y={hub.y+nh/2+1} fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".5">PROCESS</text>
-<text x="6" y={outY+nh/2+1} fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".5">OUTPUT</text>
-<text x="6" y={fbY+nh/2+1} fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".5">LEARN</text>
+<text x="6" y={pump.y+nh/2+1} fill={T.ft} fontSize="6" fontFamily="monospace" opacity=".5">INPUT</text>
+<text x="6" y={hub.y+nh/2+1} fill={T.ft} fontSize="6" fontFamily="monospace" opacity=".5">PROCESS</text>
+<text x="6" y={outY+nh/2+1} fill={T.ft} fontSize="6" fontFamily="monospace" opacity=".5">OUTPUT</text>
+<text x="6" y={fbY+nh/2+1} fill={T.ft} fontSize="6" fontFamily="monospace" opacity=".5">LEARN</text>
 {/* Tier separator lines */}
 <line x1="0" y1={pump.y+nh+4} x2={W} y2={pump.y+nh+4} stroke={T.ft} strokeWidth=".5" opacity=".06" strokeDasharray="4 4"/>
 <line x1="0" y1={outY-4} x2={W} y2={outY-4} stroke={T.ft} strokeWidth=".5" opacity=".06" strokeDasharray="4 4"/>
@@ -1192,8 +1192,8 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR-1} fill={T.bg} stroke="url(#solGrad)" strokeWidth="2"/>
 {/* Bondli logo — centered inside top of brain circle */}
 <image href="/bondli-logo.svg" x={nc(nd.n).x-12} y={nc(nd.n).y-hubR+5} width="24" height="20" opacity=".9"/>
-<text x={nc(nd.n).x} y={nc(nd.n).y+4} textAnchor="middle" fill="url(#solGrad)" fontSize={mb?"6":"8"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{nd.label}</text>
-<text x={nc(nd.n).x} y={nc(nd.n).y+12} textAnchor="middle" fill={T.dm} fontSize={mb?"4":"5"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
+<text x={nc(nd.n).x} y={nc(nd.n).y+4} textAnchor="middle" fill="url(#solGrad)" fontSize={mb?"6":"9"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{nd.label}</text>
+<text x={nc(nd.n).x} y={nc(nd.n).y+13} textAnchor="middle" fill={T.dm} fontSize={mb?"4":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y-hubR+2} r="2.5" fill="#14F195" opacity=".9"><animate attributeName="opacity" values="1;.4;1" dur="1.5s" repeatCount="indefinite"/></circle>
 </g>:<g key={"n"+i}>
 {(()=>{const pw=nd.pillImg?nw+14:nw;const px=nd.pillImg?nd.n.x-7:nd.n.x;return<>
@@ -1201,8 +1201,8 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 <rect x={px} y={nd.n.y} width={pw} height={nh} rx="5" fill={T.bg} stroke={nd.active>.5?nd.c:T.ft} strokeWidth="1" opacity={nd.active>.5?1:.5}/>
 {nd.pillImg?<image href="/pumpfun-pill.svg" x={px+1} y={nd.n.y+4} width={nh-9} height={nh-9} opacity=".8"/>:<text x={nd.n.x+5} y={nd.n.y+6} fontSize="5" fill={nd.c} opacity=".6">{nd.ico}</text>}
 <circle cx={px+pw-4} cy={nd.n.y+4} r="2" fill={nd.active>.5?T.gn:T.ft} opacity={nd.active>.5?1:.3}><animate attributeName="opacity" values={nd.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
-<text x={px+pw/2} y={nd.n.y+nh/2-1} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"6":"7"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{nd.label}</text>
-<text x={px+pw/2} y={nd.n.y+nh/2+6} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
+<text x={px+pw/2} y={nd.n.y+nh/2-1} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"6":"8"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{nd.label}</text>
+<text x={px+pw/2} y={nd.n.y+nh/2+7} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6.5"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
 </>})()}
 </g>)}
 
@@ -1215,8 +1215,8 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 ].map(nd=><g key={nd.id}>
 {hot[nd.id]&&nd.id===dominant&&<rect x={nd.n.x-2} y={nd.n.y-2} width={nw+4} height={nh+4} rx="7" fill={nd.c} opacity=".15" filter="url(#nglow)"/>}
 <rect x={nd.n.x} y={nd.n.y} width={nw} height={nh} rx="5" fill={hot[nd.id]?nd.c+"12":T.bg} stroke={hot[nd.id]?nd.c:T.ft+"44"} strokeWidth={nd.id===dominant?"1.5":"1"}/>
-<text x={nd.n.x+nw/2} y={nd.n.y+nh/2-1} textAnchor="middle" fill={hot[nd.id]?nd.c:T.ft} fontSize={mb?"7":"8"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{nd.label}</text>
-<text x={nd.n.x+nw/2} y={nd.n.y+nh/2+7} textAnchor="middle" fill={hot[nd.id]?nd.c:T.ft} fontSize={mb?"7":"8"} fontWeight="900" fontFamily="monospace" opacity=".8">{nd.v}</text>
+<text x={nd.n.x+nw/2} y={nd.n.y+nh/2-2} textAnchor="middle" fill={hot[nd.id]?nd.c:T.ft} fontSize={mb?"7":"9"} fontWeight="900" fontFamily="monospace" letterSpacing="1">{nd.label}</text>
+<text x={nd.n.x+nw/2} y={nd.n.y+nh/2+8} textAnchor="middle" fill={hot[nd.id]?nd.c:T.ft} fontSize={mb?"7":"9"} fontWeight="900" fontFamily="monospace" opacity=".8">{nd.v}</text>
 </g>)}
 
 {/* ── FEEDBACK NODES (Tier 4) ── */}
@@ -1226,13 +1226,13 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o
 {n:patterns,label:"Patterns",sub:"Memory",c:T.or,v:chartPatterns?.total||0,active:hasPatterns},
 ].map((nd,i)=><g key={"fb"+i}>
 <rect x={nd.n.x} y={nd.n.y} width={nw} height={nh} rx="5" fill={T.bg} stroke={nd.active?nd.c+"66":T.ft+"33"} strokeWidth="1" strokeDasharray={nd.active?"":"3 2"} opacity={nd.active?1:.4}/>
-<text x={nd.n.x+nw/2} y={nd.n.y+nh/2-2} textAnchor="middle" fill={nd.active?nd.c:T.ft} fontSize={mb?"5":"6"} fontWeight="800" fontFamily="monospace" letterSpacing=".3">{nd.label}</text>
-<text x={nd.n.x+nw/2} y={nd.n.y+nh/2+5} textAnchor="middle" fill={T.ft} fontSize={mb?"4":"5"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
+<text x={nd.n.x+nw/2} y={nd.n.y+nh/2-2} textAnchor="middle" fill={nd.active?nd.c:T.ft} fontSize={mb?"5":"7"} fontWeight="800" fontFamily="monospace" letterSpacing=".3">{nd.label}</text>
+<text x={nd.n.x+nw/2} y={nd.n.y+nh/2+6} textAnchor="middle" fill={T.ft} fontSize={mb?"4":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
 {nd.active&&<circle cx={nd.n.x+nw-3} cy={nd.n.y+3} r="1.5" fill={T.gn} opacity=".8"><animate attributeName="opacity" values="1;.3;1" dur="3s" repeatCount="indefinite"/></circle>}
 </g>)}
 
 {/* Feedback label */}
-<text x={W/2} y={fbY+nh+10} textAnchor="middle" fill={T.ft} fontSize="5" fontFamily="monospace" opacity=".4">↑ feedback loops — outcomes train future decisions ↑</text>
+<text x={W/2} y={fbY+nh+12} textAnchor="middle" fill={T.ft} fontSize="6" fontFamily="monospace" opacity=".4">↑ feedback loops — outcomes train future decisions ↑</text>
 </svg>
 
 {/* ═══ DYNAMICS BAR — Acceleration, Impulse, Momentum ═══ */}
@@ -1242,7 +1242,7 @@ const accelColor=av.acceleration>0.005?T.gn:av.acceleration<-0.005?T.rd:T.ft;
 const impulseColor=av.impulse>15?T.gn:av.impulse>5?T.yl:T.ft;
 const momLabel=mm.sustained>mm.flash&&mm.sustained>mm.nascent?"SUSTAINED":mm.flash>mm.building?"FLASH":mm.building>mm.nascent?"BUILDING":"NASCENT";
 const momColor=momLabel==="SUSTAINED"?T.gn:momLabel==="FLASH"?T.or:momLabel==="BUILDING"?T.yl:T.ft;
-return<div style={{display:"flex",alignItems:"center",gap:mb?4:8,padding:"4px 8px",marginTop:4,background:T.bg+"88",borderRadius:6,border:"1px solid "+T.bd+"44",fontSize:mb?7:8,fontFamily:"monospace",flexWrap:"wrap"}}>
+return<div style={{display:"flex",alignItems:"center",gap:mb?4:8,padding:"4px 8px",marginTop:4,background:T.bg+"88",borderRadius:6,border:"1px solid "+T.bd+"44",fontSize:mb?7:9,fontFamily:"monospace",flexWrap:"wrap"}}>
 {/* Acceleration gauge */}
 <div style={{display:"flex",alignItems:"center",gap:3}}>
 <span style={{color:T.ft,opacity:.6}}>d²S/dt²</span>
