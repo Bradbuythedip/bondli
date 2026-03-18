@@ -1,20 +1,16 @@
-// BONDLI v4.0 Config — Helius Enhanced + Volume Engine
+// BONDLI v4.0 Config — Alchemy RPC + Volume Engine
 import "dotenv/config";
 
-// Auto-construct Helius URLs from API key
-const _heliusKey = process.env.HELIUS_API_KEY || "";
-const _heliusRpc = _heliusKey ? `https://mainnet.helius-rpc.com/?api-key=${_heliusKey}` : "";
-const _heliusWs  = _heliusKey ? `wss://mainnet.helius-rpc.com/?api-key=${_heliusKey}` : "";
-const _heliusSendTx = _heliusKey ? `https://mainnet.helius-rpc.com/?api-key=${_heliusKey}` : "";
+// Alchemy RPC — API key in URL path: https://solana-mainnet.g.alchemy.com/v2/{KEY}
+const _alchemyKey = process.env.ALCHEMY_API_KEY || "";
+const _alchemyRpc = _alchemyKey ? `https://solana-mainnet.g.alchemy.com/v2/${_alchemyKey}` : "";
+const _alchemyWs  = _alchemyKey ? `wss://solana-mainnet.g.alchemy.com/v2/${_alchemyKey}` : "";
 
 export const CONFIG = {
-  // Helius RPC (staked connections, priority fee API, smart transactions)
-  RPC_URL:           process.env.RPC_URL || _heliusRpc || "https://api.mainnet-beta.solana.com",
-  WS_URL:            process.env.WS_URL || _heliusWs || "",
-  HELIUS_API_KEY:    _heliusKey,
-  USE_HELIUS_ATLAS:  process.env.USE_HELIUS_ATLAS === "true",
-  HELIUS_SEND_TX_URL: process.env.HELIUS_SEND_TX_URL || _heliusSendTx,
-  HELIUS_SMART_TX:   process.env.HELIUS_SMART_TX !== "false", // default ON now
+  // Alchemy RPC (Solana mainnet)
+  RPC_URL:           process.env.RPC_URL || _alchemyRpc || "https://api.mainnet-beta.solana.com",
+  WS_URL:            process.env.WS_URL || _alchemyWs || "",
+  ALCHEMY_API_KEY:   _alchemyKey,
   MASTER_SEED:       process.env.MASTER_SEED || "",
   TOKEN_CA:          process.env.TOKEN_CA || process.argv[2] || "",
   TOKEN_WEIGHTS:     process.env.TOKEN_WEIGHTS || "",
@@ -44,12 +40,12 @@ export const CONFIG = {
 };
 
 export const WALLET_ROLES = [
-  { role: "sniper",      emoji: "\U0001f3af", weight: 0.08, desc: "Fast entry" },
-  { role: "accumulator", emoji: "\U0001f41c", weight: 0.12, desc: "Micro-buys, builds floor" },
-  { role: "momentum",    emoji: "\U0001f3ce\ufe0f",  weight: 0.22, desc: "Buy pressure, FOMO" },
-  { role: "swing",       emoji: "\U0001f3a2", weight: 0.18, desc: "Buys dips, sells rips" },
-  { role: "whale",       emoji: "\U0001f40b", weight: 0.28, desc: "Large trades at key moments" },
-  { role: "liquidator",  emoji: "\U0001f4b0", weight: 0.08, desc: "Strategic profit-taking" },
+  { role: "sniper",      emoji: "\u{1f3af}", weight: 0.08, desc: "Fast entry" },
+  { role: "accumulator", emoji: "\u{1f41c}", weight: 0.12, desc: "Micro-buys, builds floor" },
+  { role: "momentum",    emoji: "\u{1f3ce}\ufe0f",  weight: 0.22, desc: "Buy pressure, FOMO" },
+  { role: "swing",       emoji: "\u{1f3a2}", weight: 0.18, desc: "Buys dips, sells rips" },
+  { role: "whale",       emoji: "\u{1f40b}", weight: 0.28, desc: "Large trades at key moments" },
+  { role: "liquidator",  emoji: "\u{1f4b0}", weight: 0.08, desc: "Strategic profit-taking" },
   { role: "recycler",    emoji: "\u267b\ufe0f",  weight: 0.04, desc: "SOL recovery loop" },
 ];
 

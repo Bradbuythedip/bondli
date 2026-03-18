@@ -1,13 +1,14 @@
-// BONDLI v3.0 — Signal Detector (Helius + X API Wallet Profiling)
+// BONDLI v3.0 — Signal Detector (Tatum RPC + X API Wallet Profiling)
+import { Connection, PublicKey } from "@solana/web3.js";
 import CONFIG from "./config.mjs";
 
 export class SignalDetector {
   constructor() {
     this.profiles = new Map();
-    this.heliusBase = "https://api.helius.xyz/v0";
+    this.connection = new Connection(CONFIG.RPC_URL, "confirmed");
   }
 
-  // Profile a wallet using Helius enriched transactions
+  // Profile a wallet using Solana RPC transaction history
   async profileWallet(address) {
     if (this.profiles.has(address)) return this.profiles.get(address);
 
@@ -24,36 +25,32 @@ export class SignalDetector {
     };
 
     try {
-      if (CONFIG.HELIUS_API_KEY) {
-        const res = await fetch(
-          `${this.heliusBase}/addresses/${address}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=50`,
-          { signal: AbortSignal.timeout(8000) }
+      if (CONFIG.ALCHEMY_API_KEY) {
+        const sigs = await this.connection.getSignaturesForAddress(
+          new PublicKey(address), { limit: 50 }, "confirmed"
         );
-        if (res.ok) {
-          const txs = await res.json();
-          profile.txCount = txs.length;
-          profile.firstSeen = txs[txs.length - 1]?.timestamp;
+        profile.txCount = sigs.length;
+        if (sigs.length > 0) {
+          profile.firstSeen = sigs[sigs.length - 1]?.blockTime;
+        }
 
-          // Analyze pump.fun activity
-          const pumpTxs = txs.filter(t =>
-            t.instructions?.some(i => i.programId === "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")
-          );
-          profile.pumpTxCount = pumpTxs.length;
-
-          // Bot detection: high frequency, low variance in timing
-          if (profile.txCount >= 20) {
-            const gaps = [];
-            for (let i = 1; i < Math.min(txs.length, 20); i++) {
-              gaps.push(txs[i-1].timestamp - txs[i].timestamp);
+        // Bot detection: high frequency, low variance in timing
+        if (profile.txCount >= 20) {
+          const gaps = [];
+          for (let i = 1; i < Math.min(sigs.length, 20); i++) {
+            if (sigs[i-1].blockTime && sigs[i].blockTime) {
+              gaps.push(sigs[i-1].blockTime - sigs[i].blockTime);
             }
+          }
+          if (gaps.length > 0) {
             const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
             const variance = gaps.reduce((s, g) => s + (g - avgGap) ** 2, 0) / gaps.length;
             const cv = Math.sqrt(variance) / avgGap;
             profile.isBot = cv < 0.3 && avgGap < 10;
           }
-
-          profile.riskScore = this._calcRisk(profile);
         }
+
+        profile.riskScore = this._calcRisk(profile);
       }
     } catch (e) {
       console.error(`[SIGNAL] Profile error for ${address.slice(0,8)}: ${e.message}`);
@@ -89,7 +86,6 @@ export class SignalDetector {
     let risk = 0;
     if (profile.isBot) risk += 40;
     if (profile.txCount < 5) risk += 20; // new wallet
-    if (profile.pumpTxCount > 30) risk += 15; // heavy pump trader
     if (!profile.firstSeen || Date.now()/1000 - profile.firstSeen < 86400) risk += 25; // <1 day old
     return Math.min(100, risk);
   }

@@ -13,7 +13,7 @@ import { PumpSdk, OnlinePumpSdk, getBuyTokenAmountFromSolAmount, getSellSolAmoun
 import BN from "bn.js";
 import bs58 from "bs58";
 import CONFIG from "./config.mjs";
-import { getOptimalPriorityFee, heliusSmartSend } from "./helius-enhanced.mjs";
+import { getOptimalPriorityFee, smartSend } from "./rpc-enhanced.mjs";
 import { ContinuousVolumeEngine, AutoRugController } from "./volume-engine.mjs";
 import { EventEmitter } from "events";
 import WebSocket from "ws";
@@ -418,8 +418,8 @@ const ROLES = [
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// HELIUS SEND — delegated to helius-enhanced.mjs (priority fees + smart tx)
-const heliusSendRawTx = heliusSmartSend;
+// RPC SEND — delegated to rpc-enhanced.mjs (priority fees + optimized tx)
+const rpcSendRawTx = smartSend;
 
 // ═══════════════════════════════════════
 // ENFORCED PROFIT SKIM
@@ -1398,7 +1398,7 @@ class FleetTrader extends EventEmitter {
       console.warn(`[FLEET] Jito send failed (${endpoint.split("/")[2]}): ${e.message} — falling back to Helius/standard`);
     }
     // Fallback: Helius sendTransaction (staked connections) → standard RPC
-    const sig = await heliusSendRawTx(this.connection, serialized);
+    const sig = await rpcSendRawTx(this.connection, serialized);
     await this.connection.confirmTransaction(sig, "confirmed");
     return sig;
   }
@@ -1498,7 +1498,7 @@ class FleetTrader extends EventEmitter {
     tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
     tx.feePayer = keypair.publicKey;
     tx.sign(keypair);
-    const sig = await heliusSendRawTx(this.connection, tx.serialize());
+    const sig = await rpcSendRawTx(this.connection, tx.serialize());
     await this.connection.confirmTransaction(sig, "confirmed");
     return { ok: true, sig, solOut: parseFloat(solOut.toString()) / 1e9, tokens: sellAmount.toString() };
   }
