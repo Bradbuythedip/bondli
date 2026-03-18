@@ -45,7 +45,7 @@ export class RugScanner {
 
       // 4. Check transaction history for sell activity
       // Tokens with many buys but zero sells are classic rug setups
-      if (CONFIG.HELIUS_API_KEY) {
+      if (CONFIG.ALCHEMY_API_KEY) {
         const txProfile = await this._checkTradeActivity(mint);
         results.checks.tradeActivity = txProfile;
         if (txProfile.totalBuys >= 5 && txProfile.totalSells === 0) {
@@ -72,7 +72,7 @@ export class RugScanner {
       }
 
       // 5. Check creator history
-      if (CONFIG.HELIUS_API_KEY && data?.mintAuthority) {
+      if (CONFIG.ALCHEMY_API_KEY && data?.mintAuthority) {
         const profile = await this._checkCreator(data.mintAuthority);
         results.checks.creatorHistory = profile;
         if (profile.rugCount > 0) { results.flags.push("CREATOR_HAS_RUGS"); results.score -= 30; }
@@ -103,55 +103,55 @@ export class RugScanner {
 
   async _checkTradeActivity(mint) {
     try {
-      const res = await fetch(
-        `https://api.helius.xyz/v0/addresses/${mint}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=100`,
-        { signal: AbortSignal.timeout(8000) }
+      // Use standard Solana RPC to get recent signatures for the token mint
+      const sigs = await this.connection.getSignaturesForAddress(
+        new PublicKey(mint), { limit: 100 }, "confirmed"
       );
-      if (!res.ok) return { totalBuys: 0, totalSells: 0, uniqueBuyers: 0, uniqueSellers: 0 };
-      const txs = await res.json();
+      if (!sigs.length) return { totalBuys: 0, totalSells: 0, uniqueBuyers: 0, uniqueSellers: 0 };
+
+      // Fetch a sample of full transactions for analysis (limit to 20 to stay fast)
+      const sample = sigs.slice(0, 20);
+      const txPromises = sample.map(s =>
+        this.connection.getParsedTransaction(s.signature, { maxSupportedTransactionVersion: 0 }).catch(() => null)
+      );
+      const txs = (await Promise.all(txPromises)).filter(Boolean);
 
       let totalBuys = 0;
       let totalSells = 0;
       const buyers = new Set();
       const sellers = new Set();
-      const buyTimestamps = []; // track timing for gradual rug detection
+      const buyTimestamps = [];
 
       for (const tx of txs) {
-        // Detect swap transactions (buys and sells on pump.fun or Raydium)
-        const desc = (tx.description || "").toLowerCase();
-        const isBuy = desc.includes("buy") || desc.includes("swap") && tx.tokenTransfers?.some(t => t.mint === mint);
-        const isSell = desc.includes("sell");
+        if (!tx.meta) continue;
+        const feePayer = tx.transaction?.message?.accountKeys?.[0]?.pubkey?.toBase58();
 
-        if (tx.type === "SWAP" || desc.includes("swap")) {
-          // Check token transfer direction to determine buy vs sell
-          for (const transfer of (tx.tokenTransfers || [])) {
-            if (transfer.mint === mint) {
-              if (transfer.tokenAmount > 0) {
-                // Received tokens = buy
-                totalBuys++;
-                if (tx.feePayer) buyers.add(tx.feePayer);
-                if (tx.timestamp) buyTimestamps.push(tx.timestamp);
-              } else {
-                // Sent tokens = sell
-                totalSells++;
-                if (tx.feePayer) sellers.add(tx.feePayer);
-              }
-            }
+        // Analyze token balance changes to determine buy vs sell
+        const preBalances = tx.meta.preTokenBalances || [];
+        const postBalances = tx.meta.postTokenBalances || [];
+
+        for (const post of postBalances) {
+          if (post.mint !== mint) continue;
+          const pre = preBalances.find(p => p.accountIndex === post.accountIndex);
+          const preAmt = parseFloat(pre?.uiTokenAmount?.uiAmount || 0);
+          const postAmt = parseFloat(post.uiTokenAmount?.uiAmount || 0);
+          const diff = postAmt - preAmt;
+
+          if (diff > 0) {
+            totalBuys++;
+            if (feePayer) buyers.add(feePayer);
+            if (tx.blockTime) buyTimestamps.push(tx.blockTime);
+          } else if (diff < 0) {
+            totalSells++;
+            if (feePayer) sellers.add(feePayer);
           }
-        } else if (isBuy) {
-          totalBuys++;
-          if (tx.feePayer) buyers.add(tx.feePayer);
-          if (tx.timestamp) buyTimestamps.push(tx.timestamp);
-        } else if (isSell) {
-          totalSells++;
-          if (tx.feePayer) sellers.add(tx.feePayer);
         }
       }
 
+      // Scale estimates based on sample vs total
+      const scaleFactor = sigs.length / Math.max(1, sample.length);
+
       // ── Gradual rug pattern detection ──
-      // Classic trap: steady buys at regular intervals over minutes with zero/near-zero sells.
-      // Real organic activity has clustered buys (FOMO waves) + intermixed sells (profit-taking).
-      // Bot-trap charts show evenly-spaced buys like a metronome — designed to lure momentum bots.
       let gradualRugScore = 0;
       let buyTimingUniformity = 0;
       let buySpreadMinutes = 0;
@@ -162,21 +162,15 @@ export class RugScanner {
         for (let i = 1; i < buyTimestamps.length; i++) {
           intervals.push(buyTimestamps[i] - buyTimestamps[i - 1]);
         }
-        // Time spread: how long has the buy-only activity been going on?
         buySpreadMinutes = (buyTimestamps[buyTimestamps.length - 1] - buyTimestamps[0]) / 60;
 
-        // Buy timing uniformity: coefficient of variation of intervals
-        // Low CV = regular spacing = bot/script, High CV = organic clustering
         const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
         if (avgInterval > 0) {
           const variance = intervals.reduce((s, d) => s + (d - avgInterval) ** 2, 0) / intervals.length;
           const cv = Math.sqrt(variance) / avgInterval;
-          // CV < 0.5 = suspiciously uniform timing (real humans cluster, bots space evenly)
           buyTimingUniformity = Math.max(0, Math.min(1, 1 - cv));
         }
 
-        // Score the gradual rug pattern:
-        // - Many buys (10+) over a long period (5+ min) with near-zero sells + uniform timing
         if (buySpreadMinutes >= 5 && totalBuys >= 10 && totalSells === 0 && buyTimingUniformity > 0.4) {
           gradualRugScore = Math.min(1, 0.6 + buyTimingUniformity * 0.3 + Math.min(0.1, buySpreadMinutes / 100));
         } else if (buySpreadMinutes >= 3 && totalBuys >= 8 && totalSells <= 1 && buyTimingUniformity > 0.3) {
@@ -191,7 +185,7 @@ export class RugScanner {
         totalSells,
         uniqueBuyers: buyers.size,
         uniqueSellers: sellers.size,
-        txCount: txs.length,
+        txCount: sigs.length,
         gradualRugScore,
         buyTimingUniformity,
         buySpreadMinutes,
@@ -203,31 +197,52 @@ export class RugScanner {
 
   async _checkCreator(address) {
     try {
-      const res = await fetch(
-        `https://api.helius.xyz/v0/addresses/${address}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=100`,
-        { signal: AbortSignal.timeout(8000) }
+      // Use standard Solana RPC to check creator's transaction history
+      const sigs = await this.connection.getSignaturesForAddress(
+        new PublicKey(address), { limit: 100 }, "confirmed"
       );
-      if (!res.ok) return { rugCount: 0, tokenCount: 0 };
-      const txs = await res.json();
-      const tokenCreations = txs.filter(t => t.type === "CREATE" || t.description?.includes("create"));
+      if (!sigs.length) return { rugCount: 0, tokenCount: 0 };
 
-      // Detect rug pattern: creator made tokens then sold quickly
-      // Look for rapid sell-after-create patterns
+      // Sample transactions to detect patterns
+      const sample = sigs.slice(0, 30);
+      const txPromises = sample.map(s =>
+        this.connection.getParsedTransaction(s.signature, { maxSupportedTransactionVersion: 0 }).catch(() => null)
+      );
+      const txs = (await Promise.all(txPromises)).filter(Boolean);
+
+      // Count token creation instructions (InitializeMint) and swaps
+      let creates = 0;
+      let swaps = 0;
+
+      for (const tx of txs) {
+        const instructions = tx.transaction?.message?.instructions || [];
+        for (const ix of instructions) {
+          const prog = ix.programId?.toBase58?.() || ix.program || "";
+          // Token program InitializeMint = token creation
+          if (prog === "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" && ix.parsed?.type === "initializeMint") {
+            creates++;
+          }
+          // pump.fun or Raydium swaps
+          if (prog === "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" || prog === "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8") {
+            swaps++;
+          }
+        }
+      }
+
+      // Scale by sampling ratio
+      const scale = sigs.length / Math.max(1, sample.length);
+      creates = Math.round(creates * scale);
+      swaps = Math.round(swaps * scale);
+
       let rugCount = 0;
-      const creates = txs.filter(t => t.type === "CREATE" || t.type === "TOKEN_MINT" || t.description?.includes("create"));
-      const sells = txs.filter(t => t.type === "SWAP" || t.type === "TRANSFER" || t.description?.includes("sell"));
-
-      // If creator has many token creations + many sells within short windows, likely serial rugger
-      if (creates.length >= 3 && sells.length > creates.length * 2) {
-        rugCount = Math.min(creates.length, Math.floor(sells.length / 3));
+      if (creates >= 3 && swaps > creates * 2) {
+        rugCount = Math.min(creates, Math.floor(swaps / 3));
+      }
+      if (creates >= 5) {
+        rugCount = Math.max(rugCount, Math.floor(creates * 0.6));
       }
 
-      // Also flag if >5 token creations in 100 txs — serial deployer
-      if (creates.length >= 5) {
-        rugCount = Math.max(rugCount, Math.floor(creates.length * 0.6));
-      }
-
-      return { rugCount, tokenCount: tokenCreations.length, txCount: txs.length, serialDeployer: creates.length >= 5 };
+      return { rugCount, tokenCount: creates, txCount: sigs.length, serialDeployer: creates >= 5 };
     } catch {
       return { rugCount: 0, tokenCount: 0 };
     }

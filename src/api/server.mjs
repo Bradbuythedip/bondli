@@ -674,7 +674,7 @@ app.post("/api/session/launch", apiLimiter, async (req, res) => {
         devBuySol: session.devBuy,
         slippageBps: parseInt(CONFIG.SLIPPAGE_BPS || "2500"),
         priorityFee: parseInt(CONFIG.PRIORITY_FEE || "100000"),
-        sendUrl: CONFIG.HELIUS_SEND_TX_URL || null,
+        sendUrl: CONFIG.RPC_URL || null,
       });
 
       tokenCA = createResult.mint;

@@ -29,7 +29,7 @@ import { PumpSdk, OnlinePumpSdk, getBuyTokenAmountFromSolAmount, getSellSolAmoun
 import BN from "bn.js";
 import bs58 from "bs58";
 import CONFIG from "./config.mjs";
-import { getOptimalPriorityFee, heliusSmartSend } from "./helius-enhanced.mjs";
+import { getOptimalPriorityFee, smartSend } from "./rpc-enhanced.mjs";
 import { EventEmitter } from "events";
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -207,7 +207,7 @@ export class ContinuousVolumeEngine extends EventEmitter {
     tx.feePayer = wallet.keypair.publicKey;
     tx.sign(wallet.keypair);
 
-    const sig = await heliusSmartSend(this.connection, tx.serialize());
+    const sig = await smartSend(this.connection, tx.serialize());
     await this.connection.confirmTransaction(sig, "confirmed");
 
     wallet.solSpent += buyAmount;
@@ -260,7 +260,7 @@ export class ContinuousVolumeEngine extends EventEmitter {
     tx.feePayer = wallet.keypair.publicKey;
     tx.sign(wallet.keypair);
 
-    const sig = await heliusSmartSend(this.connection, tx.serialize());
+    const sig = await smartSend(this.connection, tx.serialize());
     await this.connection.confirmTransaction(sig, "confirmed");
 
     const solOutNum = parseFloat(solOut.toString()) / 1e9;
