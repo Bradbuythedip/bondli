@@ -1,8 +1,9 @@
-import React,{useState,useEffect,useRef,useCallback,Component}from"react";
+import React,{useState,useEffect,useRef,useCallback,Component,useMemo}from"react";
 import{TC,D,L,css,uT}from"./lib/t.js";
 import{M,S,API,WS_URL}from"./lib/c.js";
 import{hW,wN,fm,fs,tp,dbp,wc,hp}from"./lib/u.js";
 import{useSolPrice}from"./hooks/useSolPrice.js";
+import{createChart,ColorType,CrosshairMode}from"lightweight-charts";
 import a from"./lib/a.js";
 const uM=()=>{const[m,s]=useState(()=>typeof window!=="undefined"&&window.innerWidth<700);useEffect(()=>{const q=window.matchMedia("(max-width:700px)");const h=e=>s(e.matches);q.addEventListener("change",h);s(q.matches);return()=>q.removeEventListener("change",h)},[]);return m};
 class EB extends Component{constructor(p){super(p);this.state={e:null}}static getDerivedStateFromError(e){return{e}}render(){if(this.state.e)return<div style={{padding:12,margin:6,borderRadius:8,background:"#ff174406",textAlign:"center"}}><span style={{fontFamily:M,fontSize:15,color:"#ff1744"}}>{this.props.l} error </span><button onClick={()=>this.setState({e:null})} style={{marginLeft:6,padding:"4px 12px",borderRadius:5,background:"none",border:"1px solid #ff174422",color:"#ff1744",fontFamily:M,fontSize:13,cursor:"pointer"}}>retry</button></div>;return this.props.children}}
@@ -201,13 +202,123 @@ return<div key={p.ca} style={{marginBottom:posWithScore.length>1?8:0}}>
 </div>})}
 </div>}
 
-// ═══ CANDLESTICK CHART — OHLC + volume + crosshair ═══
+// ═══ CANDLESTICK CHART — lightweight-charts OHLC + volume ═══
 function CandleChart({ca,T,mb}){
+const containerRef=useRef(null);
+const chartRef=useRef(null);
+const [err,setErr]=useState(null);
+const [interval,setInterval_]=useState(15);
+
+useEffect(()=>{
+  if(!containerRef.current||!ca)return;
+  setErr(null);
+  const isDark=T.mo==="dark";
+
+  // Create chart
+  const chart=createChart(containerRef.current,{
+    width:containerRef.current.clientWidth,
+    height:mb?220:300,
+    layout:{
+      background:{type:ColorType.Solid,color:"transparent"},
+      textColor:T.dm,
+      fontSize:10,
+      fontFamily:"inherit",
+    },
+    grid:{
+      vertLines:{color:T.bd},
+      horzLines:{color:T.bd},
+    },
+    crosshair:{
+      mode:CrosshairMode.Normal,
+      vertLine:{color:T.gn+"44",width:1,style:3,labelBackgroundColor:T.sf},
+      horzLine:{color:T.gn+"44",width:1,style:3,labelBackgroundColor:T.sf},
+    },
+    rightPriceScale:{
+      borderColor:T.bd,
+      scaleMargins:{top:0.1,bottom:0.25},
+    },
+    timeScale:{
+      borderColor:T.bd,
+      timeVisible:true,
+      secondsVisible:true,
+      rightOffset:2,
+      barSpacing:mb?6:8,
+    },
+    handleScroll:true,
+    handleScale:true,
+  });
+  chartRef.current=chart;
+
+  // Candlestick series
+  const candleSeries=chart.addCandlestickSeries({
+    upColor:T.gn,
+    downColor:T.rd,
+    borderUpColor:T.gn,
+    borderDownColor:T.rd,
+    wickUpColor:T.gn+"aa",
+    wickDownColor:T.rd+"aa",
+  });
+
+  // Volume series (bottom overlay)
+  const volumeSeries=chart.addHistogramSeries({
+    priceFormat:{type:"volume"},
+    priceScaleId:"vol",
+  });
+  chart.priceScale("vol").applyOptions({
+    scaleMargins:{top:0.8,bottom:0},
+  });
+
+  // Fetch data
+  fetch(`${API}/api/chart/${ca}?interval=${interval}`).then(r=>r.json()).then(d=>{
+    if(!d.candles?.length){setErr("No chart data yet");return}
+
+    candleSeries.setData(d.candles.map(c=>({
+      time:c.time,
+      open:c.open,
+      high:c.high,
+      low:c.low,
+      close:c.close,
+    })));
+
+    volumeSeries.setData(d.candles.map(c=>({
+      time:c.time,
+      value:c.volume||0,
+      color:c.close>=c.open?T.gn+"33":T.rd+"33",
+    })));
+
+    chart.timeScale().fitContent();
+  }).catch(()=>setErr("Chart load failed"));
+
+  // Auto-refresh every 10s
+  const iv=setInterval(()=>{
+    fetch(`${API}/api/chart/${ca}?interval=${interval}`).then(r=>r.json()).then(d=>{
+      if(!d.candles?.length)return;
+      candleSeries.setData(d.candles.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
+      volumeSeries.setData(d.candles.map(c=>({time:c.time,value:c.volume||0,color:c.close>=c.open?T.gn+"33":T.rd+"33"})));
+    }).catch(()=>{});
+  },10000);
+
+  // Resize observer
+  const ro=new ResizeObserver(entries=>{
+    const{width}=entries[0].contentRect;
+    chart.applyOptions({width});
+  });
+  ro.observe(containerRef.current);
+
+  return()=>{clearInterval(iv);ro.disconnect();chart.remove();chartRef.current=null};
+},[ca,T,mb,interval]);
+
 return<div style={{width:"100%",borderRadius:6,overflow:"hidden",background:T.bg}}>
-<iframe src={`https://www.gmgn.cc/kline/sol/${ca}?theme=dark&interval=15s&header=0`} style={{width:"100%",height:mb?220:300,border:"none",display:"block"}} title="chart" loading="lazy" sandbox="allow-scripts allow-same-origin"/>
-<div style={{display:"flex",gap:6,padding:"4px 8px",borderTop:"1px solid "+T.bd}}>
-<a href={`https://pump.fun/coin/${ca}`} target="_blank" rel="noopener" style={{fontSize:13,color:T.gn,textDecoration:"none",fontWeight:700}}>open full chart →</a>
-<a href={`https://dexscreener.com/solana/${ca}`} target="_blank" rel="noopener" style={{fontSize:13,color:T.dm,textDecoration:"none"}}>dexscreener →</a>
+<div ref={containerRef} style={{width:"100%",minHeight:mb?220:300}}>
+  {err&&<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:mb?220:300,color:T.dm,fontSize:12}}>{err}</div>}
+</div>
+<div style={{display:"flex",gap:4,padding:"4px 8px",borderTop:"1px solid "+T.bd,alignItems:"center",flexWrap:"wrap"}}>
+  <div style={{display:"flex",gap:2}}>
+    {[5,15,30,60].map(s=><button key={s} onClick={()=>setInterval_(s)} style={{fontSize:10,fontWeight:interval===s?800:500,color:interval===s?T.gn:T.dm,background:interval===s?T.gn+"12":"transparent",border:"1px solid "+(interval===s?T.gn+"33":T.bd),borderRadius:4,padding:"2px 6px",cursor:"pointer"}}>{s}s</button>)}
+  </div>
+  <div style={{flex:1}}/>
+  <a href={`https://pump.fun/coin/${ca}`} target="_blank" rel="noopener" style={{fontSize:11,color:T.gn,textDecoration:"none",fontWeight:700}}>pump.fun</a>
+  <a href={`https://dexscreener.com/solana/${ca}`} target="_blank" rel="noopener" style={{fontSize:11,color:T.dm,textDecoration:"none"}}>dexscreener</a>
 </div></div>}
 
 // ═══ MEMETIC SPIDER CHART ═══
