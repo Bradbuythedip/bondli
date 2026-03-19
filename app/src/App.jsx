@@ -1064,41 +1064,40 @@ const hasGradWatch=(intelData?.gradWatch?.count||0)>0;
 const hasPatterns=(chartPatterns?.total||0)>0;
 /* Bezier curve helper: creates smooth S-curve between two points */
 const bezier=(a,b)=>{const dx=b.x-a.x;const dy=b.y-a.y;if(Math.abs(dy)>Math.abs(dx)){const cy1=a.y+dy*0.4;const cy2=b.y-dy*0.4;return`M${a.x} ${a.y} C${a.x} ${cy1},${b.x} ${cy2},${b.x} ${b.y}`}const cx1=a.x+dx*0.4;const cx2=b.x-dx*0.4;return`M${a.x} ${a.y} C${cx1} ${a.y},${cx2} ${b.y},${b.x} ${b.y}`};
-/* SVG dimensions — compact to avoid bloat at 2x zoom */
-const W=mb?360:440;const H=mb?230:240;
-/* Node sizes */
-const nw=mb?44:54;const nh=mb?20:24;
+/* SVG dimensions — expanded for full brain map */
+const W=mb?390:540;const H=mb?290:300;
+/* Node sizes — wider to prevent text/border overlap */
+const nw=mb?48:62;const nh=mb?22:28;
 const cx=W/2;/* center x */
-const hubR=mb?20:26;/* Hub circle radius */
-/* Tier 1: inputs (top row) */
-const t1sp=mb?62:88;
-const t1cx=mb?cx+14:cx;
-const pump={x:t1cx-nw/2-t1sp,y:22};
-const scan={x:t1cx-nw/2,y:22};
-const score={x:t1cx-nw/2+t1sp,y:22};
-/* Tier 2: process — hub centered */
-const t2y=mb?68:68;
-const t2cx=mb?cx+14:cx;
-const t2sp=mb?78:92;
-const social={x:t2cx-nw/2-t2sp,y:t2y};
-const hub={x:t2cx-nw/2,y:t2y};
-const rugd={x:t2cx-nw/2+t2sp,y:t2y};
-/* Tier 3: outputs */
-const outY=mb?120:118;
-const outL=mb?36:40;
-const outR=mb?8:40;
-const outSpan=W-outL-outR-nw;
-const outGap=outSpan/3;
-const outStart=outL;
-const ape={x:outStart,y:outY};
-const watch={x:outStart+outGap,y:outY};
-const skip={x:outStart+outGap*2,y:outY};
-const rug={x:outStart+outGap*3,y:outY};
-/* Tier 4: feedback */
-const fbY=mb?172:170;
-const learner={x:ape.x,y:fbY};
-const gradW={x:watch.x,y:fbY};
-const patterns={x:rug.x,y:fbY};
+const hubR=mb?22:28;/* Hub circle radius */
+/* Even spacing helper */
+const inM=mb?10:22;const inSpan=W-inM*2-nw;const inGap=Math.floor(inSpan/3);
+/* Tier 1: inputs (4 nodes) */
+const t1y=24;
+const pump={x:inM,y:t1y};
+const scan={x:inM+inGap,y:t1y};
+const score={x:inM+inGap*2,y:t1y};
+const smartM={x:inM+inGap*3,y:t1y};
+/* Tier 2: process — 5 nodes with hub centered */
+const t2y=mb?78:84;
+const prM=mb?6:14;const prSpan=W-prM*2-nw;const prGap=Math.floor(prSpan/4);
+const social={x:prM,y:t2y};
+const artw={x:prM+prGap,y:t2y};
+const hub={x:prM+prGap*2,y:t2y};
+const gameth={x:prM+prGap*3,y:t2y};
+const rugd={x:prM+prGap*4,y:t2y};
+/* Tier 3: outputs (4 nodes) */
+const outY=mb?140:150;
+const ape={x:inM,y:outY};
+const watch={x:inM+inGap,y:outY};
+const skip={x:inM+inGap*2,y:outY};
+const rug={x:inM+inGap*3,y:outY};
+/* Tier 4: feedback (4 nodes) */
+const fbY=mb?200:216;
+const learner={x:inM,y:fbY};
+const gradW={x:inM+inGap,y:fbY};
+const surv={x:inM+inGap*2,y:fbY};
+const patterns={x:inM+inGap*3,y:fbY};
 /* Helper: node center */
 const nc=(n)=>({x:n.x+nw/2,y:n.y+nh/2});
 const nr=(n)=>({x:n.x+nw,y:n.y+nh/2});
@@ -1141,62 +1140,76 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 {/* ── PUMPFUN PILL inside PumpPortal card (left of text) ── */}
 
 {/* ── TIER LABELS ── */}
-<text x="6" y={pump.y+nh/2+1} fill={T.ft} fontSize="6" fontFamily="monospace" opacity=".5">INPUT</text>
-<text x="6" y={hub.y+nh/2+1} fill={T.ft} fontSize="6" fontFamily="monospace" opacity=".5">PROCESS</text>
-<text x="6" y={outY+nh/2+1} fill={T.ft} fontSize="6" fontFamily="monospace" opacity=".5">OUTPUT</text>
-<text x="6" y={fbY+nh/2+1} fill={T.ft} fontSize="6" fontFamily="monospace" opacity=".5">LEARN</text>
+<text x="4" y={pump.y+nh/2+1} fill={T.ft} fontSize="5.5" fontFamily="monospace" opacity=".4">INPUT</text>
+<text x="4" y={hub.y+nh/2+1} fill={T.ft} fontSize="5.5" fontFamily="monospace" opacity=".4">PROCESS</text>
+<text x="4" y={outY+nh/2+1} fill={T.ft} fontSize="5.5" fontFamily="monospace" opacity=".4">OUTPUT</text>
+<text x="4" y={fbY+nh/2+1} fill={T.ft} fontSize="5.5" fontFamily="monospace" opacity=".4">LEARN</text>
 {/* Tier separator lines */}
 <line x1="0" y1={pump.y+nh+4} x2={W} y2={pump.y+nh+4} stroke={T.ft} strokeWidth=".5" opacity=".06" strokeDasharray="4 4"/>
 <line x1="0" y1={outY-4} x2={W} y2={outY-4} stroke={T.ft} strokeWidth=".5" opacity=".06" strokeDasharray="4 4"/>
 <line x1="0" y1={fbY-4} x2={W} y2={fbY-4} stroke={T.ft} strokeWidth=".5" opacity=".06" strokeDasharray="4 4"/>
 
 {/* ── DIM WIRES (flexible bezier curves) ── */}
-{/* Forward flow: Pump→Scan→Score */}
+{/* Forward flow: Pump→Scan→Score, SmartM independent */}
 <path d={bezier(nr(pump),nl(scan))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
 <path d={bezier(nr(scan),nl(score))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
-{/* Down to hub: Score→Hub, Social→Hub, Rug→Hub */}
+{/* SmartM → Hub: diagonal down-left */}
+<path d={bezier(nb(smartM),{x:nc(hub).x+hubR+4,y:nt(hub).y})} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+{/* Down to hub: Score→Hub, Social→Artw→Hub, Hub→GameTh→Rug */}
 <path d={bezier(nb(scan),nt(hub))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
-<path d={bezier(nr(social),nl(hub))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
-<path d={bezier(nl(rugd),nr(hub))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={bezier(nr(social),nl(artw))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={bezier(nr(artw),{x:nc(hub).x-hubR,y:nc(hub).y})} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={bezier({x:nc(hub).x+hubR,y:nc(hub).y},nl(gameth))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
+<path d={bezier(nr(gameth),nl(rugd))} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>
 {/* Hub → outputs (fan out from hub bottom, each wire goes to its own output) */}
-{[{n:ape,off:-6},{n:watch,off:-2},{n:skip,off:2},{n:rug,off:6}].map((o,i)=>{
+{[{n:ape,off:-8},{n:watch,off:-3},{n:skip,off:3},{n:rug,off:8}].map((o,i)=>{
 const from={x:nb(hub).x+o.off,y:nb(hub).y};
-return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(o.n).x} ${nt(o.n).y-14},${nt(o.n).x} ${nt(o.n).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>})}
+return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+16},${nt(o.n).x} ${nt(o.n).y-16},${nt(o.n).x} ${nt(o.n).y}`} fill="none" stroke={T.ft} strokeWidth="1.5" opacity=".12"/>})}
 {/* Feedback wires — routed along edges to avoid crossing through output tier */}
 {/* Learner → Scorer: left side loop */}
 <path d={`M${nt(learner).x} ${nt(learner).y} C${nt(learner).x-15} ${nt(learner).y-30},${nb(score).x-25} ${nb(score).y+25},${nb(score).x} ${nb(score).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* GradWatch → Hub: straight up */}
-<path d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+<path d={bezier(nt(gradW),{x:nb(hub).x-4,y:nb(hub).y+8})} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+{/* Survivorship → Hub: up */}
+<path d={bezier(nt(surv),{x:nb(hub).x+4,y:nb(hub).y+8})} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* Patterns → Rug Detect: right side loop — wide radius to clear RUG card */}
 {(()=>{const fbOff=mb?35:80;return<path d={`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+fbOff} ${nr(patterns).y},${nr(rugd).x+fbOff} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>})()}
 {/* APE → Learner: straight down */}
 <path d={bezier(nb(ape),nt(learner))} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* WATCH → GradWatch: straight down */}
 <path d={bezier(nb(watch),nt(gradW))} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
+{/* SKIP → Survivorship: straight down */}
+<path d={bezier(nb(skip),nt(surv))} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 {/* RUG → Patterns: straight down */}
 <path d={bezier(nb(rug),nt(patterns))} fill="none" stroke={T.ft} strokeWidth="1" opacity=".08" strokeDasharray="3 3"/>
 
 {/* ── LIT WIRES + PARTICLES (particles on mobile only — desktop gets clean glowing wires) ── */}
 {(()=>{
-const actPump=modActive("pumpportal")>0;const actScore=modActive("scorer")>0;const actSocial=fh.socialSignals>.1;const actRug=fh.rugRisk>.05;
+const actPump=modActive("pumpportal")>0;const actScore=modActive("scorer")>0;const actSocial=fh.socialSignals>.1;const actRug=fh.rugRisk>.05;const actSmart=(intelData?.smartMoney?.signals?.length||0)>0;const actArt=modActive("artwork_scanner")>0||actScore;const actGame=actScore;const hasSurv=(intelData?.survivor?.matched||0)>0;
 const fbOff=mb?35:80;
 const l2sPath=`M${nl(learner).x} ${nl(learner).y} C${nl(learner).x-20} ${nl(learner).y},${nl(learner).x-20} ${nb(score).y+nh+8},${nb(score).x} ${nb(score).y}`;
 const p2rPath=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+fbOff} ${nr(patterns).y},${nr(rugd).x+fbOff} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;
+const s2hPath=bezier(nt(surv),{x:nb(hub).x+4,y:nb(hub).y+8});
 return<>
 {/* Forward flow wires — desktop uses stroke-dashoffset animation for flowing light effect */}
 {(()=>{const wf=!mb?{strokeDasharray:"16 8",animation:"wireflow 1.5s linear infinite"}:{};const wfSlow=!mb?{strokeDasharray:"16 8",animation:"wireflow 2s linear infinite"}:{};const fb=!mb?{strokeDasharray:"6 12",animation:"wirefb 2s linear infinite"}:{strokeDasharray:"4 2"};const fbSlow=!mb?{strokeDasharray:"6 12",animation:"wirefb 3s linear infinite"}:{strokeDasharray:"4 2"};return<>
 <path id="bp2s" d={bezier(nr(pump),nl(scan))} fill="none" stroke={T.cy} strokeWidth="1.5" style={{opacity:actPump?.6:.15,transition:"opacity .8s",...wf}} filter="url(#wglow)"/>
 <path id="bs2sc" d={bezier(nr(scan),nl(score))} fill="none" stroke={T.pu} strokeWidth="1.5" style={{opacity:actScore?.5:.12,transition:"opacity .8s",...wf}} filter="url(#wglow)"/>
+<path id="bsm2h" d={bezier(nb(smartM),{x:nc(hub).x+hubR+4,y:nt(hub).y})} fill="none" stroke="#14F195" strokeWidth="1.5" style={{opacity:actSmart?.5:.1,transition:"opacity .8s",...wfSlow}} filter="url(#wglow)"/>
 <path id="bs2h" d={bezier(nb(scan),nt(hub))} fill="none" stroke={domC} strokeWidth="1.5" style={{opacity:actScore?.4:.1,transition:"opacity .8s",...wfSlow}} filter="url(#wglow)"/>
-<path id="bso2h" d={bezier(nr(social),nl(hub))} fill="none" stroke={T.or} strokeWidth="1.5" style={{opacity:actSocial?.4:.1,transition:"opacity .8s",...wfSlow}} filter="url(#wglow)"/>
-<path id="br2h" d={bezier(nl(rugd),nr(hub))} fill="none" stroke={T.rd} strokeWidth="1.5" style={{opacity:actRug?Math.min(.7,(fh.rugRisk||0)+.2):.1,transition:"opacity .8s",...wfSlow}} filter="url(#wglow)"/>
+<path id="bso2a" d={bezier(nr(social),nl(artw))} fill="none" stroke={T.or} strokeWidth="1.5" style={{opacity:actSocial?.4:.1,transition:"opacity .8s",...wfSlow}} filter="url(#wglow)"/>
+<path id="ba2h" d={bezier(nr(artw),{x:nc(hub).x-hubR,y:nc(hub).y})} fill="none" stroke="#F472B6" strokeWidth="1.5" style={{opacity:actArt?.4:.1,transition:"opacity .8s",...wfSlow}} filter="url(#wglow)"/>
+<path id="bh2gt" d={bezier({x:nc(hub).x+hubR,y:nc(hub).y},nl(gameth))} fill="none" stroke="#60A5FA" strokeWidth="1.5" style={{opacity:actGame?.4:.1,transition:"opacity .8s",...wfSlow}} filter="url(#wglow)"/>
+<path id="bgt2r" d={bezier(nr(gameth),nl(rugd))} fill="none" stroke={T.rd} strokeWidth="1.5" style={{opacity:actRug?.4:.1,transition:"opacity .8s",...wfSlow}} filter="url(#wglow)"/>
 {/* Hub → output wires */}
-{[{k:"ape",n:ape,off:-6},{k:"watch",n:watch,off:-2},{k:"skip",n:skip,off:2},{k:"rug",n:rug,off:6}].map(({k,n,off})=>{const act=hot[k];const isDom=k===dominant;const from={x:nb(hub).x+off,y:nb(hub).y};const pid="bh2"+k;const pth=`M${from.x} ${from.y} C${from.x} ${from.y+14},${nt(n).x} ${nt(n).y-14},${nt(n).x} ${nt(n).y}`;return<path key={pid} id={pid} d={pth} fill="none" stroke={wc[k]} strokeWidth="1.5" style={{opacity:act?(isDom?.7:.3):.08,transition:"opacity .8s",...wf}} filter="url(#wglow)"/>})}
+{[{k:"ape",n:ape,off:-8},{k:"watch",n:watch,off:-3},{k:"skip",n:skip,off:3},{k:"rug",n:rug,off:8}].map(({k,n,off})=>{const act=hot[k];const isDom=k===dominant;const from={x:nb(hub).x+off,y:nb(hub).y};const pid="bh2"+k;const pth=`M${from.x} ${from.y} C${from.x} ${from.y+16},${nt(n).x} ${nt(n).y-16},${nt(n).x} ${nt(n).y}`;return<path key={pid} id={pid} d={pth} fill="none" stroke={wc[k]} strokeWidth="1.5" style={{opacity:act?(isDom?.7:.3):.08,transition:"opacity .8s",...wf}} filter="url(#wglow)"/>})}
 {/* Feedback wires */}
 <path id="bfa2l" d={bezier(nb(ape),nt(learner))} fill="none" stroke={T.gn} strokeWidth="1" style={{opacity:hasLearner&&hot.ape?.3:.08,transition:"opacity .8s",...fb}} filter="url(#fbglow)"/>
 <path id="bfl2s" d={l2sPath} fill="none" stroke={T.cy} strokeWidth="1" style={{opacity:hasLearner?.25:.06,transition:"opacity .8s",...fbSlow}} filter="url(#fbglow)"/>
 <path id="bfw2g" d={bezier(nb(watch),nt(gradW))} fill="none" stroke={T.yl} strokeWidth="1" style={{opacity:hasGradWatch?.3:.08,transition:"opacity .8s",...fb}} filter="url(#fbglow)"/>
-<path id="bfg2h" d={bezier(nt(gradW),{x:nb(hub).x,y:nb(hub).y+8})} fill="none" stroke={T.yl} strokeWidth="1" style={{opacity:hasGradWatch?.2:.06,transition:"opacity .8s",...fbSlow}} filter="url(#fbglow)"/>
+<path id="bfg2h" d={bezier(nt(gradW),{x:nb(hub).x-4,y:nb(hub).y+8})} fill="none" stroke={T.yl} strokeWidth="1" style={{opacity:hasGradWatch?.2:.06,transition:"opacity .8s",...fbSlow}} filter="url(#fbglow)"/>
+<path id="bfs2h" d={s2hPath} fill="none" stroke="#A78BFA" strokeWidth="1" style={{opacity:hasSurv?.25:.06,transition:"opacity .8s",...fbSlow}} filter="url(#fbglow)"/>
+<path id="bfsk2s" d={bezier(nb(skip),nt(surv))} fill="none" stroke={T.ft} strokeWidth="1" style={{opacity:hasSurv?.2:.06,transition:"opacity .8s",...fb}} filter="url(#fbglow)"/>
 <path id="bfr2p" d={bezier(nb(rug),nt(patterns))} fill="none" stroke={T.rd} strokeWidth="1" style={{opacity:hasPatterns&&hot.rug?.25:.06,transition:"opacity .8s",...fb}} filter="url(#fbglow)"/>
 <path id="bfp2r" d={p2rPath} fill="none" stroke={T.or} strokeWidth="1" style={{opacity:hasPatterns?.2:.06,transition:"opacity .8s",...fbSlow}} filter="url(#fbglow)"/>
 </>})()}
@@ -1217,13 +1230,16 @@ return<>
 </>}
 </>})()}
 
-{/* ── PROCESS NODES (Tier 1 + 2) ── */}
+{/* ── PROCESS NODES (Tier 1: Input + Tier 2: Process) ── */}
 {[
 {n:pump,label:"PumpPortal",sub:"WS Feed",c:T.cy,v:engineState.pool?.recent5m||0,active:modActive("pumpportal"),ico:"P",pillImg:true},
 {n:scan,label:"Scanner",sub:"Filter",c:T.pu,v:engineState.pool?.active||0,active:modActive("scorer"),ico:"S"},
 {n:score,label:"Scorer",sub:"Velocity",c:T.pu,v:total,active:modActive("scorer"),ico:"V"},
+{n:smartM,label:"Smart $",sub:"Wallets",c:"#14F195",v:intelData?.smartMoney?.signals?.length||0,active:actSmart?1:0,ico:"$"},
 {n:social,label:"Social",sub:"Signals",c:T.or,v:Math.round(fh.socialSignals*100)+"%",active:fh.socialSignals>.05?1:0,ico:"W"},
+{n:artw,label:"Artwork",sub:"Forensics",c:"#F472B6",v:intelData?.artwork?.scanned||0,active:actArt?1:0,ico:"A"},
 {n:hub,label:"CORTEX",sub:"Inference",c:domC,v:total,active:1,isHub:true},
+{n:gameth,label:"Game Th.",sub:"Bayesian",c:"#60A5FA",v:engineState.flow?.externalBuyers||0,active:actGame?1:0,ico:"G"},
 {n:rugd,label:"Rug Detect",sub:"Safety",c:T.rd,v:d.rug,active:modActive("rug_detector"),ico:"R"},
 ].map((nd,i)=>nd.isHub?<g key={"n"+i}>
 <circle cx={nc(nd.n).x} cy={nc(nd.n).y} r={hubR+6} fill="url(#hubGlow)"/>
@@ -1238,10 +1254,10 @@ return<>
 {(()=>{const pw=nd.pillImg?nw+14:nw;const px=nd.pillImg?nd.n.x-7:nd.n.x;return<>
 {nd.active>.5&&<rect x={px-2} y={nd.n.y-2} width={pw+4} height={nh+4} rx="7" fill={nd.c} opacity=".08" filter="url(#nglow)"/>}
 <rect x={px} y={nd.n.y} width={pw} height={nh} rx="5" fill={T.bg} stroke={nd.active>.5?nd.c:T.ft} strokeWidth="1" opacity={nd.active>.5?1:.5}/>
-{nd.pillImg?<image href="/pumpfun-pill.svg" x={px+1} y={nd.n.y+4} width={nh-9} height={nh-9} opacity=".8"/>:<text x={nd.n.x+5} y={nd.n.y+6} fontSize="5" fill={nd.c} opacity=".6">{nd.ico}</text>}
-<circle cx={px+pw-4} cy={nd.n.y+4} r="2" fill={nd.active>.5?T.gn:T.ft} opacity={nd.active>.5?1:.3}><animate attributeName="opacity" values={nd.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
-<text x={px+pw/2} y={nd.n.y+nh/2-1} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"6":"8"} fontWeight="900" fontFamily="monospace" letterSpacing=".5">{nd.label}</text>
-<text x={px+pw/2} y={nd.n.y+nh/2+7} textAnchor="middle" fill={T.ft} fontSize={mb?"5":"6.5"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
+{nd.pillImg?<image href="/pumpfun-pill.svg" x={px+2} y={nd.n.y+5} width={nh-10} height={nh-10} opacity=".8"/>:<text x={nd.n.x+8} y={nd.n.y+8} fontSize="5" fill={nd.c} opacity=".5">{nd.ico}</text>}
+<circle cx={px+pw-6} cy={nd.n.y+6} r="2" fill={nd.active>.5?T.gn:T.ft} opacity={nd.active>.5?1:.3}><animate attributeName="opacity" values={nd.active>.5?"1;.4;1":".3"} dur="2s" repeatCount="indefinite"/></circle>
+<text x={px+pw/2} y={nd.n.y+nh/2} textAnchor="middle" fill={nd.active>.5?nd.c:T.ft} fontSize={mb?"5.5":"7.5"} fontWeight="900" fontFamily="monospace" letterSpacing=".3">{nd.label}</text>
+<text x={px+pw/2} y={nd.n.y+nh/2+8} textAnchor="middle" fill={T.ft} fontSize={mb?"4.5":"6"} fontFamily="monospace">{nd.sub} · {nd.v}</text>
 </>})()}
 </g>)}
 
@@ -1262,6 +1278,7 @@ return<>
 {[
 {n:learner,label:"Learner",sub:"Outcomes",c:T.cy,v:autoTrade?.learner?.totalTrades||0,active:hasLearner},
 {n:gradW,label:"Grad Watch",sub:"Monitor",c:T.yl,v:intelData?.gradWatch?.count||0,active:hasGradWatch},
+{n:surv,label:"Survivor",sub:"Archetype",c:"#A78BFA",v:intelData?.survivor?.matched||0,active:hasSurv},
 {n:patterns,label:"Patterns",sub:"Memory",c:T.or,v:chartPatterns?.total||0,active:hasPatterns},
 ].map((nd,i)=><g key={"fb"+i}>
 <rect x={nd.n.x} y={nd.n.y} width={nw} height={nh} rx="5" fill={T.bg} stroke={nd.active?nd.c+"66":T.ft+"33"} strokeWidth="1" strokeDasharray={nd.active?"":"3 2"} opacity={nd.active?1:.4}/>
@@ -1271,7 +1288,7 @@ return<>
 </g>)}
 
 {/* Feedback label */}
-<text x={W/2} y={fbY+nh+12} textAnchor="middle" fill={T.ft} fontSize="6" fontFamily="monospace" opacity=".4">↑ feedback loops — outcomes train future decisions ↑</text>
+<text x={W/2} y={fbY+nh+14} textAnchor="middle" fill={T.ft} fontSize="5.5" fontFamily="monospace" opacity=".35">↑ feedback loops — outcomes train future decisions ↑</text>
 </svg>
 
 {/* ═══ DYNAMICS BAR — Acceleration, Impulse, Momentum ═══ */}
