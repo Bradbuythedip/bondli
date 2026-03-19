@@ -46,6 +46,7 @@ import { HistoricalMovers } from "../engine/historical-movers.mjs";
 import SurvivorshipBias from "../engine/survivorship-bias.mjs";
 import { SmartMoneyTracker } from "../engine/smart-money-tracker.mjs";
 import { DevWalletTracker } from "../engine/dev-wallet-tracker.mjs";
+import { scoreMemeticQuick, scoreTokenMemetic, loadBlacklists as loadMemeticBlacklists, startMemeticWorkers } from "../engine/memetic-pipeline.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -852,6 +853,16 @@ function processRadarMessage(data) {
         // Don't bother unsubscribing — they'll be cleaned up on reconnect
       }
     }
+
+    // Score memetic quality on creation (non-blocking, <50ms)
+    scoreMemeticQuick({ name: token.name, symbol: token.ticker, description: token.description }).then(mResult => {
+      const t = radar.tokens.get(mint);
+      if (!t) return;
+      t._memeticQuick = mResult.quickScore || 0;
+      t._memeticLinguistic = mResult.linguistic || 0;
+      t._memeticAbsurdity = mResult.absurdity || 0;
+      t._memeticTemporal = mResult.temporal || 0;
+    }).catch(() => {});
 
     broadcastWS({ event: "newToken", data: { ca: mint, name: token.name, mcap: mcUsd } });
     return;
@@ -1724,6 +1735,12 @@ setInterval(() => {
       artworkScore: t._artworkScore ?? null,
       artworkOriginal: t._artworkOriginal ?? null,
       artworkFlags: t._artworkFlags || [],
+      // Memetic score data
+      memeticScore: t._memeticQuick || null,
+      memeticLinguistic: t._memeticLinguistic || null,
+      memeticAbsurdity: t._memeticAbsurdity || null,
+      memeticTemporal: t._memeticTemporal || null,
+      memeticArchetype: t._memeticArchetype || null,
       // ═══ ENTRY TIMING DATA — helps frontend show when to buy ═══
       ...(() => {
         const dyn = scoreDynamics.get(t.ca);
@@ -1973,6 +1990,9 @@ setInterval(() => {
 
 connectPumpPortal();
 
+// Start memetic background workers (trend poller, KOL monitor, etc.)
+loadMemeticBlacklists().catch(() => {});
+startMemeticWorkers();
 
 // ═══════════════════════════════════════
 // WEBSOCKET BROADCAST
@@ -4616,8 +4636,16 @@ function startAutoTrader(wallet, settings) {
           t._devHighValue = devScore.isHighValue;
         }
 
+        // ═══ MEMETIC SCORE BLEND ═══
+        // Quick memetic score (linguistic + absurdity + temporal) ranges 0-1.
+        // Convert to -8 to +12 point range: tokens with strong meme DNA get boosted,
+        // generic/weak names get penalized. Cached on creation, ~0ms lookup.
+        const memeticQuick = t._memeticQuick || 0;
+        const memeticBonus = memeticQuick > 0 ? Math.round((memeticQuick - 0.45) * 24) : 0; // -11 to +13
+        t._memeticScore = memeticQuick;
+
         t._apeScore = Math.max(0, Math.min(99, Math.round(
-          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus + devCredBonus - sellPenalty - rugPenalty - artPenalty - walletAgePenalty
+          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus + devCredBonus + memeticBonus - sellPenalty - rugPenalty - artPenalty - walletAgePenalty
         )));
 
         // ═══ SURVIVORSHIP BIAS FILTER (Kahneman) ═══
@@ -6903,9 +6931,13 @@ function createLiveSim(id, settings) {
       t._artworkFlags?.includes("LOW_EFFORT_ART") && "low_effort_art",
     ].filter(Boolean);
 
+    // Memetic bonus (cached from creation)
+    const simMemeticQuick = t._memeticQuick || 0;
+    const simMemeticBonus = simMemeticQuick > 0 ? Math.round((simMemeticQuick - 0.45) * 24) : 0;
+
     let total = Math.max(0, Math.min(99, Math.round(
       buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore +
-      boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus -
+      boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus + simMemeticBonus -
       sellPenalty - rugPenalty - artPenalty - walletAgePenalty
     )));
 
