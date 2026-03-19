@@ -6670,6 +6670,108 @@ app.post("/api/vip/claim-referral", async (req, res) => {
   res.json({ ok: true, amount: pending, queued: true });
 });
 
+// VIP: Export API — full intel data dump for VIP users
+app.get("/api/vip/export-api/:wallet", async (req, res) => {
+  try {
+    const wallet = req.params.wallet;
+    if (!wallet) return res.status(400).json({ error: "wallet required" });
+    const user = await getUser(wallet);
+    if (user.tier !== "vip" && user.tier !== "pro" && !user.whitelisted) {
+      return res.status(403).json({ error: "VIP/Pro access required" });
+    }
+
+    // Collect full intel snapshot
+    const radarTokens = [];
+    for (const [ca, t] of radar.tokens) {
+      radarTokens.push({
+        ca, name: t.name, ticker: t.ticker, mcapSol: t.mcapSol || 0,
+        mcapUsd: t.mcapUsd || 0, score: t.score || 0, bondProb: t.bondProb || 0,
+        graduated: t.graduated || false, age: t.age || 0,
+        buyVelocity: t.buyVelocity5m || 0, uniqueBuyers: t.uniqueBuyers5m || 0,
+        r0: t.sir_r0 || 0, cascadeOnset: t.cs_cascadeOnset || 0,
+        reflexivity: t.cs_reflexivity || 0, apd: t.apd_divergence || 0,
+        rugScore: t.rugScore || 0, chartHealth: t.ch_healthScore || 0,
+        image: t.image || "",
+      });
+    }
+    radarTokens.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+    // Smart money signals
+    let smartMoney = null;
+    if (typeof getSmartMoneyScore === "function") {
+      smartMoney = { available: true };
+    }
+
+    // Meta/narrative state
+    let metaState = null;
+    try {
+      if (typeof metaEngine !== "undefined" && metaEngine?.getState) {
+        metaState = metaEngine.getState();
+      }
+    } catch {}
+
+    // User positions with PnL
+    let positions = [];
+    try {
+      const tw = await getTradingWallet(wallet);
+      if (tw) {
+        const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+        const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+        const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: TOKEN_PROGRAM }).catch(() => ({ value: [] }));
+        for (const ta of tokenAccounts.value) {
+          const info = ta.account.data.parsed.info;
+          const amount = parseFloat(info.tokenAmount.uiAmountString || "0");
+          if (amount <= 0) continue;
+          const mint = info.mint;
+          const rt = radar.tokens.get(mint);
+          const totalSupply = 1_000_000_000;
+          const holdPct = amount / totalSupply;
+          const mcUsd = rt?.mcapUsd || 0;
+          const valueUsd = mcUsd > 0 ? holdPct * mcUsd : 0;
+          const valueSol = solUsdPrice > 0 ? valueUsd / solUsdPrice : 0;
+          let entryData = null;
+          if (redis) try { const raw = await redis.get(`entry:${wallet}:${mint}`); if (raw) entryData = JSON.parse(raw); } catch {}
+          const solSpent = entryData?.solSpent || 0;
+          positions.push({
+            mint, name: rt?.name || "", ticker: rt?.ticker || "",
+            amount, valueSol: +valueSol.toFixed(6), valueUsd: +valueUsd.toFixed(2),
+            holdPct: +(holdPct * 100).toFixed(3), solSpent,
+            pnlSol: solSpent > 0 ? +(valueSol - solSpent).toFixed(6) : 0,
+            pnlPct: solSpent > 0 ? +((valueSol - solSpent) / solSpent * 100).toFixed(1) : 0,
+          });
+        }
+        positions.sort((a, b) => b.valueUsd - a.valueUsd);
+      }
+    } catch {}
+
+    // Auto-trade status
+    let autoTradeStatus = null;
+    try {
+      const atKey = "auto_trade:" + wallet;
+      if (redis) {
+        const raw = await redis.get(atKey);
+        if (raw) autoTradeStatus = JSON.parse(raw);
+      }
+    } catch {}
+
+    res.json({
+      ok: true,
+      exportedAt: new Date().toISOString(),
+      wallet,
+      tier: user.tier,
+      solPrice: solUsdPrice,
+      radar: { count: radarTokens.length, tokens: radarTokens.slice(0, 200) },
+      positions,
+      autoTrade: autoTradeStatus ? { active: autoTradeStatus.active, openPositions: autoTradeStatus.positions?.length || 0 } : null,
+      meta: metaState,
+      smartMoney,
+    });
+  } catch (e) {
+    console.error("[EXPORT-API] Error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ═══════════════════════════════════════
 // ROUTES: MISC
 // ═══════════════════════════════════════
