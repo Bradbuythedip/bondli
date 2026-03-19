@@ -56,7 +56,7 @@ const PORT = parseInt(process.env.PORT || "3001");
 // CONFIG.RPC_URL now auto-uses Alchemy when ALCHEMY_API_KEY is set
 const RPC_URL = process.env.RPC_URL || CONFIG.RPC_URL || "https://api.mainnet-beta.solana.com";
 
-// Alchemy-optimized sendTransaction — delegated to rpc-enhanced.mjs
+// RPC-optimized sendTransaction — delegated to rpc-enhanced.mjs
 const rpcSendRawTx = smartSend;
 const REDIS_URL = process.env.REDIS_URL || null;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
@@ -1227,6 +1227,93 @@ function extractQuickFeatures(t) {
     }
   }
 
+  // ── VELOCITY LINEARITY (R²) — straight-line price = dev self-buy ──
+  // Organic tokens have noisy, bursty price action (R² < 0.6).
+  // Dev self-pump tokens have near-perfect linear velocity up (R² > 0.85).
+  // This is the single strongest signal for the "Whale Guru" pattern:
+  // constant-velocity grind up with 90%+ buy pressure, then dev dumps.
+  let velocityLinearityR2 = 0;
+  if (spark.length >= 6) {
+    // Linear regression R² on sparkline
+    const n = spark.length;
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
+    for (let i = 0; i < n; i++) {
+      sumX += i; sumY += spark[i]; sumXY += i * spark[i]; sumX2 += i * i; sumY2 += spark[i] * spark[i];
+    }
+    const denom = (n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY);
+    if (denom > 0) {
+      const r = (n * sumXY - sumX * sumY) / Math.sqrt(denom);
+      velocityLinearityR2 = r * r; // R²
+    }
+    // Only flag if price is GOING UP (positive slope) — we don't care about linear crashes
+    const slope = n > 1 ? (spark[n - 1] - spark[0]) / n : 0;
+    if (slope <= 0) velocityLinearityR2 = 0;
+  }
+
+  // ── BUY TIMING REGULARITY — metronome buys = bot/dev ──
+  // Real FOMO buying comes in bursts with irregular gaps.
+  // Dev/bot buying comes at near-constant intervals like a metronome.
+  // Measure coefficient of variation of buy inter-arrival times.
+  let buyTimingRegularity = 0;
+  const buyTimesArr = buyTrades.map(tr => tr.time).filter(t2 => t2 > 0).sort((a, b) => a - b);
+  if (buyTimesArr.length >= 6) {
+    const intervals = [];
+    for (let i = 1; i < buyTimesArr.length; i++) {
+      intervals.push(buyTimesArr[i] - buyTimesArr[i - 1]);
+    }
+    const avgInt = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+    if (avgInt > 0) {
+      const variance = intervals.reduce((s, d) => s + (d - avgInt) ** 2, 0) / intervals.length;
+      const cv = Math.sqrt(variance) / avgInt;
+      // cv < 0.4 = very regular timing (bot), cv > 1.0 = bursty (organic FOMO)
+      // Convert to 0-1 score where 1 = perfect metronome
+      buyTimingRegularity = Math.max(0, Math.min(1, 1 - cv));
+    }
+    // Only suspicious if there are enough buys AND price is going up
+    const priceUp = spark.length >= 3 && spark[spark.length - 1] > spark[0] * 1.2;
+    if (!priceUp || buyTimesArr.length < 6) buyTimingRegularity = 0;
+  }
+
+  // ── SINGLE WALLET DOMINANCE — one wallet doing most of the buying ──
+  // In dev self-pumps, one wallet (or 2-3 related wallets) accounts for
+  // the vast majority of buy volume. Real organic tokens have distributed buying.
+  let singleWalletDominance = 0;
+  if (walletBuys.size >= 2 && totalBought > 0) {
+    const topWalletSol = sortedHolders[0] || 0;
+    const top2Sol = (sortedHolders[0] || 0) + (sortedHolders[1] || 0);
+    // Single wallet doing >50% of all buy volume
+    singleWalletDominance = topWalletSol / totalBought;
+    // If top 2 wallets are doing >70%, even more suspicious
+    if (top2Sol / totalBought > 0.7 && walletBuys.size >= 3) {
+      singleWalletDominance = Math.max(singleWalletDominance, top2Sol / totalBought * 0.9);
+    }
+  }
+
+  // ── COMPOSITE: DEV SELF-PUMP SCORE ──
+  // Combines all signals into a single "is this a dev pump?" detector.
+  // Fires when: linear velocity + regular timing + few sellers + high concentration
+  let devSelfPumpScore = 0;
+  {
+    const signals = [
+      velocityLinearityR2 > 0.85 ? 1 : velocityLinearityR2 > 0.7 ? 0.5 : 0,   // linear price
+      buyTimingRegularity > 0.6 ? 1 : buyTimingRegularity > 0.4 ? 0.5 : 0,      // metronome buys
+      zeroSellFlag > 0.5 ? 1 : buySellImbalance > 0.6 ? 0.7 : 0,                // no sells
+      singleWalletDominance > 0.5 ? 1 : holderConcentration > 0.6 ? 0.5 : 0,    // concentrated
+      smoothGrindScore > 0.4 ? 0.5 : staircaseScore > 0.3 ? 0.5 : 0,            // chart shape
+    ];
+    const signalCount = signals.filter(s => s > 0).length;
+    const signalSum = signals.reduce((a, b) => a + b, 0);
+    // 3+ signals = suspicious, 4+ = near certain
+    if (signalCount >= 4) {
+      devSelfPumpScore = Math.min(1, 0.7 + signalSum * 0.06);
+    } else if (signalCount >= 3) {
+      devSelfPumpScore = Math.min(0.8, 0.4 + signalSum * 0.08);
+    } else if (signalCount >= 2 && signalSum >= 1.5) {
+      // 2 strong signals (e.g., R²=0.9 + zero sells) = moderate concern
+      devSelfPumpScore = Math.min(0.5, 0.2 + signalSum * 0.1);
+    }
+  }
+
   // ── Chart shape similarity to stored graduated patterns ──
   let chartHealthScore = 0.5; // neutral default
   let smoothGrindScore = 0;
@@ -1417,6 +1504,11 @@ function extractQuickFeatures(t) {
     _rg_zeroSellFlag: zeroSellFlag,
     _rg_buySellImbalance: buySellImbalance,
     _rg_freshWalletRatio: freshWalletRugSignal,
+    // Dev self-pump pattern (velocity linearity + timing regularity + concentration)
+    _rg_velocityLinearity: velocityLinearityR2,
+    _rg_buyTimingRegularity: buyTimingRegularity,
+    _rg_singleWalletDominance: singleWalletDominance,
+    _rg_devSelfPumpScore: devSelfPumpScore,
     // Wallet age on-chain data (0 = all fresh wallets = bad, 1 = all aged = good)
     _walletAgeFresh: t._walletAgeData ? t._walletAgeData.freshRatio : freshWalletRugSignal,
     // Whale bullish: aged whale wallets buying = smart money conviction
@@ -3020,7 +3112,7 @@ app.post("/api/quick-ape", async (req, res) => {
           amount: solAmount, denominatedInSol: "true",
           slippage: apeSlippage, priorityFee: apePriorityFee, pool,
         }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(5000),
       });
       if (!response.ok) throw new Error(`${response.status}`);
       const txBytes = await response.arrayBuffer();
@@ -3031,10 +3123,10 @@ app.post("/api/quick-ape", async (req, res) => {
       return { sig: txSig, method: `pumpportal:${pool}` };
     };
 
-    // Race all strategies in parallel
+    // Race all strategies — first success wins (Promise.any pattern)
     const pools = isGraduated ? ["auto", "raydium"] : ["pump", "auto"];
     const candidates = pools.map(pool =>
-      tryPPBuy(pool).catch(e => { errors.push(`PP:${pool}=${e.message.slice(0, 60)}`); return null; })
+      tryPPBuy(pool).catch(e => { errors.push(`PP:${pool}=${e.message.slice(0, 60)}`); throw e; })
     );
 
     // For graduated tokens, also race Jupiter in parallel
@@ -3049,7 +3141,7 @@ app.post("/api/quick-ape", async (req, res) => {
             inputMint: "So11111111111111111111111111111111111111112",
             outputMint: ca, amount: solLamports, taker: tw.pubkey,
           }),
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(5000),
         });
         if (!orderResp.ok) throw new Error(`order:${orderResp.status}`);
         const order = await orderResp.json();
@@ -3061,19 +3153,19 @@ app.post("/api/quick-ape", async (req, res) => {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ signedTransaction: rawTx, requestId: order.requestId }),
-          signal: AbortSignal.timeout(10000),
+          signal: AbortSignal.timeout(6000),
         });
         if (!execResp.ok) throw new Error(`exec:${execResp.status}`);
         const execResult = await execResp.json();
         if (execResult.signature || execResult.txid) return { sig: execResult.signature || execResult.txid, method: "jupiter-ultra" };
         throw new Error("no_sig");
-      })().catch(e => { errors.push(`JUP-Ultra=${e.message.slice(0, 60)}`); return null; }));
+      })().catch(e => { errors.push(`JUP-Ultra=${e.message.slice(0, 60)}`); throw e; }));
 
       // Jupiter v6
       candidates.push((async () => {
         const quoteResp = await fetch(
           `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${ca}&amount=${solLamports}&slippageBps=2500`,
-          { signal: AbortSignal.timeout(6000) }
+          { signal: AbortSignal.timeout(4000) }
         );
         if (!quoteResp.ok) throw new Error(`quote:${quoteResp.status}`);
         const quote = await quoteResp.json();
@@ -3085,7 +3177,7 @@ app.post("/api/quick-ape", async (req, res) => {
             wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true,
             prioritizationFeeLamports: 10000,
           }),
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(5000),
         });
         if (!swapResp.ok) throw new Error(`swap:${swapResp.status}`);
         const { swapTransaction } = await swapResp.json();
@@ -3093,18 +3185,19 @@ app.post("/api/quick-ape", async (req, res) => {
         tx.sign([kp]);
         const txSig = await rpcSendRawTx(connection, tx.serialize());
         return { sig: txSig, method: "jupiter-v6" };
-      })().catch(e => { errors.push(`JUP-v6=${e.message.slice(0, 60)}`); return null; }));
+      })().catch(e => { errors.push(`JUP-v6=${e.message.slice(0, 60)}`); throw e; }));
     }
 
-    // Use first successful result from parallel race
-    const results = await Promise.allSettled(candidates);
-    for (const r of results) {
-      if (r.status === "fulfilled" && r.value?.sig) {
-        sig = r.value.sig;
-        method = r.value.method;
-        console.log(`[BUY] Parallel race winner: ${method} sig=${sig}`);
-        break;
+    // First successful route wins — don't wait for slower routes
+    try {
+      const winner = await Promise.any(candidates);
+      if (winner?.sig) {
+        sig = winner.sig;
+        method = winner.method;
+        console.log(`[BUY] Race winner: ${method} sig=${sig}`);
       }
+    } catch (aggErr) {
+      // All routes failed — errors already collected above
     }
 
     if (!sig) {
@@ -3179,7 +3272,7 @@ app.post("/api/quick-sell", async (req, res) => {
     let errors = []; // collect all errors for debugging
 
     // Helper: try a single PumpPortal pool sell
-    const tryPPSell = async (pool, slippage = 30, fee = 0.008, timeout = 8000) => {
+    const tryPPSell = async (pool, slippage = 30, fee = 0.008, timeout = 5000) => {
       const response = await fetch("https://pumpportal.fun/api/trade-local", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3211,7 +3304,7 @@ app.post("/api/quick-sell", async (req, res) => {
           inputMint: ca, outputMint: "So11111111111111111111111111111111111111112",
           amount: sellAmount, taker: tw.pubkey,
         }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(5000),
       });
       if (!orderResp.ok) throw new Error(`order:${orderResp.status}`);
       const order = await orderResp.json();
@@ -3224,7 +3317,7 @@ app.post("/api/quick-sell", async (req, res) => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ signedTransaction: rawTx, requestId: order.requestId }),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(6000),
       });
       if (!execResp.ok) throw new Error(`exec:${execResp.status}`);
       const execResult = await execResp.json();
@@ -3236,7 +3329,7 @@ app.post("/api/quick-sell", async (req, res) => {
     const tryJupV6Sell = async (sellAmount) => {
       const quoteResp = await fetch(
         `https://quote-api.jup.ag/v6/quote?inputMint=${ca}&outputMint=So11111111111111111111111111111111111111112&amount=${sellAmount}&slippageBps=3000`,
-        { signal: AbortSignal.timeout(6000) }
+        { signal: AbortSignal.timeout(4000) }
       );
       if (!quoteResp.ok) throw new Error(`quote:${quoteResp.status}`);
       const quote = await quoteResp.json();
@@ -3248,7 +3341,7 @@ app.post("/api/quick-sell", async (req, res) => {
           wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true,
           prioritizationFeeLamports: 10000,
         }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(5000),
       });
       if (!swapResp.ok) throw new Error(`swap:${swapResp.status}`);
       const { swapTransaction } = await swapResp.json();
@@ -3262,27 +3355,28 @@ app.post("/api/quick-sell", async (req, res) => {
     const sellAmount = Math.round(tokenBalance * (pct / 100) * Math.pow(10, tokenDecimals));
     const pools = isGraduated ? ["auto", "raydium", "pump"] : ["pump", "auto"];
     const candidates = pools.map(pool =>
-      tryPPSell(pool).catch(e => { errors.push(`PP:${pool}=${e.message.slice(0, 60)}`); return null; })
+      tryPPSell(pool).catch(e => { errors.push(`PP:${pool}=${e.message.slice(0, 60)}`); throw e; })
     );
     // For graduated tokens, also race Jupiter in parallel
     if (isGraduated && sellAmount > 0) {
       candidates.push(
-        tryJupUltraSell(sellAmount).catch(e => { errors.push(`JUP-Ultra=${e.message.slice(0, 60)}`); return null; })
+        tryJupUltraSell(sellAmount).catch(e => { errors.push(`JUP-Ultra=${e.message.slice(0, 60)}`); throw e; })
       );
       candidates.push(
-        tryJupV6Sell(sellAmount).catch(e => { errors.push(`JUP-v6=${e.message.slice(0, 60)}`); return null; })
+        tryJupV6Sell(sellAmount).catch(e => { errors.push(`JUP-v6=${e.message.slice(0, 60)}`); throw e; })
       );
     }
 
-    // Use Promise.any-like: resolve with first success
-    const results = await Promise.allSettled(candidates);
-    for (const r of results) {
-      if (r.status === "fulfilled" && r.value?.sig) {
-        sig = r.value.sig;
-        method = r.value.method;
-        console.log(`[SELL] Parallel race winner: ${method} sig=${sig}`);
-        break;
+    // First successful route wins — don't wait for slower routes
+    try {
+      const winner = await Promise.any(candidates);
+      if (winner?.sig) {
+        sig = winner.sig;
+        method = winner.method;
+        console.log(`[SELL] Race winner: ${method} sig=${sig}`);
       }
+    } catch (aggErr) {
+      // All routes failed — errors already collected above
     }
 
     // Fallback: Direct amount-based sell for dust/dead tokens

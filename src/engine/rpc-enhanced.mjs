@@ -35,30 +35,44 @@ export async function getOptimalPriorityFee(accountKeys = []) {
 }
 
 // Send transaction via RPC with optimized params
+// Retries up to 2 times with short backoff for transient network failures
 export async function smartSend(connection, serializedTx, opts = {}) {
-  try {
-    const base58Tx = bs58.encode(serializedTx);
-    const res = await fetch(CONFIG.RPC_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0", id: 1,
-        method: "sendTransaction",
-        params: [base58Tx, {
-          skipPreflight: true,
-          encoding: "base58",
-          maxRetries: 5,
-        }],
-      }),
-      signal: AbortSignal.timeout(12000),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.result) return data.result;
-      if (data.error) console.warn(`[RPC-TX] Error: ${JSON.stringify(data.error)}`);
+  const base58Tx = bs58.encode(serializedTx);
+  const MAX_RETRIES = 2;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(CONFIG.RPC_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0", id: 1,
+          method: "sendTransaction",
+          params: [base58Tx, {
+            skipPreflight: true,
+            encoding: "base58",
+            maxRetries: 5,
+          }],
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.result) return data.result;
+        if (data.error) {
+          // Non-retryable RPC errors (bad tx, insufficient funds, etc)
+          const errMsg = JSON.stringify(data.error);
+          if (errMsg.includes("insufficient") || errMsg.includes("Blockhash not found")) {
+            console.warn(`[RPC-TX] Non-retryable: ${errMsg}`);
+            break;
+          }
+          console.warn(`[RPC-TX] Error (attempt ${attempt + 1}): ${errMsg}`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[RPC-TX] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${e.message}`);
     }
-  } catch (e) {
-    console.warn(`[RPC-TX] Send failed, falling back: ${e.message}`);
+    if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
   }
 
   // Fallback: standard Connection.sendRawTransaction

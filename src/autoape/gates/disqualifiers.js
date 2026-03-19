@@ -22,6 +22,16 @@ export function checkDisqualifiers(token, qf, opts = {}) {
   if (qf?.rg_holderConcentration > 0.7 && (token.buys || 0) > 5 && !(qf?._whaleBullish > 0.3))
     flags.push("EXTREME_CONCENTRATION");
 
+  // === DEV SELF-PUMP DETECTION (highest priority — catches "Whale Guru" pattern) ===
+  // Linear velocity up + metronome buys + no sells + wallet concentration = dev pump
+  // This fires REGARDLESS of age — dev pumps are identifiable from minute 1
+  if (qf?._rg_devSelfPumpScore >= 0.7) flags.push("DEV_SELF_PUMP");
+  if (qf?._rg_devSelfPumpScore >= 0.5 && qf?._rg_zeroSellFlag >= 0.5) flags.push("DEV_PUMP_NO_SELLS");
+  // Linear velocity (R² > 0.9) combined with no sells = instant reject
+  if (qf?._rg_velocityLinearity > 0.9 && qf?._rg_buySellImbalance > 0.7) flags.push("LINEAR_PUMP");
+  // Metronome buying + concentration = bot farm
+  if (qf?._rg_buyTimingRegularity > 0.6 && qf?._rg_singleWalletDominance > 0.4) flags.push("BOT_PUMP");
+
   // Multiple moderate rug signals firing simultaneously
   const moderateSignals = [
     qf?.rg_devSellSpeed > 0.35,
@@ -40,6 +50,9 @@ export function checkDisqualifiers(token, qf, opts = {}) {
     qf?._rg_freshWalletRatio > 0.7,
     qf?.ch_flatlineSpike > 0.3,
     token._artworkOriginal === false,
+    qf?._rg_velocityLinearity > 0.8,       // near-linear price trajectory
+    qf?._rg_buyTimingRegularity > 0.5,     // suspiciously regular buy timing
+    qf?._rg_singleWalletDominance > 0.5,   // one wallet doing most buying
   ].filter(Boolean).length;
 
   const ageMin = (Date.now() - (token.createdAt || Date.now())) / 60000;
