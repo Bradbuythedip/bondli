@@ -154,9 +154,12 @@ export class MemeticPipeline extends EventEmitter {
       // Register for trend tracking
       registerTokenForTrends(tokenAddress, name, symbol).catch(() => {});
 
+      const description = metadata?.description || '';
+      const createdAt = event.timestamp || Date.now();
+
       // Emit for radar display (always, even if filtered)
       this.emit('token_detected', {
-        tokenAddress, name, symbol, imageUri,
+        tokenAddress, name, symbol, imageUri, description, createdAt,
         timestamp: Date.now()
       });
 
@@ -187,14 +190,16 @@ export class MemeticPipeline extends EventEmitter {
 
       this.stats.tokensFullScored++;
 
-      // Emit score for radar (with archetype color)
+      // Emit score for radar (with archetype color + full metadata)
       this.emit('token_scored', {
-        tokenAddress, name, symbol, imageUri,
+        tokenAddress, name, symbol, imageUri, description, createdAt,
         score: scoreResult.finalScore,
         memeticScore: scoreResult.memeticScore,
         archetype: scoreResult.archetype,
         moduleScores: scoreResult.moduleScores,
+        moduleFeatures: scoreResult.moduleFeatures,
         interactionBonuses: scoreResult.interactionBonuses,
+        kellyDampener: scoreResult.kellyDampener,
         elapsed: Date.now() - startTime
       });
 

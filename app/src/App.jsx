@@ -1911,7 +1911,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 </div></EB>}
 
 {/* MEMETIC TAB — Memetic Physics Radar */}
-{tab==="memetic"&&<EB l="Memetic"><MemeticRadar apiBase={API} onBuy={quickBuy} user={user} tradingBalance={trB} solPrice={solP}/></EB>}
+{tab==="memetic"&&<EB l="Memetic"><MemeticRadar apiBase={API} onBuy={quickBuy} onSell={quickSell} user={user} tradingBalance={trB} solPrice={solP} held={held}/></EB>}
 
 </div></>}
 
