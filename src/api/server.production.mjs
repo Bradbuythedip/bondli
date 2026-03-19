@@ -38,7 +38,7 @@ import { createToken } from "../engine/token-creator.mjs";
 import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateFee, calculateReferralSplit, getEffectiveFeeRate, recordTradeOutcome, generateWinCard, getTraderStats, addShareCredit, restoreTraderStats, PLATFORM_WALLET, NETWORK_FEE_PCT, PROFIT_LADDER } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
 import { smartSend, getOptimalPriorityFee } from "../engine/rpc-enhanced.mjs";
-import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
+import { MemeIntelligence, ScoreDynamics, loraClient } from "../engine/meme-intelligence.mjs";
 import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
 import { XSocialIntel } from "../engine/x-social-intel.mjs";
 import { MetaTracker } from "../engine/meta-engine.mjs";
@@ -7140,6 +7140,7 @@ app.get("/api/engine-state", (req, res) => {
     { id: "rug_detector", name: "Rug Detector", status: "active", throughput: decisions.rug },
     { id: "trade_router", name: "Trade Router", status: graduated.length > 0 ? "active" : "idle", throughput: graduated.length },
     { id: "grad_watch", name: "Grad Watchlist", status: gradWatchlist.size > 0 ? "active" : "idle", throughput: gradWatchlist.size },
+    { id: "lora_gpu", name: "LoRA GPU", status: loraClient.available ? "active" : "offline", throughput: loraClient.stats.hits, gpu: loraClient.stats.gpuName || null },
   ];
 
   // Feature activation heatmap (which scoring dimensions are firing)
@@ -7186,6 +7187,7 @@ app.get("/api/engine-state", (req, res) => {
     },
     solPrice: solUsdPrice,
     gradMc: gradMcUsd(),
+    lora: loraClient.getStats(),
   });
 });
 
@@ -8065,6 +8067,12 @@ server.listen(PORT, async () => {
   console.log(`  Redis: ${redis ? "connected" : "in-memory"}`);
   console.log(`  SOL: $${solUsdPrice}`);
   console.log(`  Radar: PumpPortal WS connecting...`);
+
+  // LoRA GPU scorer: check if local inference server is running
+  loraClient.checkHealth().then(ok => {
+    if (ok) console.log(`  LoRA: ACTIVE — ${loraClient.stats.gpuName || "CPU"}`);
+    else console.log(`  LoRA: offline (start with: python src/ml/serve.py)`);
+  });
   console.log(`═══════════════════════════════════════\n`);
 
   // Load smart wallet profiles from Redis

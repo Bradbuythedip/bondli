@@ -7,6 +7,7 @@
  *   1. RAG Memory   — vector similarity to past tokens + outcomes
  *   2. Online ML    — streaming model updates on every label
  *   3. Rule Engine  — Tipping Point + System 1/2 heuristics
+ *   4. LoRA GPU     — transformer-based scoring via local Python server (optional)
  *
  * Feedback loop:
  *   Token appears → extract features → score → monitor outcome
@@ -20,6 +21,8 @@
  *   // On outcome (cron or webhook):
  *   await intel.labelOutcome(ca, { graduated: true, peakMcx: 12.5, fleetPnl: 3.2 });
  */
+
+import { loraClient } from './lora-client.mjs';
 
 // ═══ FEATURE EXTRACTION ═══
 // Converts raw token data into a normalized feature vector
@@ -1142,6 +1145,43 @@ export class MemeIntelligence {
     const features = extractFeatures(tokenData);
     const scoreResult = this.scorer.score(features);
 
+    // ── LoRA GPU SCORING: blend transformer predictions with rule-based score ──
+    // Non-blocking — if LoRA server is down, rule-based scoring continues unaffected
+    const loraPrediction = await loraClient.predict(features);
+    if (loraPrediction) {
+      // Blend: 40% LoRA + 60% rule-based (LoRA earns trust over time)
+      const LORA_WEIGHT = 0.4;
+      const RULE_WEIGHT = 1.0 - LORA_WEIGHT;
+
+      const blendedScore = Math.round(scoreResult.score * RULE_WEIGHT + loraPrediction.score * LORA_WEIGHT);
+      scoreResult.score = blendedScore < 0 ? 0 : blendedScore > 99 ? 99 : blendedScore;
+
+      // LoRA rug detection: if LoRA says >70% rug and rules missed it, penalize
+      if (loraPrediction.rugProb > 0.7 && !scoreResult.hardReject) {
+        scoreResult.score = Math.max(0, scoreResult.score - Math.round(loraPrediction.rugProb * 15));
+        scoreResult.rugFlags.push("lora_rug_detected");
+      }
+
+      // LoRA graduation boost
+      if (loraPrediction.graduationProb > 0.6) {
+        scoreResult.bondProb = Math.min(99, scoreResult.bondProb + Math.round(loraPrediction.graduationProb * 12));
+      }
+
+      // LoRA hard reject override: if LoRA is very confident it's a rug
+      if (loraPrediction.rugProb > 0.9 && scoreResult.rugScore < 30) {
+        scoreResult.hardReject = true;
+        scoreResult.rugFlags.push("lora_high_confidence_rug");
+      }
+
+      scoreResult.lora = {
+        score: loraPrediction.score,
+        rugProb: loraPrediction.rugProb,
+        graduationProb: loraPrediction.graduationProb,
+        latencyMs: loraPrediction.latency_ms,
+        blendWeight: LORA_WEIGHT,
+      };
+    }
+
     // RAG: find similar past tokens
     const similar = this.memory.findSimilar(features, 5);
 
@@ -1176,7 +1216,7 @@ export class MemeIntelligence {
     this.memory.add(tokenData.ca, features);
     this.monitor.track(tokenData.ca, features, scoreResult);
 
-    this._log("score", { ca: tokenData.ca, score: scoreResult.score, bondProb: scoreResult.bondProb, meta: scoreResult.narrative });
+    this._log("score", { ca: tokenData.ca, score: scoreResult.score, bondProb: scoreResult.bondProb, meta: scoreResult.narrative, lora: !!loraPrediction });
 
     return scoreResult;
   }
@@ -1513,4 +1553,4 @@ class ScoreDynamics {
 }
 
 export default MemeIntelligence;
-export { extractFeatures, ScoringEngine, RAGMemory, OutcomeMonitor, ScoreDynamics, FEATURE_KEYS };
+export { extractFeatures, ScoringEngine, RAGMemory, OutcomeMonitor, ScoreDynamics, FEATURE_KEYS, loraClient };
