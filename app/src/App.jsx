@@ -208,9 +208,27 @@ return<div style={{width:"100%",borderRadius:6,overflow:"hidden",background:T.bg
 <a href={`https://dexscreener.com/solana/${ca}`} target="_blank" rel="noopener" style={{fontSize:13,color:T.dm,textDecoration:"none"}}>dexscreener →</a>
 </div></div>}
 
+// ═══ MEMETIC SPIDER CHART ═══
+const MEME_MODS={linguistic:{label:"Linguistic",color:"#00e676"},visual:{label:"Visual",color:"#ff9100"},cultural:{label:"Cultural",color:"#ffd600"},community:{label:"Community",color:"#18ffff"},influencer:{label:"Influencer",color:"#b388ff"},absurdity:{label:"Absurdity",color:"#ff1744"},temporal:{label:"Temporal",color:"#e040fb"}};
+const ARCH_COLORS={organic_runner:"#00e676",cultural_catalyst:"#ff9100",camp_absurdist:"#b388ff",influencer_cascade:"#18ffff",rug_signal:"#ff1744",noise:"#5c5c7a"};
+const ARCH_LABELS={organic_runner:"Organic Runner",cultural_catalyst:"Cultural Catalyst",camp_absurdist:"Camp / Absurdist",influencer_cascade:"Influencer Cascade",rug_signal:"Rug Signal",noise:"Noise"};
+function MemeSpider({scores={},size=180,T:theme}){
+const keys=Object.keys(MEME_MODS);const cx=size/2,cy=size/2,r=size*0.36;const step=(2*Math.PI)/keys.length;
+const pt=(i,v)=>{const a=step*i-Math.PI/2;return{x:cx+r*v*Math.cos(a),y:cy+r*v*Math.sin(a)}};
+const pts=keys.map((k,i)=>pt(i,scores[k]??0.5));const poly=pts.map(p=>`${p.x},${p.y}`).join(" ");
+return<svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+{[0.25,0.5,0.75,1].map(ring=><polygon key={ring} points={keys.map((_,i)=>{const p=pt(i,ring);return`${p.x},${p.y}`}).join(" ")} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="0.5"/>)}
+{keys.map((_,i)=>{const p=pt(i,1);return<line key={i} x1={cx} y1={cy} x2={p.x} y2={p.y} stroke="rgba(255,255,255,0.03)" strokeWidth="0.5"/>})}
+<polygon points={poly} fill="rgba(0,230,118,0.1)" stroke="#00e67688" strokeWidth="1.5"/>
+{pts.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r={2.5} fill={MEME_MODS[keys[i]].color}/>)}
+{keys.map((k,i)=>{const p=pt(i,1.22);return<text key={k} x={p.x} y={p.y} textAnchor="middle" dominantBaseline="middle" fill={MEME_MODS[k].color} fontSize="8" fontFamily={M} fontWeight="700">{MEME_MODS[k].label}</text>})}
+</svg>}
+
 // ═══ TOKEN DETAIL — full inspection panel ═══
 function TokenDetail({t,T,mb,trB,buying,selling,sBuy,sSell,quickBuy,quickSell,toast,held,onClose,solP,rCustomBuy,sRCB}){
 const isH=held.has(t.ca);
+const[memeData,setMemeData]=useState(null);const[memeLoading,setMemeLoading]=useState(false);
+useEffect(()=>{if(!t.ca)return;setMemeData(null);setMemeLoading(true);fetch(API+"/api/memetic-score/"+t.ca).then(r=>r.ok?r.json():null).then(d=>{setMemeData(d);setMemeLoading(false)}).catch(()=>setMemeLoading(false))},[t.ca]);
 useEffect(()=>{const h=e=>{if(e.key==="Escape")onClose()};window.addEventListener("keydown",h);return()=>window.removeEventListener("keydown",h)},[onClose]);
 const SL=({href,icon:Ic,label})=>href?<a href={href} target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:5,padding:"7px 12px",background:T.bg,border:"1px solid "+T.bd,borderRadius:5,fontSize:14,color:T.md,textDecoration:"none",fontWeight:600}}><Ic s={14} c={T.md}/>{label}</a>:null;
 return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden",animation:"su .25s ease",margin:mb?"0 0 6px":"0 0 8px"}}>
@@ -256,6 +274,34 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 {[{l:"Ling",v:t.memeticLinguistic,c:"#00e676"},{l:"Absurd",v:t.memeticAbsurdity,c:"#ff1744"},{l:"Timing",v:t.memeticTemporal,c:"#e040fb"}].map(m=>m.v!=null&&<div key={m.l} style={{display:"flex",alignItems:"center",gap:3}}><span style={{fontSize:9,color:T.ft}}>{m.l}</span><div style={{width:40,height:3,borderRadius:2,background:T.bd}}><div style={{width:Math.round((m.v||0)*100)+"%",height:3,borderRadius:2,background:m.c}}/></div><span style={{fontSize:9,fontWeight:700,color:m.c}}>{Math.round((m.v||0)*100)}</span></div>)}
 </div>
 <span style={{fontSize:14,fontWeight:900,color:t.memeticScore>=0.7?T.gn:t.memeticScore>=0.5?T.yl:"#ff4444"}}>{Math.round(t.memeticScore*100)}</span>
+</div>}
+{/* ═══ MEMETIC SPIDER CHART — full 7-module breakdown ═══ */}
+{memeLoading&&<div style={{padding:12,textAlign:"center"}}><Sp s={12}/></div>}
+{memeData&&memeData.moduleScores&&<div style={{borderBottom:"1px solid "+T.bd}}>
+{/* Archetype + composite score */}
+<div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px"}}>
+<div style={{fontSize:28,fontWeight:900,color:ARCH_COLORS[memeData.archetype]||T.dm,fontFamily:M,lineHeight:1}}>{Math.round((memeData.score||0)*100)}</div>
+<div>
+<div style={{display:"inline-block",padding:"2px 8px",borderRadius:4,background:(ARCH_COLORS[memeData.archetype]||T.dm)+"18",color:ARCH_COLORS[memeData.archetype]||T.dm,fontSize:10,fontWeight:800,marginBottom:2}}>{ARCH_LABELS[memeData.archetype]||"Unknown"}</div>
+{memeData.memeticScore!=null&&<div style={{fontSize:9,color:T.dm}}>Memetic: {Math.round(memeData.memeticScore*100)} · On-chain: {Math.round((memeData.onChainScore||0)*100)}</div>}
+{memeData.elapsed!=null&&<div style={{fontSize:8,color:T.ft}}>{memeData.elapsed}ms</div>}
+</div>
+</div>
+{/* Spider chart */}
+<div style={{display:"flex",justifyContent:"center",padding:"2px 0 6px"}}><MemeSpider scores={memeData.moduleScores} size={mb?160:190} T={T}/></div>
+{/* Module bars */}
+<div style={{padding:"0 14px 8px"}}>{Object.entries(MEME_MODS).map(([key,{label,color:mc}])=>{const sc=memeData.moduleScores[key]??0.5;return<div key={key} style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+<span style={{width:3,height:3,borderRadius:"50%",background:mc,flexShrink:0}}/>
+<span style={{fontSize:10,color:T.dm,flex:1,fontFamily:M}}>{label}</span>
+<div style={{width:70,height:2.5,borderRadius:2,background:T.bd}}><div style={{height:2.5,borderRadius:2,background:mc,width:(sc*100)+"%"}}/></div>
+<span style={{fontSize:10,color:mc,fontWeight:700,fontFamily:M,width:24,textAlign:"right"}}>{Math.round(sc*100)}</span>
+</div>})}</div>
+{/* Interaction bonuses */}
+{memeData.interactionBonuses?.length>0&&<div style={{padding:"0 14px 8px"}}><div style={{fontSize:10,fontWeight:800,marginBottom:3,color:T.tx}}>Memeplex Bonuses</div>
+{memeData.interactionBonuses.map((b,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",padding:"2px 6px",background:T.gn+"06",borderRadius:3,marginBottom:1,fontSize:10,fontFamily:M}}>
+<span style={{color:T.gn}}>{(b.name||"").replace(/_/g," ")}</span>
+<span style={{color:T.yl,fontWeight:800}}>×{(b.multiplier||1).toFixed(2)}</span>
+</div>)}</div>}
 </div>}
 {/* Chart — canvas candlestick with OHLC + volume */}
 <CandleChart ca={t.ca} T={T} mb={mb}/>

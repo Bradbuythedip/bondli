@@ -5712,6 +5712,46 @@ app.get("/api/img", async (req, res) => {
 });
 
 // ═══════════════════════════════════════
+// ROUTES: MEMETIC SCORE (on-demand full 7-module)
+// ═══════════════════════════════════════
+const _memeticCache = new Map(); // ca -> { result, ts }
+app.get("/api/memetic-score/:ca", async (req, res) => {
+  try {
+    const ca = req.params.ca;
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(ca)) return res.status(400).json({ error: "Invalid CA" });
+    // Check cache (5 min TTL)
+    const cached = _memeticCache.get(ca);
+    if (cached && Date.now() - cached.ts < 300000) return res.json(cached.result);
+    // Find token in radar pool
+    const token = radar.tokens.get(ca);
+    if (!token) return res.status(404).json({ error: "Token not in radar" });
+    // Run full 7-module memetic score
+    const result = await scoreTokenMemetic(token);
+    const response = {
+      ca,
+      score: result.finalScore,
+      memeticScore: result.memeticScore,
+      onChainScore: result.onChainScore,
+      archetype: result.archetype,
+      moduleScores: result.moduleScores || {},
+      interactionBonuses: result.interactionBonuses || [],
+      kellyDampener: result.kellyDampener,
+      elapsed: result.elapsed,
+    };
+    _memeticCache.set(ca, { result: response, ts: Date.now() });
+    // Cap cache size
+    if (_memeticCache.size > 200) {
+      const oldest = [..._memeticCache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, 50);
+      for (const [k] of oldest) _memeticCache.delete(k);
+    }
+    res.json(response);
+  } catch (e) {
+    console.error("[MEMETIC-SCORE]", e.message);
+    res.status(500).json({ error: "Scoring failed" });
+  }
+});
+
+// ═══════════════════════════════════════
 // ROUTES: RADAR
 // ═══════════════════════════════════════
 app.get("/api/radar", (req, res) => {

@@ -459,6 +459,32 @@ app.get("/api/score/:ca", apiLimiter, async (req, res) => {
   }
 });
 
+// Full memetic score (on-demand, 7 modules)
+const _memeticCache = new Map();
+app.get("/api/memetic-score/:ca", apiLimiter, async (req, res) => {
+  try {
+    const ca = req.params.ca;
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(ca)) return res.status(400).json({ error: "Invalid CA" });
+    const cached = _memeticCache.get(ca);
+    if (cached && Date.now() - cached.ts < 300000) return res.json(cached.result);
+    const token = { ca, name: "", ticker: "" };
+    // Try to find in movers
+    if (movers) {
+      const scored = await movers.scoreToken(ca);
+      if (scored) { token.name = scored.name || ""; token.ticker = scored.ticker || ""; token.description = scored.description || ""; token.image = scored.image || ""; }
+    }
+    const result = await scoreTokenMemetic(token);
+    const response = {
+      ca, score: result.finalScore, memeticScore: result.memeticScore, archetype: result.archetype,
+      moduleScores: result.moduleScores || {}, interactionBonuses: result.interactionBonuses || [],
+      elapsed: result.elapsed,
+    };
+    _memeticCache.set(ca, { result: response, ts: Date.now() });
+    if (_memeticCache.size > 200) { for (const [k] of [..._memeticCache.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, 50)) _memeticCache.delete(k); }
+    res.json(response);
+  } catch (e) { res.status(500).json({ error: "Scoring failed" }); }
+});
+
 app.get("/api/fees", apiLimiter, (req, res) => {
   const sol = Math.min(100, Math.max(0, parseFloat(req.query.sol || "1")));
   const tier = getFeeTier(sol);
