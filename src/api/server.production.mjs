@@ -1289,31 +1289,6 @@ function extractQuickFeatures(t) {
     }
   }
 
-  // ── COMPOSITE: DEV SELF-PUMP SCORE ──
-  // Combines all signals into a single "is this a dev pump?" detector.
-  // Fires when: linear velocity + regular timing + few sellers + high concentration
-  let devSelfPumpScore = 0;
-  {
-    const signals = [
-      velocityLinearityR2 > 0.85 ? 1 : velocityLinearityR2 > 0.7 ? 0.5 : 0,   // linear price
-      buyTimingRegularity > 0.6 ? 1 : buyTimingRegularity > 0.4 ? 0.5 : 0,      // metronome buys
-      zeroSellFlag > 0.5 ? 1 : buySellImbalance > 0.6 ? 0.7 : 0,                // no sells
-      singleWalletDominance > 0.5 ? 1 : holderConcentration > 0.6 ? 0.5 : 0,    // concentrated
-      smoothGrindScore > 0.4 ? 0.5 : staircaseScore > 0.3 ? 0.5 : 0,            // chart shape
-    ];
-    const signalCount = signals.filter(s => s > 0).length;
-    const signalSum = signals.reduce((a, b) => a + b, 0);
-    // 3+ signals = suspicious, 4+ = near certain
-    if (signalCount >= 4) {
-      devSelfPumpScore = Math.min(1, 0.7 + signalSum * 0.06);
-    } else if (signalCount >= 3) {
-      devSelfPumpScore = Math.min(0.8, 0.4 + signalSum * 0.08);
-    } else if (signalCount >= 2 && signalSum >= 1.5) {
-      // 2 strong signals (e.g., R²=0.9 + zero sells) = moderate concern
-      devSelfPumpScore = Math.min(0.5, 0.2 + signalSum * 0.1);
-    }
-  }
-
   // ── Chart shape similarity to stored graduated patterns ──
   let chartHealthScore = 0.5; // neutral default
   let smoothGrindScore = 0;
@@ -1445,6 +1420,31 @@ function extractQuickFeatures(t) {
   const freshWalletRatio = uniqueBuyWallets.size > 2 ? singleUseBuyers / uniqueBuyWallets.size : 0;
   // Combined: fresh wallets + zero sells = definite rug setup
   const freshWalletRugSignal = freshWalletRatio > 0.7 && zeroSellFlag > 0.5 ? Math.min(1, freshWalletRatio * zeroSellFlag * 1.5) : freshWalletRatio;
+
+  // ── COMPOSITE: DEV SELF-PUMP SCORE ──
+  // Combines all signals into a single "is this a dev pump?" detector.
+  // Fires when: linear velocity + regular timing + few sellers + high concentration
+  let devSelfPumpScore = 0;
+  {
+    const signals = [
+      velocityLinearityR2 > 0.85 ? 1 : velocityLinearityR2 > 0.7 ? 0.5 : 0,   // linear price
+      buyTimingRegularity > 0.6 ? 1 : buyTimingRegularity > 0.4 ? 0.5 : 0,      // metronome buys
+      zeroSellFlag > 0.5 ? 1 : buySellImbalance > 0.6 ? 0.7 : 0,                // no sells
+      singleWalletDominance > 0.5 ? 1 : holderConcentration > 0.6 ? 0.5 : 0,    // concentrated
+      smoothGrindScore > 0.4 ? 0.5 : staircaseScore > 0.3 ? 0.5 : 0,            // chart shape
+    ];
+    const signalCount = signals.filter(s => s > 0).length;
+    const signalSum = signals.reduce((a, b) => a + b, 0);
+    // 3+ signals = suspicious, 4+ = near certain
+    if (signalCount >= 4) {
+      devSelfPumpScore = Math.min(1, 0.7 + signalSum * 0.06);
+    } else if (signalCount >= 3) {
+      devSelfPumpScore = Math.min(0.8, 0.4 + signalSum * 0.08);
+    } else if (signalCount >= 2 && signalSum >= 1.5) {
+      // 2 strong signals (e.g., R²=0.9 + zero sells) = moderate concern
+      devSelfPumpScore = Math.min(0.5, 0.2 + signalSum * 0.1);
+    }
+  }
 
   // ── DEV CREDIBILITY SCORE ──
   // Fresh name (never launched before) + first-time dev + dev holding SOL = high trust
