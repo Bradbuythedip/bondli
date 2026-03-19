@@ -27,6 +27,10 @@ import SessionStore from "../db/session-store.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
 import { scoreToken } from "../engine/velocity-scorer.mjs";
 
+// Memetic trading pipeline
+import { MemeticPipeline } from "../engine/memetic-pipeline.mjs";
+import { scheduleRetraining } from "../scoring/memetic/learning-pipeline.js";
+
 // Intelligence — meme scoring, score dynamics, artwork originality
 import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
 import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
@@ -131,6 +135,7 @@ app.use((req, res, next) => {
 // ═══════════════════════════════════════
 let sessionStore, paymentVerifier, sessionManager, movers;
 let intel, scoreDynamics, artworkScanner, metaTracker;
+let memeticPipeline = null;
 const orch = new Orchestrator();
 
 async function initServices() {
@@ -1690,6 +1695,38 @@ app.use((err, req, res, next) => {
 });
 
 // ═══════════════════════════════════════
+// MEMETIC PIPELINE API
+// ═══════════════════════════════════════
+app.get("/api/memetic/stats", (req, res) => {
+  if (!memeticPipeline) return res.json({ status: "offline" });
+  res.json(memeticPipeline.getStats());
+});
+
+app.get("/api/memetic/score/:tokenAddress", async (req, res) => {
+  try {
+    const { scoreMemeticAll } = await import("../scoring/memetic/index.js");
+    const result = await scoreMemeticAll({
+      tokenAddress: req.params.tokenAddress,
+      name: req.query.name || "",
+      symbol: req.query.symbol || "",
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/memetic/retrain", async (req, res) => {
+  try {
+    const { runRetraining } = await import("../scoring/memetic/learning-pipeline.js");
+    const result = await runRetraining();
+    res.json(result || { message: "Not enough data" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════
 // WEBSOCKET
 // ═══════════════════════════════════════
 const server = createServer(app);
@@ -1722,6 +1759,32 @@ async function start() {
   try {
     await initServices();
     app.use(createPaymentRoutes(paymentVerifier));
+
+    // Initialize memetic trading pipeline
+    try {
+      memeticPipeline = new MemeticPipeline({
+        dryRun: CONFIG.DRY_RUN,
+        alchemyApiKey: process.env.ALCHEMY_API_KEY,
+      });
+
+      // Pipe memetic events to WebSocket clients
+      const pipelineEvents = ['token_detected', 'token_scored', 'token_filtered', 'position_entered', 'position_update', 'position_exited', 'graduation'];
+      for (const event of pipelineEvents) {
+        memeticPipeline.on(event, (data) => {
+          const str = JSON.stringify({ type: event, ...data });
+          wss.clients.forEach(ws => {
+            if (ws.readyState === 1) { try { ws.send(str); } catch {} }
+          });
+        });
+      }
+
+      await memeticPipeline.start();
+      scheduleRetraining();
+      console.log("  \x1b[36mMemetic Pipeline: ACTIVE\x1b[0m");
+    } catch (e) {
+      console.error("  Memetic Pipeline failed to start:", e.message);
+    }
+
     server.listen(PORT, () => {
       const wl = getWhitelist();
       console.log("");

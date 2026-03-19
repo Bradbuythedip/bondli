@@ -24,6 +24,7 @@
     "generate:secrets": "node -e \"const c=require('crypto');console.log('JWT_SECRET='+c.randomBytes(32).toString('hex'));console.log('API_SECRET='+c.randomBytes(32).toString('hex'));console.log('FEE_SALT='+c.randomBytes(8).toString('hex'));console.log('REDIS_PASSWORD='+c.randomBytes(24).toString('hex'))\""
   },
   "dependencies": {
+    "alchemy-sdk": "^3.4.0",
     "@pump-fun/pump-sdk": "^1.29.0",
     "@solana/spl-token": "^0.4.0",
     "@solana/web3.js": "^1.91.0",
@@ -35,6 +36,7 @@
     "express": "^4.18.0",
     "node-fetch": "^3.3.0",
     "redis": "^4.6.0",
+    "sharp": "^0.33.0",
     "ws": "^8.16.0"
   },
   "engines": {

@@ -4,6 +4,7 @@ import{M,S,API,WS_URL}from"./lib/c.js";
 import{hW,wN,fm,fs,tp,dbp,wc,hp}from"./lib/u.js";
 import{useSolPrice}from"./hooks/useSolPrice.js";
 import a from"./lib/a.js";
+import MemeticRadar from"./MemeticRadar.jsx";
 const uM=()=>{const[m,s]=useState(()=>typeof window!=="undefined"&&window.innerWidth<700);useEffect(()=>{const q=window.matchMedia("(max-width:700px)");const h=e=>s(e.matches);q.addEventListener("change",h);s(q.matches);return()=>q.removeEventListener("change",h)},[]);return m};
 class EB extends Component{constructor(p){super(p);this.state={e:null}}static getDerivedStateFromError(e){return{e}}render(){if(this.state.e)return<div style={{padding:12,margin:6,borderRadius:8,background:"#ff174406",textAlign:"center"}}><span style={{fontFamily:M,fontSize:15,color:"#ff1744"}}>{this.props.l} error </span><button onClick={()=>this.setState({e:null})} style={{marginLeft:6,padding:"4px 12px",borderRadius:5,background:"none",border:"1px solid #ff174422",color:"#ff1744",fontFamily:M,fontSize:13,cursor:"pointer"}}>retry</button></div>;return this.props.children}}
 
@@ -715,7 +716,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 </div>
 </div></EB>
 :<>
-{!mb&&<div style={{display:"flex",margin:0,overflow:"hidden",background:T.bg,borderBottom:"1px solid "+T.bd,position:"sticky",top:0,zIndex:19,backdropFilter:"blur(10px)"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim}].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);window.scrollTo({top:0,behavior:"smooth"})}} style={{flex:1,padding:"12px 0",background:ac?T.gn+"08":"transparent",borderBottom:ac?"2px solid "+T.gn:"2px solid transparent",border:"none",fontSize:16,fontWeight:ac?800:500,color:ac?T.gn:T.dm,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}><t.ic s={16} c={ac?T.gn:T.dm}/>{t.l}</button>})}</div>}
+{!mb&&<div style={{display:"flex",margin:0,overflow:"hidden",background:T.bg,borderBottom:"1px solid "+T.bd,position:"sticky",top:0,zIndex:19,backdropFilter:"blur(10px)"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},{id:"memetic",l:"Memetic",ic:IC.brain}].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);window.scrollTo({top:0,behavior:"smooth"})}} style={{flex:1,padding:"12px 0",background:ac?T.gn+"08":"transparent",borderBottom:ac?"2px solid "+T.gn:"2px solid transparent",border:"none",fontSize:16,fontWeight:ac?800:500,color:ac?T.gn:T.dm,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}><t.ic s={16} c={ac?T.gn:T.dm}/>{t.l}</button>})}</div>}
 <div id="tc" style={{padding:mb?"0 6px 6px":"0 16px 16px",marginTop:mb?4:8,scrollMarginTop:50}}>
 
 {tab==="radar"&&<EB l="Radar"><div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden",animation:"si .2s ease"}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"7px 10px",borderBottom:"1px solid "+T.bd}}><div style={{display:"flex",alignItems:"center",gap:5}}><IC.radar s={16} c={T.gn}/><span style={{fontSize:15,fontWeight:800}}>Radar</span><span style={{width:6,height:6,borderRadius:"50%",background:rEnabled?T.gn:T.rd}}/><span style={{fontSize:13,color:T.ft}}>{rPool}</span>{online>0&&<span style={{fontSize:11,color:T.gn+"66"}}>{online} online</span>}</div><div style={{display:"flex",gap:3}}><button onClick={()=>{sRL(true);a.gr().then(d=>{if(d.tabs)sRT(d.tabs);if(d.poolSize!=null)sRP(d.poolSize);sRL(false)}).catch(()=>sRL(false))}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:5,padding:"4px 9px",cursor:"pointer",fontSize:14,color:T.dm}}>↻</button><button onClick={()=>sRE(!rEnabled)} style={{background:rEnabled?T.gn+"08":T.rd+"08",border:"1px solid "+(rEnabled?T.gn:T.rd)+"18",borderRadius:5,padding:"4px 10px",cursor:"pointer",fontSize:12,fontWeight:700,color:rEnabled?T.gn:T.rd}}>{rEnabled?"ON":"OFF"}</button></div></div>
@@ -1909,6 +1910,8 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 
 </div></EB>}
 
+{/* MEMETIC TAB — Memetic Physics Radar */}
+{tab==="memetic"&&<EB l="Memetic"><MemeticRadar apiBase={API}/></EB>}
 
 </div></>}
 
@@ -1922,7 +1925,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 </div></div>}
 
 {mb&&!launched&&<div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:15,background:T.bg+"f6",backdropFilter:"blur(10px)",borderTop:"1px solid "+T.bd,paddingBottom:"max(2px,env(safe-area-inset-bottom,2px))"}}>
-<div style={{display:"flex"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim}].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"8px 0 4px",background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"pointer"}}><t.ic s={20} c={ac?T.gn:T.ft}/><span style={{fontSize:11,fontWeight:ac?700:400,color:ac?T.gn:T.ft}}>{t.l}</span></button>})}</div>
+<div style={{display:"flex"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},{id:"memetic",l:"Memetic",ic:IC.brain}].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"8px 0 4px",background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"pointer"}}><t.ic s={20} c={ac?T.gn:T.ft}/><span style={{fontSize:11,fontWeight:ac?700:400,color:ac?T.gn:T.ft}}>{t.l}</span></button>})}</div>
 <div style={{textAlign:"center",padding:"2px 0 4px"}}><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:3,color:T.dm,textDecoration:"none",fontSize:10}}><IC.tw s={10} c={T.dm}/>@Bondlifun</a></div>
 </div>}
 {!mb&&<footer style={{padding:"8px 16px",borderTop:"1px solid "+T.bd,marginTop:12,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:T.ft}}><span>BONDLI v4</span><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"flex",alignItems:"center",gap:4,color:T.dm,textDecoration:"none",fontSize:13,fontWeight:700}}><IC.tw s={16} c={T.dm}/>@Bondlifun</a><span>{launched?"ACTIVE":"IDLE"}</span></footer>}
