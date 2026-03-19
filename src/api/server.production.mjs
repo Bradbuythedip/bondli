@@ -6579,11 +6579,13 @@ app.get("/api/intel/stats", (req, res) => {
         if (tok._devCredData.devCredScore < 0.15) return false;
       }
       // Gate 6: chart pattern check — reject known bad patterns
-      const qf = tok ? extractQuickFeatures(tok) : null;
-      if (qf) {
-        if (qf._rg_pumpDump > 0.5 || qf.ch_flatlineSpike > 0.5) return false;
-        if (qf.ch_smoothGrind > 0.6) return false;
-      }
+      try {
+        const qf = tok ? extractQuickFeatures(tok) : null;
+        if (qf) {
+          if (qf._rg_pumpDump > 0.5 || qf.ch_flatlineSpike > 0.5) return false;
+          if (qf.ch_smoothGrind > 0.6) return false;
+        }
+      } catch {}
       return true;
     }).slice(0, 4).map(t => {
       const tok = radar.tokens.get(t.ca);
