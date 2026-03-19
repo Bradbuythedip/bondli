@@ -3023,7 +3023,7 @@ app.post("/api/quick-ape", async (req, res) => {
           amount: solAmount, denominatedInSol: "true",
           slippage: apeSlippage, priorityFee: apePriorityFee, pool,
         }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(5000),
       });
       if (!response.ok) throw new Error(`${response.status}`);
       const txBytes = await response.arrayBuffer();
@@ -3034,10 +3034,10 @@ app.post("/api/quick-ape", async (req, res) => {
       return { sig: txSig, method: `pumpportal:${pool}` };
     };
 
-    // Race all strategies in parallel
+    // Race all strategies — first success wins (Promise.any pattern)
     const pools = isGraduated ? ["auto", "raydium"] : ["pump", "auto"];
     const candidates = pools.map(pool =>
-      tryPPBuy(pool).catch(e => { errors.push(`PP:${pool}=${e.message.slice(0, 60)}`); return null; })
+      tryPPBuy(pool).catch(e => { errors.push(`PP:${pool}=${e.message.slice(0, 60)}`); throw e; })
     );
 
     // For graduated tokens, also race Jupiter in parallel
@@ -3052,7 +3052,7 @@ app.post("/api/quick-ape", async (req, res) => {
             inputMint: "So11111111111111111111111111111111111111112",
             outputMint: ca, amount: solLamports, taker: tw.pubkey,
           }),
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(5000),
         });
         if (!orderResp.ok) throw new Error(`order:${orderResp.status}`);
         const order = await orderResp.json();
@@ -3064,19 +3064,19 @@ app.post("/api/quick-ape", async (req, res) => {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ signedTransaction: rawTx, requestId: order.requestId }),
-          signal: AbortSignal.timeout(10000),
+          signal: AbortSignal.timeout(6000),
         });
         if (!execResp.ok) throw new Error(`exec:${execResp.status}`);
         const execResult = await execResp.json();
         if (execResult.signature || execResult.txid) return { sig: execResult.signature || execResult.txid, method: "jupiter-ultra" };
         throw new Error("no_sig");
-      })().catch(e => { errors.push(`JUP-Ultra=${e.message.slice(0, 60)}`); return null; }));
+      })().catch(e => { errors.push(`JUP-Ultra=${e.message.slice(0, 60)}`); throw e; }));
 
       // Jupiter v6
       candidates.push((async () => {
         const quoteResp = await fetch(
           `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${ca}&amount=${solLamports}&slippageBps=2500`,
-          { signal: AbortSignal.timeout(6000) }
+          { signal: AbortSignal.timeout(4000) }
         );
         if (!quoteResp.ok) throw new Error(`quote:${quoteResp.status}`);
         const quote = await quoteResp.json();
@@ -3088,7 +3088,7 @@ app.post("/api/quick-ape", async (req, res) => {
             wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true,
             prioritizationFeeLamports: 10000,
           }),
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(5000),
         });
         if (!swapResp.ok) throw new Error(`swap:${swapResp.status}`);
         const { swapTransaction } = await swapResp.json();
@@ -3096,18 +3096,19 @@ app.post("/api/quick-ape", async (req, res) => {
         tx.sign([kp]);
         const txSig = await heliusSendRawTx(connection, tx.serialize());
         return { sig: txSig, method: "jupiter-v6" };
-      })().catch(e => { errors.push(`JUP-v6=${e.message.slice(0, 60)}`); return null; }));
+      })().catch(e => { errors.push(`JUP-v6=${e.message.slice(0, 60)}`); throw e; }));
     }
 
-    // Use first successful result from parallel race
-    const results = await Promise.allSettled(candidates);
-    for (const r of results) {
-      if (r.status === "fulfilled" && r.value?.sig) {
-        sig = r.value.sig;
-        method = r.value.method;
-        console.log(`[BUY] Parallel race winner: ${method} sig=${sig}`);
-        break;
+    // First successful route wins — don't wait for slower routes
+    try {
+      const winner = await Promise.any(candidates);
+      if (winner?.sig) {
+        sig = winner.sig;
+        method = winner.method;
+        console.log(`[BUY] Race winner: ${method} sig=${sig}`);
       }
+    } catch (aggErr) {
+      // All routes failed — errors already collected above
     }
 
     if (!sig) {
@@ -3182,7 +3183,7 @@ app.post("/api/quick-sell", async (req, res) => {
     let errors = []; // collect all errors for debugging
 
     // Helper: try a single PumpPortal pool sell
-    const tryPPSell = async (pool, slippage = 30, fee = 0.008, timeout = 8000) => {
+    const tryPPSell = async (pool, slippage = 30, fee = 0.008, timeout = 5000) => {
       const response = await fetch("https://pumpportal.fun/api/trade-local", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3214,7 +3215,7 @@ app.post("/api/quick-sell", async (req, res) => {
           inputMint: ca, outputMint: "So11111111111111111111111111111111111111112",
           amount: sellAmount, taker: tw.pubkey,
         }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(5000),
       });
       if (!orderResp.ok) throw new Error(`order:${orderResp.status}`);
       const order = await orderResp.json();
@@ -3227,7 +3228,7 @@ app.post("/api/quick-sell", async (req, res) => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ signedTransaction: rawTx, requestId: order.requestId }),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(6000),
       });
       if (!execResp.ok) throw new Error(`exec:${execResp.status}`);
       const execResult = await execResp.json();
@@ -3239,7 +3240,7 @@ app.post("/api/quick-sell", async (req, res) => {
     const tryJupV6Sell = async (sellAmount) => {
       const quoteResp = await fetch(
         `https://quote-api.jup.ag/v6/quote?inputMint=${ca}&outputMint=So11111111111111111111111111111111111111112&amount=${sellAmount}&slippageBps=3000`,
-        { signal: AbortSignal.timeout(6000) }
+        { signal: AbortSignal.timeout(4000) }
       );
       if (!quoteResp.ok) throw new Error(`quote:${quoteResp.status}`);
       const quote = await quoteResp.json();
@@ -3251,7 +3252,7 @@ app.post("/api/quick-sell", async (req, res) => {
           wrapAndUnwrapSol: true, dynamicComputeUnitLimit: true,
           prioritizationFeeLamports: 10000,
         }),
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(5000),
       });
       if (!swapResp.ok) throw new Error(`swap:${swapResp.status}`);
       const { swapTransaction } = await swapResp.json();
@@ -3265,27 +3266,28 @@ app.post("/api/quick-sell", async (req, res) => {
     const sellAmount = Math.round(tokenBalance * (pct / 100) * Math.pow(10, tokenDecimals));
     const pools = isGraduated ? ["auto", "raydium", "pump"] : ["pump", "auto"];
     const candidates = pools.map(pool =>
-      tryPPSell(pool).catch(e => { errors.push(`PP:${pool}=${e.message.slice(0, 60)}`); return null; })
+      tryPPSell(pool).catch(e => { errors.push(`PP:${pool}=${e.message.slice(0, 60)}`); throw e; })
     );
     // For graduated tokens, also race Jupiter in parallel
     if (isGraduated && sellAmount > 0) {
       candidates.push(
-        tryJupUltraSell(sellAmount).catch(e => { errors.push(`JUP-Ultra=${e.message.slice(0, 60)}`); return null; })
+        tryJupUltraSell(sellAmount).catch(e => { errors.push(`JUP-Ultra=${e.message.slice(0, 60)}`); throw e; })
       );
       candidates.push(
-        tryJupV6Sell(sellAmount).catch(e => { errors.push(`JUP-v6=${e.message.slice(0, 60)}`); return null; })
+        tryJupV6Sell(sellAmount).catch(e => { errors.push(`JUP-v6=${e.message.slice(0, 60)}`); throw e; })
       );
     }
 
-    // Use Promise.any-like: resolve with first success
-    const results = await Promise.allSettled(candidates);
-    for (const r of results) {
-      if (r.status === "fulfilled" && r.value?.sig) {
-        sig = r.value.sig;
-        method = r.value.method;
-        console.log(`[SELL] Parallel race winner: ${method} sig=${sig}`);
-        break;
+    // First successful route wins — don't wait for slower routes
+    try {
+      const winner = await Promise.any(candidates);
+      if (winner?.sig) {
+        sig = winner.sig;
+        method = winner.method;
+        console.log(`[SELL] Race winner: ${method} sig=${sig}`);
       }
+    } catch (aggErr) {
+      // All routes failed — errors already collected above
     }
 
     // Fallback: Direct amount-based sell for dust/dead tokens

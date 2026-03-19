@@ -52,34 +52,47 @@ export async function getOptimalPriorityFee(accountKeys = []) {
 
 // Send transaction via Helius smart transaction API (auto-retry, optimized landing)
 // Falls back to standard sendRawTransaction if smart tx not available
+// Retries up to 2 times with short backoff for transient network failures
 export async function heliusSmartSend(connection, serializedTx, opts = {}) {
-  // Try Helius staked sendTransaction endpoint first
+  const base58Tx = bs58.encode(serializedTx);
+  const MAX_RETRIES = 2;
+
+  // Try Helius staked sendTransaction endpoint with retry
   if (CONFIG.HELIUS_SEND_TX_URL) {
-    try {
-      const base58Tx = bs58.encode(serializedTx);
-      const res = await fetch(CONFIG.HELIUS_SEND_TX_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0", id: 1,
-          method: "sendTransaction",
-          params: [base58Tx, {
-            skipPreflight: true,
-            encoding: "base58",
-            maxRetries: 5,
-            // Helius enhanced options
-            ...(CONFIG.HELIUS_SMART_TX ? { preflightCommitment: "confirmed" } : {}),
-          }],
-        }),
-        signal: AbortSignal.timeout(12000),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.result) return data.result;
-        if (data.error) console.warn(`[HELIUS-TX] Error: ${JSON.stringify(data.error)}`);
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const res = await fetch(CONFIG.HELIUS_SEND_TX_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0", id: 1,
+            method: "sendTransaction",
+            params: [base58Tx, {
+              skipPreflight: true,
+              encoding: "base58",
+              maxRetries: 5,
+              ...(CONFIG.HELIUS_SMART_TX ? { preflightCommitment: "confirmed" } : {}),
+            }],
+          }),
+          signal: AbortSignal.timeout(8000),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.result) return data.result;
+          if (data.error) {
+            // Non-retryable RPC errors (bad tx, insufficient funds, etc)
+            const errMsg = JSON.stringify(data.error);
+            if (errMsg.includes("insufficient") || errMsg.includes("Blockhash not found")) {
+              console.warn(`[HELIUS-TX] Non-retryable: ${errMsg}`);
+              break;
+            }
+            console.warn(`[HELIUS-TX] Error (attempt ${attempt + 1}): ${errMsg}`);
+          }
+        }
+      } catch (e) {
+        console.warn(`[HELIUS-TX] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${e.message}`);
       }
-    } catch (e) {
-      console.warn(`[HELIUS-TX] Smart send failed, falling back: ${e.message}`);
+      if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
     }
   }
 

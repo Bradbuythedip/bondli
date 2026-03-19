@@ -1,6 +1,6 @@
 import{API}from"./c.js";
 class A{constructor(){this.w=null}sw(w){this.w=w}
-async f(p,o={}){const h={"Content-Type":"application/json"};if(this.w){h["X-Wallet"]=this.w;h["x-wallet"]=this.w}const r=await fetch(API+p,{headers:h,...o,body:o.body?JSON.stringify(o.body):undefined});if(!r.ok){const e=await r.json().catch(()=>({error:r.statusText}));throw new Error(e.error||`API ${r.status}`)}return r.json()}
+async f(p,o={}){const h={"Content-Type":"application/json"};if(this.w){h["X-Wallet"]=this.w;h["x-wallet"]=this.w}const r=await fetch(API+p,{headers:h,...o,body:o.body?JSON.stringify(o.body):undefined,signal:o.signal||AbortSignal.timeout(o.timeout||20000)});if(!r.ok){const e=await r.json().catch(()=>({error:r.statusText}));throw new Error(e.error||`API ${r.status}`)}return r.json()}
 chk(w){return this.f(`/api/access/check?wallet=${w}`)}
 afr(w){return this.f("/api/access/activate-free",{method:"POST",body:{wallet:w}})}
 apr(w,t){return this.f("/api/access/activate-pro",{method:"POST",body:{wallet:w,txSig:t}})}
@@ -21,8 +21,8 @@ fr(s,w){return this.f("/api/session/force-recover",{method:"POST",body:{sessionI
 gtw(w){return this.f(`/api/trading-wallet/${w}`)}
 ctw(w){return this.f("/api/trading-wallet/create",{method:"POST",body:{wallet:w}})}
 etw(w){return this.f("/api/trading-wallet/export",{method:"POST",body:{wallet:w}})}
-qb(w,c,s,slip,tip){return this.f("/api/quick-ape",{method:"POST",body:{wallet:w,ca:c,solAmount:s,...(slip!=null?{slippage:slip}:{}),...(tip!=null?{priorityFee:tip}:{})}})}
-qs(w,c,p){return this.f("/api/quick-sell",{method:"POST",body:{wallet:w,ca:c,percent:p}})}
+qb(w,c,s,slip,tip){return this.f("/api/quick-ape",{method:"POST",timeout:15000,body:{wallet:w,ca:c,solAmount:s,...(slip!=null?{slippage:slip}:{}),...(tip!=null?{priorityFee:tip}:{})}})}
+qs(w,c,p){return this.f("/api/quick-sell",{method:"POST",timeout:15000,body:{wallet:w,ca:c,percent:p}})}
 sa(w){return this.f("/api/sell-all",{method:"POST",body:{wallet:w}})}
 gp(w){return this.f(`/api/positions/${w}`)}
 gfs(){return this.f("/api/fleet")}
