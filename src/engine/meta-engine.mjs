@@ -102,6 +102,13 @@ class MetaTracker {
     this._lastSummary = null;
     this._lastSummaryTime = 0;
 
+    // ── NARRATIVE ACCELERATION ──
+    // Tracks heat snapshots over time to detect ACCELERATION
+    // Key insight: the 3rd and 4th token in an emerging wave are the outliers.
+    // We want to detect when a narrative is getting hotter, not just hot.
+    this._heatHistory = new Map();  // narrative_id → [{ time, heat }]
+    this._accelCache = new Map();   // narrative_id → { accel, velocity, updatedAt }
+
     // Initialize all narratives
     for (const n of NARRATIVES) {
       this.narratives.set(n.id, { events: [], gradCount1h: 0, gradCount6h: 0, totalCount1h: 0, totalCount6h: 0 });
@@ -235,6 +242,20 @@ class MetaTracker {
     results.sort((a, b) => b.heat - a.heat);
     this._lastSummary = results;
     this._lastSummaryTime = now;
+
+    // Update acceleration data from heat history
+    this._updateAcceleration();
+
+    // Enrich results with acceleration data
+    for (const r of results) {
+      const accel = this._accelCache.get(r.id);
+      if (accel) {
+        r.velocity = accel.velocity;
+        r.acceleration = accel.acceleration;
+        r.wavePosition = accel.wavePosition;
+      }
+    }
+
     return results;
   }
 
@@ -267,7 +288,29 @@ class MetaTracker {
     // Extra boost if this narrative is THE dominant meta (top by >2x)
     const dominanceBoost = (rank === 0 && topHeat > 0.15 && thisHeat > (summary[1]?.heat || 0) * 2) ? 5 : 0;
 
-    const boost = Math.min(25, Math.round(rawBoost + dominanceBoost));
+    // ═══ NARRATIVE ACCELERATION BONUS ═══
+    // Detecting WHEN a narrative is accelerating is the key to finding outliers.
+    // The 3rd-4th token in an emerging wave = highest alpha. By token 6+ it's crowded.
+    const accel = this.getNarrativeAccel(classification.primary);
+    let accelBoost = 0;
+    if (accel.acceleration > 0 && accel.velocity > 0) {
+      // Narrative is accelerating — wave is building
+      if (accel.wavePosition <= 2) {
+        // EARLY WAVE: first 1-2 grads in this narrative. Maximum alpha.
+        accelBoost = Math.min(15, Math.round(accel.acceleration * 5000 + accel.velocity * 2000));
+      } else if (accel.wavePosition <= 4) {
+        // MID WAVE: 3-4 grads. Still good but diminishing.
+        accelBoost = Math.min(10, Math.round(accel.acceleration * 3000 + accel.velocity * 1000));
+      } else {
+        // LATE WAVE: 5+ grads. Crowded trade, reduce boost.
+        accelBoost = Math.max(-5, Math.min(3, Math.round(accel.acceleration * 1000)));
+      }
+    } else if (accel.velocity < 0 && accel.wavePosition > 3) {
+      // Narrative is DECELERATING and crowded — slight penalty
+      accelBoost = Math.max(-8, Math.round(accel.velocity * 1000));
+    }
+
+    const boost = Math.min(30, Math.round(rawBoost + dominanceBoost + accelBoost));
 
     return {
       boost,
@@ -277,8 +320,81 @@ class MetaTracker {
       rank,
       confidence: narrResult.confidence,
       gradRate1h: narrResult.gradRate1h,
-      reason: boost > 10 ? "hot_meta" : boost > 5 ? "warm_meta" : boost > 0 ? "mild_meta" : "cold_meta",
+      accelBoost,
+      wavePosition: accel.wavePosition,
+      narrativeVelocity: accel.velocity,
+      narrativeAcceleration: accel.acceleration,
+      reason: accelBoost >= 8 ? "wave_building" : boost > 10 ? "hot_meta" : boost > 5 ? "warm_meta" : boost > 0 ? "mild_meta" : "cold_meta",
     };
+  }
+
+  // ── NARRATIVE ACCELERATION — detect waves getting hotter ──
+  // Called internally by getSummary. Snapshots heat every 60s and computes
+  // velocity (dH/dt) and acceleration (d²H/dt²).
+  _updateAcceleration() {
+    const now = Date.now();
+    const summary = this._lastSummary;
+    if (!summary) return;
+
+    for (const entry of summary) {
+      const id = entry.id;
+
+      // Initialize history
+      if (!this._heatHistory.has(id)) this._heatHistory.set(id, []);
+      const history = this._heatHistory.get(id);
+
+      // Snapshot heat every ~60s (don't spam)
+      if (history.length === 0 || now - history[history.length - 1].time > 55000) {
+        history.push({ time: now, heat: entry.heat, grads: entry.graduated1h });
+        // Keep last 30 snapshots (~30 minutes of history)
+        if (history.length > 30) history.shift();
+      }
+
+      // Need at least 3 points for acceleration
+      if (history.length < 3) {
+        this._accelCache.set(id, { velocity: 0, acceleration: 0, wavePosition: 0, updatedAt: now });
+        continue;
+      }
+
+      // Velocity: average change in heat over last 5 snapshots
+      const recent = history.slice(-5);
+      let totalDelta = 0;
+      for (let i = 1; i < recent.length; i++) {
+        const dt = (recent[i].time - recent[i - 1].time) / 60000; // minutes
+        if (dt > 0) totalDelta += (recent[i].heat - recent[i - 1].heat) / dt;
+      }
+      const velocity = totalDelta / (recent.length - 1);
+
+      // Acceleration: change in velocity over longer window
+      const older = history.slice(-10, -5);
+      let olderDelta = 0;
+      if (older.length >= 2) {
+        for (let i = 1; i < older.length; i++) {
+          const dt = (older[i].time - older[i - 1].time) / 60000;
+          if (dt > 0) olderDelta += (older[i].heat - older[i - 1].heat) / dt;
+        }
+        olderDelta /= (older.length - 1);
+      }
+      const acceleration = velocity - olderDelta;
+
+      // Wave position: how many graduated tokens in this narrative in last 30 min?
+      // Position 1-2 = early wave (highest alpha), 3-5 = mid wave, 6+ = late (crowded)
+      const cutoff30m = now - 30 * 60 * 1000;
+      const narr = this.narratives.get(id);
+      const waveGrads = narr ? narr.events.filter(e => e.time > cutoff30m && e.graduated && !e.sighting).length : 0;
+
+      this._accelCache.set(id, {
+        velocity: +velocity.toFixed(6),
+        acceleration: +acceleration.toFixed(6),
+        wavePosition: waveGrads,
+        updatedAt: now,
+      });
+    }
+  }
+
+  // ── Get narrative acceleration data for a specific narrative ──
+  getNarrativeAccel(narrativeId) {
+    return this._accelCache.get(narrativeId) || { velocity: 0, acceleration: 0, wavePosition: 0 };
   }
 
   // ── Get the current dominant meta (for UI display) ──
