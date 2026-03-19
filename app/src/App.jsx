@@ -227,7 +227,7 @@ return<svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
 // ═══ TOKEN DETAIL — full inspection panel ═══
 function TokenDetail({t,T,mb,trB,buying,selling,sBuy,sSell,quickBuy,quickSell,toast,held,onClose,solP,rCustomBuy,sRCB}){
 const isH=held.has(t.ca);
-const[memeData,setMemeData]=useState(null);const[memeLoading,setMemeLoading]=useState(false);
+const[memeData,setMemeData]=useState(null);const[memeLoading,setMemeLoading]=useState(false);const[memeOpen,setMemeOpen]=useState(false);
 useEffect(()=>{if(!t.ca)return;setMemeData(null);setMemeLoading(true);fetch(API+"/api/memetic-score/"+t.ca).then(r=>r.ok?r.json():null).then(d=>{setMemeData(d);setMemeLoading(false)}).catch(()=>setMemeLoading(false))},[t.ca]);
 useEffect(()=>{const h=e=>{if(e.key==="Escape")onClose()};window.addEventListener("keydown",h);return()=>window.removeEventListener("keydown",h)},[onClose]);
 const SL=({href,icon:Ic,label})=>href?<a href={href} target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:5,padding:"7px 12px",background:T.bg,border:"1px solid "+T.bd,borderRadius:5,fontSize:14,color:T.md,textDecoration:"none",fontWeight:600}}><Ic s={14} c={T.md}/>{label}</a>:null;
@@ -275,9 +275,20 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 </div>
 <span style={{fontSize:14,fontWeight:900,color:t.memeticScore>=0.7?T.gn:t.memeticScore>=0.5?T.yl:"#ff4444"}}>{Math.round(t.memeticScore*100)}</span>
 </div>}
-{/* ═══ MEMETIC SPIDER CHART — full 7-module breakdown ═══ */}
-{memeLoading&&<div style={{padding:12,textAlign:"center"}}><Sp s={12}/></div>}
-{memeData&&memeData.moduleScores&&<div style={{borderBottom:"1px solid "+T.bd}}>
+{/* Chart — canvas candlestick with OHLC + volume (FIRST) */}
+<CandleChart ca={t.ca} T={T} mb={mb}/>
+{/* ═══ MEMETIC TOGGLE BUTTON ═══ */}
+<div style={{borderTop:"1px solid "+T.bd,borderBottom:memeOpen?"none":"1px solid "+T.bd}}>
+<button onClick={()=>setMemeOpen(o=>!o)} style={{width:"100%",padding:"7px 14px",background:"none",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
+<span style={{fontSize:11,fontWeight:800,color:T.pu||"#b388ff",letterSpacing:".5px"}}>MEMETIC</span>
+{memeData&&<span style={{fontSize:12,fontWeight:900,color:ARCH_COLORS[memeData.archetype]||T.dm}}>{Math.round((memeData.score||0)*100)}</span>}
+{memeData&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:3,background:(ARCH_COLORS[memeData.archetype]||T.dm)+"18",color:ARCH_COLORS[memeData.archetype]||T.dm,fontWeight:700}}>{ARCH_LABELS[memeData.archetype]||"?"}</span>}
+{memeLoading&&<Sp s={10}/>}
+<span style={{marginLeft:"auto",fontSize:10,color:T.dm,transition:"transform .2s",transform:memeOpen?"rotate(180deg)":"rotate(0)"}}>{"\u25BC"}</span>
+</button>
+</div>
+{/* ═══ MEMETIC SPIDER CHART — collapsible ═══ */}
+{memeOpen&&memeData&&memeData.moduleScores&&<div style={{borderBottom:"1px solid "+T.bd}}>
 {/* Archetype + composite score */}
 <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px"}}>
 <div style={{fontSize:28,fontWeight:900,color:ARCH_COLORS[memeData.archetype]||T.dm,fontFamily:M,lineHeight:1}}>{Math.round((memeData.score||0)*100)}</div>
@@ -303,8 +314,6 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 <span style={{color:T.yl,fontWeight:800}}>×{(b.multiplier||1).toFixed(2)}</span>
 </div>)}</div>}
 </div>}
-{/* Chart — canvas candlestick with OHLC + volume */}
-<CandleChart ca={t.ca} T={T} mb={mb}/>
 {/* CA copy */}
 <div style={{padding:"5px 14px",borderTop:"1px solid "+T.bd,display:"flex",alignItems:"center",gap:4}}>
 <button onClick={()=>{navigator.clipboard?.writeText(t.ca);toast("Copied","success")}} style={{padding:"5px 8px",background:"none",border:"1px solid "+T.bd,borderRadius:4,fontSize:13,color:T.ft,cursor:"pointer",display:"flex",alignItems:"center",gap:4}}><IC.copy s={12}/>{t.ca}</button>
