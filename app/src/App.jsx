@@ -1062,6 +1062,10 @@ const modActive=id=>{const m=mods.find(x=>x.id===id);return m?.status==="active"
 const hasLearner=(autoTrade?.learner?.totalTrades||0)>0;
 const hasGradWatch=(intelData?.gradWatch?.count||0)>0;
 const hasPatterns=(chartPatterns?.total||0)>0;
+const actSmart=(intelData?.smartMoney?.signals?.length||0)>0;
+const actArt=modActive("artwork_scanner")>0||modActive("scorer")>0;
+const actGame=modActive("scorer")>0;
+const hasSurv=(intelData?.survivor?.matched||0)>0;
 /* Bezier curve helper: creates smooth S-curve between two points */
 const bezier=(a,b)=>{const dx=b.x-a.x;const dy=b.y-a.y;if(Math.abs(dy)>Math.abs(dx)){const cy1=a.y+dy*0.4;const cy2=b.y-dy*0.4;return`M${a.x} ${a.y} C${a.x} ${cy1},${b.x} ${cy2},${b.x} ${b.y}`}const cx1=a.x+dx*0.4;const cx2=b.x-dx*0.4;return`M${a.x} ${a.y} C${cx1} ${a.y},${cx2} ${b.y},${b.x} ${b.y}`};
 /* SVG dimensions — expanded for full brain map */
@@ -1185,7 +1189,7 @@ return<path key={"dw"+i} d={`M${from.x} ${from.y} C${from.x} ${from.y+16},${nt(o
 
 {/* ── LIT WIRES + PARTICLES (particles on mobile only — desktop gets clean glowing wires) ── */}
 {(()=>{
-const actPump=modActive("pumpportal")>0;const actScore=modActive("scorer")>0;const actSocial=fh.socialSignals>.1;const actRug=fh.rugRisk>.05;const actSmart=(intelData?.smartMoney?.signals?.length||0)>0;const actArt=modActive("artwork_scanner")>0||actScore;const actGame=actScore;const hasSurv=(intelData?.survivor?.matched||0)>0;
+const actPump=modActive("pumpportal")>0;const actScore=modActive("scorer")>0;const actSocial=fh.socialSignals>.1;const actRug=fh.rugRisk>.05;
 const fbOff=mb?35:80;
 const l2sPath=`M${nl(learner).x} ${nl(learner).y} C${nl(learner).x-20} ${nl(learner).y},${nl(learner).x-20} ${nb(score).y+nh+8},${nb(score).x} ${nb(score).y}`;
 const p2rPath=`M${nr(patterns).x} ${nr(patterns).y} C${nr(patterns).x+fbOff} ${nr(patterns).y},${nr(rugd).x+fbOff} ${nr(rugd).y},${nr(rugd).x} ${nr(rugd).y}`;
