@@ -47,6 +47,7 @@ import SurvivorshipBias from "../engine/survivorship-bias.mjs";
 import { SmartMoneyTracker } from "../engine/smart-money-tracker.mjs";
 import { DevWalletTracker } from "../engine/dev-wallet-tracker.mjs";
 import { scoreMemeticQuick, scoreTokenMemetic, loadBlacklists as loadMemeticBlacklists, startMemeticWorkers } from "../engine/memetic-pipeline.mjs";
+import { runPipeline, runExitChecks, classifyConfidence, calculatePositionSize, createExitPlan, checkPostExitReentry, checkDipDCA } from "../autoape/pipeline.js";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -3938,6 +3939,32 @@ function startAutoTrader(wallet, settings) {
 
         const s = { ...state.settings };
 
+        // ═══ TIER-AWARE TP/SL ADJUSTMENT ═══
+        // Tier 1 (GOD_CANDLE): wider stops, higher TPs — let runners run
+        // Tier 3 (SPECULATIVE): tighter stops, lower TPs — take money fast
+        const posTier = pos.tier || 2;
+        if (posTier === 1) {
+          s.sl1 = Math.round(s.sl1 * 1.3); s.sl2 = Math.round(s.sl2 * 1.3);
+          s.tp1 = Math.round(s.tp1 * 1.3); s.tp2 = Math.round(s.tp2 * 1.3); s.tp3 = Math.round(s.tp3 * 1.3);
+        } else if (posTier === 3) {
+          s.sl1 = Math.round(s.sl1 * 0.8); s.sl2 = Math.round(s.sl2 * 0.8);
+          s.tp1 = Math.round(s.tp1 * 0.85); s.tp2 = Math.round(s.tp2 * 0.75);
+          s.tp3 = 0; // Tier 3 never holds for moonshot
+        }
+        // Max hold time enforcement (tier-dependent)
+        const MAX_HOLDS_MS = { 1: 30 * 60000, 2: 15 * 60000, 3: 10 * 60000 };
+        const holdTime = Date.now() - (pos.entryTime || Date.now());
+        if (holdTime > (MAX_HOLDS_MS[posTier] || 15 * 60000) && changePct < 20 && !pos.isMoonbag) {
+          log(`MAX HOLD ${ca.slice(0,6)}: T${posTier} ${Math.round(holdTime/60000)}min +${changePct.toFixed(0)}% — FULL SELL`);
+          const sig = await execSell(ca, 100, kp, "max-hold-" + posTier);
+          if (sig) {
+            broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "MAX_HOLD", reason: `T${posTier}-${Math.round(holdTime/60000)}min` } });
+            exitPosition(ca, 100, "max-hold");
+            trackSell(wallet, ca);
+          }
+          continue;
+        }
+
         // ── Apply learner-driven TP/SL adjustments ──
         const adj = tradeLearner.getAdjustments();
         if (adj.tpMultiplier) { s.tp1 = Math.round(s.tp1 * adj.tpMultiplier); s.tp2 = Math.round(s.tp2 * adj.tpMultiplier); s.tp3 = Math.round(s.tp3 * adj.tpMultiplier); }
@@ -4753,6 +4780,56 @@ function startAutoTrader(wallet, settings) {
         return true;
       }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
 
+      // ═══ 5-GATE PIPELINE ENRICHMENT — classify confidence tier for each candidate ═══
+      // Runs the full gate pipeline on scored candidates to assign tiers and exit plans.
+      // Portfolio constraints are built from current state.
+      const _portfolioSnapshot = {
+        activePositionCount: state.positions.size,
+        maxPositions: state.settings.maxPositions,
+        positionsLast10m: state._positionsLast10m || 0,
+        availableSOL: 0, // filled per-candidate in entry loop
+        totalBankroll: 0,
+        drawdownMult: state.drawdownMult,
+        consecutiveLosses: state._consecutiveLosses || 0,
+        lastLossTime: state._lastLossTime || 0,
+        solPerTrade: state.settings.solPerTrade,
+        settings: state.settings,
+        activePositions: [...state.positions.entries()].map(([ca, p]) => ({
+          ca, devWallet: radar.tokens.get(ca)?.devWallet, archetype: p.archetype,
+        })),
+      };
+      // Track entries in last 10 min
+      if (!state._entryTimestamps) state._entryTimestamps = [];
+      state._entryTimestamps = state._entryTimestamps.filter(t => Date.now() - t < 600000);
+      state._positionsLast10m = state._entryTimestamps.length;
+      _portfolioSnapshot.positionsLast10m = state._positionsLast10m;
+
+      for (const t of hot) {
+        const qf = extractQuickFeatures(t);
+        const dyn = scoreDynamics.get(t.ca);
+        const scores = {
+          apeScore: t._apeScore || 0,
+          scoreTimestamp: Date.now(),
+          pricePhase: t._pricePhase,
+          buyVelTrend: t._buyVelTrend,
+          rugFlagCount: t._rugFlags?.length || 0,
+        };
+        const pipeResult = runPipeline(t, qf, scores, dyn, _portfolioSnapshot);
+        t._pipelineTier = pipeResult.tier;
+        t._pipelineLabel = pipeResult.tierLabel;
+        t._pipelineDecision = pipeResult.decision;
+        t._pipelineRejectGate = pipeResult.rejectGate;
+        t._pipelineRejectReason = pipeResult.rejectReason;
+        t._pipelineExitPlan = pipeResult.exitPlan;
+        t._pipelineSizing = pipeResult.positionSize;
+        t._pipelineTiming = pipeResult.timing;
+      }
+      // Track tier distribution
+      if (!state._pipelineStats) state._pipelineStats = { lastLog: 0, nearMisses: [], rugRejects: [], skippedGreen: [], cycles: 0, lastPipeline: null };
+      const _tierDist = { 1: 0, 2: 0, 3: 0, 4: 0, 0: 0 };
+      for (const t of hot) _tierDist[t._pipelineTier || 0]++;
+      state._pipelineStats.tierDistribution = _tierDist;
+
       // ── PIPELINE DECISION LOG — shows what's happening every cycle ──
       if (!state._pipelineStats) state._pipelineStats = { lastLog: 0, nearMisses: [], rugRejects: [], skippedGreen: [], cycles: 0, lastPipeline: null };
       state._pipelineStats.cycles++;
@@ -4783,7 +4860,11 @@ function startAutoTrader(wallet, settings) {
         const nmStr = p.nearMisses.length > 0 ? ` | NEAR: ${p.nearMisses.map(n => `${n.name}(${n.score}/${n.needed})`).join(", ")}` : "";
         const survStr = p.survivorRejects?.length > 0 ? ` | SURVIVOR-KILLED: ${p.survivorRejects.map(s => `${s.name}(match:${s.survivorMatch}%)`).join(", ")}` : "";
         const sbStats = survivorBias.survivors.size > 0 ? ` [SB:${survivorBias.survivors.size}W/${survivorBias.dead.size}L]` : "";
-        log(`SCAN: ${p.total} tokens → ${p.total-p.baseFilter} pass base → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown} new → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate} pass rug → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate-p.trendReject} pass trend → ${p.passed} READY (need ${state.settings.minScore}+)${sbStats}${nmStr}${survStr}`);
+        // Tier distribution for pipeline candidates
+        const tierDist = { 1: 0, 2: 0, 3: 0, 4: 0 };
+        for (const t of hot) { if (t._pipelineTier) tierDist[t._pipelineTier]++; }
+        const tierStr = hot.length > 0 ? ` | TIERS: T1:${tierDist[1]} T2:${tierDist[2]} T3:${tierDist[3]} WL:${tierDist[4]}` : "";
+        log(`SCAN: ${p.total} tokens → ${p.total-p.baseFilter} pass base → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown} new → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate} pass rug → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate-p.trendReject} pass trend → ${p.passed} READY (need ${state.settings.minScore}+)${sbStats}${tierStr}${nmStr}${survStr}`);
       }
 
       // ═══ SCORE-BASED POSITION SIZING (Kelly Criterion + Kahneman Loss Aversion) ═══
@@ -4848,6 +4929,7 @@ function startAutoTrader(wallet, settings) {
         prev.aboveCount++;
         prev.lastSeen = Date.now();
         stabilityMap.set(t.ca, prev);
+        t._stabilityCount = prev.aboveCount; // expose to pipeline Gate 5
       }
       // Prune tokens not seen in 30s
       for (const [ca, s] of stabilityMap) { if (Date.now() - s.lastSeen > 30000) stabilityMap.delete(ca); }
@@ -4933,7 +5015,8 @@ function startAutoTrader(wallet, settings) {
         const bullishStr = t._bullishSignals?.length > 0 ? ` [BULLISH: ${t._bullishSignals.join(",")}]` : "";
         const walletAgeStr = t._walletAgeData ? ` wallets:${Math.round(t._walletAgeData.walletAgeScore * 100)}%aged` : "";
         const survivorStr = t._survivorMatch != null ? ` surv:${t._survivorMatch}%` : "";
-        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${trendTag}${earlyTag}${phaseTag}${velTag}${survivorStr} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
+        const tierTag = t._pipelineTier ? ` T${t._pipelineTier}:${t._pipelineLabel}` : "";
+        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${tierTag}${trendTag}${earlyTag}${phaseTag}${velTag}${survivorStr} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -4947,10 +5030,13 @@ function startAutoTrader(wallet, settings) {
               const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
               // Snapshot features at entry for survivorship bias learning
               const _entryFeatures = typeof extractQuickFeatures === "function" ? extractQuickFeatures(t) : null;
-              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: tradeSol, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, entryBuyVel: buyVelTrend, entryFeatures: _entryFeatures });
+              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: tradeSol, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, entryBuyVel: buyVelTrend, entryFeatures: _entryFeatures, tier: t._pipelineTier || 2, exitPlan: t._pipelineExitPlan || createExitPlan(2, t._apeScore || 0, state.settings) });
+              // Track entry timestamp for rate limiting
+              if (!state._entryTimestamps) state._entryTimestamps = [];
+              state._entryTimestamps.push(Date.now());
               trackBuy(wallet, t.ca, tradeSol); // instant wallet visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
-              broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: tradeSol, mcap: t.mcapUsd, wallet, score: t._apeScore, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, buyVelTrend } });
+              broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: tradeSol, mcap: t.mcapUsd, wallet, score: t._apeScore, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, buyVelTrend, tier: t._pipelineTier || 2, tierLabel: t._pipelineLabel || "STRONG" } });
               // ═══ RAPID POST-ENTRY DUMP CHECK — catches instant rugs ═══
               // The 4s main loop interval lets dumps grow from -12% to -40%+.
               // This 2s rapid check catches tokens that dump immediately after our buy.
@@ -5223,6 +5309,8 @@ app.get("/api/auto-trade/status", (req, res) => {
         scoreVelocity: p.scoreVelocity || 0,
         scoreAcceleration: p.scoreAcceleration || 0,
         scoreTrend: p.scoreTrend || "stable",
+        tier: p.tier || 2,
+        exitPlan: p.exitPlan ? { tier: p.exitPlan.tier, stopLoss: p.exitPlan.stopLoss, maxHoldMs: p.exitPlan.maxHoldMs } : null,
       };
     }),
     log: state.log.slice(-20),
@@ -5234,6 +5322,7 @@ app.get("/api/auto-trade/status", (req, res) => {
       last: state._pipelineStats.lastPipeline,
       nearMisses: state._pipelineStats.nearMisses,
       rugRejects: state._pipelineStats.rugRejects || [],
+      tierDistribution: state._pipelineStats.tierDistribution || {},
     } : null,
   });
 });
