@@ -35,7 +35,7 @@ import crypto from "crypto";
 import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
 import { FleetTrader, skimSweep } from "../engine/fleet-trader.mjs";
 import { createToken } from "../engine/token-creator.mjs";
-import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateFee, calculateReferralSplit, PLATFORM_WALLET, NETWORK_FEE_PCT } from "../engine/fee-engine.mjs";
+import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateFee, calculateReferralSplit, getEffectiveFeeRate, recordTradeOutcome, generateWinCard, getTraderStats, addShareCredit, restoreTraderStats, PLATFORM_WALLET, NETWORK_FEE_PCT, PROFIT_LADDER } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
 import { smartSend, getOptimalPriorityFee } from "../engine/rpc-enhanced.mjs";
 import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
@@ -2335,12 +2335,62 @@ app.post("/api/access/activate-vip", async (req, res) => {
 });
 
 app.get("/api/pricing", (req, res) => {
-  res.json({
-    free: { fee: "25% of profit", price: "0 SOL", label: "Free — 25% profit share" },
+  const wallet = req.query.wallet;
+  const base = {
+    free: { fee: "25% → 5% (profit ladder)", price: "0 SOL", label: "Free — earn lower fees by winning" },
     pro: { fee: "0%", price: "1 SOL", label: "Pro — 0% fee" },
     vip: { fee: "0%", price: "10 SOL", label: "VIP — full sovereignty" },
     platformWallet: PLATFORM_WALLET,
-  });
+    ladder: PROFIT_LADDER,
+  };
+  // If wallet provided, include their personal fee stats
+  if (wallet && wallet.length >= 32) {
+    const { rate, ladder, stats } = getEffectiveFeeRate(wallet);
+    base.personal = { rate, ladder: ladder.name, ladderProgress: ladder.progress, nextTier: ladder.next, totalProfit: stats.totalProfit, winStreak: stats.winStreak, wins: stats.wins, trades: stats.trades, shareCredits: stats.shareCredits };
+  }
+  res.json(base);
+});
+
+// ── Trader stats & win cards (share-to-earn viral loop) ──
+app.get("/api/trader-stats/:wallet", (req, res) => {
+  const wallet = req.params.wallet;
+  if (!wallet || wallet.length < 32) return res.status(400).json({ error: "Invalid wallet" });
+  const stats = getTraderStats(wallet);
+  const { rate, ladder } = getEffectiveFeeRate(wallet);
+  res.json({ ...stats, effectiveRate: rate, ladder: ladder.name, ladderProgress: ladder.progress, nextTier: ladder.next });
+});
+
+// Win cards are stored in-memory with short TTL (shared via URL)
+const winCards = new Map();
+app.post("/api/win-card", (req, res) => {
+  try {
+    const { wallet, profitSol, profitPct, tokenName, ticker, holdTimeMs } = req.body;
+    if (!wallet || !profitSol || profitSol <= 0) return res.status(400).json({ error: "No profit to share" });
+    const card = generateWinCard(wallet, { profitSol, profitPct, tokenName, ticker, holdTimeMs });
+    winCards.set(card.cardId, { ...card, creatorWallet: wallet, ts: Date.now() });
+    // Evict old cards (keep last 1000)
+    if (winCards.size > 1000) {
+      const oldest = [...winCards.entries()].sort((a, b) => a[1].ts - b[1].ts).slice(0, 200);
+      for (const [k] of oldest) winCards.delete(k);
+    }
+    res.json({ ok: true, card });
+  } catch { res.status(500).json({ error: "Failed to generate win card" }); }
+});
+
+app.get("/api/win-card/:id", (req, res) => {
+  const card = winCards.get(req.params.id);
+  if (!card) return res.status(404).json({ error: "Card expired or not found" });
+  res.json(card);
+});
+
+// Share credit: when someone signs up via a win card link
+app.post("/api/share-credit", (req, res) => {
+  const { cardId, newWallet } = req.body;
+  const card = winCards.get(cardId);
+  if (!card) return res.status(404).json({ error: "Card not found" });
+  if (card.creatorWallet === newWallet) return res.status(400).json({ error: "Cannot credit yourself" });
+  const credits = addShareCredit(card.creatorWallet);
+  res.json({ ok: true, credited: card.creatorWallet.slice(0, 4) + "...", newCredits: credits });
 });
 
 // ═══════════════════════════════════════
