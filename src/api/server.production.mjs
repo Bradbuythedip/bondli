@@ -165,6 +165,51 @@ const smartMoneyTracker = new SmartMoneyTracker({
   },
 });
 
+// ═══ SECOND WAVE TRACKER — remember tokens that scored well for re-entry detection ═══
+// Tokens that previously had high scores, dipped, and show renewed buying = potential outliers.
+// ca → { peakScore, peakMcap, peakTime, lastBuys, lastUpdate }
+const secondWaveTracker = new Map();
+// Snapshot top-scoring tokens periodically (called from scoring loop)
+function secondWaveSnapshot(token) {
+  const ca = token.ca;
+  if (!ca) return;
+  const score = token._apeScore || 0;
+  const existing = secondWaveTracker.get(ca);
+  if (!existing || score > existing.peakScore) {
+    secondWaveTracker.set(ca, {
+      peakScore: score,
+      peakMcap: token.mcapUsd || 0,
+      peakTime: Date.now(),
+      lastBuys: token.buys || 0,
+      lastUpdate: Date.now(),
+    });
+  } else if (existing) {
+    existing.lastBuys = token.buys || 0;
+    existing.lastUpdate = Date.now();
+  }
+  // Prune old entries (>3h)
+  if (secondWaveTracker.size > 2000) {
+    const cutoff = Date.now() - 3 * 60 * 60 * 1000;
+    for (const [k, v] of secondWaveTracker) {
+      if (v.lastUpdate < cutoff) secondWaveTracker.delete(k);
+    }
+  }
+}
+
+// ═══ KOL CASCADE TRACKER — detect tight temporal KOL mention convergence ═══
+// ca → [{ handle, time }] — recent KOL mentions per token
+const kolCascadeTracker = new Map();
+function recordKolMention(ca, handle) {
+  if (!ca) return;
+  if (!kolCascadeTracker.has(ca)) kolCascadeTracker.set(ca, []);
+  const mentions = kolCascadeTracker.get(ca);
+  mentions.push({ handle, time: Date.now() });
+  // Keep last 20 mentions, prune older than 30 min
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  const filtered = mentions.filter(m => m.time > cutoff).slice(-20);
+  kolCascadeTracker.set(ca, filtered);
+}
+
 // Dev Wallet Tracker — maps every dev wallet on radar, checks balances, profiles funded devs
 const devWalletTracker = new DevWalletTracker({ redis, connection });
 // Load persisted dev wallet data from Redis
@@ -1582,6 +1627,89 @@ function extractQuickFeatures(t) {
       (t.knownInfluencerBuys ? t.knownInfluencerBuys * 0.2 : 0) +
       (smartMoneyTracker.getSmartMoneyScore(t.ca || ca)?.convergence ? 0.5 : 0)
     ),
+
+    // ═══ HOLDER QUALITY SCORE — are early buyers proven winners? ═══
+    // A token where 5 early buyers each have 3+ past graduated tokens
+    // is radically different from one with 5 random wallets.
+    // Score 0-1: 0 = no proven winners buying, 1 = multiple proven winners
+    _holderQuality: (() => {
+      const buyWallets = buyTrades.map(tr => (tr.wallet || "").slice(0, 8)).filter(Boolean);
+      const uniqueWallets = [...new Set(buyWallets)];
+      let provenCount = 0;
+      let totalScore = 0;
+      for (const wp of uniqueWallets) {
+        const stats = smartWallets.walletStats.get(wp);
+        if (stats && (stats.wins + stats.losses) >= 3) {
+          const winRate = stats.wins / (stats.wins + stats.losses);
+          if (winRate >= 0.4) {
+            provenCount++;
+            totalScore += stats.score;
+          }
+        }
+      }
+      // Also check smart money tracker for full-address matched wallets
+      const smScore = smartMoneyTracker.getSmartMoneyScore(t.ca || ca);
+      if (smScore?.walletCount > 0) {
+        provenCount += smScore.walletCount;
+        totalScore += smScore.score * smScore.walletCount;
+      }
+      // Normalize: 1 proven = 0.25, 2 = 0.45, 3+ = 0.6+, convergence = 0.8+
+      if (provenCount === 0) return 0;
+      return Math.min(1, provenCount * 0.2 + totalScore * 0.15 + (smScore?.convergence ? 0.3 : 0));
+    })(),
+
+    // ═══ KOL CASCADE TIMING — multiple KOLs mentioning within tight window ═══
+    // 3+ KOLs in 10 minutes is completely different from 3 over 2 hours.
+    // Tight temporal convergence = coordinated alpha, not random mentions.
+    _kolCascade: (() => {
+      const mentions = kolCascadeTracker.get(t.ca) || t._kolMentions || [];
+      if (mentions.length < 2) return 0;
+      // Sort by time, check for tight clustering
+      const sorted = mentions.map(m => m.time || m.timestamp || 0).filter(Boolean).sort((a, b) => a - b);
+      if (sorted.length < 2) return 0;
+      // Count mentions within a 10-minute sliding window
+      let maxInWindow = 0;
+      const windowMs = 10 * 60 * 1000;
+      for (let i = 0; i < sorted.length; i++) {
+        let count = 1;
+        for (let j = i + 1; j < sorted.length && sorted[j] - sorted[i] <= windowMs; j++) {
+          count++;
+        }
+        if (count > maxInWindow) maxInWindow = count;
+      }
+      // 2 KOLs in 10min = 0.3, 3 = 0.6, 4+ = 0.85+
+      if (maxInWindow >= 4) return Math.min(1, 0.85 + (maxInWindow - 4) * 0.05);
+      if (maxInWindow >= 3) return 0.6;
+      if (maxInWindow >= 2) return 0.3;
+      return 0;
+    })(),
+
+    // ═══ SECOND WAVE DETECTION — previously scored well, dipped, re-accumulating ═══
+    // Many $10M tokens have a quiet period then re-ignite.
+    // Check if this token was previously on radar with good score, dipped, and is now showing
+    // renewed buying activity.
+    _secondWave: (() => {
+      const history = secondWaveTracker.get(t.ca);
+      if (!history) return 0;
+      const timeSincePeak = (Date.now() - history.peakTime) / 60000; // minutes
+      const currentBuys = buys;
+      const priceRecovery = history.peakMcap > 0 && (t.mcapUsd || 0) > 0
+        ? (t.mcapUsd / history.peakMcap) : 0;
+      // Must have: good previous score, dipped significantly, now recovering
+      if (history.peakScore < 50) return 0;
+      if (timeSincePeak < 5 || timeSincePeak > 120) return 0; // 5-120 min window
+      if (priceRecovery > 0.8) return 0; // hasn't dipped enough
+      if (priceRecovery < 0.1) return 0; // dead, not recovering
+      // Score: higher for better previous score, reasonable dip, new buying activity
+      const dippedEnough = priceRecovery >= 0.2 && priceRecovery <= 0.7;
+      const freshBuying = currentBuys > history.lastBuys + 3;
+      if (!dippedEnough || !freshBuying) return 0;
+      return Math.min(1,
+        (history.peakScore / 100) * 0.4 +
+        (1 - priceRecovery) * 0.3 + // bigger dip = more upside
+        Math.min(0.3, (currentBuys - history.lastBuys) * 0.05)
+      );
+    })(),
   };
 
   // Compute divergence after other fields are set
@@ -3797,7 +3925,7 @@ setInterval(() => {
   if (survivorBias.survivors.size >= 5) {
     const profile = survivorBias.getSurvivorProfile();
     if (profile.ready && profile.insights.length > 0) {
-      console.log(`[SURVIVOR] Profile (${survivorBias.survivors.size}W/${survivorBias.dead.size}L): ${profile.insights.slice(0, 3).join(" | ")}`);
+      console.log(`[SURVIVOR] Profile (${survivorBias.survivors.size}W/${survivorBias.dead.size}L, ${survivorBias.megaWinners.size} mega): ${profile.insights.slice(0, 3).join(" | ")}`);
       const disc = survivorBias.getTopDiscriminants(3);
       if (disc.length > 0) {
         console.log(`[SURVIVOR] Top discriminants: ${disc.map(d => `${d.feature}(${d.direction}:${d.power})`).join(", ")}`);
@@ -4819,8 +4947,44 @@ function startAutoTrader(wallet, settings) {
         const memeticBonus = memeticQuick > 0 ? Math.round((memeticQuick - 0.45) * 24) : 0; // -11 to +13
         t._memeticScore = memeticQuick;
 
+        // ═══ OUTLIER DETECTION SIGNALS — finding the 0.01% ═══
+
+        // HOLDER QUALITY: early buyers with proven track records
+        let holderQualityBonus = 0;
+        if (qf?._holderQuality > 0.2) {
+          holderQualityBonus = Math.min(15, Math.round(qf._holderQuality * 20));
+        }
+
+        // KOL CASCADE: tight temporal convergence of KOL mentions
+        let kolCascadeBonus = 0;
+        if (qf?._kolCascade > 0.2) {
+          kolCascadeBonus = Math.min(12, Math.round(qf._kolCascade * 18));
+        }
+
+        // SECOND WAVE: previously strong token showing renewed interest after dip
+        let secondWaveBonus = 0;
+        if (qf?._secondWave > 0.2) {
+          secondWaveBonus = Math.min(15, Math.round(qf._secondWave * 22));
+        }
+
+        // META NARRATIVE ACCELERATION: is this narrative's wave building?
+        let narrativeAccelBonus = 0;
+        if (metaTracker) {
+          const metaResult = metaTracker.getMetaBoost(t);
+          narrativeAccelBonus = metaResult.accelBoost || 0;
+          t._metaBoost = metaResult.boost;
+          t._narrativeAccel = metaResult.accelBoost || 0;
+          t._wavePosition = metaResult.wavePosition || 0;
+          t._narrative = metaResult.narrative;
+        }
+
+        // Snapshot for second wave tracker (if score is good enough)
+        if (buyScore + ubScore + volScore + mcScore + greenScore > 30) {
+          secondWaveSnapshot(t);
+        }
+
         t._apeScore = Math.max(0, Math.min(99, Math.round(
-          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus + devCredBonus + memeticBonus - sellPenalty - rugPenalty - artPenalty - walletAgePenalty
+          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus + devCredBonus + memeticBonus + holderQualityBonus + kolCascadeBonus + secondWaveBonus + narrativeAccelBonus - sellPenalty - rugPenalty - artPenalty - walletAgePenalty
         )));
 
         // ═══ SURVIVORSHIP BIAS FILTER (Kahneman) ═══
@@ -4837,6 +5001,9 @@ function startAutoTrader(wallet, settings) {
           t._survivorMatch = sbResult.eval.matchPct;
           t._survivorNet = sbResult.eval.netScore;
           t._survivorKills = sbResult.eval.killSignals?.map(k => k.feature.replace(/^(oc_|rg_|ch_|cs_|sir_|gf_|tp_|k_|apd_)/, "")).slice(0, 3);
+          // Mega-winner archetype match
+          t._megaMatch = sbResult.eval.megaMatchPct || 0;
+          t._isMegaCandidate = sbResult.eval.isMegaCandidate || false;
           // Hard filter: survivorship engine says this looks nothing like winners
           if (!sbResult.eval.shouldApe && sbResult.eval.confidence > 40) {
             survivorKilled = true;
@@ -4883,6 +5050,11 @@ function startAutoTrader(wallet, settings) {
           dyn?.trend === "rising" && "rising_trend",
           earlyApeBonus > 0 && "early_discovery",
           survivorAdj > 5 && `survivor_match(${t._survivorMatch || 0}%)`,
+          t._isMegaCandidate && `mega_candidate(${t._megaMatch}%)`,
+          holderQualityBonus > 5 && `proven_buyers(${Math.round((qf?._holderQuality || 0) * 100)}%)`,
+          kolCascadeBonus > 5 && `kol_cascade(${Math.round((qf?._kolCascade || 0) * 100)}%)`,
+          secondWaveBonus > 5 && "second_wave",
+          narrativeAccelBonus > 5 && `wave_building(pos:${t._wavePosition || 0})`,
         ].filter(Boolean);
         t._scoreTrend = dyn?.trend || "new";
         t._earlyApe = earlyApeBonus > 0; // flag for logging
@@ -5160,8 +5332,9 @@ function startAutoTrader(wallet, settings) {
         const bullishStr = t._bullishSignals?.length > 0 ? ` [BULLISH: ${t._bullishSignals.join(",")}]` : "";
         const walletAgeStr = t._walletAgeData ? ` wallets:${Math.round(t._walletAgeData.walletAgeScore * 100)}%aged` : "";
         const survivorStr = t._survivorMatch != null ? ` surv:${t._survivorMatch}%` : "";
+        const megaStr = t._isMegaCandidate ? ` MEGA:${t._megaMatch}%` : "";
         const tierTag = t._pipelineTier ? ` T${t._pipelineTier}:${t._pipelineLabel}` : "";
-        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${tierTag}${trendTag}${earlyTag}${phaseTag}${velTag}${survivorStr} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
+        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${tierTag}${trendTag}${earlyTag}${phaseTag}${velTag}${survivorStr}${megaStr} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },

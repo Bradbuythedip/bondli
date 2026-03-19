@@ -176,15 +176,17 @@ class FeatureArchive {
 export class SurvivorshipBias {
   constructor(redis = null) {
     this.redis = redis;
-    this.survivors = new FeatureArchive(500);  // winning tokens
-    this.dead = new FeatureArchive(500);       // losing tokens
-    this._discriminantWeights = null;          // Fisher's discriminant per feature
+    this.survivors = new FeatureArchive(500);     // all winning tokens
+    this.dead = new FeatureArchive(500);          // losing tokens
+    this.megaWinners = new FeatureArchive(200);   // 10x+ outlier tokens — the 0.01%
+    this._discriminantWeights = null;             // Fisher's discriminant per feature
     this._discriminantDirty = true;
     this._minSurvivors = 5;  // need at least 5 survivors before applying filter
     this.stats = {
       totalRecorded: 0,
       survivorCount: 0,
       deadCount: 0,
+      megaWinnerCount: 0,
       appliedCount: 0,
       filteredCount: 0,
       avgSurvivorScore: 0,
@@ -201,20 +203,35 @@ export class SurvivorshipBias {
 
     this.stats.totalRecorded++;
 
-    // Weight by magnitude of win/loss — big winners define the archetype more
+    // ═══ POWER-LAW WEIGHTING ═══
+    // Meme returns follow Pareto distribution. The 5% of tokens that
+    // become 10x+ runners generate >50% of total returns. We need the
+    // survivor archetype to be DOMINATED by these outliers, not diluted
+    // by marginal 5-10% winners. Weight = log2(1 + mcx) so:
+    //   2x winner → weight 1.6    (modest influence)
+    //   5x winner → weight 2.6    (strong influence)
+    //   10x winner → weight 3.5   (dominates archetype)
+    //   50x winner → weight 5.7   (mega outlier shapes the model)
+    //   100x winner → weight 6.7  (legendary)
+    const mcx = outcome.peakMcx || 1;
+
     if (outcome.won || outcome.pnlPct > 5 || outcome.graduated) {
-      // SURVIVOR: token that made money or graduated
-      const weight = outcome.graduated ? 2.0
-        : outcome.pnlPct > 50 ? 1.8
-        : outcome.pnlPct > 20 ? 1.4
-        : 1.0;
+      const weight = Math.max(1, Math.log2(1 + Math.max(mcx, 1 + outcome.pnlPct / 100)));
       this.survivors.add(ca, entryFeatures, outcome, weight);
       this.stats.survivorCount = this.survivors.size;
+
+      // ── MEGA-WINNER ARCHIVE — separate archetype for 10x+ tokens ──
+      // These are the outliers we're hunting. A dedicated archetype
+      // prevents their signal from being diluted by marginal winners.
+      if (mcx >= 10 || outcome.pnlPct >= 900) {
+        const megaWeight = Math.log2(1 + mcx); // even more weight for bigger wins
+        this.megaWinners.add(ca, entryFeatures, outcome, megaWeight);
+        this.stats.megaWinnerCount = this.megaWinners.size;
+      }
     } else {
-      // DEAD: token that lost money
-      const weight = outcome.pnlPct < -20 ? 1.5
-        : outcome.pnlPct < -10 ? 1.2
-        : 1.0;
+      // DEAD: power-law on losses too — big rugs teach more
+      const lossPct = Math.abs(outcome.pnlPct || 0);
+      const weight = Math.max(1, 1 + lossPct / 50); // -50% → 2.0, -100% → 3.0
       this.dead.add(ca, entryFeatures, outcome, weight);
       this.stats.deadCount = this.dead.size;
     }
@@ -318,6 +335,22 @@ export class SurvivorshipBias {
         importance: +f.discriminantPower.toFixed(3),
       }));
 
+    // ── MEGA-WINNER SIMILARITY — does this look like a 10x+ outlier? ──
+    result.megaMatchPct = 0;
+    result.isMegaCandidate = false;
+    if (this.megaWinners.size >= 3) {
+      const megaArchetype = this.megaWinners.getArchetype();
+      const megaSim = this._cosineSim(vec, megaArchetype);
+      result.megaMatchPct = Math.round(megaSim * 100);
+      // If this looks ≥60% like a mega-winner, it's a potential outlier
+      if (megaSim >= 0.6) {
+        result.isMegaCandidate = true;
+        // Boost the survival score — outlier signal overrides marginal survivor data
+        result.survivalScore += megaSim * 0.3;
+        result.netScore = Math.round(result.survivalScore * 100);
+      }
+    }
+
     // ─── DECISION ───
     // Should we ape? Apply survival filter only when confident enough
     if (result.confidence > 30) {
@@ -334,6 +367,10 @@ export class SurvivorshipBias {
       }
       // Strong survivor match overrides soft kills
       if (survivorSim > 0.8 && result.boostSignals.length >= 3) {
+        result.shouldApe = true;
+      }
+      // MEGA-WINNER OVERRIDE: if it looks like a 10x+, NEVER kill it
+      if (result.isMegaCandidate) {
         result.shouldApe = true;
       }
     }
@@ -355,7 +392,15 @@ export class SurvivorshipBias {
     // netScore range: roughly -100 to +100
     // We want adjustment range: -20 to +20
     let adjustment = Math.round(eval_.netScore * 0.2 * confidenceScale);
-    adjustment = Math.max(-20, Math.min(20, adjustment));
+
+    // MEGA-WINNER BONUS: if this token matches the outlier archetype, big boost
+    // This is the key to finding the 0.01% — outlier similarity is the strongest signal
+    if (eval_.isMegaCandidate) {
+      const megaBonus = Math.round((eval_.megaMatchPct - 50) * 0.3); // 60% match → +3, 80% → +9, 95% → +14
+      adjustment += megaBonus;
+    }
+
+    adjustment = Math.max(-20, Math.min(25, adjustment)); // allow up to +25 for mega candidates
 
     return { adjustment, eval: eval_ };
   }
@@ -511,6 +556,8 @@ export class SurvivorshipBias {
       ...this.stats,
       survivorArchetypeReady: this.survivors.size >= this._minSurvivors,
       deadArchetypeReady: this.dead.size >= 3,
+      megaWinnerArchetypeReady: this.megaWinners.size >= 3,
+      megaWinnerCount: this.megaWinners.size,
       topDiscriminants: this.getTopDiscriminants(5),
       filterRate: this.stats.appliedCount > 0
         ? +(this.stats.filteredCount / this.stats.appliedCount * 100).toFixed(1) + "%"
@@ -525,6 +572,7 @@ export class SurvivorshipBias {
       const data = {
         survivors: this.survivors.export(),
         dead: this.dead.export(),
+        megaWinners: this.megaWinners.export(),
         stats: this.stats,
       };
       await this.redis.set("survivorship:data", JSON.stringify(data), { EX: 604800 }); // 7 day TTL
@@ -541,8 +589,9 @@ export class SurvivorshipBias {
         const data = JSON.parse(raw);
         if (data.survivors) this.survivors.import(data.survivors);
         if (data.dead) this.dead.import(data.dead);
+        if (data.megaWinners) this.megaWinners.import(data.megaWinners);
         if (data.stats) this.stats = { ...this.stats, ...data.stats };
-        console.log(`[SURVIVORSHIP] Restored: ${this.survivors.size} survivors, ${this.dead.size} dead`);
+        console.log(`[SURVIVORSHIP] Restored: ${this.survivors.size} survivors, ${this.dead.size} dead, ${this.megaWinners.size} mega-winners`);
       }
     } catch (e) {
       console.error("[SURVIVORSHIP] Restore error:", e.message);
