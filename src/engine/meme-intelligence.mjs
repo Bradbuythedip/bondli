@@ -75,6 +75,10 @@ const FEATURE_KEYS = [
   "rg_buySellImbalance",// extreme buy/sell count imbalance (0=balanced, 1=all buys no sells)
   "rg_fakeVolumeScore", // volume from very few unique wallets recycling SOL (0=organic, 1=fake)
   "rg_gradualRugScore", // gradual buy-only chart over extended period with uniform timing (0=normal, 1=classic bot trap)
+  "rg_velocityLinearity", // R² of sparkline linear regression (0=noisy organic, 1=perfect straight line = dev pump)
+  "rg_buyTimingRegularity", // coefficient of variation of buy intervals inverted (0=bursty organic, 1=metronome bot)
+  "rg_singleWalletDominance", // fraction of total buy volume from top wallet (0=distributed, 1=single entity)
+  "rg_devSelfPumpScore", // composite: linear velocity + regular timing + no sells + concentrated (0=clean, 1=certain pump)
 
   // Chart shape analysis
   "ch_healthScore",     // overall chart health (0=crash, 0.5=neutral, 1=healthy growth)
@@ -345,6 +349,66 @@ function extractFeatures(token) {
     } else if (spreadMin >= 2 && buys.length >= 6 && sells.length === 0 && timingUniformity > 0.5 && isMonoUp) {
       f.rg_gradualRugScore = 0.5;
     }
+  }
+
+  // ─── Velocity linearity (R²) — straight-line price = dev self-buy ───
+  f.rg_velocityLinearity = 0;
+  if (spark.length >= 6) {
+    const n = spark.length;
+    let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
+    for (let i = 0; i < n; i++) {
+      sumX += i; sumY += spark[i]; sumXY += i * spark[i]; sumX2 += i * i; sumY2 += spark[i] * spark[i];
+    }
+    const denom = (n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY);
+    if (denom > 0) {
+      const r = (n * sumXY - sumX * sumY) / Math.sqrt(denom);
+      f.rg_velocityLinearity = r * r;
+    }
+    if (spark[n - 1] <= spark[0]) f.rg_velocityLinearity = 0; // only flag upward
+  }
+
+  // ─── Buy timing regularity — metronome = bot ───
+  f.rg_buyTimingRegularity = 0;
+  if (buyTimes.length >= 6) {
+    const intervals = [];
+    for (let i = 1; i < buyTimes.length; i++) intervals.push(buyTimes[i] - buyTimes[i - 1]);
+    const avgInt = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+    if (avgInt > 0) {
+      const variance = intervals.reduce((s, d) => s + (d - avgInt) ** 2, 0) / intervals.length;
+      const cv = Math.sqrt(variance) / avgInt;
+      f.rg_buyTimingRegularity = Math.max(0, Math.min(1, 1 - cv));
+    }
+    const priceUp = spark.length >= 3 && spark[spark.length - 1] > spark[0] * 1.2;
+    if (!priceUp || buyTimes.length < 6) f.rg_buyTimingRegularity = 0;
+  }
+
+  // ─── Single wallet dominance ───
+  f.rg_singleWalletDominance = 0;
+  const sortedBuyerAmounts = Object.values(walletBuys).sort((a, b) => b - a);
+  const totalBuyVol = sortedBuyerAmounts.reduce((s, v) => s + v, 0);
+  if (sortedBuyerAmounts.length >= 2 && totalBuyVol > 0) {
+    f.rg_singleWalletDominance = sortedBuyerAmounts[0] / totalBuyVol;
+    const top2 = (sortedBuyerAmounts[0] + (sortedBuyerAmounts[1] || 0)) / totalBuyVol;
+    if (top2 > 0.7 && sortedBuyerAmounts.length >= 3) {
+      f.rg_singleWalletDominance = Math.max(f.rg_singleWalletDominance, top2 * 0.9);
+    }
+  }
+
+  // ─── Composite dev self-pump score ───
+  {
+    const sigs = [
+      f.rg_velocityLinearity > 0.85 ? 1 : f.rg_velocityLinearity > 0.7 ? 0.5 : 0,
+      f.rg_buyTimingRegularity > 0.6 ? 1 : f.rg_buyTimingRegularity > 0.4 ? 0.5 : 0,
+      (f.rg_zeroSellFlag || 0) > 0.5 ? 1 : (f.rg_buySellImbalance || 0) > 0.6 ? 0.7 : 0,
+      f.rg_singleWalletDominance > 0.5 ? 1 : (f.rg_holderConcentration || 0) > 0.6 ? 0.5 : 0,
+      (f.ch_smoothGrind || 0) > 0.4 ? 0.5 : (f.ch_staircaseScore || 0) > 0.3 ? 0.5 : 0,
+    ];
+    const sigCount = sigs.filter(s => s > 0).length;
+    const sigSum = sigs.reduce((a, b) => a + b, 0);
+    if (sigCount >= 4) f.rg_devSelfPumpScore = Math.min(1, 0.7 + sigSum * 0.06);
+    else if (sigCount >= 3) f.rg_devSelfPumpScore = Math.min(0.8, 0.4 + sigSum * 0.08);
+    else if (sigCount >= 2 && sigSum >= 1.5) f.rg_devSelfPumpScore = Math.min(0.5, 0.2 + sigSum * 0.1);
+    else f.rg_devSelfPumpScore = 0;
   }
 
   // ─── Chart shape analysis: gradual-up-no-dips detection ───
@@ -745,6 +809,10 @@ class ScoringEngine {
     if ((features.rg_fakeVolumeScore || 0) > 0.4) rugFlags.push("fake_volume_wash_trading");
     if ((features.rg_gradualRugScore || 0) > 0.5) rugFlags.push("gradual_rug_bot_trap");
     if ((features.rg_gradualRugScore || 0) > 0.3 && (features.ch_smoothGrind || 0) > 0.3) rugFlags.push("gradual_rug_smooth_chart");
+    if ((features.rg_devSelfPumpScore || 0) > 0.5) rugFlags.push("dev_self_pump");
+    if ((features.rg_velocityLinearity || 0) > 0.85 && (features.rg_buySellImbalance || 0) > 0.6) rugFlags.push("linear_pump_no_sells");
+    if ((features.rg_buyTimingRegularity || 0) > 0.6) rugFlags.push("metronome_buys");
+    if ((features.rg_singleWalletDominance || 0) > 0.5) rugFlags.push("single_wallet_pump");
 
     // ── Zero sell hard penalty ──
     // A token with many buys and zero sells is the #1 rug pattern
@@ -762,8 +830,16 @@ class ScoringEngine {
         ? Math.round(features.rg_gradualRugScore * 20)
         : 0;
 
+    // ── Dev self-pump penalty ──
+    // Linear velocity + metronome buys + no sells + concentrated = dev self-pump
+    const devPumpPenalty = (features.rg_devSelfPumpScore || 0) >= 0.7
+      ? Math.round(features.rg_devSelfPumpScore * 40) // severe: near-certain pump
+      : (features.rg_devSelfPumpScore || 0) >= 0.4
+        ? Math.round(features.rg_devSelfPumpScore * 25)
+        : 0;
+
     const finalScore = (rawScore * 100 + 0.5) | 0;
-    const clamped = finalScore - rugPenalty - chartPenalty - zeroSellPenalty - gradualRugPenalty;
+    const clamped = finalScore - rugPenalty - chartPenalty - zeroSellPenalty - gradualRugPenalty - devPumpPenalty;
 
     // ── Hard reject: 3+ moderate rug signals = instant block ──
     // This is the CRITICAL safety gate — prevents buying into obvious rugs
@@ -776,7 +852,11 @@ class ScoringEngine {
       // Gradual rug: sustained buy-only chart with uniform timing = classic bot trap
       || (features.rg_gradualRugScore || 0) >= 0.7
       || ((features.rg_gradualRugScore || 0) >= 0.5 && (features.ch_smoothGrind || 0) > 0.3)
-      || ((features.rg_gradualRugScore || 0) >= 0.5 && (features.rg_zeroSellFlag || 0) >= 0.5);
+      || ((features.rg_gradualRugScore || 0) >= 0.5 && (features.rg_zeroSellFlag || 0) >= 0.5)
+      // Dev self-pump: linear velocity + metronome buys + concentration
+      || (features.rg_devSelfPumpScore || 0) >= 0.7
+      || ((features.rg_devSelfPumpScore || 0) >= 0.5 && (features.rg_zeroSellFlag || 0) >= 0.5)
+      || ((features.rg_velocityLinearity || 0) > 0.9 && (features.rg_buySellImbalance || 0) > 0.7);
 
     return {
       score: clamped < 0 ? 0 : clamped > 99 ? 99 : clamped,
@@ -787,6 +867,7 @@ class ScoringEngine {
       rugFlags,
       zeroSellPenalty,
       gradualRugPenalty,
+      devPumpPenalty,
       subScores: {
         tippingPoint: (s_tp * 100 + 0.5) | 0,
         kahneman: (s_k * 100 + 0.5) | 0,
