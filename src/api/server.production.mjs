@@ -3390,13 +3390,76 @@ app.post("/api/quick-ape", async (req, res) => {
     // Track position immediately for instant wallet visibility
     trackBuy(wallet, ca, solAmount);
 
-    // Wait for confirmation (non-blocking for response but log result)
-    connection.confirmTransaction(sig, "confirmed").then(() => {
-      console.log(`[BUY] Confirmed: ${sig}`);
-    }).catch(() => {});
+    // Persist entry cost to Redis for PnL calculation (survives restarts + pendingPositions cleanup)
+    if (redis) {
+      try {
+        const entryKey = `entry:${wallet}:${ca}`;
+        const existing = await redis.get(entryKey);
+        if (existing) {
+          // Dollar-cost averaging: accumulate total SOL spent
+          const prev = JSON.parse(existing);
+          prev.solSpent = +(prev.solSpent + solAmount).toFixed(6);
+          prev.buys = (prev.buys || 1) + 1;
+          prev.lastBuy = Date.now();
+          await redis.set(entryKey, JSON.stringify(prev), { EX: 2592000 }); // 30 days
+        } else {
+          await redis.set(entryKey, JSON.stringify({
+            solSpent: solAmount,
+            entryMcapSol: radar.tokens.get(ca)?.mcapSol || 0,
+            entryMcapUsd: radar.tokens.get(ca)?.mcapUsd || 0,
+            buys: 1,
+            time: Date.now(),
+            lastBuy: Date.now(),
+          }), { EX: 2592000 }); // 30 days
+        }
+      } catch (e) { console.warn("[BUY] Failed to persist entry cost:", e.message); }
+    }
 
+    // Verify token landed: confirm tx on-chain, then check token account
     const boughtToken = radar.tokens.get(ca);
-    res.json({ ok: true, signature: sig, ca, method, balance: +(balance - solAmount).toFixed(4), position: { mint: ca, name: boughtToken?.name || "", ticker: boughtToken?.ticker || "", image: boughtToken?.image || "", mcapUsd: boughtToken?.mcapUsd || 0, mcapSol: boughtToken?.mcapSol || 0, solSpent: solAmount } });
+    let verified = false;
+    let verifyError = null;
+    try {
+      // Wait up to 12s for on-chain confirmation
+      const CONFIRM_TIMEOUT = 12000;
+      const POLL_INTERVAL = 2000;
+      const confirmStart = Date.now();
+      let confirmed = false;
+      while (Date.now() - confirmStart < CONFIRM_TIMEOUT) {
+        const txStatus = await connection.getSignatureStatus(sig);
+        if (txStatus?.value?.confirmationStatus === "confirmed" || txStatus?.value?.confirmationStatus === "finalized") {
+          confirmed = true;
+          break;
+        }
+        if (txStatus?.value?.err) {
+          verifyError = "Transaction failed on-chain";
+          break;
+        }
+        await new Promise(r => setTimeout(r, POLL_INTERVAL));
+      }
+      if (confirmed) {
+        // Check that the token account actually exists now
+        const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+        try {
+          const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: TOKEN_PROGRAM });
+          const hasToken = tokenAccounts.value.some(ta => {
+            const info = ta.account.data.parsed.info;
+            return info.mint === ca && parseFloat(info.tokenAmount.uiAmountString || "0") > 0;
+          });
+          verified = hasToken;
+          if (!hasToken) verifyError = "Token not found in wallet after confirmed tx";
+        } catch (e) {
+          verifyError = "RPC error checking token account: " + e.message;
+        }
+      } else if (!verifyError) {
+        verifyError = "Confirmation timeout (tx may still be processing)";
+      }
+    } catch (e) {
+      verifyError = "Verification error: " + e.message;
+    }
+    console.log(`[BUY] ${verified ? "VERIFIED" : "UNVERIFIED"}: ${sig} ${verifyError || ""}`);
+
+    res.json({ ok: true, signature: sig, ca, method, verified, verifyError: verifyError || undefined, balance: +(balance - solAmount).toFixed(4), position: { mint: ca, name: boughtToken?.name || "", ticker: boughtToken?.ticker || "", image: boughtToken?.image || "", mcapUsd: boughtToken?.mcapUsd || 0, mcapSol: boughtToken?.mcapSol || 0, solSpent: solAmount } });
   } catch (e) {
     console.error("[QUICK-APE] Error:", e.message);
     res.status(500).json({ error: e.message });
@@ -5902,6 +5965,8 @@ function trackBuy(wallet, ca, solAmount) {
 function trackSell(wallet, ca) {
   const wp = pendingPositions.get(wallet);
   if (wp) wp.delete(ca);
+  // Clean up entry cost from Redis (full sell = position closed)
+  if (redis) redis.del(`entry:${wallet}:${ca}`).catch(() => {});
 }
 
 // ═══════════════════════════════════════
@@ -6001,6 +6066,31 @@ app.get("/api/positions/:wallet", async (req, res) => {
       }));
     }
 
+    // Batch-fetch entry costs from Redis for PnL calculation
+    const entryDataMap = new Map(); // mint → { solSpent, ... }
+    if (redis) {
+      try {
+        const mints = [...mintAmounts.keys()];
+        const pipeline = redis.pipeline ? redis.pipeline() : null;
+        if (pipeline) {
+          for (const mint of mints) pipeline.get(`entry:${userWallet}:${mint}`);
+          const results = await pipeline.exec();
+          for (let i = 0; i < mints.length; i++) {
+            const raw = results?.[i]?.[1];
+            if (raw) try { entryDataMap.set(mints[i], JSON.parse(raw)); } catch {}
+          }
+        } else {
+          // Fallback: fetch individually in parallel
+          await Promise.all(mints.map(async (mint) => {
+            try {
+              const raw = await redis.get(`entry:${userWallet}:${mint}`);
+              if (raw) entryDataMap.set(mint, JSON.parse(raw));
+            } catch {}
+          }));
+        }
+      } catch (e) { console.warn("[POSITIONS] Failed to fetch entry costs:", e.message); }
+    }
+
     const positions = [];
     for (const [mint, { amount, decimals }] of mintAmounts) {
       const radarToken = radar.tokens.get(mint) || metadataCache.get(mint) || null;
@@ -6012,6 +6102,12 @@ app.get("/api/positions/:wallet", async (req, res) => {
       const mcUsd = radarToken?.mcapUsd || 0;
       const valueUsd = mcUsd > 0 ? holdPct * mcUsd : 0;
       const valueSol = solUsdPrice > 0 ? valueUsd / solUsdPrice : 0;
+
+      // Calculate real PnL from persisted entry cost
+      const entry = entryDataMap.get(mint);
+      const solSpent = entry?.solSpent || 0;
+      const pnlSol = solSpent > 0 ? +(valueSol - solSpent).toFixed(6) : 0;
+      const pnlPct = solSpent > 0 ? +((valueSol - solSpent) / solSpent * 100).toFixed(1) : 0;
 
       positions.push({
         mint,
@@ -6026,8 +6122,9 @@ app.get("/api/positions/:wallet", async (req, res) => {
         valueSol: +valueSol.toFixed(6),
         valueUsd: +valueUsd.toFixed(2),
         holdPct: +(holdPct * 100).toFixed(3),
-        pnlSol: 0,
-        pnlPct: 0,
+        solSpent,
+        pnlSol,
+        pnlPct,
       });
     }
     
@@ -6044,6 +6141,9 @@ app.get("/api/positions/:wallet", async (req, res) => {
         const holdPct = estTokens / 1_000_000_000;
         const valueUsd = mcUsd > 0 ? holdPct * mcUsd : p.solSpent * solUsdPrice;
         const valueSol = solUsdPrice > 0 ? valueUsd / solUsdPrice : p.solSpent;
+        // Calculate PnL for pending positions (price may have moved since buy)
+        const pendPnlSol = p.solSpent > 0 ? +(valueSol - p.solSpent).toFixed(6) : 0;
+        const pendPnlPct = p.solSpent > 0 ? +((valueSol - p.solSpent) / p.solSpent * 100).toFixed(1) : 0;
         positions.push({
           mint: ca,
           ticker: token.ticker || p.ticker || "",
@@ -6057,8 +6157,9 @@ app.get("/api/positions/:wallet", async (req, res) => {
           valueSol: +valueSol.toFixed(6),
           valueUsd: +valueUsd.toFixed(2),
           holdPct: +(holdPct * 100).toFixed(3),
-          pnlSol: 0,
-          pnlPct: 0,
+          solSpent: p.solSpent,
+          pnlSol: pendPnlSol,
+          pnlPct: pendPnlPct,
           pending: true, // flag for frontend to show loading state
         });
       }

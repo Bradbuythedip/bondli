@@ -244,7 +244,7 @@ function ScorePanel({ token, onClose, onBuy, onSell, user, tradingBalance, solPr
         }}>
           {buying ? "SENDING..." : !user ? "CONNECT WALLET" : user.demo ? "DEMO MODE" : `BUY ${buyAmt} SOL`}
         </button>
-        {buyResult && <div style={{ fontSize: 10, marginTop: 3, color: buyResult.ok ? C.gn : C.rd, fontFamily: M }}>{buyResult.ok ? `Sent! ${buyResult.sig?.slice(0, 12)}...` : buyResult.err}</div>}
+        {buyResult && <div style={{ fontSize: 10, marginTop: 3, color: buyResult.ok ? C.gn : C.rd, fontFamily: M }}>{buyResult.ok ? `Sent! ${buyResult.sig?.slice(0, 12)}...` : buyResult.err}{buyResult.ok && buyResult.verified && <span style={{ color: C.gn, marginLeft: 4, fontWeight: 800 }}>VERIFIED</span>}{buyResult.ok && buyResult.verified === false && <span style={{ color: C.yl || "#fa0", marginLeft: 4, fontWeight: 800 }}>VERIFYING...</span>}</div>}
         {/* Sell buttons if held */}
         {isHeld && onSell && (
           <div style={{ display: "flex", gap: 3, marginTop: 6 }}>
