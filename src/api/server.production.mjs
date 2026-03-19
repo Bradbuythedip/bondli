@@ -5413,6 +5413,24 @@ app.post("/api/auto-trade/simulate", (req, res) => {
     let bestTrade = null, worstTrade = null;
     const trades = [];
 
+    // Build a lightweight portfolio snapshot for pipeline Gate 4
+    let btActivePositions = 0;
+    const btPortfolio = {
+      activePositionCount: 0,
+      maxPositions: s.maxPositions,
+      positionsLast10m: 0,
+      availableSOL: s.solPerTrade * s.maxPositions * 2,
+      totalBankroll: s.solPerTrade * s.maxPositions * 2,
+      solPerTrade: s.solPerTrade,
+      drawdownMult: 1,
+      consecutiveLosses: 0,
+      lastLossTime: 0,
+      currentDrawdownPct: 0,
+      settings: s,
+      learnerMult: 1,
+      activePositions: [],
+    };
+
     for (const t of tokens) {
       const spark = t.spark || [];
       if (spark.length < 6) continue;
@@ -5423,59 +5441,68 @@ app.post("/api/auto-trade/simulate", (req, res) => {
       const score = scoreResult?.score || t._apeScore || 0;
       if (score < s.minScore) continue;
 
+      // Run 5-gate pipeline for entry decision (matches live auto-ape)
+      const qf = features;
+      const dyn = scoreDynamics.get(t.ca);
+      const scores = {
+        apeScore: score,
+        scoreTimestamp: Date.now(),
+        pricePhase: t._pricePhase,
+        buyVelTrend: t._buyVelTrend,
+        rugFlagCount: t._rugFlags?.length || 0,
+      };
+      const pipeResult = runPipeline(t, qf, scores, dyn, btPortfolio);
+
+      // Only simulate tokens that pass the pipeline (ENTER decision)
+      if (pipeResult.decision !== "ENTER") continue;
+
+      // Use pipeline's tier-specific exit plan for TP/SL levels
+      const exitPlan = pipeResult.exitPlan || createExitPlan(pipeResult.tier || 2, score, s);
+      const tp = exitPlan.tpLevels;
+      const sizing = pipeResult.positionSize;
+      const tradeSol = sizing?.solAmount || Math.round(s.solPerTrade * 1000) / 1000;
+      const sizeMult = sizing?.sizeMult || 1;
+
       // Simulate entry at spark midpoint, exit at end
       const entryIdx = Math.floor(spark.length * 0.3);
       const entryMc = spark[entryIdx] || 1;
       const peakMc = Math.max(...spark.slice(entryIdx));
       const endMc = spark[spark.length - 1] || 1;
 
-      // Score-based sizing
-      const range = Math.max(80 - s.minScore, 20);
-      let sizeMult = 0.5 + ((score - s.minScore) / range);
-      sizeMult = Math.max(0.4, Math.min(1.6, sizeMult));
-      const tradeSol = Math.round(s.solPerTrade * sizeMult * 1000) / 1000;
-
       const peakPct = entryMc > 0 ? ((peakMc - entryMc) / entryMc) * 100 : 0;
       const endPct = entryMc > 0 ? ((endMc - entryMc) / entryMc) * 100 : 0;
 
-      // Simulate tiered TP/SL
-      let exitPct = endPct;
+      // Simulate tiered TP/SL using pipeline exit plan levels
       let exitReason = "hold";
       let soldPct = 0;
       let realizedPnl = 0;
 
-      // TP3
-      if (peakPct >= s.tp3) {
-        realizedPnl += tradeSol * (s.tp3 / 100) * (s.tp3Sell / 100);
-        soldPct += s.tp3Sell * ((100 - soldPct) / 100);
+      // TP3 (if tier supports it)
+      if (tp.tp3 > 0 && peakPct >= tp.tp3) {
+        realizedPnl += tradeSol * (tp.tp3 / 100) * (tp.tp3Sell / 100);
+        soldPct += tp.tp3Sell * ((100 - soldPct) / 100);
         exitReason = "TP3";
       }
       // TP2
-      if (peakPct >= s.tp2) {
+      if (peakPct >= tp.tp2) {
         const remaining = 100 - soldPct;
-        realizedPnl += tradeSol * (remaining / 100) * (s.tp2 / 100) * (s.tp2Sell / 100);
-        soldPct += s.tp2Sell * (remaining / 100);
+        realizedPnl += tradeSol * (remaining / 100) * (tp.tp2 / 100) * (tp.tp2Sell / 100);
+        soldPct += tp.tp2Sell * (remaining / 100);
         if (exitReason === "hold") exitReason = "TP2";
       }
       // TP1
-      if (peakPct >= s.tp1) {
+      if (peakPct >= tp.tp1) {
         const remaining = 100 - soldPct;
-        realizedPnl += tradeSol * (remaining / 100) * (s.tp1 / 100) * (s.tp1Sell / 100);
-        soldPct += s.tp1Sell * (remaining / 100);
+        realizedPnl += tradeSol * (remaining / 100) * (tp.tp1 / 100) * (tp.tp1Sell / 100);
+        soldPct += tp.tp1Sell * (remaining / 100);
         if (exitReason === "hold") exitReason = "TP1";
       }
-      // SL check on remaining
-      if (endPct <= -s.sl2 && soldPct < 100) {
+      // SL check using pipeline stop loss
+      if (endPct <= -exitPlan.stopLoss && soldPct < 100) {
         const remaining = 100 - soldPct;
         realizedPnl += tradeSol * (remaining / 100) * (endPct / 100);
         soldPct = 100;
-        exitReason = exitReason === "hold" ? "SL2" : exitReason + "+SL2";
-      } else if (endPct <= -s.sl1 && soldPct < 100) {
-        const remaining = 100 - soldPct;
-        const slSold = s.sl1Sell;
-        realizedPnl += tradeSol * (remaining / 100) * (slSold / 100) * (endPct / 100);
-        soldPct += slSold * (remaining / 100);
-        if (exitReason === "hold") exitReason = "SL1";
+        exitReason = exitReason === "hold" ? "SL" : exitReason + "+SL";
       }
       // Remaining unsold position at current price
       if (soldPct < 100) {
@@ -5486,7 +5513,9 @@ app.post("/api/auto-trade/simulate", (req, res) => {
       const trade = {
         name: t.name || t.ca?.slice(0, 8),
         score,
-        sizeMult: +sizeMult.toFixed(2),
+        tier: pipeResult.tier,
+        tierLabel: pipeResult.tierLabel,
+        sizeMult: +sizeMult.toFixed ? +sizeMult.toFixed(2) : sizeMult,
         sol: tradeSol,
         peakPct: +peakPct.toFixed(1),
         endPct: +endPct.toFixed(1),
@@ -5501,6 +5530,10 @@ app.post("/api/auto-trade/simulate", (req, res) => {
       else losses++;
       if (!bestTrade || realizedPnl > bestTrade.pnlSol) bestTrade = trade;
       if (!worstTrade || realizedPnl < worstTrade.pnlSol) worstTrade = trade;
+
+      // Update portfolio snapshot for subsequent iterations
+      btPortfolio.activePositionCount++;
+      btPortfolio.availableSOL -= tradeSol;
     }
 
     const winRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100) : 0;
@@ -6855,7 +6888,8 @@ function createLiveSim(id, settings) {
     const trade = { ca, name: pos.name, ticker: pos.ticker, entryScore: pos.entryScore, entrySol: pos.entrySol, changePct, pnlSol: +pnlSol.toFixed(4), exitReason: reason, duration: Date.now() - pos.entryTime, time: Date.now() };
     state.closedTrades.push(trade);
     if (state.closedTrades.length > 200) state.closedTrades.shift();
-    if (pnlSol > 0) state.stats.wins++; else state.stats.losses++;
+    if (pnlSol > 0) { state.stats.wins++; state._consecutiveLosses = 0; }
+    else { state.stats.losses++; state._consecutiveLosses = (state._consecutiveLosses || 0) + 1; state._lastLossTime = Date.now(); }
     state.stats.totalPnlSol += pnlSol;
     state.stats.totalSells++;
     if (!state.stats.bestTrade || pnlSol > state.stats.bestTrade.pnlSol) state.stats.bestTrade = trade;
@@ -7105,7 +7139,7 @@ function createLiveSim(id, settings) {
       }
       const tokenMap = new Map(tokens.map(t => [t.ca, t]));
 
-      // Check existing positions
+      // Check existing positions using auto-ape's 4-layer exit system
       for (const [ca, pos] of state.positions) {
         const token = tokenMap.get(ca);
         if (!token) {
@@ -7124,17 +7158,53 @@ function createLiveSim(id, settings) {
         const dyn = scoreDynamics.get(ca);
         pos.trend = dyn?.trend || "new";
         pos.liveScore = token._apeScore || 0;
+        // Enrich pos fields that runExitChecks needs
+        pos.liveBuys = token.buys || 0;
+        pos.liveUB = token.uniqueBuyers?.size || 0;
 
-        const s = state.settings;
-        if (changePct >= s.tp1 && !pos.tp1Hit) { pos.tp1Hit = true; addDecision("TP1", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); simLog(`SIM TP1 ${pos.name}: +${changePct.toFixed(0)}%`, "profit"); }
-        if (changePct >= s.tp2 && !pos.tp2Hit) { pos.tp2Hit = true; addDecision("TP2", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); simLog(`SIM TP2 ${pos.name}: +${changePct.toFixed(0)}%`, "profit"); }
-        if (changePct >= s.tp3 && !pos.tp3Hit) { pos.tp3Hit = true; addDecision("TP3", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); simLog(`SIM TP3 ${pos.name}: +${changePct.toFixed(0)}%`, "profit"); }
-        if (changePct <= -s.sl2) { addDecision("SELL", { ca, name: pos.name, reason: "SL2", pnlPct: +changePct.toFixed(1) }); simLog(`SIM SL2 ${pos.name}: ${changePct.toFixed(0)}% — full exit`, "loss"); closeTrade(ca, changePct, "SL2"); continue; }
-        if (changePct <= -s.sl1 && !pos.sl1Hit) { pos.sl1Hit = true; addDecision("SL1", { ca, name: pos.name, pnlPct: +changePct.toFixed(1) }); simLog(`SIM SL1 ${pos.name}: ${changePct.toFixed(0)}%`, "loss"); }
-        if (s.momentumExit && dyn?.trend === "crashing" && changePct < -5) { addDecision("SELL", { ca, name: pos.name, reason: "momentum-crash", pnlPct: +changePct.toFixed(1) }); simLog(`SIM CRASH EXIT ${pos.name}: score crashing at ${changePct.toFixed(0)}%`, "sell"); closeTrade(ca, changePct, "momentum-crash"); }
+        // Use auto-ape's runExitChecks — 4-layer system (derivatives, thresholds, trailing, graduation)
+        const exitResult = runExitChecks(pos, token, dyn, state.settings);
+        if (exitResult) {
+          const { action, pct, reason, layer, detail, moonbag } = exitResult;
+          const layerName = ["", "derivative", "threshold", "trailing", "graduation"][layer] || "unknown";
+          if (action === "SELL") {
+            addDecision("SELL", { ca, name: pos.name, reason, pnlPct: +changePct.toFixed(1), layer: layerName, detail });
+            simLog(`SIM EXIT ${pos.name}: ${reason} (L${layer}) at ${changePct.toFixed(0)}%${detail ? " — " + detail : ""}`, changePct >= 0 ? "profit" : "loss");
+            closeTrade(ca, changePct, reason);
+            continue;
+          } else if (action === "PARTIAL_SELL") {
+            // Track partial sells as TP hits for sim purposes
+            const tpNum = (pos.tpHit || 0) + 1;
+            pos.tpHit = tpNum;
+            addDecision(`TP${tpNum}`, { ca, name: pos.name, reason, pnlPct: +changePct.toFixed(1), sellPct: pct, layer: layerName, detail });
+            simLog(`SIM PARTIAL ${pos.name}: ${reason} (L${layer}) sell ${pct}% at +${changePct.toFixed(0)}%`, "profit");
+            // Simulate partial sell by reducing position proportionally
+            const soldFraction = (pct || 33) / 100;
+            const soldSol = pos.entrySol * soldFraction;
+            const partialPnl = soldSol * (changePct / 100);
+            state.stats.totalPnlSol += partialPnl;
+            if (state.stats.totalPnlSol > state.stats.peakPnl) state.stats.peakPnl = state.stats.totalPnlSol;
+            pos.entrySol *= (1 - soldFraction);
+            if (moonbag) {
+              pos.isMoonbag = true;
+              simLog(`SIM MOONBAG ${pos.name}: holding ${Math.round(pos.entrySol * 1000) / 1000} SOL`, "info");
+            }
+          } else if (action === "WIDEN_TPS") {
+            // Runner detected — log but no trade action needed in sim
+            if (!pos._runnerLogged) {
+              simLog(`SIM RUNNER ${pos.name}: ${reason} — widening TPs ×${exitResult.multiplier}`, "info");
+              pos._runnerLogged = true;
+            }
+          } else if (action === "TIGHTEN_SLS") {
+            if (!pos._tightenLogged) {
+              simLog(`SIM TIGHTEN ${pos.name}: ${reason} — SLs ×${exitResult.multiplier}`, "info");
+              pos._tightenLogged = true;
+            }
+          }
+        }
       }
 
-      // Look for new entries
+      // Look for new entries using auto-ape's 5-gate pipeline
       if (state.positions.size >= state.settings.maxPositions) {
         if (_simCycle % 8 === 1) simLog(`Max positions (${state.settings.maxPositions}) filled — watching for exits`, "scan");
         updateGraduation();
@@ -7146,12 +7216,31 @@ function createLiveSim(id, settings) {
         if (Date.now() - t > 1800000) state.soldCooldowns.delete(c);
       }
 
-      // Apply learner-recommended min score (matches auto-ape)
-      const adj = tradeLearner.getAdjustments();
-      const learnerMin = adj.minScoreShift || state.settings.minScore;
-      const effectiveMin = Math.min(state.settings.minScore + state.calibration.adjustments.scoreBias, learnerMin);
-      const scored = tokens.filter(t => (t._apeScore || 0) > 0);
-      const candidates = tokens.filter(t => {
+      // Build portfolio snapshot (matches auto-ape's _portfolioSnapshot structure)
+      if (!state._entryTimestamps) state._entryTimestamps = [];
+      state._entryTimestamps = state._entryTimestamps.filter(ts => Date.now() - ts < 600000);
+      const simBankroll = state.settings.solPerTrade * state.settings.maxPositions * 2; // simulated bankroll
+      const simInvested = [...state.positions.values()].reduce((s, p) => s + p.entrySol, 0);
+      const simPortfolio = {
+        activePositionCount: state.positions.size,
+        maxPositions: state.settings.maxPositions,
+        positionsLast10m: state._entryTimestamps.length,
+        availableSOL: simBankroll - simInvested,
+        totalBankroll: simBankroll,
+        solPerTrade: state.settings.solPerTrade,
+        drawdownMult: 1,
+        consecutiveLosses: state.stats.losses > 0 ? Math.min(5, state.stats.losses - state.stats.wins) : 0,
+        lastLossTime: state._lastLossTime || 0,
+        currentDrawdownPct: state.stats.peakPnl > 0 ? (state.stats.peakPnl - state.stats.totalPnlSol) / simBankroll : 0,
+        settings: state.settings,
+        learnerMult: 1,
+        activePositions: [...state.positions.entries()].map(([ca, p]) => ({
+          ca, devWallet: radar.tokens.get(ca)?.devWallet, archetype: p.archetype,
+        })),
+      };
+
+      // Pre-filter: skip already-held, cooldown, and unscored tokens
+      const preFiltered = tokens.filter(t => {
         if (state.positions.has(t.ca)) return false;
         if (state.soldCooldowns.has(t.ca)) {
           const soldAt = state.soldCooldowns.get(t.ca);
@@ -7160,42 +7249,78 @@ function createLiveSim(id, settings) {
           if (Date.now() - soldAt < (recovering ? 600000 : 1800000)) return false;
           state.soldCooldowns.delete(t.ca);
         }
-        const score = t._apeScore || 0;
-        return score >= effectiveMin;
+        return (t._apeScore || 0) > 0;
       }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
 
-      // Log scan activity periodically so user sees sim is working
-      if (_simCycle % 5 === 1) {
-        const topScore = scored.length > 0 ? Math.max(...scored.map(t => t._apeScore || 0)) : 0;
-        simLog(`Scan: ${tokens.length} tokens, ${scored.length} scored, ${candidates.length} candidates (min:${effectiveMin}, top:${topScore})`, "scan");
-      }
+      // Run 5-gate pipeline on top candidates (matches auto-ape exactly)
+      const pipelineResults = [];
+      const nearMisses = [];
+      const rugRejects = [];
+      for (const t of preFiltered.slice(0, 15)) {
+        const qf = typeof extractQuickFeatures === "function" ? extractQuickFeatures(t) : null;
+        const dyn = scoreDynamics.get(t.ca);
+        const scores = {
+          apeScore: t._apeScore || 0,
+          scoreTimestamp: Date.now(),
+          pricePhase: t._pricePhase,
+          buyVelTrend: t._buyVelTrend,
+          rugFlagCount: t._rugFlags?.length || 0,
+        };
+        const pipeResult = runPipeline(t, qf, scores, dyn, simPortfolio);
+        t._simPipelineTier = pipeResult.tier;
+        t._simPipelineLabel = pipeResult.tierLabel;
+        t._simPipelineDecision = pipeResult.decision;
 
-      // Log near misses for visibility
-      if (candidates.length === 0 && _simCycle % 10 === 1) {
-        const nearMisses = tokens.filter(t => !state.positions.has(t.ca) && (t._apeScore || 0) >= effectiveMin - 10 && (t._apeScore || 0) < effectiveMin).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0)).slice(0, 3);
-        if (nearMisses.length > 0) {
-          simLog(`Near misses: ${nearMisses.map(t => `${t.name||t.ca.slice(0,6)} s:${t._apeScore}`).join(", ")} (need ≥${effectiveMin})`, "scan");
+        if (pipeResult.decision === "ENTER") {
+          pipelineResults.push({ token: t, result: pipeResult, dyn });
+        } else if (pipeResult.decision === "WATCHLIST") {
+          nearMisses.push({ name: t.name || t.ca?.slice(0, 6), score: t._apeScore, tier: pipeResult.tier, reason: pipeResult.rejectReason });
+        } else if (pipeResult.rejectGate === 1) {
+          rugRejects.push({ name: t.name || t.ca?.slice(0, 6), reason: pipeResult.rejectReason });
         }
       }
 
-      for (const t of candidates.slice(0, 2)) {
+      // Log scan activity periodically so user sees sim is working
+      if (_simCycle % 5 === 1) {
+        const scored = preFiltered.length;
+        const topScore = preFiltered.length > 0 ? (preFiltered[0]._apeScore || 0) : 0;
+        simLog(`Scan: ${tokens.length} tokens, ${scored} scored, ${pipelineResults.length} passed pipeline (top:${topScore})`, "scan");
+      }
+
+      // Log near misses for visibility
+      if (pipelineResults.length === 0 && _simCycle % 10 === 1) {
+        if (nearMisses.length > 0) {
+          simLog(`Near misses (WATCHLIST): ${nearMisses.slice(0, 3).map(n => `${n.name} s:${n.score}`).join(", ")}`, "scan");
+        }
+        if (rugRejects.length > 0) {
+          simLog(`Rug rejects: ${rugRejects.slice(0, 3).map(r => `${r.name}:${r.reason}`).join(", ")}`, "scan");
+        }
+      }
+
+      // Enter positions for pipeline-approved tokens
+      for (const { token: t, result: pipeResult, dyn } of pipelineResults.slice(0, 2)) {
         if (state.positions.size >= state.settings.maxPositions) break;
         const score = t._apeScore || 0;
-        const dyn = scoreDynamics.get(t.ca);
         const trend = dyn?.trend || "new";
-        const rugFlags = t._rugFlags || [];
-        const sizeSol = calcPositionSize(score, trend, rugFlags.length);
+        const sizing = pipeResult.positionSize;
+        const sizeSol = sizing?.solAmount || calcPositionSize(score, trend, (t._rugFlags || []).length);
         state.positions.set(t.ca, {
           name: t.name, ticker: t.ticker, image: t.image, entryMcap: t.mcapUsd || 0,
           currentMcap: t.mcapUsd || 0, peakMcap: t.mcapUsd || 0, changePct: 0,
-          entrySol: sizeSol, sizeMult: +(sizeSol / state.settings.solPerTrade).toFixed(2),
+          entrySol: sizeSol, sizeMult: sizing?.sizeMult || +(sizeSol / state.settings.solPerTrade).toFixed(2),
           entryScore: score, liveScore: score, trend, entryTime: Date.now(),
-          tp1Hit: false, tp2Hit: false, tp3Hit: false, sl1Hit: false, isMoonbag: false,
+          // Auto-ape pipeline fields for exit system
+          tier: pipeResult.tier, tierLabel: pipeResult.tierLabel,
+          exitPlan: pipeResult.exitPlan,
+          tpHit: 0, slHit: 0, isMoonbag: false,
+          // Legacy compat
+          tp1Hit: false, tp2Hit: false, tp3Hit: false, sl1Hit: false,
         });
+        state._entryTimestamps.push(Date.now());
         state.stats.totalBuys++;
         state.stats.totalInvested += sizeSol;
-        addDecision("BUY", { ca: t.ca, name: t.name, score, trend, sol: sizeSol, rugFlags });
-        simLog(`SIM BUY ${t.name} score=${score} trend=${trend} MC:$${Math.round(t.mcapUsd||0)} sol=${sizeSol}`, "buy");
+        addDecision("BUY", { ca: t.ca, name: t.name, score, trend, sol: sizeSol, tier: pipeResult.tier, tierLabel: pipeResult.tierLabel, rugFlags: t._rugFlags || [], gates: pipeResult.timing });
+        simLog(`SIM BUY ${t.name} score=${score} T${pipeResult.tier}:${pipeResult.tierLabel} trend=${trend} MC:$${Math.round(t.mcapUsd||0)} sol=${sizeSol}`, "buy");
       }
 
       updateGraduation();
@@ -7256,8 +7381,9 @@ app.get("/api/sim/status", (req, res) => {
       entryMcap: p.entryMcap, currentMcap: p.currentMcap, peakMcap: p.peakMcap,
       changePct: p.changePct, entrySol: p.entrySol, sizeMult: p.sizeMult,
       entryScore: p.entryScore, liveScore: p.liveScore, trend: p.trend,
-      tpHit: (p.tp1Hit ? 1 : 0) + (p.tp2Hit ? 1 : 0) + (p.tp3Hit ? 1 : 0),
-      slHit: p.sl1Hit ? 1 : 0, isMoonbag: !!p.isMoonbag,
+      tpHit: p.tpHit || ((p.tp1Hit ? 1 : 0) + (p.tp2Hit ? 1 : 0) + (p.tp3Hit ? 1 : 0)),
+      slHit: p.slHit || (p.sl1Hit ? 1 : 0), isMoonbag: !!p.isMoonbag,
+      tier: p.tier || 0, tierLabel: p.tierLabel || "UNKNOWN",
       age: Math.round((Date.now() - p.entryTime) / 60000),
     })),
     decisions: state.decisions.slice(-30), log: state.log.slice(-30),
