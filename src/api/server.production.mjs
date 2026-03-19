@@ -37,7 +37,7 @@ import { FleetTrader, skimSweep } from "../engine/fleet-trader.mjs";
 import { createToken } from "../engine/token-creator.mjs";
 import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateFee, calculateReferralSplit, PLATFORM_WALLET, NETWORK_FEE_PCT } from "../engine/fee-engine.mjs";
 import CONFIG from "../engine/config.mjs";
-import { heliusSmartSend, getOptimalPriorityFee } from "../engine/helius-enhanced.mjs";
+import { smartSend, getOptimalPriorityFee } from "../engine/rpc-enhanced.mjs";
 import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
 import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
 import { XSocialIntel } from "../engine/x-social-intel.mjs";
@@ -56,8 +56,8 @@ const PORT = parseInt(process.env.PORT || "3001");
 // CONFIG.RPC_URL now auto-uses Helius when HELIUS_API_KEY is set
 const RPC_URL = process.env.RPC_URL || CONFIG.RPC_URL || "https://api.mainnet-beta.solana.com";
 
-// Helius-optimized sendTransaction — delegated to helius-enhanced.mjs
-const heliusSendRawTx = heliusSmartSend;
+// RPC-optimized sendTransaction — delegated to rpc-enhanced.mjs
+const heliusSendRawTx = smartSend;
 const REDIS_URL = process.env.REDIS_URL || null;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
 const DEFAULT_REFERRAL_CODE = "ilikethetech"; // owner's referral code — applied to all new users unless they have another referrer

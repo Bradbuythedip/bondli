@@ -13,7 +13,7 @@ import { PumpSdk, OnlinePumpSdk, getBuyTokenAmountFromSolAmount, getSellSolAmoun
 import BN from "bn.js";
 import bs58 from "bs58";
 import CONFIG from "./config.mjs";
-import { getOptimalPriorityFee, heliusSmartSend } from "./helius-enhanced.mjs";
+import { getOptimalPriorityFee, smartSend } from "./rpc-enhanced.mjs";
 import { ContinuousVolumeEngine, AutoRugController } from "./volume-engine.mjs";
 import { EventEmitter } from "events";
 import WebSocket from "ws";
@@ -418,8 +418,8 @@ const ROLES = [
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// HELIUS SEND — delegated to helius-enhanced.mjs (priority fees + smart tx)
-const heliusSendRawTx = heliusSmartSend;
+// RPC SEND — delegated to rpc-enhanced.mjs (priority fees + optimized tx)
+const heliusSendRawTx = smartSend;
 
 // ═══════════════════════════════════════
 // ENFORCED PROFIT SKIM
