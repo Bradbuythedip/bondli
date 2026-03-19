@@ -640,9 +640,11 @@ async function fetchPumpFunMetadata(ca) {
 async function fetchTokenImage(ca, uri) {
   try {
     let url = uri;
-    if (url.startsWith("ipfs://")) url = "https://cf-ipfs.com/ipfs/" + url.slice(7);
-    // pump.fun uses cf-ipfs for metadata
-    if (url.includes("bafkrei") && !url.startsWith("http")) url = "https://cf-ipfs.com/ipfs/" + url;
+    if (url.startsWith("ipfs://")) url = "https://gateway.pinata.cloud/ipfs/" + url.slice(7);
+    // pump.fun uses IPFS for metadata
+    if (url.includes("bafkrei") && !url.startsWith("http")) url = "https://gateway.pinata.cloud/ipfs/" + url;
+    // Rewrite slow cf-ipfs to Pinata
+    if (url.includes("cf-ipfs.com/ipfs/")) url = url.replace("cf-ipfs.com/ipfs/", "gateway.pinata.cloud/ipfs/");
     
     const r = await fetch(url, {
       signal: AbortSignal.timeout(8000),
@@ -654,8 +656,10 @@ async function fetchTokenImage(ca, uri) {
     if (!token) return;
     
     let img = meta.image || meta.imageUri || "";
-    if (img.startsWith("ipfs://")) img = "https://cf-ipfs.com/ipfs/" + img.slice(7);
-    if (img && !img.startsWith("http")) img = "https://cf-ipfs.com/ipfs/" + img;
+    if (img.startsWith("ipfs://")) img = "https://gateway.pinata.cloud/ipfs/" + img.slice(7);
+    if (img && !img.startsWith("http")) img = "https://gateway.pinata.cloud/ipfs/" + img;
+    // Rewrite slow cf-ipfs URLs to Pinata
+    if (img.includes("cf-ipfs.com/ipfs/")) img = img.replace("cf-ipfs.com/ipfs/", "gateway.pinata.cloud/ipfs/");
     
     if (img) token.image = img;
     if (meta.name && !token.name) token.name = meta.name;
@@ -5851,8 +5855,9 @@ app.get("/api/positions/:wallet", async (req, res) => {
 // ═══════════════════════════════════════
 // In-memory image cache to avoid repeated fetches for the same URL
 const imgCache = new Map(); // url → { buf, ct, ts }
-const IMG_CACHE_MAX = 500;
-const IMG_CACHE_TTL = 3600000; // 1 hour
+const IMG_CACHE_MAX = 2000;
+const IMG_CACHE_TTL = 7200000; // 2 hours
+const imgFailing = new Map(); // url → timestamp of last failure (negative cache)
 
 app.get("/api/img", async (req, res) => {
   const url = req.query.url;
@@ -5867,6 +5872,12 @@ app.get("/api/img", async (req, res) => {
     return res.send(cached.buf);
   }
 
+  // Negative cache: if this URL failed recently, don't retry for 2 min
+  const failTs = imgFailing.get(url);
+  if (failTs && Date.now() - failTs < 120000) {
+    return res.status(404).end();
+  }
+
   try {
     let fetchUrl = url;
     if (fetchUrl.startsWith("ipfs://")) fetchUrl = fetchUrl.slice(7);
@@ -5875,52 +5886,77 @@ app.get("/api/img", async (req, res) => {
     const ipfsMatch = fetchUrl.match(/(Qm[a-zA-Z0-9]{44,}|bafkrei[a-zA-Z0-9]{50,}|bafy[a-zA-Z0-9]{50,})/);
     const ipfsHash = ipfsMatch ? ipfsMatch[1] : null;
 
-    // Build ordered list of URLs to try — more gateways for reliability
+    // Build gateway URLs — fastest/most reliable first
     const urls = [];
     if (ipfsHash) {
       urls.push(`https://img.fotofolio.xyz/?url=https%3A%2F%2Fcf-ipfs.com%2Fipfs%2F${ipfsHash}`);
-      urls.push(`https://cf-ipfs.com/ipfs/${ipfsHash}`);
       urls.push(`https://gateway.pinata.cloud/ipfs/${ipfsHash}`);
+      urls.push(`https://cf-ipfs.com/ipfs/${ipfsHash}`);
       urls.push(`https://nftstorage.link/ipfs/${ipfsHash}`);
       urls.push(`https://dweb.link/ipfs/${ipfsHash}`);
       urls.push(`https://ipfs.io/ipfs/${ipfsHash}`);
     }
-    // pump.fun image CDN — try directly if the URL is from pump.fun
     if (fetchUrl.includes("pump.fun") || fetchUrl.includes("cf-ipfs")) {
       const pumpMatch = fetchUrl.match(/\/ipfs\/([a-zA-Z0-9]+)/);
       if (pumpMatch) urls.unshift(`https://img.fotofolio.xyz/?url=${encodeURIComponent(fetchUrl)}`);
     }
-    // Always try the original URL
     if (!fetchUrl.startsWith("http")) fetchUrl = "https://" + fetchUrl;
     urls.push(fetchUrl);
 
-    for (const u of urls) {
-      try {
-        const r = await fetch(u, {
-          signal: AbortSignal.timeout(8000),
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "image/*,*/*" },
-          redirect: "follow",
-        });
-        if (!r.ok) continue;
-        const ct = r.headers.get("content-type") || "image/png";
-        if (!ct.includes("image") && !ct.includes("octet")) continue;
-        const buf = Buffer.from(await r.arrayBuffer());
-        if (buf.length < 100) continue; // skip empty/tiny responses
+    // Helper: fetch a single URL with short timeout
+    const tryFetch = async (u, timeout) => {
+      const r = await fetch(u, {
+        signal: AbortSignal.timeout(timeout),
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "image/*,*/*" },
+        redirect: "follow",
+      });
+      if (!r.ok) throw new Error(r.status);
+      const ct = r.headers.get("content-type") || "image/png";
+      if (!ct.includes("image") && !ct.includes("octet")) throw new Error("not image");
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length < 100) throw new Error("too small");
+      return { buf, ct };
+    };
 
-        // Cache the result
-        if (imgCache.size >= IMG_CACHE_MAX) {
-          const oldest = [...imgCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
-          if (oldest) imgCache.delete(oldest[0]);
-        }
-        imgCache.set(url, { buf, ct, ts: Date.now() });
+    // Race strategy: fire first 3 gateways concurrently (5s timeout),
+    // fallback to remaining sequentially (4s each) if all fail
+    let result = null;
+    const batch1 = urls.slice(0, 3);
+    const batch2 = urls.slice(3);
 
-        res.set("Content-Type", ct);
-        res.set("Cache-Control", "public, max-age=86400");
-        res.set("Access-Control-Allow-Origin", "*");
-        return res.send(buf);
-      } catch { continue; }
+    try {
+      result = await Promise.any(batch1.map(u => tryFetch(u, 5000)));
+    } catch {
+      // batch1 all failed, try remaining sequentially with short timeout
+      for (const u of batch2) {
+        try { result = await tryFetch(u, 4000); break; } catch { continue; }
+      }
     }
-    res.status(404).end();
+
+    if (!result) {
+      imgFailing.set(url, Date.now());
+      // Evict old negative cache entries
+      if (imgFailing.size > 5000) {
+        const cutoff = Date.now() - 120000;
+        for (const [k, v] of imgFailing) { if (v < cutoff) imgFailing.delete(k); }
+      }
+      return res.status(404).end();
+    }
+
+    // Cache the result
+    if (imgCache.size >= IMG_CACHE_MAX) {
+      // Evict ~10% oldest entries in bulk instead of sorting every time
+      const entries = [...imgCache.entries()];
+      entries.sort((a, b) => a[1].ts - b[1].ts);
+      const evictCount = Math.max(1, Math.floor(IMG_CACHE_MAX * 0.1));
+      for (let i = 0; i < evictCount; i++) imgCache.delete(entries[i][0]);
+    }
+    imgCache.set(url, { buf: result.buf, ct: result.ct, ts: Date.now() });
+
+    res.set("Content-Type", result.ct);
+    res.set("Cache-Control", "public, max-age=86400");
+    res.set("Access-Control-Allow-Origin", "*");
+    return res.send(result.buf);
   } catch { res.status(502).end(); }
 });
 
