@@ -27,8 +27,8 @@ import SessionStore from "../db/session-store.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
 import { scoreToken } from "../engine/velocity-scorer.mjs";
 
-// Memetic trading pipeline
-import { MemeticPipeline } from "../engine/memetic-pipeline.mjs";
+// Memetic scoring (Alchemy-free — uses PumpPortal data)
+import { MemeticPipeline, scoreMemeticQuick, scoreTokenMemetic, loadBlacklists as loadMemeticBlacklists, startMemeticWorkers } from "../engine/memetic-pipeline.mjs";
 import { scheduleRetraining } from "../scoring/memetic/learning-pipeline.js";
 
 // Intelligence — meme scoring, score dynamics, artwork originality
@@ -435,9 +435,8 @@ app.get("/api/score/:ca", apiLimiter, async (req, res) => {
       } catch {}
     }
 
-    // Enrich with memetic physics score
+    // Enrich with memetic score (Alchemy-free)
     try {
-      const { scoreMemeticQuick } = await import("../scoring/memetic/index.js");
       const memeticResult = await scoreMemeticQuick({
         name: scored.name || "", symbol: scored.ticker || "",
       });
@@ -445,11 +444,11 @@ app.get("/api/score/:ca", apiLimiter, async (req, res) => {
       scored.memeticLinguistic = memeticResult.linguistic;
       scored.memeticAbsurdity = memeticResult.absurdity;
       scored.memeticTemporal = memeticResult.temporal;
-      // Blend memetic into apeScore: 70% original + 30% memetic-adjusted
+      // Blend memetic into apeScore
       if (scored.apeScore !== undefined && memeticResult.quickScore > 0) {
-        const memeticBoost = (memeticResult.quickScore - 0.5) * 4; // -2 to +2 range
+        const memeticBoost = Math.round((memeticResult.quickScore - 0.45) * 24);
+        scored.apeScoreRaw = scored.apeScore;
         scored.apeScore = Math.max(0, scored.apeScore + memeticBoost * 0.3);
-        scored.apeScoreRaw = scored.apeScore - memeticBoost * 0.3; // preserve original
       }
     } catch {}
 
@@ -1799,29 +1798,14 @@ async function start() {
     await initServices();
     app.use(createPaymentRoutes(paymentVerifier));
 
-    // Initialize memetic trading pipeline
+    // Initialize memetic scoring (Alchemy-free — scores inline from PF data)
     try {
-      memeticPipeline = new MemeticPipeline({
-        dryRun: CONFIG.DRY_RUN,
-        alchemyApiKey: process.env.ALCHEMY_API_KEY,
-      });
-
-      // Pipe memetic events to WebSocket clients
-      const pipelineEvents = ['token_detected', 'token_scored', 'token_filtered', 'position_entered', 'position_update', 'position_exited', 'graduation'];
-      for (const event of pipelineEvents) {
-        memeticPipeline.on(event, (data) => {
-          const str = JSON.stringify({ type: event, ...data });
-          wss.clients.forEach(ws => {
-            if (ws.readyState === 1) { try { ws.send(str); } catch {} }
-          });
-        });
-      }
-
+      memeticPipeline = new MemeticPipeline({ dryRun: CONFIG.DRY_RUN });
       await memeticPipeline.start();
       scheduleRetraining();
-      console.log("  \x1b[36mMemetic Pipeline: ACTIVE\x1b[0m");
+      console.log("  \x1b[36mMemetic Scoring: ACTIVE (PumpPortal mode)\x1b[0m");
     } catch (e) {
-      console.error("  Memetic Pipeline failed to start:", e.message);
+      console.error("  Memetic Scoring failed to start:", e.message);
     }
 
     server.listen(PORT, () => {
