@@ -9,7 +9,7 @@
  *
  * This engine closes that loop:
  *   1. LEADERBOARD: ranks wallets by win rate, avg return, consistency
- *   2. WATCHLIST: monitors top wallets via Helius for new buys
+ *   2. WATCHLIST: monitors top wallets via RPC for new buys
  *   3. SIGNALS: emits "smart money alert" when a tracked wallet apes
  *      into a token we haven't seen yet — BEFORE the radar picks it up
  *   4. COPY SCORING: feeds signals into the scoring pipeline so tokens
@@ -17,22 +17,23 @@
  *
  * Data flow:
  *   smartWallets (existing) → feeds wallet stats into leaderboard
- *   Helius tx polling → detects new buys from top wallets
+ *   RPC tx polling → detects new buys from top wallets
  *   Signal emitted → token gets fast-tracked onto radar with boost
  *
  * ═══════════════════════════════════════════════════════════════
  */
 
+import { Connection, PublicKey } from "@solana/web3.js";
 import CONFIG from "./config.mjs";
 
 // pump.fun program ID
 const PUMP_FUN_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 
 export class SmartMoneyTracker {
-  constructor({ redis = null, heliusApiKey = "", onSignal = null } = {}) {
+  constructor({ redis = null, onSignal = null } = {}) {
     this.redis = redis;
-    this.heliusApiKey = heliusApiKey || CONFIG.HELIUS_API_KEY || "";
-    this.heliusBase = "https://api.helius.xyz/v0";
+    this.rpcEnabled = !!CONFIG.ALCHEMY_API_KEY;
+    this.connection = new Connection(CONFIG.RPC_URL, "confirmed");
     this.onSignal = onSignal; // callback: (signal) => {} — emits to radar/scoring
 
     // ── Wallet leaderboard ──
@@ -242,13 +243,13 @@ export class SmartMoneyTracker {
   }
 
   // ═══════════════════════════════════════
-  // POLLING — Helius transaction monitoring
+  // POLLING — RPC transaction monitoring
   // ═══════════════════════════════════════
 
   start() {
     if (this.pollInterval) return;
-    if (!this.heliusApiKey) {
-      console.log("[SMART-MONEY] No Helius API key — polling disabled (passive mode only)");
+    if (!this.rpcEnabled) {
+      console.log("[SMART-MONEY] No Alchemy API key — polling disabled (passive mode only)");
       return;
     }
     console.log(`[SMART-MONEY] Starting wallet poll (${this.watchlist.size} wallets, ${this.POLL_INTERVAL_MS / 1000}s interval)`);
@@ -286,21 +287,20 @@ export class SmartMoneyTracker {
 
   async _pollWallet(address) {
     try {
-      const url = `${this.heliusBase}/addresses/${address}/transactions?api-key=${this.heliusApiKey}&limit=5&type=SWAP`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) return;
-
-      const txs = await res.json();
-      if (!txs || !txs.length) return;
+      const pubkey = new PublicKey(address);
+      const sigs = await this.connection.getSignaturesForAddress(pubkey, { limit: 5 }, "confirmed");
+      if (!sigs || !sigs.length) return;
 
       const lastSig = this.lastPollSignatures.get(address);
 
-      for (const tx of txs) {
-        // Skip already-seen transactions
-        if (tx.signature === lastSig) break;
+      for (const sig of sigs) {
+        if (sig.signature === lastSig) break;
 
-        // Look for pump.fun buys
-        const isPumpBuy = this._isPumpFunBuy(tx);
+        // Fetch full parsed transaction to detect pump.fun buys
+        const tx = await this.connection.getParsedTransaction(sig.signature, { maxSupportedTransactionVersion: 0 });
+        if (!tx) continue;
+
+        const isPumpBuy = this._isPumpFunBuy(tx, address);
         if (isPumpBuy) {
           this._emitSignal({
             type: "smart_money_buy",
@@ -312,43 +312,50 @@ export class SmartMoneyTracker {
             walletScore: this.wallets.get(address)?.score || 0,
             walletWinRate: this.wallets.get(address)?.winRate || 0,
             walletWins: this.wallets.get(address)?.wins || 0,
-            timestamp: tx.timestamp * 1000,
+            timestamp: (sig.blockTime || 0) * 1000,
           });
         }
       }
 
       // Update last seen signature
-      if (txs[0]?.signature) {
-        this.lastPollSignatures.set(address, txs[0].signature);
+      if (sigs[0]?.signature) {
+        this.lastPollSignatures.set(address, sigs[0].signature);
       }
     } catch (e) {
       this.stats.pollErrors++;
     }
   }
 
-  _isPumpFunBuy(tx) {
-    if (!tx.instructions) return null;
+  _isPumpFunBuy(tx, walletAddress) {
+    if (!tx.transaction?.message?.instructions) return null;
 
-    // Look for pump.fun program interaction
-    const pumpIx = tx.instructions.find(i => i.programId === PUMP_FUN_PROGRAM);
-    if (!pumpIx) return null;
+    // Check if pump.fun program is involved
+    const hasPump = tx.transaction.message.instructions.some(ix => {
+      const prog = ix.programId?.toBase58?.() || "";
+      return prog === PUMP_FUN_PROGRAM;
+    });
+    if (!hasPump) return null;
 
-    // Check token transfers — buying = SOL out, tokens in
-    const transfers = tx.tokenTransfers || [];
-    const nativeTransfers = tx.nativeTransfers || [];
+    // Analyze token balance changes to detect buy
+    const preBalances = tx.meta?.preTokenBalances || [];
+    const postBalances = tx.meta?.postTokenBalances || [];
 
-    // Find SOL spent (native transfer out from this wallet)
-    const solOut = nativeTransfers
-      .filter(t => t.fromUserAccount === tx.feePayer)
-      .reduce((s, t) => s + (t.amount || 0), 0) / 1e9;
+    for (const post of postBalances) {
+      if (!post.mint || post.mint === "So11111111111111111111111111111111111111112") continue;
+      const pre = preBalances.find(p => p.accountIndex === post.accountIndex);
+      const preAmt = parseFloat(pre?.uiTokenAmount?.uiAmount || 0);
+      const postAmt = parseFloat(post.uiTokenAmount?.uiAmount || 0);
 
-    // Find token received
-    const tokenIn = transfers.find(t =>
-      t.toUserAccount === tx.feePayer && t.mint && t.mint !== "So11111111111111111111111111111111111111112"
-    );
+      if (postAmt > preAmt) {
+        // Token received — this is a buy. Estimate SOL spent from lamport diff
+        const preSol = (tx.meta?.preBalances?.[0] || 0) / 1e9;
+        const postSol = (tx.meta?.postBalances?.[0] || 0) / 1e9;
+        const solSpent = preSol - postSol;
 
-    if (solOut > 0.005 && tokenIn?.mint) {
-      return { mint: tokenIn.mint, solAmount: solOut };
+        if (solSpent > 0.005) {
+          return { mint: post.mint, solAmount: solSpent };
+        }
+      }
     }
 
     return null;
@@ -583,7 +590,7 @@ export class SmartMoneyTracker {
       recentSignals: this.recentSignals.size,
       stats: { ...this.stats },
       polling: !!this.pollInterval,
-      heliusEnabled: !!this.heliusApiKey,
+      rpcEnabled: this.rpcEnabled,
     };
   }
 }

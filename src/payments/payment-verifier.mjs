@@ -23,7 +23,7 @@ async function resolvePlatformWallet(connection) {
 
 export class PaymentVerifier {
   constructor(connection) {
-    this.connection = connection || new Connection(process.env.RPC_URL, "confirmed");
+    this.connection = connection || new Connection(process.env.RPC_URL || "https://api.mainnet-beta.solana.com", "confirmed");
     this.verifiedPayments = new Map(); // txSig -> { wallet, amount, time }
     this.platformPubkey = null;
   }

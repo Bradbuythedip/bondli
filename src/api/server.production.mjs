@@ -53,11 +53,11 @@ import { runPipeline, runExitChecks, classifyConfidence, calculatePositionSize, 
 // ENVIRONMENT
 // ═══════════════════════════════════════
 const PORT = parseInt(process.env.PORT || "3001");
-// CONFIG.RPC_URL now auto-uses Helius when HELIUS_API_KEY is set
+// CONFIG.RPC_URL now auto-uses Alchemy when ALCHEMY_API_KEY is set
 const RPC_URL = process.env.RPC_URL || CONFIG.RPC_URL || "https://api.mainnet-beta.solana.com";
 
 // RPC-optimized sendTransaction — delegated to rpc-enhanced.mjs
-const heliusSendRawTx = smartSend;
+const rpcSendRawTx = smartSend;
 const REDIS_URL = process.env.REDIS_URL || null;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
 const DEFAULT_REFERRAL_CODE = "ilikethetech"; // owner's referral code — applied to all new users unless they have another referrer
@@ -153,7 +153,6 @@ const survivorBias = new SurvivorshipBias(redis);
 // Smart Money Tracker — monitors profitable wallets, emits signals for new buys
 const smartMoneyTracker = new SmartMoneyTracker({
   redis,
-  heliusApiKey: CONFIG.HELIUS_API_KEY,
   onSignal: (signal) => {
     // When a smart wallet buys a token we're not tracking yet, fast-track it onto radar
     const mint = signal.mint;
@@ -206,16 +205,14 @@ async function getWalletAge(walletAddress) {
   if (cached && Date.now() - cached.checkedAt < WALLET_AGE_TTL) return cached;
 
   try {
-    // Use Helius enhanced API for transaction history (fastest way to get oldest tx)
-    if (CONFIG.HELIUS_API_KEY) {
-      const resp = await fetch(
-        `https://api.helius.xyz/v0/addresses/${walletAddress}/transactions?api-key=${CONFIG.HELIUS_API_KEY}&limit=1&type=TRANSFER`,
-        { signal: AbortSignal.timeout(3000) }
-      );
-      if (resp.ok) {
-        const txs = await resp.json();
-        if (txs.length > 0 && txs[0].timestamp) {
-          const firstTxTime = txs[0].timestamp * 1000; // Helius returns seconds
+    // Use Solana RPC getSignaturesForAddress via Tatum gateway for wallet age
+    if (CONFIG.ALCHEMY_API_KEY) {
+      try {
+        const sigs = await connection.getSignaturesForAddress(
+          new PublicKey(walletAddress), { limit: 1 }, "confirmed"
+        );
+        if (sigs.length > 0 && sigs[0].blockTime) {
+          const firstTxTime = sigs[0].blockTime * 1000;
           const ageMs = Date.now() - firstTxTime;
           const entry = { ageMs, firstTxTime, checkedAt: Date.now() };
           walletAgeCache.set(walletAddress, entry);
@@ -225,7 +222,7 @@ async function getWalletAge(walletAddress) {
           }
           return entry;
         }
-      }
+      } catch {}
     }
 
     // Fallback: use Solana RPC getSignaturesForAddress (returns newest first, but limit=1 is fast)
@@ -3122,7 +3119,7 @@ app.post("/api/quick-ape", async (req, res) => {
       if (txBytes.byteLength < 100) throw new Error("empty_response");
       const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
       tx.sign([kp]);
-      const txSig = await heliusSendRawTx(connection, tx.serialize());
+      const txSig = await rpcSendRawTx(connection, tx.serialize());
       return { sig: txSig, method: `pumpportal:${pool}` };
     };
 
@@ -3186,7 +3183,7 @@ app.post("/api/quick-ape", async (req, res) => {
         const { swapTransaction } = await swapResp.json();
         const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
         tx.sign([kp]);
-        const txSig = await heliusSendRawTx(connection, tx.serialize());
+        const txSig = await rpcSendRawTx(connection, tx.serialize());
         return { sig: txSig, method: "jupiter-v6" };
       })().catch(e => { errors.push(`JUP-v6=${e.message.slice(0, 60)}`); throw e; }));
     }
@@ -3294,7 +3291,7 @@ app.post("/api/quick-sell", async (req, res) => {
       if (txBytes.byteLength < 100) throw new Error("empty_response");
       const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
       tx.sign([kp]);
-      const txSig = await heliusSendRawTx(connection, tx.serialize());
+      const txSig = await rpcSendRawTx(connection, tx.serialize());
       return { sig: txSig, method: `pumpportal:${pool}` };
     };
 
@@ -3350,7 +3347,7 @@ app.post("/api/quick-sell", async (req, res) => {
       const { swapTransaction } = await swapResp.json();
       const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
       tx.sign([kp]);
-      const txSig = await heliusSendRawTx(connection, tx.serialize());
+      const txSig = await rpcSendRawTx(connection, tx.serialize());
       return { sig: txSig, method: "jupiter-v6" };
     };
 
@@ -3401,7 +3398,7 @@ app.post("/api/quick-sell", async (req, res) => {
           if (txBytes.byteLength > 100) {
             const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
             tx.sign([kp]);
-            sig = await heliusSendRawTx(connection, tx.serialize());
+            sig = await rpcSendRawTx(connection, tx.serialize());
             method = "pumpportal:amount-fallback";
             console.log(`[SELL] Amount-based fallback success: ${sig}`);
           }
@@ -5263,7 +5260,7 @@ app.post("/api/auto-trade/exit-position", async (req, res) => {
       if (txBytes.byteLength > 100) {
         const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
         tx.sign([kp]);
-        sig = await heliusSendRawTx(connection, tx.serialize());
+        sig = await rpcSendRawTx(connection, tx.serialize());
       }
     }
     // If PumpPortal failed, try Jupiter as fallback for graduated tokens

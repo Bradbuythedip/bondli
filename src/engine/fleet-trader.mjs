@@ -419,7 +419,7 @@ const ROLES = [
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // RPC SEND — delegated to rpc-enhanced.mjs (priority fees + optimized tx)
-const heliusSendRawTx = smartSend;
+const rpcSendRawTx = smartSend;
 
 // ═══════════════════════════════════════
 // ENFORCED PROFIT SKIM
@@ -1398,7 +1398,7 @@ class FleetTrader extends EventEmitter {
       console.warn(`[FLEET] Jito send failed (${endpoint.split("/")[2]}): ${e.message} — falling back to Helius/standard`);
     }
     // Fallback: Helius sendTransaction (staked connections) → standard RPC
-    const sig = await heliusSendRawTx(this.connection, serialized);
+    const sig = await rpcSendRawTx(this.connection, serialized);
     await this.connection.confirmTransaction(sig, "confirmed");
     return sig;
   }
@@ -1498,7 +1498,7 @@ class FleetTrader extends EventEmitter {
     tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
     tx.feePayer = keypair.publicKey;
     tx.sign(keypair);
-    const sig = await heliusSendRawTx(this.connection, tx.serialize());
+    const sig = await rpcSendRawTx(this.connection, tx.serialize());
     await this.connection.confirmTransaction(sig, "confirmed");
     return { ok: true, sig, solOut: parseFloat(solOut.toString()) / 1e9, tokens: sellAmount.toString() };
   }
