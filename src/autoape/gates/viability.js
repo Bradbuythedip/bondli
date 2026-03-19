@@ -1,0 +1,51 @@
+// ═══ GATE 2: MINIMUM VIABILITY — Score & Feature Floors (<10ms) ═══
+// Tokens passing Gate 1 aren't dangerous, but might be noise.
+// Every floor must be met (AND conditions).
+
+export function checkViability(token, qf, scores, dynamics) {
+  const checks = [];
+  const buys = token.buys || 0;
+  const ub = token.uniqueBuyers?.size || 0;
+  const sells = token.sells || 0;
+  const mc = token.mcapUsd || 0;
+  const ageMin = (Date.now() - (token.createdAt || Date.now())) / 60000;
+  const vol = token.volumeSol || 0;
+
+  // === COMPOSITE SCORE FLOOR ===
+  // The token must have passed base scoring. Score is 0-99 (our system).
+  // Map: 55/100 composite ≈ score 45 in our 0-99 system
+  if ((scores.apeScore || 0) < 45) checks.push("SCORE_BELOW_FLOOR");
+
+  // === ON-CHAIN ACTIVITY MINIMUM ===
+  // Must have at least 5 unique buyers (was 10 in spec, relaxed for pump.fun reality)
+  if (ub < 5 && ageMin >= 2) checks.push("DEAD_ON_ARRIVAL");
+
+  // Buy/sell ratio must show demand
+  if (buys > 5 && sells > buys * 1.2) checks.push("WEAK_DEMAND");
+
+  // === LIQUIDITY FLOOR ===
+  // Bonding curve must have meaningful SOL
+  if (mc < 4000) checks.push("INSUFFICIENT_LIQUIDITY");
+
+  // === SYBIL CHECK ===
+  if (qf?._rg_sybilScore > 0.40) checks.push("HIGH_SYBIL_RISK");
+
+  // === DYNAMICS GATE ===
+  // Must have at least 1 score observation
+  const dyn = dynamics;
+  const isEarlyMover = ageMin < 2 && mc >= 4000 && mc <= 30000 && ub >= 2;
+  if (!dyn || (dyn.scores < 2 && !isEarlyMover)) checks.push("INSUFFICIENT_DATA");
+
+  // Actively crashing = dead
+  if (dyn?.trend === "crashing") checks.push("CRASHING_SCORE");
+
+  // === STRUCTURAL DIVERSITY ===
+  // Fresh wallets dominating = sybil/dev-buy setup
+  if (qf?._rg_freshWalletRatio > 0.80 && !isEarlyMover) checks.push("SINGLE_CLUSTER_BUYERS");
+
+  return {
+    pass: checks.length === 0,
+    checks,
+    fatal: false,
+  };
+}
