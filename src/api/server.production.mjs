@@ -6404,14 +6404,67 @@ app.get("/api/price/:ca", (req, res) => {
 app.get("/api/chart/:ca", (req, res) => {
   const token = radar.tokens.get(req.params.ca);
   if (!token || !token.spark?.length) return res.json({ candles: [] });
-  // Generate OHLC from spark data
+
+  const interval = parseInt(req.query.interval) || 15; // seconds per candle
+  const intervalMs = interval * 1000;
+
+  // Method 1: Build candles from trades (best data)
+  if (token.trades?.length >= 3) {
+    const trades = token.trades;
+    const startTime = trades[0].time;
+    const endTime = trades[trades.length - 1].time;
+    const candles = [];
+    let bucketStart = startTime;
+    let sparkIdx = 0;
+
+    // Estimate spark timing: spark entries are pushed ~when trades happen
+    const sparkInterval = token.spark.length > 1 ? (endTime - startTime) / (token.spark.length - 1) : intervalMs;
+
+    while (bucketStart <= endTime + intervalMs) {
+      const bucketEnd = bucketStart + intervalMs;
+      const bucketTrades = trades.filter(t => t.time >= bucketStart && t.time < bucketEnd);
+
+      // Get spark values in this time range
+      const sparkVals = [];
+      while (sparkIdx < token.spark.length) {
+        const sparkTime = startTime + sparkIdx * sparkInterval;
+        if (sparkTime >= bucketEnd) break;
+        if (sparkTime >= bucketStart) sparkVals.push(token.spark[sparkIdx]);
+        sparkIdx++;
+      }
+
+      if (sparkVals.length > 0 || bucketTrades.length > 0) {
+        const vals = sparkVals.length > 0 ? sparkVals : [candles.length > 0 ? candles[candles.length - 1].close : token.spark[0] || 0];
+        const buyVol = bucketTrades.filter(t => t.side === "buy").reduce((s, t) => s + (t.sol || 0), 0);
+        const sellVol = bucketTrades.filter(t => t.side === "sell").reduce((s, t) => s + (t.sol || 0), 0);
+
+        candles.push({
+          time: Math.floor(bucketStart / 1000),
+          open: vals[0],
+          high: Math.max(...vals),
+          low: Math.min(...vals),
+          close: vals[vals.length - 1],
+          volume: +(buyVol + sellVol).toFixed(4),
+          buyVol: +buyVol.toFixed(4),
+          sellVol: +sellVol.toFixed(4),
+          trades: bucketTrades.length,
+        });
+      }
+
+      bucketStart = bucketEnd;
+    }
+
+    return res.json({ candles, interval, source: "trades" });
+  }
+
+  // Method 2: Fallback to spark chunking
   const candles = [];
   const chunkSize = Math.max(1, Math.floor(token.spark.length / 30));
   for (let i = 0; i < token.spark.length; i += chunkSize) {
     const chunk = token.spark.slice(i, i + chunkSize);
     if (chunk.length === 0) continue;
     candles.push({
-      time: token.createdAt + i * 10000,
+      time: Math.floor((token.createdAt + i * 10000) / 1000),
       open: chunk[0],
       high: Math.max(...chunk),
       low: Math.min(...chunk),
@@ -6419,7 +6472,7 @@ app.get("/api/chart/:ca", (req, res) => {
       volume: chunk.length,
     });
   }
-  res.json({ candles });
+  res.json({ candles, interval: 10, source: "spark" });
 });
 
 // ═══════════════════════════════════════
