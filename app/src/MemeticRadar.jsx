@@ -108,98 +108,164 @@ function Dot({ token, onClick, selected }) {
   );
 }
 
-// ═══ SCORE PANEL (slide-out) ═══
-function ScorePanel({ token, onClose, onBuy, user, tradingBalance, solPrice }) {
+// ═══ TOKEN IMAGE ═══
+function TImg({ src, symbol, size = 64 }) {
+  const [err, setErr] = useState(false);
+  if (!src || err) return (
+    <div style={{ width: size, height: size, borderRadius: 8, background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.35, fontWeight: 900, color: C.ft + "44" }}>
+      {(symbol || "?")[0]}
+    </div>
+  );
+  return <img src={src} alt="" style={{ width: size, height: size, borderRadius: 8, objectFit: "cover" }} onError={() => setErr(true)} />;
+}
+
+// ═══ SCORE PANEL (slide-out with full detail) ═══
+function ScorePanel({ token, onClose, onBuy, onSell, user, tradingBalance, solPrice, held }) {
   const [buyAmt, setBuyAmt] = useState(0.1);
   const [buying, setBuying] = useState(false);
+  const [selling, setSelling] = useState(false);
   const [buyResult, setBuyResult] = useState(null);
   if (!token) return null;
 
   const color = ARCH_COLORS[token.archetype] || C.dm;
   const bonuses = token.interactionBonuses || [];
-  const age = Date.now() - (token.timestamp || Date.now());
-  const canBuy = user && !user.demo && tradingBalance >= buyAmt;
+  const age = Date.now() - (token.createdAt || token.timestamp || Date.now());
+  const canBuy = user && !user.demo && onBuy && tradingBalance >= buyAmt;
+  const isHeld = held?.has?.(token.tokenAddress) || held?.has?.(token.ca);
 
   const handleBuy = async () => {
     if (!canBuy || buying) return;
-    setBuying(true);
-    setBuyResult(null);
+    setBuying(true); setBuyResult(null);
     try {
-      const sig = await onBuy(token.tokenAddress, buyAmt);
+      const sig = await onBuy(token.tokenAddress || token.ca, buyAmt);
       setBuyResult({ ok: true, sig });
-    } catch (e) {
-      setBuyResult({ ok: false, err: e.message });
-    }
+    } catch (e) { setBuyResult({ ok: false, err: e.message }); }
     setBuying(false);
   };
 
+  const handleSell = async (pct) => {
+    if (!onSell || selling) return;
+    setSelling(true);
+    try {
+      await onSell(token.tokenAddress || token.ca, pct);
+    } catch {}
+    setSelling(false);
+  };
+
+  const fmtMcap = (v) => {
+    if (!v) return "—";
+    if (v >= 1e6) return "$" + (v / 1e6).toFixed(2) + "M";
+    if (v >= 1e3) return "$" + (v / 1e3).toFixed(1) + "K";
+    return "$" + v.toFixed(0);
+  };
+
   return (
-    <div style={{
-      position: "absolute", right: 0, top: 0, bottom: 0, width: 340,
+    <div className="memetic-scroll" style={{
+      position: "absolute", right: 0, top: 0, bottom: 0, width: 360,
       background: C.sf + "f8", borderLeft: `1px solid ${C.bd}`,
-      backdropFilter: "blur(12px)", overflowY: "auto", zIndex: 200, padding: 16,
+      backdropFilter: "blur(12px)", overflowY: "auto", zIndex: 200,
       animation: "slideInRight 0.25s cubic-bezier(.4,0,.2,1)",
     }}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-        <div>
-          <div style={{ fontSize: 20, fontWeight: 900, color: C.tx, fontFamily: M }}>{token.symbol}</div>
-          <div style={{ fontSize: 11, color: C.dm, marginBottom: 4 }}>{token.name}</div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ fontSize: 10, color: C.ft, fontFamily: M }}>{fmtAge(age)} old</span>
-            {token.mcap && <span style={{ fontSize: 10, color: C.yl, fontFamily: M }}>${token.mcap > 1000 ? (token.mcap / 1000).toFixed(1) + "K" : token.mcap}</span>}
+      {/* Header with image */}
+      <div style={{ display: "flex", gap: 10, padding: "12px 14px", borderBottom: `1px solid ${C.bd}` }}>
+        <TImg src={token.imageUri || token.image} symbol={token.symbol} size={72} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 20, fontWeight: 900, color: C.tx }}>{token.name || token.symbol}</span>
+            <span style={{ fontSize: 14, color: C.gn, fontWeight: 700 }}>{token.symbol || token.ticker}</span>
+            {isHeld && <span style={{ fontSize: 9, fontWeight: 800, padding: "2px 6px", borderRadius: 3, background: C.gn + "18", color: C.gn }}>HELD</span>}
           </div>
+          {/* Market cap + age */}
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+            <span style={{ fontSize: 24, fontWeight: 900, color: (token.mcapUsd || token.mcap || 0) >= 100000 ? C.gn : C.tx, fontFamily: M }}>
+              {fmtMcap(token.mcapUsd || token.mcap)}
+            </span>
+            {token.h1Change != null && <span style={{ fontSize: 14, fontWeight: 700, color: token.h1Change > 0 ? C.gn : C.rd }}>{token.h1Change > 0 ? "+" : ""}{token.h1Change.toFixed(1)}%</span>}
+          </div>
+          <div style={{ fontSize: 10, color: C.ft, fontFamily: M }}>{fmtAge(age)} old</div>
         </div>
-        <button onClick={onClose} style={{ background: "none", border: "none", color: C.dm, fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1 }}>×</button>
+        <button onClick={onClose} style={{ background: C.bg, border: `1px solid ${C.bd}`, cursor: "pointer", color: C.dm, padding: "4px 8px", alignSelf: "flex-start", borderRadius: 5, fontSize: 13, fontFamily: M, fontWeight: 700 }}>×</button>
       </div>
 
-      {/* Score + Archetype */}
-      <div style={{ textAlign: "center", padding: "8px 0", marginBottom: 8 }}>
-        <div style={{ fontSize: 44, fontWeight: 900, color, fontFamily: M, lineHeight: 1 }}>{((token.score || 0) * 100).toFixed(0)}</div>
-        <div style={{ display: "inline-block", padding: "2px 8px", borderRadius: 4, background: color + "18", color, fontSize: 10, fontWeight: 800, marginTop: 4 }}>
-          {ARCH_LABELS[token.archetype] || "Unknown"}
+      {/* Description */}
+      {token.description && (
+        <div style={{ padding: "6px 14px", fontSize: 12, color: C.dm, borderBottom: `1px solid ${C.bd}`, lineHeight: 1.5 }}>
+          {token.description.length > 200 ? token.description.slice(0, 200) + "..." : token.description}
         </div>
-        {token.trajectory && <div style={{ fontSize: 10, color: C.dm, marginTop: 4 }}>{token.trajectory.replace(/_/g, " ")}</div>}
+      )}
+
+      {/* Score + Archetype badge */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", borderBottom: `1px solid ${C.bd}` }}>
+        <div style={{ fontSize: 40, fontWeight: 900, color, fontFamily: M, lineHeight: 1 }}>{((token.score || 0) * 100).toFixed(0)}</div>
+        <div>
+          <div style={{ display: "inline-block", padding: "2px 8px", borderRadius: 4, background: color + "18", color, fontSize: 10, fontWeight: 800, marginBottom: 2 }}>
+            {ARCH_LABELS[token.archetype] || "Unknown"}
+          </div>
+          {token.trajectory && <div style={{ fontSize: 9, color: C.dm }}>{token.trajectory.replace(/_/g, " ")}</div>}
+          {token.entrySignal && <div style={{ fontSize: 9, color: C.gn, fontWeight: 700 }}>⚡ {token.entrySignal}</div>}
+        </div>
+        <div style={{ marginLeft: "auto", textAlign: "right" }}>
+          {token.memeticScore != null && <div style={{ fontSize: 10, color: C.dm }}>Memetic: {(token.memeticScore * 100).toFixed(0)}</div>}
+          {token.elapsed != null && <div style={{ fontSize: 9, color: C.ft }}>{token.elapsed}ms</div>}
+        </div>
       </div>
 
-      {/* BUY SECTION */}
-      <div style={{ background: C.bg, border: `1px solid ${C.gn}22`, borderRadius: 8, padding: 10, marginBottom: 12 }}>
+      {/* Social links + external */}
+      <div style={{ display: "flex", gap: 3, padding: "6px 14px", borderBottom: `1px solid ${C.bd}`, flexWrap: "wrap" }}>
+        {token.twitter && <a href={token.twitter.startsWith("http") ? token.twitter : "https://twitter.com/" + token.twitter.replace("@", "")} target="_blank" rel="noopener" style={linkStyle}>Twitter</a>}
+        {token.telegram && <a href={token.telegram.startsWith("http") ? token.telegram : "https://t.me/" + token.telegram.replace("@", "")} target="_blank" rel="noopener" style={linkStyle}>Telegram</a>}
+        {token.website && <a href={token.website.startsWith("http") ? token.website : "https://" + token.website} target="_blank" rel="noopener" style={linkStyle}>Website</a>}
+        <a href={"https://pump.fun/coin/" + (token.tokenAddress || token.ca)} target="_blank" rel="noopener" style={{ ...linkStyle, background: C.gn + "08", borderColor: C.gn + "22", color: C.gn }}>pump.fun</a>
+        <a href={"https://dexscreener.com/solana/" + (token.tokenAddress || token.ca)} target="_blank" rel="noopener" style={linkStyle}>dex</a>
+        <a href={"https://www.gmgn.cc/sol/token/" + (token.tokenAddress || token.ca)} target="_blank" rel="noopener" style={linkStyle}>gmgn</a>
+      </div>
+
+      {/* BUY / SELL */}
+      <div style={{ padding: "8px 14px", borderBottom: `1px solid ${C.bd}` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-          <span style={{ fontSize: 11, fontWeight: 800, color: C.gn }}>QUICK BUY</span>
-          {tradingBalance != null && <span style={{ fontSize: 10, color: C.ft, marginLeft: "auto" }}>{fmtSol(tradingBalance)} SOL</span>}
+          <span style={{ fontSize: 12, fontWeight: 800, color: C.gn }}>BUY</span>
+          {tradingBalance != null && <span style={{ fontSize: 10, color: C.ft, marginLeft: "auto" }}>{fmtSol(tradingBalance)} SOL avail</span>}
         </div>
-        <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
-          {[0.05, 0.1, 0.25, 0.5].map(amt => (
+        <div style={{ display: "flex", gap: 3, marginBottom: 5 }}>
+          {[0.05, 0.1, 0.25, 0.5, 1].map(amt => (
             <button key={amt} onClick={() => setBuyAmt(amt)} style={{
-              flex: 1, padding: "5px 0", borderRadius: 5, fontSize: 11, fontWeight: 700,
-              background: buyAmt === amt ? C.gn + "18" : C.sf,
+              flex: 1, padding: "6px 0", borderRadius: 5, fontSize: 11, fontWeight: 700,
+              background: buyAmt === amt ? C.gn + "15" : C.bg,
               border: `1px solid ${buyAmt === amt ? C.gn + "44" : C.bd}`,
               color: buyAmt === amt ? C.gn : C.dm, cursor: "pointer", fontFamily: M,
             }}>{amt}</button>
           ))}
         </div>
         <button onClick={handleBuy} disabled={!canBuy || buying} style={{
-          width: "100%", padding: "8px 0", borderRadius: 6, border: "none", fontSize: 13,
+          width: "100%", padding: "9px 0", borderRadius: 6, border: "none", fontSize: 14,
           fontWeight: 900, fontFamily: M, cursor: canBuy && !buying ? "pointer" : "not-allowed",
           background: canBuy ? `linear-gradient(135deg, ${C.gn}dd, ${C.gn}88)` : C.ft + "33",
           color: canBuy ? "#000" : C.ft, transition: "all 0.2s",
         }}>
           {buying ? "SENDING..." : !user ? "CONNECT WALLET" : user.demo ? "DEMO MODE" : `BUY ${buyAmt} SOL`}
         </button>
-        {buyResult && (
-          <div style={{ fontSize: 10, marginTop: 4, color: buyResult.ok ? C.gn : C.rd, fontFamily: M }}>
-            {buyResult.ok ? `Sent! ${buyResult.sig?.slice(0, 12)}...` : buyResult.err}
+        {buyResult && <div style={{ fontSize: 10, marginTop: 3, color: buyResult.ok ? C.gn : C.rd, fontFamily: M }}>{buyResult.ok ? `Sent! ${buyResult.sig?.slice(0, 12)}...` : buyResult.err}</div>}
+        {/* Sell buttons if held */}
+        {isHeld && onSell && (
+          <div style={{ display: "flex", gap: 3, marginTop: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 800, color: C.rd, width: 32, alignSelf: "center" }}>SELL</span>
+            {[25, 50, 100].map(pct => (
+              <button key={pct} disabled={selling} onClick={() => handleSell(pct)} style={{
+                flex: 1, padding: "7px 0", borderRadius: 5, fontSize: 12, fontWeight: 800,
+                background: C.rd + "06", border: `1px solid ${C.rd}18`, color: C.rd, cursor: selling ? "default" : "pointer",
+              }}>{pct === 100 ? "ALL" : pct + "%"}</button>
+            ))}
           </div>
         )}
       </div>
 
       {/* Spider chart */}
-      <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
-        <Spider scores={token.moduleScores} size={190} />
+      <div style={{ display: "flex", justifyContent: "center", padding: "8px 0" }}>
+        <Spider scores={token.moduleScores} size={200} />
       </div>
 
       {/* Module scores */}
-      <div style={{ marginBottom: 12 }}>
+      <div style={{ padding: "0 14px 8px" }}>
         {Object.entries(MODS).map(([key, { label, color: mc }]) => {
           const score = token.moduleScores?.[key] ?? 0.5;
           return (
@@ -217,7 +283,7 @@ function ScorePanel({ token, onClose, onBuy, user, tradingBalance, solPrice }) {
 
       {/* Interaction bonuses */}
       {bonuses.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
+        <div style={{ padding: "0 14px 8px" }}>
           <div style={{ fontSize: 11, fontWeight: 800, marginBottom: 4, color: C.tx }}>Memeplex Bonuses</div>
           {bonuses.map((b, i) => (
             <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "3px 6px", background: C.gn + "06", borderRadius: 3, marginBottom: 1, fontSize: 10, fontFamily: M }}>
@@ -228,13 +294,39 @@ function ScorePanel({ token, onClose, onBuy, user, tradingBalance, solPrice }) {
         </div>
       )}
 
-      {/* CA */}
-      <div style={{ fontSize: 9, color: C.ft, fontFamily: M, wordBreak: "break-all", userSelect: "all", cursor: "text", padding: "4px 0" }}>
-        {token.tokenAddress}
+      {/* On-chain stats if available */}
+      {(token.buys || token.sells || token.volumeSol || token.uniqueBuyers) && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 4, padding: "6px 14px", borderTop: `1px solid ${C.bd}` }}>
+          {[
+            { l: "Buys", v: token.buys || 0, c: C.gn },
+            { l: "Sells", v: token.sells || 0, c: C.rd },
+            { l: "Buyers", v: token.uniqueBuyers || 0, c: C.cy },
+            { l: "Vol", v: token.volumeSol ? fmtSol(token.volumeSol) : "—", c: C.or },
+          ].map(s => (
+            <div key={s.l} style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: s.c, fontFamily: M }}>{s.v}</div>
+              <div style={{ fontSize: 8, color: C.ft, fontWeight: 700 }}>{s.l}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* CA copy */}
+      <div style={{ padding: "6px 14px", borderTop: `1px solid ${C.bd}`, display: "flex", alignItems: "center" }}>
+        <button onClick={() => navigator.clipboard?.writeText(token.tokenAddress || token.ca)} style={{
+          padding: "4px 8px", background: "none", border: `1px solid ${C.bd}`, borderRadius: 4,
+          fontSize: 9, color: C.ft, cursor: "pointer", fontFamily: M, wordBreak: "break-all", textAlign: "left", flex: 1,
+        }}>{token.tokenAddress || token.ca}</button>
       </div>
     </div>
   );
 }
+
+const linkStyle = {
+  display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 8px",
+  background: "rgba(255,255,255,.02)", border: "1px solid rgba(255,255,255,.06)",
+  borderRadius: 4, fontSize: 10, color: "#5c5c7a", textDecoration: "none", fontWeight: 600,
+};
 
 // ═══ TREND RIBBON ═══
 function TrendRibbon({ trends = [] }) {
@@ -298,10 +390,12 @@ function TokenList({ tokens, selected, onSelect }) {
             borderLeft: isSel ? `2px solid ${color}` : "2px solid transparent",
             transition: "all 0.15s",
           }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0, boxShadow: (t.score || 0) > 0.6 ? `0 0 6px ${color}66` : "none" }} />
+            <div style={{ width: 28, height: 28, borderRadius: 5, overflow: "hidden", flexShrink: 0, background: C.bg, border: `1px solid ${color}22` }}>
+              {(t.imageUri || t.image) ? <img src={t.imageUri || t.image} alt="" style={{ width: 28, height: 28, objectFit: "cover" }} onError={e => e.target.style.display = "none"} /> : <div style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 900, color: C.ft + "44" }}>{(t.symbol || "?")[0]}</div>}
+            </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.tx, fontFamily: M, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.symbol || t.name}</div>
-              <div style={{ fontSize: 9, color: C.ft }}>{fmtAge(age)}</div>
+              <div style={{ fontSize: 9, color: C.ft }}>{fmtAge(age)} · {t.mcapUsd || t.mcap ? "$" + ((t.mcapUsd || t.mcap) >= 1000 ? ((t.mcapUsd || t.mcap) / 1000).toFixed(1) + "K" : (t.mcapUsd || t.mcap)) : "—"}</div>
             </div>
             <div style={{ textAlign: "right", flexShrink: 0 }}>
               <div style={{ fontSize: 14, fontWeight: 900, color, fontFamily: M }}>{((t.score || 0) * 100).toFixed(0)}</div>
@@ -315,7 +409,7 @@ function TokenList({ tokens, selected, onSelect }) {
 }
 
 // ═══ MAIN COMPONENT ═══
-export default function MemeticRadar({ apiBase, onBuy, user, tradingBalance, solPrice }) {
+export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBalance, solPrice, held }) {
   const API = apiBase || "https://bondli-production.up.railway.app";
   const [tokens, setTokens] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -485,7 +579,7 @@ export default function MemeticRadar({ apiBase, onBuy, user, tradingBalance, sol
 
         {/* Score panel */}
         <ScorePanel token={selected} onClose={() => setSelected(null)}
-          onBuy={onBuy} user={user} tradingBalance={tradingBalance} solPrice={solPrice} />
+          onBuy={onBuy} onSell={onSell} user={user} tradingBalance={tradingBalance} solPrice={solPrice} held={held} />
       </div>
 
       <FleetBar stats={fleet} />
