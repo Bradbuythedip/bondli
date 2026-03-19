@@ -188,11 +188,15 @@ export class ArtworkScanner {
       const pHash = computeImageHash(imageBuffer);
       const SIMILARITY_THRESHOLD = 0.85; // 85%+ = suspiciously similar
 
+      let similarFound = false;
       for (const entry of this.pHashes) {
         if (entry.ca === ca) continue;
         const sim = hashSimilarity(pHash, entry.hash);
         if (sim >= SIMILARITY_THRESHOLD) {
-          result.flags.push("SIMILAR_IMAGE");
+          if (!similarFound) {
+            result.flags.push("SIMILAR_IMAGE");
+            similarFound = true;
+          }
           result.matches.push({
             type: "perceptual",
             ca: entry.ca,
