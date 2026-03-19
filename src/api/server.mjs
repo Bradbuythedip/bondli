@@ -435,6 +435,24 @@ app.get("/api/score/:ca", apiLimiter, async (req, res) => {
       } catch {}
     }
 
+    // Enrich with memetic physics score
+    try {
+      const { scoreMemeticQuick } = await import("../scoring/memetic/index.js");
+      const memeticResult = await scoreMemeticQuick({
+        name: scored.name || "", symbol: scored.ticker || "",
+      });
+      scored.memeticScore = memeticResult.quickScore;
+      scored.memeticLinguistic = memeticResult.linguistic;
+      scored.memeticAbsurdity = memeticResult.absurdity;
+      scored.memeticTemporal = memeticResult.temporal;
+      // Blend memetic into apeScore: 70% original + 30% memetic-adjusted
+      if (scored.apeScore !== undefined && memeticResult.quickScore > 0) {
+        const memeticBoost = (memeticResult.quickScore - 0.5) * 4; // -2 to +2 range
+        scored.apeScore = Math.max(0, scored.apeScore + memeticBoost * 0.3);
+        scored.apeScoreRaw = scored.apeScore - memeticBoost * 0.3; // preserve original
+      }
+    } catch {}
+
     res.json(scored);
   } catch (e) {
     console.error("[SCORE]", e.message);
@@ -550,13 +568,14 @@ app.post("/api/intel/artwork/bulk", apiLimiter, async (req, res) => {
   }
 });
 
-// Intel stats — model accuracy, memory, artwork scanner stats
+// Intel stats — model accuracy, memory, artwork scanner stats + memetic
 app.get("/api/intel/stats", apiLimiter, (req, res) => {
   const stats = {
     intel: intel ? intel.getStats() : null,
     dynamics: scoreDynamics ? { tracked: scoreDynamics.history.size } : null,
     artwork: artworkScanner ? artworkScanner.getStats() : null,
     meta: metaTracker ? metaTracker.getCurrentMeta() : null,
+    memetic: memeticPipeline ? memeticPipeline.getStats() : null,
   };
   res.json(stats);
 });
@@ -1173,7 +1192,11 @@ function createLiveSim(id, settings) {
         if (Date.now() - t > 1800000) state.soldCooldowns.delete(c);
       }
 
-      const candidates = currentTokens.filter(t => {
+      // Enrich candidates with memetic quick score (async, non-blocking)
+      let memeticQuickScorer = null;
+      try { memeticQuickScorer = (await import("../scoring/memetic/index.js")).scoreMemeticQuick; } catch {}
+
+      const candidatesRaw = currentTokens.filter(t => {
         const mc = t.mcapUsd || 0;
         const buys = t.buys || 0;
         const ub = t.uniqueBuyers || 0;
@@ -1194,7 +1217,23 @@ function createLiveSim(id, settings) {
           if (!dyn || (dyn.scores || 0) < 2) return false;
         }
         return true;
-      }).sort((a, b) => (b.apeScore || 0) - (a.apeScore || 0));
+      });
+
+      // Apply memetic scoring to candidates for smarter ranking
+      const candidates = [];
+      for (const t of candidatesRaw) {
+        if (memeticQuickScorer) {
+          try {
+            const ms = await memeticQuickScorer({ name: t.name || "", symbol: t.ticker || "" });
+            t.memeticScore = ms.quickScore;
+            // Boost apeScore with memetic signal: strong memetic = boost, weak = dampen
+            const mBoost = (ms.quickScore - 0.5) * 3; // -1.5 to +1.5
+            t.apeScore = Math.max(0, (t.apeScore || 0) + mBoost * 0.25);
+          } catch {}
+        }
+        candidates.push(t);
+      }
+      candidates.sort((a, b) => (b.apeScore || 0) - (a.apeScore || 0));
 
       // Sim-buy top 2 candidates
       for (const t of candidates.slice(0, 2)) {
