@@ -574,86 +574,85 @@ const quickSell=async(ca,pct)=>{if(!user?.pubkey)throw new Error("Connect wallet
 
 if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHeight:"100dvh",background:T.bg,fontFamily:M,overflow:"auto"}}>
 {/* ═══ HERO ═══ */}
-<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:mb?"60px 16px 36px":"100px 20px 50px",textAlign:"center"}}>
-<div style={{animation:"pf 3s ease infinite",marginBottom:16}}><Logo s={mb?48:64}/></div>
-<div style={{fontWeight:900,fontSize:mb?44:72,letterSpacing:"-.04em",lineHeight:1,marginBottom:12}}>BOND<span style={{color:T.rd}}>LI</span></div>
-<div style={{fontSize:mb?14:18,color:T.dm,marginBottom:32,maxWidth:420,lineHeight:1.6}}>Score every token. Learn from every outcome. Exit before the rug. Trust nothing. Verify everything.</div>
-<B onClick={connect} style={{padding:"16px 44px",fontSize:20,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)",animation:"gl 3s infinite",letterSpacing:".02em"}}><IC.ph/> Enter</B>
-<button onClick={()=>sU({pubkey:"demo",tier:"demo",demo:true})} style={{marginTop:12,background:"none",border:"none",fontSize:13,color:T.ft,cursor:"pointer",textDecoration:"underline",textUnderlineOffset:3}}>demo mode</button>
-<a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:16,color:T.dm,textDecoration:"none",fontSize:13}}><IC.tw s={14} c={T.dm}/>@Bondlifun</a>
+<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:mb?"48px 16px 28px":"80px 20px 40px",textAlign:"center"}}>
+<div style={{animation:"pf 3s ease infinite",marginBottom:12}}><Logo s={mb?48:64}/></div>
+<div style={{fontWeight:900,fontSize:mb?44:72,letterSpacing:"-.04em",lineHeight:1,marginBottom:8}}>BOND<span style={{color:T.rd}}>LI</span></div>
+<div style={{fontSize:mb?13:16,color:T.dm,marginBottom:24,maxWidth:380,lineHeight:1.5}}>AI-powered Solana memecoin intelligence.<br/>Scores. Learns. Exits before the rug.</div>
+<div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",justifyContent:"center"}}>
+<B onClick={connect} style={{padding:"14px 36px",fontSize:18,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)",animation:"gl 3s infinite",letterSpacing:".02em"}}><IC.ph/> Connect Wallet</B>
+<button onClick={()=>sU({pubkey:"demo",tier:"demo",demo:true})} style={{padding:"14px 28px",background:T.gn+"12",border:"2px solid "+T.gn+"44",borderRadius:10,fontSize:18,fontWeight:800,color:T.gn,cursor:"pointer",letterSpacing:".02em",transition:"all .15s"}}>Try Demo</button>
+</div>
+<a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:4,marginTop:16,color:T.dm,textDecoration:"none",fontSize:12}}><IC.tw s={14} c={T.dm}/>@Bondlifun</a>
 </div>
 
-{/* ═══ FEATURE GRID ═══ */}
-<div style={{maxWidth:940,margin:"0 auto",padding:mb?"0 12px 36px":"0 20px 56px"}}>
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:14}}>
+{/* ═══ STATS BAR ═══ */}
+<div style={{display:"flex",flexWrap:"wrap",justifyContent:"center",gap:mb?4:8,padding:mb?"0 12px 20px":"0 20px 28px"}}>
 {[
-{ic:<IC.bulb s={mb?22:26} c={T.pu}/>,title:"40+ Feature ML",desc:"Scores every token in real-time. Learns from every outcome. Weights update automatically.",color:T.pu},
-{ic:<IC.chart s={mb?22:26} c={T.gn}/>,title:"Score Derivatives",desc:"Velocity and acceleration are leading indicators. Exits 1-2 cycles before the chart shows it.",color:T.gn},
-{ic:<IC.scan s={mb?22:26} c={T.cy||"#00bcd4"}/>,title:"Bundle Detection",desc:"8 signals scored 0-100. Same-slot buys, identical amounts, dust inflation. High score = fake chart.",color:T.cy||"#00bcd4"},
-{ic:<IC.bolt s={mb?22:26} c={T.yl}/>,title:"Pattern Memory",desc:"Every chart stored and classified. Healthy pumps, sniper spikes, slow grinds, rugs. Seen it before.",color:T.yl},
-{ic:<IC.fleet s={mb?22:26} c={T.rd}/>,title:"Fleet + Nash",desc:"Multi-wallet, no bundling. Nash equilibrium signals. Kelly Criterion sizing. Game theory, not guessing.",color:T.rd},
-{ic:<IC.eye s={mb?22:26} c="#ff9800"/>,title:"8 Rug Vectors",desc:"Dev dumps, sybil wallets, liquidity drains, sell waves, holder concentration. 3+ signals = reject.",color:"#ff9800"},
-].map((f,i)=><div key={i} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:12,padding:mb?"14px 12px":"20px 16px"}}>
-<div style={{marginBottom:8}}>{f.ic}</div>
-<div style={{fontSize:mb?13:14,fontWeight:800,color:f.color,marginBottom:5}}>{f.title}</div>
-<div style={{fontSize:mb?11:12,color:T.dm,lineHeight:1.5}}>{f.desc}</div>
+{n:"40+",l:"ML features"},{n:"12+",l:"rug signals"},{n:"24/7",l:"auto-trading"},{n:"3",l:"exit layers"},{n:"0%",l:"fees (Pro+)"},
+].map((s,i)=><div key={i} style={{textAlign:"center",padding:mb?"6px 10px":"8px 16px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,minWidth:mb?60:80}}>
+<div style={{fontSize:mb?16:20,fontWeight:900,color:T.gn,lineHeight:1}}>{s.n}</div>
+<div style={{fontSize:mb?8:9,color:T.ft,marginTop:2,textTransform:"uppercase",letterSpacing:".06em"}}>{s.l}</div>
+</div>)}
+</div>
+
+{/* ═══ HIGHLIGHTS ═══ */}
+<div style={{maxWidth:940,margin:"0 auto",padding:mb?"0 12px 28px":"0 20px 44px"}}>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"1fr 1fr 1fr",gap:mb?6:12}}>
+{[
+{ic:<IC.bulb s={mb?20:24} c={T.pu}/>,title:"40+ Feature ML",desc:"Scores every token. Learns from every outcome. Weights update live.",color:T.pu},
+{ic:<IC.chart s={mb?20:24} c={T.gn}/>,title:"Score Derivatives",desc:"Velocity + acceleration detect problems 2 cycles before price drops.",color:T.gn},
+{ic:<IC.eye s={mb?20:24} c="#ff9800"/>,title:"12+ Rug Signals",desc:"Dev dumps, sybil wallets, wash trading, liquidity drains. 3+ = reject.",color:"#ff9800"},
+{ic:<IC.bolt s={mb?20:24} c={T.yl}/>,title:"Auto-Ape",desc:"Set rules. Walk away. Finds, buys, manages positions, takes profit.",color:T.yl},
+{ic:<IC.fleet s={mb?20:24} c={T.rd}/>,title:"Fleet Trading",desc:"Multi-wallet coordinated launches. Nash equilibrium. Kelly sizing.",color:T.rd},
+{ic:<IC.scan s={mb?20:24} c={T.cy||"#00bcd4"}/>,title:"Smart Money",desc:"Track profitable wallets. See what they buy before the chart moves.",color:T.cy||"#00bcd4"},
+].map((f,i)=><div key={i} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?"12px 10px":"16px 14px"}}>
+<div style={{marginBottom:6}}>{f.ic}</div>
+<div style={{fontSize:mb?12:13,fontWeight:800,color:f.color,marginBottom:4}}>{f.title}</div>
+<div style={{fontSize:mb?10:11,color:T.dm,lineHeight:1.4}}>{f.desc}</div>
 </div>)}
 </div>
 
 {/* ═══ HOW IT WORKS ═══ */}
-<div style={{marginTop:mb?32:48}}>
-<div style={{textAlign:"center",marginBottom:mb?12:20}}>
-<div style={{fontSize:mb?16:20,fontWeight:800,color:T.tx}}>How it works</div>
+<div style={{marginTop:mb?24:36}}>
+<div style={{textAlign:"center",marginBottom:mb?10:16}}>
+<div style={{fontSize:mb?14:18,fontWeight:800,color:T.tx}}>How it works</div>
 </div>
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"1fr 1fr 1fr 1fr",gap:mb?6:12}}>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"1fr 1fr 1fr 1fr",gap:mb?4:10}}>
 {[
-{step:"1",title:"Connect",desc:"Phantom. No sign-up. No KYC."},
-{step:"2",title:"Fund",desc:"Generate keypair. Deposit SOL."},
-{step:"3",title:"Set rules",desc:"Min score, SOL/trade, TP/SL."},
-{step:"4",title:"Walk away",desc:"It finds, buys, exits. You verify."},
-].map((s,i)=><div key={i} style={{padding:mb?"10px 8px":"16px 12px",textAlign:"center"}}>
-<div style={{width:mb?28:36,height:mb?28:36,borderRadius:"50%",background:"linear-gradient(135deg,#534bb1,#551bf9)",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:mb?14:18,fontWeight:900,color:"#fff",marginBottom:8}}>{s.step}</div>
-<div style={{fontSize:mb?12:14,fontWeight:800,color:T.tx,marginBottom:3}}>{s.title}</div>
-<div style={{fontSize:mb?10:11,color:T.dm,lineHeight:1.4}}>{s.desc}</div>
+{step:"1",title:"Connect",desc:"Phantom wallet"},
+{step:"2",title:"Fund",desc:"Deposit SOL"},
+{step:"3",title:"Configure",desc:"Score, size, TP/SL"},
+{step:"4",title:"Earn",desc:"It trades. You verify."},
+].map((s,i)=><div key={i} style={{padding:mb?"8px 6px":"12px 10px",textAlign:"center"}}>
+<div style={{width:mb?24:32,height:mb?24:32,borderRadius:"50%",background:"linear-gradient(135deg,#534bb1,#551bf9)",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:mb?12:16,fontWeight:900,color:"#fff",marginBottom:6}}>{s.step}</div>
+<div style={{fontSize:mb?11:13,fontWeight:800,color:T.tx,marginBottom:2}}>{s.title}</div>
+<div style={{fontSize:mb?9:10,color:T.dm,lineHeight:1.3}}>{s.desc}</div>
 </div>)}
 </div>
-</div>
-
-{/* ═══ SPECS ═══ */}
-<div style={{marginTop:mb?28:44,display:"flex",flexWrap:"wrap",justifyContent:"center",gap:mb?4:8}}>
-{[
-{n:"40+",l:"features"},
-{n:"3",l:"exit layers"},
-{n:"8",l:"rug signals"},
-{n:"4",l:"radar feeds"},
-{n:"4",l:"trade modes"},
-{n:"0.02",l:"learn rate"},
-].map((s,i)=><div key={i} style={{textAlign:"center",padding:mb?"8px 12px":"10px 18px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,minWidth:mb?80:100}}>
-<div style={{fontSize:mb?18:22,fontWeight:900,color:T.gn,lineHeight:1}}>{s.n}</div>
-<div style={{fontSize:mb?9:10,color:T.ft,marginTop:3,textTransform:"uppercase",letterSpacing:".06em"}}>{s.l}</div>
-</div>)}
 </div>
 
 {/* ═══ TIERS ═══ */}
-<div style={{marginTop:mb?36:52}}>
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:14}}>
+<div style={{marginTop:mb?28:40}}>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:12}}>
 {[
-{tier:"Free",price:"0 SOL",color:T.ft,features:["Radar + ML scoring","Auto-Ape + momentum exits","2 positions","25% profit share"]},
-{tier:"Pro",price:"1 SOL",color:T.pu,features:["Fleet multi-wallet","Batch deploy (20)","0% profit share","Export keys","50 launches/hr"]},
-{tier:"VIP",price:"10 SOL",color:T.yl,features:["200 launches/hr","Priority queue","Early access","Direct to dev"]},
-].map((t,i)=><div key={i} onClick={connect} style={{background:T.sf,border:"1px solid "+(t.color)+"33",borderRadius:12,padding:mb?"16px 14px":"22px 18px",position:"relative",cursor:"pointer",transition:"all .15s ease"}} onMouseEnter={e=>{e.currentTarget.style.borderColor=t.color+"88";e.currentTarget.style.transform="translateY(-2px)"}} onMouseLeave={e=>{e.currentTarget.style.borderColor=t.color+"33";e.currentTarget.style.transform="none"}}>
-{i===1&&<div style={{position:"absolute",top:-8,right:12,fontSize:9,fontWeight:900,padding:"2px 8px",borderRadius:4,background:T.pu,color:"#fff",letterSpacing:".05em"}}>POPULAR</div>}
-<div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:8}}><span style={{fontSize:mb?20:26,fontWeight:900,color:t.color}}>{t.tier}</span><span style={{fontSize:mb?13:15,color:T.tx,fontWeight:800}}>{t.price}</span></div>
-{t.features.map((f,j)=><div key={j} style={{fontSize:mb?11:12,color:T.dm,padding:"2px 0"}}>{f}</div>)}
-<div style={{marginTop:10,fontSize:mb?11:12,fontWeight:700,color:t.color,opacity:.8}}>Select {t.tier} →</div>
+{tier:"Free",price:"0 SOL",color:T.ft,features:["ML scoring + radar","Auto-Ape","2 positions","25% profit share"]},
+{tier:"Pro",price:"1 SOL",color:T.pu,features:["0% profit share","Fleet multi-wallet","Smart money signals","50 launches/hr"]},
+{tier:"VIP",price:"10 SOL",color:T.yl,features:["Everything in Pro","200 launches/hr","Priority queue","Direct to dev"]},
+].map((t,i)=><div key={i} onClick={connect} style={{background:T.sf,border:"1px solid "+(t.color)+"33",borderRadius:10,padding:mb?"14px 12px":"18px 16px",position:"relative",cursor:"pointer",transition:"all .15s ease"}} onMouseEnter={e=>{e.currentTarget.style.borderColor=t.color+"88";e.currentTarget.style.transform="translateY(-2px)"}} onMouseLeave={e=>{e.currentTarget.style.borderColor=t.color+"33";e.currentTarget.style.transform="none"}}>
+{i===1&&<div style={{position:"absolute",top:-8,right:12,fontSize:8,fontWeight:900,padding:"2px 7px",borderRadius:4,background:T.pu,color:"#fff",letterSpacing:".05em"}}>POPULAR</div>}
+<div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:6}}><span style={{fontSize:mb?18:22,fontWeight:900,color:t.color}}>{t.tier}</span><span style={{fontSize:mb?12:14,color:T.tx,fontWeight:800}}>{t.price}</span></div>
+{t.features.map((f,j)=><div key={j} style={{fontSize:mb?10:11,color:T.dm,padding:"1px 0"}}>{f}</div>)}
 </div>)}
 </div>
 </div>
 
 {/* ═══ BOTTOM CTA ═══ */}
-<div style={{marginTop:mb?36:52,textAlign:"center",paddingBottom:28}}>
-<B onClick={connect} style={{padding:"14px 40px",fontSize:18,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)"}}><IC.ph/> Enter</B>
-<div style={{marginTop:14,fontSize:11,color:T.ft}}>Solana. Phantom. Nothing else.</div>
+<div style={{marginTop:mb?28:40,textAlign:"center",paddingBottom:24}}>
+<div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",justifyContent:"center"}}>
+<B onClick={connect} style={{padding:"12px 36px",fontSize:16,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)"}}><IC.ph/> Connect Wallet</B>
+<button onClick={()=>sU({pubkey:"demo",tier:"demo",demo:true})} style={{padding:"12px 24px",background:T.gn+"12",border:"2px solid "+T.gn+"44",borderRadius:10,fontSize:16,fontWeight:800,color:T.gn,cursor:"pointer"}}>Try Demo</button>
+</div>
+<div style={{marginTop:12,fontSize:10,color:T.ft}}>Solana. Phantom. Nothing else.</div>
 </div>
 </div>
 </div></TC.Provider>;
