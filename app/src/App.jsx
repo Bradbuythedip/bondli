@@ -636,8 +636,8 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:12}}>
 {[
 {tier:"Free",price:"0 SOL",color:T.ft,features:["ML scoring + radar","Auto-Ape","2 positions","25% profit share"]},
-{tier:"Pro",price:"1 SOL",color:T.pu,features:["0% profit share","Fleet multi-wallet","Smart money signals","50 launches/hr"]},
-{tier:"VIP",price:"10 SOL",color:T.yl,features:["Everything in Pro","200 launches/hr","Priority queue","Direct to dev"]},
+{tier:"Pro",price:"1 SOL",color:T.pu,features:["0% profit share","Fleet multi-wallet","Smart money signals","Export keys"]},
+{tier:"VIP",price:"10 SOL",color:T.yl,features:["Everything in Pro","API access","Priority queue","Direct to dev"]},
 ].map((t,i)=><div key={i} onClick={connect} style={{background:T.sf,border:"1px solid "+(t.color)+"33",borderRadius:10,padding:mb?"14px 12px":"18px 16px",position:"relative",cursor:"pointer",transition:"all .15s ease"}} onMouseEnter={e=>{e.currentTarget.style.borderColor=t.color+"88";e.currentTarget.style.transform="translateY(-2px)"}} onMouseLeave={e=>{e.currentTarget.style.borderColor=t.color+"33";e.currentTarget.style.transform="none"}}>
 {i===1&&<div style={{position:"absolute",top:-8,right:12,fontSize:8,fontWeight:900,padding:"2px 7px",borderRadius:4,background:T.pu,color:"#fff",letterSpacing:".05em"}}>POPULAR</div>}
 <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:6}}><span style={{fontSize:mb?18:22,fontWeight:900,color:t.color}}>{t.tier}</span><span style={{fontSize:mb?12:14,color:T.tx,fontWeight:800}}>{t.price}</span></div>
