@@ -15,6 +15,7 @@ import bs58 from "bs58";
 import CONFIG from "./config.mjs";
 import { getOptimalPriorityFee, smartSend } from "./rpc-enhanced.mjs";
 import { ContinuousVolumeEngine, AutoRugController } from "./volume-engine.mjs";
+import { LaunchOrchestrator } from "./launch-orchestrator.mjs";
 import { EventEmitter } from "events";
 import WebSocket from "ws";
 
@@ -796,6 +797,75 @@ class FleetTrader extends EventEmitter {
 
     if (!session.running) return;
     await sleep(2000); // brief pause to let chart render
+
+    // ═══ PHASE 1.5: POST-LAUNCH ORCHESTRATION ═══
+    // Dev sell into snipers → cascading buy waves → mixed volume
+    // Makes the chart look organic before handing to volume engine
+    if (!session.running) return;
+    session.phase = "orchestrating";
+    this.emit("phase", { ca, phase: "orchestrating" });
+    console.log(`[FLEET] CREATE v7: Phase 1.5 — post-launch orchestration (dev sell + cascade + mixed)...`);
+
+    const orchestrator = new LaunchOrchestrator(session, {
+      executeBuy: async (wallet, solAmount) => {
+        try {
+          let g, fc;
+          try { g = await this.onlineSdk.fetchGlobal(); fc = await this.onlineSdk.fetchFeeConfig(); } catch { g = global; fc = feeConfig; }
+          const result = await this._executeBuy(wallet, mint, g, fc, solAmount);
+          if (result.ok) {
+            wallet.solSpent += solAmount;
+            session.tradeCount++;
+            session.totalSolSpent += solAmount;
+            this.emit("trade", { ca, role: wallet.role, side: "buy", sol: solAmount, sig: result.sig, engine: "orchestrator" });
+          }
+          return result;
+        } catch (e) { return { ok: false, error: e.message }; }
+      },
+      executeSell: async (wallet, sellPct) => {
+        try {
+          const ata = getAssociatedTokenAddressSync(mint, wallet.keypair.publicKey, true);
+          const account = await getAccount(this.connection, ata);
+          const tokenBal = new BN(account.amount.toString());
+          if (tokenBal.isZero()) return { ok: false };
+          const sellAmount = tokenBal.muln(Math.floor(sellPct * 1000)).divn(1000);
+          if (sellAmount.isZero()) return { ok: false };
+          let g, fc;
+          try { g = await this.onlineSdk.fetchGlobal(); fc = await this.onlineSdk.fetchFeeConfig(); } catch { g = global; fc = feeConfig; }
+          const sellState = await this.onlineSdk.fetchSellState(mint, wallet.keypair.publicKey);
+          const mintSupply = sellState.bondingCurve.tokenTotalSupply || g.tokenTotalSupply;
+          const solOut = getSellSolAmountFromTokenAmount({ global: g, feeConfig: fc, mintSupply, bondingCurve: sellState.bondingCurve, amount: sellAmount });
+          const priorityFee = await getOptimalPriorityFee();
+          const instructions = await new PumpSdk().sellInstructions({
+            global: g, bondingCurveAccountInfo: sellState.bondingCurveAccountInfo, bondingCurve: sellState.bondingCurve,
+            mint, user: wallet.keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 15,
+          });
+          const tx = new Transaction();
+          tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
+          tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
+          tx.feePayer = wallet.keypair.publicKey;
+          tx.sign(wallet.keypair);
+          const sig = await smartSend(this.connection, tx.serialize());
+          const solOutNum = parseFloat(solOut.toString()) / 1e9;
+          wallet.solRecovered += solOutNum;
+          session.tradeCount++;
+          session.totalSolRecovered += solOutNum;
+          this.emit("trade", { ca, role: wallet.role, side: "sell", sol: solOutNum, sig, engine: "orchestrator" });
+          return { ok: true, solOut: solOutNum, sig };
+        } catch (e) { return { ok: false, error: e.message }; }
+      },
+    });
+    session._orchestrator = orchestrator;
+
+    // Forward orchestrator events
+    orchestrator.on("trade", (data) => this.emit("trade", data));
+    orchestrator.on("phase", (data) => this.emit("phase", data));
+    orchestrator.on("external_buyer", (data) => {
+      console.log(`[FLEET] External buyer detected! Total: ${data.count}`);
+      this.emit("external_buyer", data);
+    });
+
+    await orchestrator.run();
+    console.log(`[FLEET] Post-launch orchestration complete | External buyers: ${orchestrator.getStats().externalBuyers}`);
 
     // ═══ PHASE 2: CONTINUOUS VOLUME + AUTO-RUG ═══
     // Volume engine runs continuously with escalating trade sizes
