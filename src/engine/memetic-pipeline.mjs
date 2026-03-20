@@ -11,6 +11,7 @@
  *   - MemeticPipeline class (kept for backward compat, now wraps PF data)
  */
 
+import { scoreVolumeLegitimacy } from './volume-legitimacy.mjs';
 import { EventEmitter } from 'events';
 import { createClient } from 'redis';
 import { scoreMemeticAll, scoreMemeticQuick, logTradeOutcome } from '../scoring/memetic/index.js';
@@ -124,11 +125,17 @@ export async function scoreTokenMemetic(token) {
     const buyRatio = totalTxns > 0 ? buys / totalTxns : 0.5;
     const mcap = token.mcapUsd || 0;
 
-    // On-chain heuristic: buy pressure + unique buyers + mcap sweet spot
+    // Volume legitimacy — fee accrual rate + organic volume detection
+    const volLeg = scoreVolumeLegitimacy(token);
+    token._volumeLegitimacy = volLeg;
+    const volLegScore = volLeg.legitimacyScore / 100; // normalize to 0-1
+
+    // On-chain heuristic: buy pressure + unique buyers + mcap sweet spot + volume legitimacy
     const buyPressureScore = Math.min(1, buyRatio * 1.2);
     const buyerDiversityScore = Math.min(1, uniqueBuyers / 20);
     const mcapScore = mcap > 0 && mcap < 100000 ? 0.7 : mcap >= 100000 && mcap < 500000 ? 0.5 : 0.3;
-    const onChainScore = Math.min(1, buyPressureScore * 0.4 + buyerDiversityScore * 0.3 + mcapScore * 0.3);
+    // Volume legitimacy gets 20% weight — real volume is a strong signal
+    const onChainScore = Math.min(1, buyPressureScore * 0.30 + buyerDiversityScore * 0.25 + mcapScore * 0.25 + volLegScore * 0.20);
 
     const scoreResult = await scoreMemeticAll({
       name, symbol, description, imageUri,
@@ -151,6 +158,15 @@ export async function scoreTokenMemetic(token) {
       ...scoreResult,
       elapsed: Date.now() - startTime,
       onChainScore,
+      volumeLegitimacy: {
+        score: volLeg.legitimacyScore,
+        label: volLeg.legitimacy,
+        feePerSec: volLeg.feeRate.feePerSec,
+        feeRating: volLeg.feeRate.feeRating,
+        botScore: volLeg.botDetection.botScore,
+        organicScore: volLeg.botDetection.organicScore,
+        botSignals: volLeg.botDetection.signals,
+      },
     };
   } catch (err) {
     console.error('[memetic] scoreTokenMemetic error:', err.message);

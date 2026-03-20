@@ -30,6 +30,16 @@ export function checkViability(token, qf, scores, dynamics) {
   // === SYBIL CHECK ===
   if (qf?._rg_sybilScore > 0.40) checks.push("HIGH_SYBIL_RISK");
 
+  // === VOLUME LEGITIMACY FLOOR ===
+  // Token must have some organic volume activity — fee accrual rate matters
+  const volLeg = token._volumeLegitimacy;
+  if (volLeg && volLeg.legitimacy === "LIKELY_BOTTED" && ageMin >= 3) {
+    checks.push("BOTTED_VOLUME");
+  }
+  if (volLeg && volLeg.feeRate?.feeRating === "DEAD" && ageMin >= 5 && vol > 0) {
+    checks.push("DEAD_FEE_RATE"); // volume exists but fee accrual per second is too low
+  }
+
   // === DYNAMICS GATE ===
   // Must have at least 1 score observation
   const dyn = dynamics;

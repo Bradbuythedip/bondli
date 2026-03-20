@@ -85,6 +85,22 @@ export function checkDisqualifiers(token, qf, opts = {}) {
   if (qf?._rg_buySellImbalance >= 0.8 && (token.buys || 0) >= 15 && !isVeryYoung)
     flags.push("ALL_BUYS_NO_SELLS");
 
+  // === VOLUME LEGITIMACY (fee accrual + bot detection) ===
+  // Botted volume = instant disqualify. Real volume is the strongest legitimacy signal.
+  const volLeg = token._volumeLegitimacy || qf?._volumeLegitimacy;
+  if (volLeg) {
+    // Hard reject: volume is almost certainly botted
+    if (volLeg.botDetection?.botScore >= 70 && (token.buys || 0) >= 10)
+      flags.push("BOTTED_VOLUME");
+    // High volume but extremely few unique wallets = wash trading for chart
+    if (volLeg.legitimacy === "LIKELY_BOTTED" && (token.volumeSol || 0) > 5)
+      flags.push("FAKE_VOLUME_HIGH_SOL");
+    // Metronomic timing + uniform sizes = clear bot farm
+    const botSigs = volLeg.botDetection?.signals || [];
+    if (botSigs.includes("METRONOMIC_TIMING") && botSigs.includes("UNIFORM_TRADE_SIZES"))
+      flags.push("BOT_FARM_VOLUME");
+  }
+
   // === ARTWORK ===
   if (token._artworkFlags?.includes("EXACT_DUPLICATE")) flags.push("STOLEN_ART");
 
