@@ -353,6 +353,39 @@ function Heatmap({ intensity = 0.5 }) {
   return <div style={{ position: "absolute", inset: 0, background: `radial-gradient(ellipse at center, ${C.pu}${a} 0%, transparent 70%)`, pointerEvents: "none", zIndex: 0 }} />;
 }
 
+// ═══ PLATFORM STATS BAR (fees vs mcap) ═══
+function PlatformBar({ platformStats }) {
+  if (!platformStats) return null;
+  const { fees, mcap, ratio, meta } = platformStats;
+
+  const fmtUsd = (v) => {
+    if (!v) return "$0";
+    if (v >= 1e6) return "$" + (v / 1e6).toFixed(2) + "M";
+    if (v >= 1e3) return "$" + (v / 1e3).toFixed(1) + "K";
+    return "$" + v.toFixed(0);
+  };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 3, padding: "5px 12px", borderTop: `1px solid ${C.bd}`, background: C.bg }}>
+      {[
+        { l: "FEES", v: `${fmtSol(fees?.sessionSol || 0)}`, c: C.yl, sub: fmtUsd(fees?.sessionUsd) },
+        { l: "LIFETIME", v: `${fmtSol(fees?.lifetimeSol || 0)}`, c: C.or, sub: fmtUsd(fees?.lifetimeUsd) },
+        { l: "MCAP", v: fmtUsd(mcap?.combinedUsd), c: C.cy },
+        { l: "GRAD MC", v: fmtUsd((mcap?.graduatedUsd || 0) + (mcap?.watchlistUsd || 0)), c: C.gn },
+        { l: "FEE/MC", v: `${(ratio?.feeToMcapBps || 0).toFixed(1)}bp`, c: (ratio?.feeToMcapBps || 0) > 1 ? C.gn : C.dm },
+        { l: "TOKENS", v: `${meta?.radarTokens || 0}`, c: C.dm, sub: `${meta?.graduatedCount || 0} grad` },
+      ].map(s => (
+        <div key={s.l} style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 12, fontWeight: 900, color: s.c, fontFamily: M }}>{s.v}</div>
+          <div style={{ fontSize: 7, color: C.ft, fontWeight: 700, letterSpacing: ".08em" }}>
+            {s.l}{s.sub ? <span style={{ color: C.dm, marginLeft: 3 }}>{s.sub}</span> : ""}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ═══ FLEET BAR ═══
 function FleetBar({ stats = {} }) {
   return (
@@ -514,6 +547,7 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
   const [view, setView] = useState("radar"); // "radar", "list", or "grads"
   const [grads, setGrads] = useState([]);
   const [gradBuying, setGradBuying] = useState(false);
+  const [platformStats, setPlatformStats] = useState(null);
   const [now, setNow] = useState(Date.now());
   const wsRef = useRef(null);
 
@@ -587,9 +621,22 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
 
   useEffect(() => {
     fetchGrads();
-    const iv = setInterval(fetchGrads, 15000); // refresh every 15s
+    const iv = setInterval(fetchGrads, 15000);
     return () => clearInterval(iv);
   }, [fetchGrads]);
+
+  // Fetch platform stats (fees vs mcap)
+  useEffect(() => {
+    const fetchPlatform = async () => {
+      try {
+        const r = await fetch(API + "/api/platform-stats");
+        if (r.ok) setPlatformStats(await r.json());
+      } catch {}
+    };
+    fetchPlatform();
+    const iv = setInterval(fetchPlatform, 10000); // refresh every 10s
+    return () => clearInterval(iv);
+  }, [API]);
 
   // Handle buy from grad panel
   const handleGradBuy = useCallback(async (ca, amt) => {
@@ -735,6 +782,7 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
           onBuy={onBuy} onSell={onSell} user={user} tradingBalance={tradingBalance} solPrice={solPrice} held={held} />
       </div>
 
+      <PlatformBar platformStats={platformStats} />
       <FleetBar stats={fleet} />
     </div>
   );
