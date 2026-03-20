@@ -6504,7 +6504,7 @@ app.get("/api/bags/status", (req, res) => {
 app.get("/api/bags/feed", async (req, res) => {
   if (!bagsMonitor.client) return res.json({ tokens: [], error: "Bags monitor not configured" });
   try {
-    const feed = await bagsMonitor.client.getLaunchFeed({ limit: parseInt(req.query.limit) || 50 });
+    const feed = await bagsMonitor.client.getLaunchFeed();
     const tokens = Array.isArray(feed) ? feed : (feed?.tokens || feed?.launches || []);
     const normalized = tokens.map(t => bagsMonitor.client._normalizeToBondli(t));
     res.json({ tokens: normalized, count: normalized.length });
