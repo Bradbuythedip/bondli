@@ -1020,7 +1020,7 @@ function processRadarMessage(data) {
       setTimeout(() => refreshGraduatedMcap(mint).catch(() => {}), 15000);
       setTimeout(() => refreshGraduatedMcap(mint).catch(() => {}), 60000);
       // Add to graduated watchlist for 24h follow
-      const wEntry = { name: token.name || "", ticker: token.ticker || "", gradMcap: token.mcapUsd || 0, gradTime: Date.now(), spark: [...(token.spark || [])], peakMcap: token.mcapUsd || 0, lastMcap: token.mcapUsd || 0, lastRefresh: Date.now() };
+      const wEntry = { name: token.name || "", ticker: token.ticker || "", image: token.image || "", gradMcap: token.mcapUsd || 0, gradTime: Date.now(), spark: [...(token.spark || [])], peakMcap: token.mcapUsd || 0, lastMcap: token.mcapUsd || 0, lastRefresh: Date.now() };
       gradWatchlist.set(mint, wEntry);
       if (redis) { redis.hSet("grad:watchlist", mint, JSON.stringify(wEntry)).catch(() => {}); }
     }
@@ -6529,6 +6529,61 @@ app.get("/api/chart-analysis/:mint", async (req, res) => {
     const analysis = analyzeCandles(candles);
     res.json({ mint: req.params.mint, ...analysis, source: "geckoterminal", tf });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════
+// ROUTES: GRADUATED TOKENS (clickable watchlist with live mcap)
+// ═══════════════════════════════════════
+app.get("/api/graduated", (req, res) => {
+  const now = Date.now();
+  const tokens = [];
+
+  // From grad watchlist (post-graduation tracking with sparklines)
+  for (const [ca, w] of gradWatchlist) {
+    const changePct = w.gradMcap > 0 ? ((w.lastMcap - w.gradMcap) / w.gradMcap) * 100 : 0;
+    const peakMultiple = w.gradMcap > 0 ? w.peakMcap / w.gradMcap : 1;
+    tokens.push({
+      ca, name: w.name, ticker: w.ticker,
+      image: w.image || null,
+      gradMcap: w.gradMcap,
+      currentMcap: w.lastMcap || w.gradMcap,
+      peakMcap: w.peakMcap || w.gradMcap,
+      changePct: Math.round(changePct * 10) / 10,
+      peakMultiple: Math.round(peakMultiple * 100) / 100,
+      spark: w.spark?.slice(-30) || [],
+      gradTime: w.gradTime,
+      ageHours: Math.round((now - w.gradTime) / 3600000 * 10) / 10,
+      source: "watchlist",
+    });
+  }
+
+  // Also include recently graduated tokens still on radar
+  for (const [ca, t] of radar.tokens) {
+    if (!t.graduated) continue;
+    if (gradWatchlist.has(ca)) continue; // already in watchlist
+    tokens.push({
+      ca, name: t.name, ticker: t.ticker,
+      image: t.image || null,
+      gradMcap: t.mcapUsd || gradMcUsd(),
+      currentMcap: t.mcapUsd || 0,
+      peakMcap: t.mcapUsd || 0,
+      changePct: 0,
+      peakMultiple: 1,
+      spark: t.spark?.slice(-30) || [],
+      gradTime: t.graduatedAt || t.createdAt || now,
+      ageHours: Math.round((now - (t.graduatedAt || t.createdAt || now)) / 3600000 * 10) / 10,
+      source: "radar",
+    });
+  }
+
+  // Sort by graduation time (newest first)
+  tokens.sort((a, b) => (b.gradTime || 0) - (a.gradTime || 0));
+
+  res.json({
+    graduated: tokens.slice(0, 50),
+    total: tokens.length,
+    updatedAt: now,
+  });
 });
 
 // ═══════════════════════════════════════

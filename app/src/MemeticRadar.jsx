@@ -408,6 +408,101 @@ function TokenList({ tokens, selected, onSelect }) {
   );
 }
 
+// ═══ MINI SPARKLINE ═══
+function MiniSpark({ data = [], width = 60, height = 20, color = C.gn }) {
+  if (data.length < 2) return null;
+  const min = Math.min(...data), max = Math.max(...data);
+  const range = max - min || 1;
+  const points = data.map((v, i) => `${(i / (data.length - 1)) * width},${height - ((v - min) / range) * height}`).join(" ");
+  return (
+    <svg width={width} height={height} style={{ display: "block" }}>
+      <polyline points={points} fill="none" stroke={color} strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+// ═══ GRADUATED TOKENS PANEL ═══
+function GradPanel({ grads, onSelect, onBuy, user, tradingBalance, buying }) {
+  if (!grads || grads.length === 0) return (
+    <div style={{ padding: 30, textAlign: "center", color: C.dm, fontSize: 11 }}>No graduated tokens yet...</div>
+  );
+
+  const fmtMcap = (v) => {
+    if (!v) return "—";
+    if (v >= 1e6) return "$" + (v / 1e6).toFixed(2) + "M";
+    if (v >= 1e3) return "$" + (v / 1e3).toFixed(1) + "K";
+    return "$" + v.toFixed(0);
+  };
+
+  return (
+    <div style={{ overflowY: "auto", maxHeight: "100%", scrollbarWidth: "thin" }}>
+      <div style={{ padding: "6px 10px", fontSize: 9, color: C.ft, borderBottom: `1px solid ${C.bd}`, display: "flex", justifyContent: "space-between" }}>
+        <span>GRADUATED TOKENS — click to track & buy</span>
+        <span>{grads.length} tracked</span>
+      </div>
+      {grads.map(g => {
+        const isUp = (g.changePct || 0) > 0;
+        const changeColor = isUp ? C.gn : g.changePct < -30 ? C.rd : C.or;
+        const sparkColor = isUp ? C.gn : C.rd;
+        return (
+          <div key={g.ca} style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "8px 10px",
+            borderBottom: `1px solid ${C.bd}`, cursor: "pointer",
+            transition: "background 0.15s",
+          }} onClick={() => onSelect(g)}
+            onMouseEnter={e => e.currentTarget.style.background = C.sf}
+            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+          >
+            {/* Image */}
+            <div style={{ width: 32, height: 32, borderRadius: 6, overflow: "hidden", flexShrink: 0, background: C.bg, border: `1px solid ${C.bd}` }}>
+              {g.image ? <img src={g.image} alt="" style={{ width: 32, height: 32, objectFit: "cover" }} onError={e => e.target.style.display = "none"} /> : <div style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 900, color: C.ft + "44" }}>{(g.ticker || g.name || "?")[0]}</div>}
+            </div>
+
+            {/* Name + Ticker */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: C.tx, fontFamily: M }}>{g.ticker || g.name}</span>
+                <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: C.gn + "12", color: C.gn, fontWeight: 700 }}>GRAD</span>
+                {g.peakMultiple > 2 && <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: C.yl + "12", color: C.yl, fontWeight: 700 }}>{g.peakMultiple.toFixed(1)}x</span>}
+              </div>
+              <div style={{ fontSize: 9, color: C.ft, marginTop: 1 }}>
+                {g.ageHours < 1 ? Math.round(g.ageHours * 60) + "m ago" : g.ageHours.toFixed(1) + "h ago"}
+                {g.name && g.name !== g.ticker ? ` · ${g.name.slice(0, 20)}` : ""}
+              </div>
+            </div>
+
+            {/* Sparkline */}
+            <div style={{ flexShrink: 0 }}>
+              <MiniSpark data={g.spark} width={50} height={18} color={sparkColor} />
+            </div>
+
+            {/* Price info */}
+            <div style={{ textAlign: "right", flexShrink: 0, minWidth: 65 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: C.tx, fontFamily: M }}>{fmtMcap(g.currentMcap)}</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: changeColor, fontFamily: M }}>
+                {isUp ? "+" : ""}{g.changePct?.toFixed(1)}%
+              </div>
+            </div>
+
+            {/* Quick buy button */}
+            <button
+              onClick={(e) => { e.stopPropagation(); if (onBuy && user && !user.demo) onBuy(g.ca, 0.1); }}
+              disabled={!user || user.demo || buying}
+              style={{
+                padding: "5px 8px", borderRadius: 5, border: "none", fontSize: 10, fontWeight: 800,
+                background: user && !user.demo ? `linear-gradient(135deg, ${C.gn}cc, ${C.gn}66)` : C.ft + "22",
+                color: user && !user.demo ? "#000" : C.ft,
+                cursor: user && !user.demo && !buying ? "pointer" : "not-allowed",
+                fontFamily: M, flexShrink: 0, whiteSpace: "nowrap",
+              }}
+            >BUY</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ═══ MAIN COMPONENT ═══
 export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBalance, solPrice, held }) {
   const API = apiBase || "https://bondli-production.up.railway.app";
@@ -416,7 +511,9 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
   const [trends, setTrends] = useState([]);
   const [fleet, setFleet] = useState({});
   const [heatLevel, setHeatLevel] = useState(0.3);
-  const [view, setView] = useState("radar"); // "radar" or "list"
+  const [view, setView] = useState("radar"); // "radar", "list", or "grads"
+  const [grads, setGrads] = useState([]);
+  const [gradBuying, setGradBuying] = useState(false);
   const [now, setNow] = useState(Date.now());
   const wsRef = useRef(null);
 
@@ -463,6 +560,10 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
               t.tokenAddress === msg.tokenAddress ? { ...t, pnl: msg.pnl, trajectory: msg.trajectory, entrySignal: true } : t
             ));
           }
+          if (msg.event === "graduation") {
+            // Refresh graduated list when a new token graduates
+            fetchGrads();
+          }
           if (msg.type === "trends") setTrends(msg.trends || []);
           if (msg.type === "fleet_stats") setFleet(msg.stats || {});
           if (msg.type === "attention_level") setHeatLevel(msg.intensity || 0.3);
@@ -475,6 +576,45 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
     connect();
     return () => { if (wsRef.current) wsRef.current.close(); };
   }, [API, assignPos]);
+
+  // Fetch graduated tokens
+  const fetchGrads = useCallback(async () => {
+    try {
+      const r = await fetch(API + "/api/graduated");
+      if (r.ok) { const d = await r.json(); setGrads(d.graduated || []); }
+    } catch {}
+  }, [API]);
+
+  useEffect(() => {
+    fetchGrads();
+    const iv = setInterval(fetchGrads, 15000); // refresh every 15s
+    return () => clearInterval(iv);
+  }, [fetchGrads]);
+
+  // Handle buy from grad panel
+  const handleGradBuy = useCallback(async (ca, amt) => {
+    if (!onBuy || gradBuying) return;
+    setGradBuying(true);
+    try { await onBuy(ca, amt); } catch {}
+    setGradBuying(false);
+  }, [onBuy, gradBuying]);
+
+  // When a grad token is clicked, select it (opens score panel if on radar, or navigate)
+  const handleGradSelect = useCallback((g) => {
+    // Try to find on radar first
+    const radarToken = tokens.find(t => (t.tokenAddress || t.ca) === g.ca);
+    if (radarToken) {
+      setSelected(radarToken);
+    } else {
+      // Build a pseudo-token for the score panel
+      setSelected({
+        tokenAddress: g.ca, ca: g.ca, name: g.name, symbol: g.ticker, ticker: g.ticker,
+        image: g.image, mcapUsd: g.currentMcap, mcap: g.currentMcap,
+        score: 0, archetype: "organic_runner", graduated: true,
+        spark: g.spark, moduleScores: {},
+      });
+    }
+  }, [tokens]);
 
   // Demo tokens
   useEffect(() => {
@@ -534,10 +674,18 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
         </div>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           {/* View toggle */}
-          <button onClick={() => setView(v => v === "radar" ? "list" : "radar")} style={{
-            padding: "3px 8px", borderRadius: 4, border: `1px solid ${C.bd}`, background: "none",
-            fontSize: 10, fontWeight: 700, color: C.dm, cursor: "pointer", fontFamily: M,
-          }}>{view === "radar" ? "LIST" : "RADAR"}</button>
+          {["radar", "list", "grads"].map(v => (
+            <button key={v} onClick={() => setView(v)} style={{
+              padding: "3px 8px", borderRadius: 4,
+              border: `1px solid ${view === v ? C.gn + "44" : C.bd}`,
+              background: view === v ? C.gn + "0a" : "none",
+              fontSize: 10, fontWeight: 700,
+              color: view === v ? C.gn : C.dm,
+              cursor: "pointer", fontFamily: M,
+            }}>
+              {v === "grads" ? `GRADS${grads.length ? ` (${grads.length})` : ""}` : v.toUpperCase()}
+            </button>
+          ))}
           {/* Legend */}
           {Object.entries(ARCH_COLORS).slice(0, 4).map(([k, color]) => (
             <div key={k} style={{ display: "flex", alignItems: "center", gap: 3 }}>
@@ -569,6 +717,11 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
             <div style={{ position: "absolute", bottom: 6, left: 10, fontSize: 10, color: C.ft, zIndex: 10 }}>
               {tokens.length} tokens · {tokens.filter(t => (t.score || 0) > 0.6).length} hot
             </div>
+          </div>
+        ) : view === "grads" ? (
+          /* GRADUATED VIEW */
+          <div style={{ flex: 1 }} className="memetic-scroll">
+            <GradPanel grads={grads} onSelect={handleGradSelect} onBuy={handleGradBuy} user={user} tradingBalance={tradingBalance} buying={gradBuying} />
           </div>
         ) : (
           /* LIST VIEW */
