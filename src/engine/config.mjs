@@ -38,10 +38,11 @@ export const CONFIG = {
   AUTO_RUG_DROUGHT_SEC:    parseInt(process.env.AUTO_RUG_DROUGHT_SEC || "45"),       // seconds of no external volume
   AUTO_RUG_MIN_WAIT_SEC:   parseInt(process.env.AUTO_RUG_MIN_WAIT_SEC || "60"),      // minimum time before auto-rug can trigger
 
-  // Bags.fm integration
+  // Bags.fm integration — https://dev.bags.fm
   BAGS_API_KEY:            process.env.BAGS_API_KEY || "",
-  BAGS_FEE_SWEEP_HOURS:    parseInt(process.env.BAGS_FEE_SWEEP_HOURS || "6"),        // sweep claimable fees every N hours
+  BAGS_FEE_SWEEP_HOURS:    parseInt(process.env.BAGS_FEE_SWEEP_HOURS || "6"),
   BAGS_PARTNER_WALLET:     process.env.BAGS_PARTNER_WALLET || "",
+  BAGS_AGENT_JWT:          process.env.BAGS_AGENT_JWT || "",                          // agent auth JWT (365-day validity)
 };
 
 export const WALLET_ROLES = [
