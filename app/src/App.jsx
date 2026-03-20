@@ -357,7 +357,6 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 <SL href={t.website?(t.website.startsWith("http")?t.website:"https://"+t.website):null} icon={IC.globe} label="Website"/>
 <SL href={t.telegram?(t.telegram.startsWith("http")?t.telegram:"https://t.me/"+(t.telegram.startsWith("@")?t.telegram.slice(1):t.telegram)):null} icon={IC.tg} label="Telegram"/>
 <a href={"https://pump.fun/coin/"+t.ca} target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:4,padding:"6px 10px",background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:5,fontSize:14,color:T.gn,textDecoration:"none",fontWeight:700}}>pump.fun</a>
-<a href={"https://www.gmgn.cc/sol/token/"+t.ca} target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:5,padding:"6px 12px",background:T.bg,border:"1px solid "+T.bd,borderRadius:5,fontSize:14,color:T.dm,textDecoration:"none"}}>gmgn</a>
 <a href={"https://dexscreener.com/solana/"+t.ca} target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:5,padding:"6px 12px",background:T.bg,border:"1px solid "+T.bd,borderRadius:5,fontSize:14,color:T.dm,textDecoration:"none"}}>dex</a>
 </div>
 </div>
@@ -388,8 +387,8 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 </div>
 <span style={{fontSize:14,fontWeight:900,color:t.memeticScore>=0.7?T.gn:t.memeticScore>=0.5?T.yl:"#ff4444"}}>{Math.round(t.memeticScore*100)}</span>
 </div>}
-{/* Chart — canvas candlestick with OHLC + volume (FIRST) */}
-<CandleChart ca={t.ca} T={T} mb={mb}/>
+{/* Chart — gmgn embed */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden"}}><iframe src={"https://www.gmgn.cc/kline/sol/"+t.ca} style={{width:"100%",height:mb?240:360,border:"none",display:"block"}} title="chart" loading="lazy"/></div>
 {/* ═══ MEMETIC TOGGLE BUTTON ═══ */}
 <div style={{borderTop:"1px solid "+T.bd,borderBottom:memeOpen?"none":"1px solid "+T.bd}}>
 <button onClick={()=>setMemeOpen(o=>!o)} style={{width:"100%",padding:"7px 14px",background:"none",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
@@ -885,7 +884,6 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
 <button onClick={()=>{navigator.clipboard?.writeText(lCA);toast("CA copied","success")}} style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:12,color:T.ft,cursor:"pointer",fontFamily:M}}>{lCA.slice(0,12)}…</button>
 <a href={"https://pump.fun/coin/"+lCA} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:6,fontSize:12,color:T.gn,textDecoration:"none",fontWeight:700}}>pump.fun ↗</a>
-<a href={"https://www.gmgn.cc/sol/token/"+lCA} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:12,color:T.dm,textDecoration:"none"}}>gmgn ↗</a>
 <a href={"https://dexscreener.com/solana/"+lCA} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:12,color:T.dm,textDecoration:"none"}}>dexscreener ↗</a>
 <a href={"https://birdeye.so/token/"+lCA+"?chain=solana"} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:12,color:T.dm,textDecoration:"none"}}>birdeye ↗</a>
 <a href={"https://photon-sol.tinyastro.io/en/lp/"+lCA} target="_blank" rel="noopener" style={{padding:"5px 10px",background:T.sf,border:"1px solid "+T.bd,borderRadius:6,fontSize:12,color:T.dm,textDecoration:"none"}}>photon ↗</a>
