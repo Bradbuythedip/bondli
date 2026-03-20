@@ -23,24 +23,38 @@ const POLL_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Fetch BTC and SOL 24h price changes
+ * Primary: Jupiter (SOL) + CoinGecko (BTC) — Jupiter is free with generous limits
  */
 async function fetchPriceChanges() {
+  let solPrice = 0, btcPrice = 0, btcChange = 0, solChange = 0;
+
+  // Jupiter for SOL price (free, no key, no rate limit issues)
+  try {
+    const r = await fetch('https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112',
+      { signal: AbortSignal.timeout(5000) });
+    if (r.ok) {
+      const d = await r.json();
+      solPrice = parseFloat(d?.data?.['So11111111111111111111111111111111111111112']?.price || 0);
+    }
+  } catch {}
+
+  // CoinGecko for BTC + 24h changes (still needed for BTC data)
   try {
     const response = await fetch(
       'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,solana&vs_currencies=usd&include_24hr_change=true',
-      { headers: { 'User-Agent': 'bondli-market-poller/1.0' } }
+      { headers: { 'User-Agent': 'bondli-market-poller/1.0' }, signal: AbortSignal.timeout(5000) }
     );
-    if (!response.ok) return null;
-    const data = await response.json();
-    return {
-      btcChange: data.bitcoin?.usd_24h_change || 0,
-      solChange: data.solana?.usd_24h_change || 0,
-      btcPrice: data.bitcoin?.usd || 0,
-      solPrice: data.solana?.usd || 0
-    };
-  } catch {
-    return null;
-  }
+    if (response.ok) {
+      const data = await response.json();
+      btcChange = data.bitcoin?.usd_24h_change || 0;
+      solChange = data.solana?.usd_24h_change || 0;
+      btcPrice = data.bitcoin?.usd || 0;
+      if (!solPrice) solPrice = data.solana?.usd || 0;
+    }
+  } catch {}
+
+  if (!solPrice && !btcPrice) return null;
+  return { btcChange, solChange, btcPrice, solPrice };
 }
 
 /**

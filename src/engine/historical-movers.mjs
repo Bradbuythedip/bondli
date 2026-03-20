@@ -4,6 +4,7 @@
 // Caches in Redis with TTL to avoid rate limits
 
 import { rankTokens, scoreToken } from "./velocity-scorer.mjs";
+import { getCandlesByMint, analyzeCandles, getSpotPrice } from "./price-feeds.mjs";
 
 const BIRDEYE_KEY = process.env.BIRDEYE_API_KEY || "";
 const CACHE_TTL = 600; // 10 min
@@ -321,14 +322,21 @@ export class HistoricalMovers {
     const allTokens = [...seen.values()];
     const scored = rankTokens(allTokens, 0);
 
-    // Enrich top candidates with detailed data (parallel, top 10 only)
+    // Enrich top candidates with detailed data + chart analysis (parallel, top 10 only)
     const topCandidates = scored.slice(0, 10);
     const enriched = await Promise.all(
       topCandidates.map(async (t) => {
-        const detail = await fetchTokenHistory(t.ca).catch(() => null);
-        if (!detail) return t;
+        const [detail, candles] = await Promise.all([
+          fetchTokenHistory(t.ca).catch(() => null),
+          getCandlesByMint(t.ca, "5m", 60).catch(() => []),
+        ]);
+        const merged = { ...t, ...(detail || {}) };
+        // Attach chart analysis if candles available
+        if (candles.length >= 5) {
+          merged.chartAnalysis = analyzeCandles(candles);
+        }
         // Re-score with enriched data (has 5m change, txn counts, etc.)
-        return scoreToken({ ...t, ...detail });
+        return scoreToken(merged);
       })
     );
 
@@ -352,8 +360,14 @@ export class HistoricalMovers {
     const cached = await this._getCached(cacheKey);
     if (cached) return cached;
 
-    const detail = await fetchTokenHistory(ca);
-    if (detail) await this._setCache(cacheKey, detail);
+    const [detail, candles] = await Promise.all([
+      fetchTokenHistory(ca),
+      getCandlesByMint(ca, "5m", 60).catch(() => []),
+    ]);
+    if (detail) {
+      if (candles.length >= 5) detail.chartAnalysis = analyzeCandles(candles);
+      await this._setCache(cacheKey, detail);
+    }
     return detail;
   }
 
