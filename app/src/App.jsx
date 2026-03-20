@@ -1154,21 +1154,12 @@ return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16p
 <span style={{fontSize:10,fontWeight:800,color:T.yl}}>Following Grads</span>
 <span style={{fontSize:8,color:T.ft}}>{intelData.gradWatch.count} tracked 24h {gradsOpen?"▾":"▸"}</span>
 </div>
-{gradsOpen&&intelData.gradWatch.tokens?.map(g=>{const c=g.changePct>=0?T.gn:T.rd;const gCA=g.ca||"";const canBuyGrad=user&&(user.tier==="pro"||user.whitelisted)&&trW&&gCA.length>=20;return<div key={gCA}>
-<div style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0",fontSize:9,cursor:"pointer",borderRadius:3,transition:"background 0.1s"}} onClick={()=>window.open("https://dexscreener.com/solana/"+gCA,"_blank")} onMouseEnter={e=>e.currentTarget.style.background=T.sf} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+{gradsOpen&&intelData.gradWatch.tokens?.map(g=>{const c=g.changePct>=0?T.gn:T.rd;const gCA=g.ca||"";return<div key={gCA} onClick={()=>{if(gCA.length>=20){sTab("radar");sRS(gCA);sRExp(gCA);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0",fontSize:9,cursor:"pointer",borderRadius:3,transition:"background 0.1s"}} onMouseEnter={e=>e.currentTarget.style.background=T.sf} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
 <span style={{color:T.tx,fontWeight:700,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{g.name||gCA.slice(0,6)}</span>
 <span style={{color:T.ft}}>${fm(g.currentMcap)}</span>
 <span style={{color:c,fontWeight:800}}>{g.changePct>=0?"+":""}{g.changePct}%</span>
 <span style={{color:T.ft}}>{g.age}h</span>
-<a href={"https://pump.fun/coin/"+gCA} target="_blank" rel="noopener" onClick={e=>e.stopPropagation()} style={{fontSize:8,color:T.gn+"88",textDecoration:"none",fontWeight:700}}>PF</a>
-{canBuyGrad&&<button onClick={e=>{e.stopPropagation();sITrade(p=>({...p,ca:p.ca===gCA?null:gCA}))}} style={{padding:"2px 6px",background:iTrade.ca===gCA?T.gn:T.gn+"0a",border:"1px solid "+T.gn+"22",borderRadius:3,fontSize:8,fontWeight:800,color:iTrade.ca===gCA?"#0a0a0f":T.gn,cursor:"pointer"}}>BUY</button>}
-</div>
-{iTrade.ca===gCA&&<div onClick={ev=>ev.stopPropagation()} style={{padding:"6px",background:T.bg,border:"1px solid "+T.gn+"33",borderRadius:6,marginTop:2,marginBottom:4}}>
-<div style={{display:"flex",gap:3,marginBottom:4}}>
-{[0.05,0.1,0.25,0.5].map(amt=><button key={amt} onClick={()=>sITrade(p=>({...p,amt}))} style={{flex:1,padding:"4px 0",borderRadius:4,fontSize:9,fontWeight:800,background:iTrade.amt===amt?T.gn+"18":"none",border:"1px solid "+(iTrade.amt===amt?T.gn+"44":T.bd),color:iTrade.amt===amt?T.gn:T.ft,cursor:"pointer"}}>{amt}</button>)}
-</div>
-<button onClick={async()=>{try{toast("Buying "+iTrade.amt+" SOL...","info");await quickBuy(gCA,iTrade.amt,{slippage:iTrade.slip,tip:iTrade.tip});sITrade(p=>({...p,ca:null}));toast("Buy sent!","success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:"5px 0",background:"linear-gradient(135deg,#00c853,#00e676)",border:"none",borderRadius:4,fontSize:10,fontWeight:900,color:"#0a0a0f",cursor:"pointer"}}>BUY {iTrade.amt} SOL — {g.ticker||g.name}</button>
-</div>}
+{g.peakMultiple>2&&<span style={{fontSize:8,padding:"1px 3px",borderRadius:2,background:T.yl+"12",color:T.yl,fontWeight:700}}>{g.peakMultiple}x</span>}
 </div>})}
 </div>}
 </div>
