@@ -18,6 +18,8 @@
 //
 //   ε = 5 (floor to avoid div-by-zero and prevent infinite scores on zero-velocity coins)
 
+import { scoreVolumeLegitimacy } from "./volume-legitimacy.mjs";
+
 const EPSILON = 5;
 
 // ── Velocity Score: how much has this token already moved? ──
@@ -138,7 +140,22 @@ function calcPotential(token) {
     p -= 15;
   }
 
-  return Math.min(100, p);
+  // 6. Volume legitimacy — real volume = real fees = legit token
+  //    PumpFun fees/sec is the ultimate signal: high fee rate + organic patterns = real
+  //    Botted volume with few wallets = instant penalty
+  const volLeg = scoreVolumeLegitimacy(token);
+  if (volLeg.legitimacy === "REAL_VOLUME") p += 15;       // strong organic volume
+  else if (volLeg.legitimacy === "LIKELY_ORGANIC") p += 8;
+  else if (volLeg.legitimacy === "SUSPICIOUS") p -= 5;
+  else if (volLeg.legitimacy === "LIKELY_BOTTED") p -= 15; // fake volume = danger
+
+  // Extra penalty for high bot detection score
+  if (volLeg.botDetection.botScore >= 60) p -= 10;
+
+  // Store for downstream use
+  token._volumeLegitimacy = volLeg;
+
+  return Math.min(100, Math.max(0, p));
 }
 
 // ── Main: Ape Score ──
@@ -153,6 +170,9 @@ function scoreToken(token) {
   const velocity = calcVelocity(token);
   const potential = calcPotential(token);
   const apeScore = potential / (velocity + EPSILON);
+
+  // Pull volume legitimacy computed during calcPotential
+  const volLeg = token._volumeLegitimacy || null;
 
   return {
     ca: token.ca,
@@ -169,6 +189,16 @@ function scoreToken(token) {
     change24h: token.change24h || 0,
     ageMin: token.pairCreated ? Math.round((Date.now() - token.pairCreated) / 60000) : null,
     signal: apeScore >= 5.0 ? "STRONG_APE" : apeScore >= 3.0 ? "WATCH" : apeScore >= 1.0 ? "WEAK" : "SKIP",
+    // Volume legitimacy — fee accrual rate + organic volume detection
+    volumeLegitimacy: volLeg ? {
+      score: volLeg.legitimacyScore,
+      label: volLeg.legitimacy,
+      feePerSec: volLeg.feeRate.feePerSec,
+      feeRating: volLeg.feeRate.feeRating,
+      botScore: volLeg.botDetection.botScore,
+      organicScore: volLeg.botDetection.organicScore,
+      botSignals: volLeg.botDetection.signals,
+    } : null,
     breakdown: {
       velocity_components: {
         priceAccel: Math.abs(token.change5m || 0),
@@ -179,6 +209,7 @@ function scoreToken(token) {
         mcapHeadroom: token.mcapUsd || 0,
         liqRatio: (token.liquidity || 0) / Math.max(token.mcapUsd || 1, 1),
         momentumDir: token.change5m || 0,
+        volumeLegitimacy: volLeg?.legitimacyScore || 0,
       },
     },
   };
