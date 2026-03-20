@@ -514,7 +514,7 @@ setInterval(pollDexBoosted, 120000); // every 2 min
 // ═══════════════════════════════════════
 const radar = {
   tokens: new Map(),    // ca → token data
-  tabs: { new: [], hot: [], graduating: [], momentum: [] },
+  tabs: { new: [], hot: [], graduating: [], momentum: [], bags: [] },
   poolSize: 0,
   online: 0,
   ws: null,
@@ -2211,6 +2211,26 @@ setInterval(() => {
     })
     .filter(Boolean)
     .sort((a, b) => b._momentum - a._momentum)
+    .slice(0, 50).map(serialize);
+
+  // ── BAGS: Hot tokens from Bags.fm only — heat-ranked ──
+  const bagsOnly = rugFiltered.filter(t => t._source === "bags");
+  radar.tabs.bags = bagsOnly
+    .map(t => {
+      const ageMin = Math.max(0.3, (now - t.createdAt) / 60000);
+      const ub = t.uniqueBuyers?.size || 0;
+      let rugHeatPenalty = 0;
+      try {
+        const qf = extractQuickFeatures(t);
+        if (qf) {
+          if (qf._rg_zeroSellFlag > 0.5) rugHeatPenalty += qf._rg_zeroSellFlag * 30;
+          if (qf._rg_buySellImbalance > 0.5) rugHeatPenalty += qf._rg_buySellImbalance * 20;
+          if (qf.ch_staircaseScore > 0.3) rugHeatPenalty += qf.ch_staircaseScore * 15;
+        }
+      } catch {}
+      return { ...t, _heat: (t.buys/ageMin)*10 + ub*8 + t.volumeSol*5 + (t.mcapUsd>5000?10:0) - rugHeatPenalty };
+    })
+    .sort((a, b) => b._heat - a._heat)
     .slice(0, 50).map(serialize);
 
   radar.poolSize = radar.tokens.size;
