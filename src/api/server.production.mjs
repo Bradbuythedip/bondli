@@ -7276,10 +7276,12 @@ app.get("/api/intel/stats", (req, res) => {
     gradMc: gradMcUsd(),
     gradWatch: {
       count: gradWatchlist.size,
-      tokens: [...gradWatchlist.entries()].slice(0, 10).map(([ca, w]) => ({
+      tokens: [...gradWatchlist.entries()].slice(0, 50).map(([ca, w]) => ({
         ca, name: w.name, ticker: w.ticker,
+        image: w.image || "",
         gradMcap: w.gradMcap, currentMcap: w.lastMcap,
         peakMcap: w.peakMcap,
+        peakMultiple: w.gradMcap > 0 ? Math.round((w.peakMcap || w.gradMcap) / w.gradMcap * 100) / 100 : 1,
         changePct: w.gradMcap > 0 ? +((w.lastMcap - w.gradMcap) / w.gradMcap * 100).toFixed(1) : 0,
         age: Math.round((Date.now() - w.gradTime) / 3600000),
       })),
