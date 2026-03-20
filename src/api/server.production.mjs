@@ -2267,6 +2267,38 @@ async function saveTradingWallet(userPubkey, tw) {
 // ═══════════════════════════════════════
 const users = new Map(); // wallet → { tier, whitelisted, username, ... }
 
+// Global fee accumulator — tracks all platform fees in this server session
+// Persisted to Redis so it survives restarts
+const globalFees = { totalSol: 0, txCount: 0, lastFeeAt: 0, sessionStart: Date.now() };
+
+function recordGlobalFee(feeSol) {
+  if (feeSol > 0) {
+    globalFees.totalSol = +(globalFees.totalSol + feeSol).toFixed(6);
+    globalFees.txCount++;
+    globalFees.lastFeeAt = Date.now();
+    // Persist async (non-blocking)
+    if (redis) {
+      redis.hSet("platform:fees", {
+        totalSol: String(globalFees.totalSol),
+        txCount: String(globalFees.txCount),
+        lastFeeAt: String(globalFees.lastFeeAt),
+      }).catch(() => {});
+    }
+  }
+}
+
+// Restore global fees from Redis on startup
+(async () => {
+  if (!redis) return;
+  try {
+    const data = await redis.hGetAll("platform:fees");
+    if (data?.totalSol) globalFees.totalSol = parseFloat(data.totalSol) || 0;
+    if (data?.txCount) globalFees.txCount = parseInt(data.txCount) || 0;
+    if (data?.lastFeeAt) globalFees.lastFeeAt = parseInt(data.lastFeeAt) || 0;
+    console.log(`[FEES] Restored: ${globalFees.totalSol} SOL from ${globalFees.txCount} txns`);
+  } catch {}
+})();
+
 async function getUser(wallet) {
   let u = users.get(wallet);
   if (!u && redis) {
@@ -3082,6 +3114,7 @@ app.post("/api/session/sell-sweep", async (req, res) => {
     // ── Referral revenue tracking (silent) ──
     const platformCut = closeResult.platformCut || 0;
     if (platformCut > 0.0001) {
+      recordGlobalFee(platformCut);
       try {
         const sweepUser = await getUser(wallet);
         if (sweepUser.referredBy) {
@@ -3731,6 +3764,7 @@ app.post("/api/quick-sell", async (req, res) => {
             tx.sign(kp);
             const skimSig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
             console.log(`[PROFIT-SKIM] ${wallet.slice(0,8)} → ${PLATFORM_WALLET.slice(0,8)} | ${feeInfo.fee.toFixed(4)} SOL (${feeInfo.rate}% of ${feeInfo.net.toFixed(4)}) | tx: ${skimSig.slice(0,12)}`);
+            recordGlobalFee(feeInfo.fee);
           }
         }
       } catch (e) {
@@ -3817,6 +3851,7 @@ app.post("/api/sell-all", async (req, res) => {
               tx.sign(kp);
               const skimSig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
               console.log(`[PROFIT-SKIM] sell-all ${wallet.slice(0,8)} → ${PLATFORM_WALLET.slice(0,8)} | ${feeInfo.fee.toFixed(4)} SOL (${feeInfo.rate}% of ${feeInfo.net.toFixed(4)}) | tx: ${skimSig.slice(0,12)}`);
+              recordGlobalFee(feeInfo.fee);
             }
           }
         } catch (e) { console.log(`[PROFIT-SKIM] sell-all error: ${e.message}`); }
@@ -4213,6 +4248,7 @@ function startAutoTrader(wallet, settings) {
             if (pnlSol > 0.001) {
               const netFee = +(pnlSol * NETWORK_FEE_PCT / 100).toFixed(6);
               if (netFee > 0.0001) {
+                recordGlobalFee(netFee);
                 (async () => {
                   try {
                     const tradeUser = await getUser(wallet);
@@ -7352,6 +7388,71 @@ app.get("/api/engine-state", (req, res) => {
     solPrice: solUsdPrice,
     gradMc: gradMcUsd(),
     lora: loraClient.getStats(),
+  });
+});
+
+// ═══════════════════════════════════════
+// ROUTES: PLATFORM STATS (public — fees accrued vs market cap)
+// ═══════════════════════════════════════
+app.get("/api/platform-stats", (req, res) => {
+  const tokens = [...radar.tokens.values()];
+  const now = Date.now();
+
+  // Total market cap of all tracked tokens
+  const totalMcapUsd = tokens.reduce((s, t) => s + (t.mcapUsd || 0), 0);
+  const graduated = tokens.filter(t => t.graduated);
+  const gradMcapUsd = graduated.reduce((s, t) => s + (t.mcapUsd || 0), 0);
+
+  // Watchlist mcap
+  let watchlistMcapUsd = 0;
+  for (const [, w] of gradWatchlist) {
+    watchlistMcapUsd += w.lastMcap || 0;
+  }
+
+  // Fee metrics
+  const feesUsd = globalFees.totalSol * solUsdPrice;
+  const combinedMcap = totalMcapUsd + watchlistMcapUsd;
+  const feeToMcapBps = combinedMcap > 0 ? (feesUsd / combinedMcap) * 10000 : 0; // basis points
+
+  // Per-user accumulated fees (lifetime, from Redis)
+  let lifetimeFeesSol = globalFees.totalSol;
+  for (const [, u] of users) {
+    const cut = parseFloat(u.totalPlatformCut || "0");
+    if (cut > lifetimeFeesSol) lifetimeFeesSol = cut; // take the larger of session vs stored
+  }
+  // Sum all user fees for true lifetime
+  let allUserFeesSol = 0;
+  for (const [, u] of users) {
+    allUserFeesSol += parseFloat(u.totalPlatformCut || "0");
+  }
+  if (allUserFeesSol > lifetimeFeesSol) lifetimeFeesSol = allUserFeesSol;
+
+  res.json({
+    fees: {
+      sessionSol: +globalFees.totalSol.toFixed(4),
+      sessionUsd: +feesUsd.toFixed(2),
+      lifetimeSol: +lifetimeFeesSol.toFixed(4),
+      lifetimeUsd: +(lifetimeFeesSol * solUsdPrice).toFixed(2),
+      txCount: globalFees.txCount,
+      lastFeeAt: globalFees.lastFeeAt || null,
+    },
+    mcap: {
+      radarTotalUsd: Math.round(totalMcapUsd),
+      graduatedUsd: Math.round(gradMcapUsd),
+      watchlistUsd: Math.round(watchlistMcapUsd),
+      combinedUsd: Math.round(combinedMcap),
+    },
+    ratio: {
+      feeToMcapBps: Math.round(feeToMcapBps * 100) / 100,
+      feeToMcapPct: Math.round(feeToMcapBps / 100 * 1000) / 1000,
+    },
+    meta: {
+      radarTokens: tokens.length,
+      graduatedCount: graduated.length,
+      watchlistCount: gradWatchlist.size,
+      solPrice: solUsdPrice,
+      uptime: Math.round(process.uptime()),
+    },
   });
 });
 
