@@ -241,12 +241,9 @@ export class BagsClient {
    * Get token launch feed — recent and active token launches.
    * GET /token-launch/feed
    */
-  async getLaunchFeed(opts = {}) {
-    const params = new URLSearchParams();
-    if (opts.limit) params.set("limit", opts.limit);
-    if (opts.offset) params.set("offset", opts.offset);
-    const qs = params.toString();
-    return this._fetch(`/token-launch/feed${qs ? "?" + qs : ""}`, { cacheTtl: 10_000 });
+  async getLaunchFeed() {
+    // Bags API: GET /token-launch/feed — NO query params (400 if any are sent)
+    return this._fetch("/token-launch/feed", { cacheTtl: 10_000 });
   }
 
   /**
@@ -585,12 +582,15 @@ export class BagsClient {
    * Scoring engine treats Bags and PumpFun tokens identically.
    */
   async pollNewLaunches(since = 0) {
-    const feed = await this.getLaunchFeed({ limit: 50 });
+    const feed = await this.getLaunchFeed();
+    // Response is already unwrapped by _fetch (strips { success, response } wrapper)
     const tokens = Array.isArray(feed) ? feed : (feed?.tokens || feed?.launches || []);
     return tokens
       .filter(t => {
+        // Feed may not have createdAt — include all tokens if since=0
+        if (since === 0) return true;
         const created = t.createdAt ? new Date(t.createdAt).getTime() : 0;
-        return created > since;
+        return created > since || created === 0; // include if no timestamp
       })
       .map(t => this._normalizeToBondli(t));
   }
@@ -601,8 +601,12 @@ export class BagsClient {
    */
   _normalizeToBondli(bagsToken) {
     const t = bagsToken;
+    // Feed response fields per docs: name, symbol, description, image, tokenMint,
+    // status (PRE_LAUNCH|PRE_GRAD|MIGRATING|MIGRATED), twitter, website,
+    // launchSignature, accountKeys[], uri, dbcPoolKey, dbcConfigKey
+    const devWallet = t.creator || t.deployer || (Array.isArray(t.accountKeys) ? t.accountKeys[0] : "") || "";
     return {
-      ca: t.mint || t.tokenMint || t.address,
+      ca: t.tokenMint || t.mint || t.address || "",
       name: t.name || "",
       ticker: t.symbol || "",
       description: t.description || "",
@@ -610,7 +614,7 @@ export class BagsClient {
       twitter: t.twitter || "",
       telegram: t.telegram || "",
       website: t.website || "",
-      devWallet: t.creator || t.deployer || "",
+      devWallet,
       priceUsd: t.priceUsd || 0,
       mcapUsd: t.marketCap || t.mcapUsd || 0,
       volume24h: t.volume24h || 0,
@@ -626,11 +630,14 @@ export class BagsClient {
       createdAt: t.createdAt ? new Date(t.createdAt).getTime() : Date.now(),
       // Bags-specific fields — preserved for routing + fee logic
       _source: "bags",
-      _bagsCreatorFee: 0.01, // 1% perpetual creator royalty
+      _bagsStatus: t.status || "",              // PRE_LAUNCH | PRE_GRAD | MIGRATING | MIGRATED
+      _bagsCreatorFee: 0.01,                    // 1% perpetual creator royalty
       _bagsDividends: true,
       _bagsHolderCount: t.holderCount || 0,
-      _meteoraDBC: true,     // Meteora DBC, NOT pump.fun bonding curve
-      _bagsRaw: t,           // preserve original for Bags-specific API calls
+      _bagsDbcPoolKey: t.dbcPoolKey || "",
+      _bagsLaunchSig: t.launchSignature || "",
+      _meteoraDBC: true,                        // Meteora DBC, NOT pump.fun bonding curve
+      _bagsRaw: t,                              // preserve original for Bags-specific API calls
     };
   }
 
