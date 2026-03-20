@@ -388,7 +388,7 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 <span style={{fontSize:14,fontWeight:900,color:t.memeticScore>=0.7?T.gn:t.memeticScore>=0.5?T.yl:"#ff4444"}}>{Math.round(t.memeticScore*100)}</span>
 </div>}
 {/* Chart — gmgn embed */}
-<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden"}}><iframe src={"https://www.gmgn.cc/kline/sol/"+t.ca} style={{width:"100%",height:mb?240:360,border:"none",display:"block"}} title="chart" loading="lazy"/></div>
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden"}}><iframe src={"https://dexscreener.com/solana/"+t.ca+"?embed=1&theme=dark&trades=0&info=0} style={{width:"100%",height:mb?240:360,border:"none",display:"block"}} title="chart" loading="lazy"/></div>
 {/* ═══ MEMETIC TOGGLE BUTTON ═══ */}
 <div style={{borderTop:"1px solid "+T.bd,borderBottom:memeOpen?"none":"1px solid "+T.bd}}>
 <button onClick={()=>setMemeOpen(o=>!o)} style={{width:"100%",padding:"7px 14px",background:"none",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
@@ -813,7 +813,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 
 {/* ═══ CHART ═══ */}
 <div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden",marginBottom:6}}>
-<iframe src={"https://www.gmgn.cc/kline/sol/"+lCA} style={{width:"100%",height:mb?240:360,border:"none",display:"block"}} title="chart" loading="lazy"/>
+<iframe src={"https://dexscreener.com/solana/"+lCA+"?embed=1&theme=dark&trades=0&info=0} style={{width:"100%",height:mb?240:360,border:"none",display:"block"}} title="chart" loading="lazy"/>
 </div>
 
 {/* ═══ FLEET CONTROLS ═══ */}
