@@ -49,6 +49,7 @@ import { DevWalletTracker } from "../engine/dev-wallet-tracker.mjs";
 import { scoreMemeticQuick, scoreTokenMemetic, loadBlacklists as loadMemeticBlacklists, startMemeticWorkers } from "../engine/memetic-pipeline.mjs";
 import { runPipeline, runExitChecks, classifyConfidence, calculatePositionSize, createExitPlan, checkPostExitReentry, checkDipDCA } from "../autoape/pipeline.js";
 import { getSpotPrice, getMultiSpotPrices, getCandlesByMint, findPool, analyzeCandles } from "../engine/price-feeds.mjs";
+import { BagsClient } from "../engine/bags-client.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -1956,6 +1957,7 @@ setInterval(() => {
       age: Math.round((now - t.createdAt) / 1000),
       devWallet: t.devWallet, graduated: t.graduated, bundled: t.bundled,
       marketCapSol: t.mcapSol,
+      source: t._source || "pump",     // "pump" | "bags" — launchpad origin
       dexBoosted: !!radar.dexBoosted.get(t.ca),
       boostAmount: radar.dexBoosted.get(t.ca)?.amount || 0,
       artworkScore: t._artworkScore ?? null,
@@ -2215,6 +2217,121 @@ setInterval(() => {
 }, 5000);
 
 connectPumpPortal();
+
+// ═══════════════════════════════════════
+// BAGS.FM FEED MONITOR
+// Polls Bags public API for new token launches and injects into radar.tokens.
+// Bags tokens are Meteora DBC — different from PumpFun bonding curve.
+// Without this, Bags coins never appear in the radar feed.
+// ═══════════════════════════════════════
+const bagsMonitor = {
+  client: null,
+  lastPollTime: 0,
+  pollCount: 0,
+  tokensIngested: 0,
+  errors: 0,
+  lastError: null,
+  running: false,
+};
+
+function startBagsMonitor() {
+  const apiKey = CONFIG.BAGS_API_KEY || process.env.BAGS_API_KEY;
+  if (!apiKey) {
+    console.warn("[BAGS-MONITOR] No BAGS_API_KEY set — Bags.fm feed disabled. Set BAGS_API_KEY in .env to enable.");
+    return;
+  }
+
+  bagsMonitor.client = new BagsClient(apiKey);
+  bagsMonitor.running = true;
+  bagsMonitor.lastPollTime = Date.now() - 600_000; // start by fetching last 10 min
+  console.log("[BAGS-MONITOR] Starting Bags.fm feed monitor (polling every 15s)");
+
+  // Initial poll immediately
+  pollBagsFeed().catch(() => {});
+
+  // Then poll every 15s (Bags rate limit: 1000 req/hr = ~16/min, we use 4/min)
+  setInterval(() => {
+    if (bagsMonitor.running) pollBagsFeed().catch(() => {});
+  }, 15_000);
+}
+
+async function pollBagsFeed() {
+  try {
+    const tokens = await bagsMonitor.client.pollNewLaunches(bagsMonitor.lastPollTime);
+    bagsMonitor.pollCount++;
+    bagsMonitor.lastPollTime = Date.now();
+
+    if (!tokens || tokens.length === 0) return;
+
+    let ingested = 0;
+    const now = Date.now();
+
+    for (const t of tokens) {
+      const mint = t.ca;
+      if (!mint || radar.tokens.has(mint)) continue;
+
+      // Convert Bags normalized format to radar token format
+      const token = {
+        ca: mint,
+        name: t.name || "",
+        ticker: t.ticker || "",
+        description: (t.description || "").slice(0, 200),
+        image: t.image || "",
+        twitter: t.twitter || "",
+        website: t.website || "",
+        telegram: t.telegram || "",
+        createdAt: t.createdAt || t.pairCreated || now,
+        trades: [],
+        buys: t.buys || 0,
+        sells: t.sells || 0,
+        volumeSol: t.volumeSol || 0,
+        sellVolumeSol: 0,
+        mcapSol: t.mcapUsd > 0 && solUsdPrice > 0 ? t.mcapUsd / solUsdPrice : 0,
+        mcapUsd: t.mcapUsd || 0,
+        prevVSol: 0,
+        uniqueBuyers: new Set(),
+        spark: t.mcapUsd > 0 ? [t.mcapUsd] : [],
+        h1Change: t.change1h || 0,
+        devWallet: t.devWallet || "",
+        graduated: false,     // Bags tokens don't graduate — Meteora DBC
+        bundled: false,
+        initialBuy: 0,
+        // Bags-specific fields
+        _source: "bags",
+        _bagsLiquidity: t.liquidity || 0,
+        _bagsHolderCount: t._bagsHolderCount || 0,
+      };
+
+      radar.tokens.set(mint, token);
+      ingested++;
+      bagsMonitor.tokensIngested++;
+
+      // Register dev wallet if present
+      if (t.devWallet && typeof devWalletTracker?.register === "function") {
+        devWalletTracker.register(t.devWallet, {
+          ca: mint, name: t.name || "", ticker: t.ticker || "",
+          mcap: t.mcapUsd || 0,
+        });
+      }
+
+      console.log(`[BAGS-MONITOR] New token: ${(t.name || "?").slice(0, 20)} (${mint.slice(0, 8)}...) | MC: $${(t.mcapUsd || 0).toLocaleString()} | Source: bags.fm`);
+      broadcastWS({ event: "newToken", data: { ca: mint, name: t.name, mcap: t.mcapUsd, source: "bags" } });
+    }
+
+    if (ingested > 0) {
+      console.log(`[BAGS-MONITOR] Ingested ${ingested} new Bags tokens (total: ${bagsMonitor.tokensIngested})`);
+    }
+  } catch (e) {
+    bagsMonitor.errors++;
+    bagsMonitor.lastError = { message: e.message, time: Date.now() };
+    // Only log every 5th error to avoid spam
+    if (bagsMonitor.errors % 5 === 1) {
+      console.error(`[BAGS-MONITOR] Poll error (${bagsMonitor.errors} total): ${e.message}`);
+    }
+  }
+}
+
+startBagsMonitor();
 
 // Start memetic background workers (trend poller, KOL monitor, etc.)
 loadMemeticBlacklists().catch(() => {});
@@ -6358,6 +6475,41 @@ app.get("/api/memetic-score/:ca", async (req, res) => {
   } catch (e) {
     console.error("[MEMETIC-SCORE]", e.message);
     res.status(500).json({ error: "Scoring failed" });
+  }
+});
+
+// ═══════════════════════════════════════
+// ROUTES: BAGS.FM STATUS
+// ═══════════════════════════════════════
+app.get("/api/bags/status", (req, res) => {
+  const bagsTokens = [...radar.tokens.values()].filter(t => t._source === "bags");
+  res.json({
+    enabled: !!bagsMonitor.client,
+    running: bagsMonitor.running,
+    pollCount: bagsMonitor.pollCount,
+    tokensIngested: bagsMonitor.tokensIngested,
+    tokensInRadar: bagsTokens.length,
+    errors: bagsMonitor.errors,
+    lastError: bagsMonitor.lastError,
+    lastPollTime: bagsMonitor.lastPollTime,
+    rateLimitStatus: bagsMonitor.client?.getRateLimitStatus() || null,
+    recentTokens: bagsTokens.slice(-10).map(t => ({
+      ca: t.ca, name: t.name, ticker: t.ticker, mcapUsd: t.mcapUsd,
+      age: Math.round((Date.now() - t.createdAt) / 1000),
+    })),
+  });
+});
+
+// Bags feed proxy — frontend fetches through us (avoids CORS + uses server-side API key)
+app.get("/api/bags/feed", async (req, res) => {
+  if (!bagsMonitor.client) return res.json({ tokens: [], error: "Bags monitor not configured" });
+  try {
+    const feed = await bagsMonitor.client.getLaunchFeed({ limit: parseInt(req.query.limit) || 50 });
+    const tokens = Array.isArray(feed) ? feed : (feed?.tokens || feed?.launches || []);
+    const normalized = tokens.map(t => bagsMonitor.client._normalizeToBondli(t));
+    res.json({ tokens: normalized, count: normalized.length });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
   }
 });
 
