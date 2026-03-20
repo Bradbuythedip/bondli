@@ -1958,6 +1958,8 @@ setInterval(() => {
       devWallet: t.devWallet, graduated: t.graduated, bundled: t.bundled,
       marketCapSol: t.mcapSol,
       source: t._source || "pump",     // "pump" | "bags" — launchpad origin
+      _source: t._source || "pump",    // alias for frontend compatibility
+      _meteoraDBC: t._source === "bags", // Bags tokens use Meteora DBC
       dexBoosted: !!radar.dexBoosted.get(t.ca),
       boostAmount: radar.dexBoosted.get(t.ca)?.amount || 0,
       artworkScore: t._artworkScore ?? null,
