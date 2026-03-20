@@ -48,6 +48,7 @@ import { SmartMoneyTracker } from "../engine/smart-money-tracker.mjs";
 import { DevWalletTracker } from "../engine/dev-wallet-tracker.mjs";
 import { scoreMemeticQuick, scoreTokenMemetic, loadBlacklists as loadMemeticBlacklists, startMemeticWorkers } from "../engine/memetic-pipeline.mjs";
 import { runPipeline, runExitChecks, classifyConfidence, calculatePositionSize, createExitPlan, checkPostExitReentry, checkDipDCA } from "../autoape/pipeline.js";
+import { getSpotPrice, getMultiSpotPrices, getCandlesByMint, findPool, analyzeCandles } from "../engine/price-feeds.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -460,17 +461,17 @@ let solUsdPrice = 135;
 // Dynamic: recalculated as SOL price changes. Floor at 55K (graduation never below ~$55K MC).
 function gradMcUsd() { return Math.max(55000, Math.round(85 * solUsdPrice * 5.4)); }
 async function pollSolPrice() {
+  // Primary: Jupiter (free, no key, generous rate limits)
   try {
-    const r = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
+    const r = await fetch("https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112", { signal: AbortSignal.timeout(5000) });
+    if (r.ok) { const d = await r.json(); const sp = d?.data?.["So11111111111111111111111111111111111111112"]?.price; if (sp > 0) { solUsdPrice = +sp; return; } }
+  } catch {}
+  // Fallback: CoinGecko (rate-limited on free tier)
+  try {
+    const r2 = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
       { signal: AbortSignal.timeout(5000) });
-    if (r.ok) { const d = await r.json(); if (d?.solana?.usd > 0) solUsdPrice = d.solana.usd; }
-  } catch {
-    // Fallback: try Jupiter
-    try {
-      const r2 = await fetch("https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112", { signal: AbortSignal.timeout(5000) });
-      if (r2.ok) { const d2 = await r2.json(); const sp = d2?.data?.["So11111111111111111111111111111111111111112"]?.price; if (sp > 0) solUsdPrice = +sp; }
-    } catch {}
-  }
+    if (r2.ok) { const d2 = await r2.json(); if (d2?.solana?.usd > 0) solUsdPrice = d2.solana.usd; }
+  } catch {}
 }
 pollSolPrice();
 setInterval(pollSolPrice, 60000); // 60s — SOL price doesn't move fast enough to justify 30s
@@ -6473,6 +6474,61 @@ app.get("/api/chart/:ca", (req, res) => {
     });
   }
   res.json({ candles, interval: 10, source: "spark" });
+});
+
+// ═══════════════════════════════════════
+// ROUTES: PRICE FEEDS (Jupiter + GeckoTerminal — free, no API keys)
+// ═══════════════════════════════════════
+
+// Jupiter spot price for any token mint
+app.get("/api/spot/:mint", async (req, res) => {
+  try {
+    const result = await getSpotPrice(req.params.mint);
+    if (!result) return res.status(404).json({ error: "price not found" });
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Jupiter batch spot prices (POST body: { mints: ["addr1", "addr2"] })
+app.post("/api/spot/batch", async (req, res) => {
+  try {
+    const mints = req.body?.mints;
+    if (!Array.isArray(mints)) return res.status(400).json({ error: "mints array required" });
+    const prices = await getMultiSpotPrices(mints.slice(0, 100));
+    res.json(Object.fromEntries(prices));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GeckoTerminal OHLCV candles by mint address
+// GET /api/candles/:mint?tf=5m&limit=100
+app.get("/api/candles/:mint", async (req, res) => {
+  try {
+    const tf = req.query.tf || "5m";
+    const limit = Math.min(parseInt(req.query.limit) || 100, 1000);
+    const candles = await getCandlesByMint(req.params.mint, tf, limit);
+    if (!candles.length) return res.json({ candles: [], source: "geckoterminal", tf });
+    const analysis = analyzeCandles(candles);
+    res.json({ candles, analysis, source: "geckoterminal", tf });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Find pool address for a token (needed for direct GeckoTerminal queries)
+app.get("/api/pool/:mint", async (req, res) => {
+  try {
+    const pool = await findPool(req.params.mint);
+    if (!pool) return res.status(404).json({ error: "no pool found" });
+    res.json(pool);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Chart analysis only (no raw candles) — lightweight for scoring
+app.get("/api/chart-analysis/:mint", async (req, res) => {
+  try {
+    const tf = req.query.tf || "5m";
+    const candles = await getCandlesByMint(req.params.mint, tf, 60);
+    const analysis = analyzeCandles(candles);
+    res.json({ mint: req.params.mint, ...analysis, source: "geckoterminal", tf });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ═══════════════════════════════════════
