@@ -1928,7 +1928,7 @@ setInterval(() => {
   // Serialize with sparkline generation
   const serialize = (t) => {
     let spark = [...(t.spark || [])];
-    if (spark.length < 5 && t.mcapUsd > 0) {
+    if (spark.length < 5 && (t.mcapUsd > 0 || t._source === "bags")) {
       const mc = t.mcapUsd;
       const ca = t.ca || "";
       const s1 = ca.charCodeAt(0)||65, s2 = ca.charCodeAt(3)||70;
