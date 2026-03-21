@@ -69,7 +69,15 @@ const solFmt=n=>n<.01?"<0.01":n<100?n.toFixed(2):Math.round(n)+"";
 const kFmt=n=>n>=10000?(n/1000).toFixed(1).replace(/\.0$/,"")+"k":n>=1000?(n/1000).toFixed(1)+"k":n+"";
 // Image proxy: route ALL external images through backend to avoid CORS/blocking
 const imgProxy=u=>!u?"":u.startsWith("data:")?u:u.startsWith("/")?u:API+"/api/img?url="+encodeURIComponent(u);
-// Resilient token image component — retries on failure, shows fallback letter
+
+// ═══ IMAGE PRELOADER CACHE ═══
+// Eagerly loads images via hidden Image objects so they're in browser cache
+// before any <img> tag tries to render them. Retries failures 3x.
+const imgCache=new Map(); // url -> "loading" | "ok" | "fail"
+function preloadImg(rawUrl){if(!rawUrl)return;const url=imgProxy(rawUrl);if(imgCache.has(url))return;imgCache.set(url,"loading");const load=(attempt)=>{const img=new Image();img.onload=()=>{imgCache.set(url,"ok")};img.onerror=()=>{if(attempt<3){setTimeout(()=>load(attempt+1),600*(attempt+1))}else{imgCache.set(url,"fail")}};img.src=attempt>0?url+"&_r="+attempt+"&_t="+Date.now():url};load(0)}
+function preloadTokenImages(tokens){if(!tokens?.length)return;tokens.forEach(t=>{if(t.image)preloadImg(t.image)})}
+
+// Resilient token image component — uses preloaded cache, retries on failure
 function TImg({src,ticker,size,style:sx={}}){const[ok,sOk]=useState(true);const[retries,sR]=useState(0);const proxyUrl=imgProxy(src);const letter=(tk(ticker)||"?")[0];if(!src||!ok)return<div style={{width:size,height:size,display:"flex",alignItems:"center",justifyContent:"center",fontSize:Math.max(12,size*.35),color:"#3a3a50"+"33",fontWeight:900,...sx}}>{letter}</div>;return<img src={retries>0?proxyUrl+"&_r="+retries+"&_t="+Date.now():proxyUrl} style={{width:"100%",height:"100%",objectFit:"cover",...sx}} alt="" onError={()=>{if(retries<3)setTimeout(()=>sR(r=>r+1),500*(retries+1));else sOk(false)}}/>}
 // Inline img onError with retry — used in token rows & positions
 function retryImg(e){const el=e.target;const r=parseInt(el.dataset.r||"0");if(r<3){el.dataset.r=String(r+1);const base=el.src.replace(/&_r=\d+&_t=\d+/g,"");setTimeout(()=>{el.src=base+"&_r="+(r+1)+"&_t="+Date.now()},500*(r+1))}else{el.style.display="none"}}
@@ -714,10 +722,11 @@ useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>
 useEffect(()=>{if(tab!=="intel"||!liveSim?.active)return;const poll=()=>a.simst(user?.pubkey||"anon").then(d=>{if(d.active)sLiveSim(p=>({...p,...d}));else sLiveSim(null)}).catch(()=>{});poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab,liveSim?.active,user?.pubkey]);
 useEffect(()=>{if(tab!=="intel")return;a.gcp().then(d=>sChartPatterns(d)).catch(()=>{});const iv=setInterval(()=>a.gcp().then(d=>sChartPatterns(d)).catch(()=>{}),30000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs){const tabs={...d.tabs};delete tabs.graduating;// Bags tab now served from radar (hot Bags tokens, heat-ranked server-side)
-if(!tabs.bags)tabs.bags=[];sRT(tabs)}if(d.poolSize!=null)sRP(d.poolSize);if(d.gradMc)sGradMc(d.gradMc);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,5000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
+if(!tabs.bags)tabs.bags=[];// Preload all token images before rendering
+const allTokens=[...(tabs.new||[]),...(tabs.hot||[]),...(tabs.momentum||[]),...(tabs.bags||[])];preloadTokenImages(allTokens);sRT(tabs)}if(d.poolSize!=null)sRP(d.poolSize);if(d.gradMc)sGradMc(d.gradMc);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,5000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
 // VIP Dashboard polling
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;if(user.tier!=="vip"&&user.tier!=="pro"&&!user.whitelisted&&!isOwner)return;const poll=()=>a.vrd(user.pubkey).then(d=>sVipDash(d)).catch(()=>{});poll();const iv=setInterval(poll,15000);return()=>clearInterval(iv)},[tab,user?.pubkey,user?.tier]);
-useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){const onChainMints=new Set(d.positions.map(p=>p.mint));const serverPositions=d.positions.map(p=>{if(p.pending&&p.time&&(Date.now()-p.time)>120000)return{...p,pending:false,pendingExpired:true};return p});sPos(prev=>{const now=Date.now();const recentPending=prev.filter(p=>{if(!p.pendingSince)return false;const age=now-p.pendingSince;// Already expired — keep the expired state, don't re-add as pending
+useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){preloadTokenImages(d.positions.map(p=>({image:p.image})));const onChainMints=new Set(d.positions.map(p=>p.mint));const serverPositions=d.positions.map(p=>{if(p.pending&&p.time&&(Date.now()-p.time)>120000)return{...p,pending:false,pendingExpired:true};return p});sPos(prev=>{const now=Date.now();const recentPending=prev.filter(p=>{if(!p.pendingSince)return false;const age=now-p.pendingSince;// Already expired — keep the expired state, don't re-add as pending
 if(p.pendingExpired&&!p.pending)return!onChainMints.has(p.mint)&&age<60000;// Still pending — keep if not on-chain yet and under 20s (reduced from 30s)
 return p.pending&&!onChainMints.has(p.mint)&&age<20000});return[...serverPositions,...recentPending]});sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,8000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.grf(user.pubkey).then(d=>sRefData(d)).catch(()=>{})},[user?.pubkey]);
