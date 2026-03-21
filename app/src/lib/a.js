@@ -62,6 +62,10 @@ simu(w,s){return this.f("/api/sim/update",{method:"POST",body:{wallet:w,settings
 simg(w){return this.f("/api/sim/graduate",{method:"POST",body:{wallet:w}})}
 simbt(s){return this.f("/api/sim/backtest",{method:"POST",body:{settings:s}})}
 ges(){return this.f("/api/engine-state")}
+// Auto-exit (manual ape position management)
+aee(w,c,em,es,s){return this.f("/api/auto-exit/enable",{method:"POST",body:{wallet:w,ca:c,entryMcap:em,entrySol:es,settings:s}})}
+aed(w,c){return this.f("/api/auto-exit/disable",{method:"POST",body:{wallet:w,ca:c}})}
+aes(w){return this.f(`/api/auto-exit/status?wallet=${w}`)}
 // VIP referral dashboard
 vrd(w){return this.f(`/api/vip/referral-dashboard/${w}`)}
 vcrc(w,c){return this.f("/api/vip/custom-ref-code",{method:"POST",body:{wallet:w,code:c}})}
