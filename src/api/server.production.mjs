@@ -6633,9 +6633,9 @@ app.get("/api/img", async (req, res) => {
     return res.send(cached.buf);
   }
 
-  // Negative cache: if this URL failed recently, don't retry for 2 min
+  // Negative cache: if this URL failed recently, don't retry for 15s
   const failTs = imgFailing.get(url);
-  if (failTs && Date.now() - failTs < 120000) {
+  if (failTs && Date.now() - failTs < 15000) {
     return res.status(404).end();
   }
 
@@ -6698,7 +6698,7 @@ app.get("/api/img", async (req, res) => {
       imgFailing.set(url, Date.now());
       // Evict old negative cache entries
       if (imgFailing.size > 5000) {
-        const cutoff = Date.now() - 120000;
+        const cutoff = Date.now() - 15000;
         for (const [k, v] of imgFailing) { if (v < cutoff) imgFailing.delete(k); }
       }
       return res.status(404).end();
