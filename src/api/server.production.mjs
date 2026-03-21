@@ -6662,7 +6662,13 @@ app.get("/api/img", async (req, res) => {
       if (pumpMatch) urls.unshift(`https://img.fotofolio.xyz/?url=${encodeURIComponent(fetchUrl)}`);
     }
     if (!fetchUrl.startsWith("http")) fetchUrl = "https://" + fetchUrl;
-    urls.push(fetchUrl);
+    // For any external URL, also try via image proxy services as fallback
+    if (!ipfsHash && fetchUrl.startsWith("https://")) {
+      urls.push(fetchUrl);
+      urls.push(`https://img.fotofolio.xyz/?url=${encodeURIComponent(fetchUrl)}`);
+    } else {
+      urls.push(fetchUrl);
+    }
 
     // Helper: fetch a single URL with short timeout
     const tryFetch = async (u, timeout) => {
@@ -6686,7 +6692,7 @@ app.get("/api/img", async (req, res) => {
     const batch2 = urls.slice(3);
 
     try {
-      result = await Promise.any(batch1.map(u => tryFetch(u, 5000)));
+      result = await Promise.any(batch1.map(u => tryFetch(u, 8000)));
     } catch {
       // batch1 all failed, try remaining sequentially with short timeout
       for (const u of batch2) {
