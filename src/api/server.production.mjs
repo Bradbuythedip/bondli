@@ -2216,7 +2216,7 @@ setInterval(() => {
     .slice(0, 50).map(serialize);
 
   // ── BAGS: Hot tokens from Bags.fm only — heat-ranked ──
-  const bagsOnly = rugFiltered.filter(t => t._source === "bags");
+  const bagsOnly = rugFiltered.filter(t => t._source === "bags" && (t.buys > 0 || t.volumeSol > 0 || t.mcapUsd > 1000));
   radar.tabs.bags = bagsOnly
     .map(t => {
       const ageMin = Math.max(0.3, (now - t.createdAt) / 60000);
