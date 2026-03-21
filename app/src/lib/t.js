@@ -1,5 +1,5 @@
 import{createContext,useContext}from"react";
-export const D={bg:"#131320",bg2:"#171728",sf:"#1c1c30",sf2:"#212138",cd:"#1a1a2e",bd:"rgba(255,255,255,.08)",bl:"rgba(255,255,255,.12)",gn:"#00e676",gd:"#00c853",gg:"rgba(0,230,118,.04)",rd:"#ff1744",rg:"rgba(255,23,68,.04)",yl:"#ffd600",or:"#ff9100",bl2:"#448aff",pu:"#b388ff",cy:"#18ffff",tx:"#e2e2f0",dm:"#8888a8",md:"#9a9ab8",ft:"#4a4a68",gl:"none",mo:"dark"};
+export const D={bg:"#1a1a1a",bg2:"#1e1e1e",sf:"#242424",sf2:"#2a2a2a",cd:"#202020",bd:"rgba(255,255,255,.08)",bl:"rgba(255,255,255,.10)",gn:"#d97706",gd:"#b45309",gg:"rgba(217,119,6,.04)",rd:"#ef4444",rg:"rgba(239,68,68,.04)",yl:"#eab308",or:"#f97316",bl2:"#60a5fa",pu:"#c084fc",cy:"#22d3ee",tx:"#e8e4e0",dm:"#9b958f",md:"#b0aaa4",ft:"#5c5650",gl:"none",mo:"dark"};
 export const L={bg:"#f3f3f7",bg2:"#eaeaef",sf:"#fff",sf2:"#f0f0f5",cd:"#fff",bd:"rgba(0,0,0,.07)",bl:"rgba(0,0,0,.12)",gn:"#00a854",gd:"#008844",gg:"rgba(0,168,84,.03)",rd:"#d01030",rg:"rgba(208,16,48,.03)",yl:"#b89800",or:"#c07000",bl2:"#1155cc",pu:"#6633bb",cy:"#0088aa",tx:"#181828",dm:"#606078",md:"#505068",ft:"#9494b0",gl:"none",mo:"light"};
 export const TC=createContext(D);
 export const uT=()=>useContext(TC);
