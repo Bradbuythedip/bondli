@@ -5884,6 +5884,267 @@ app.get("/api/auto-trade/status", (req, res) => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// AUTO-EXIT ENGINE — manages exits for manually-aped positions
+// Uses Kelly-sized partial exits + moon bag retention
+// ═══════════════════════════════════════════════════════════════════════
+
+const autoExitPositions = new Map(); // wallet -> Map<ca, exitPlan>
+
+function createExitPlan(ca, wallet, entryMcap, entrySol, settings = {}) {
+  // Kelly-based win rate estimate from token score
+  const token = radar.tokens.get(ca);
+  const score = token?._apeScore || 40;
+  const winRate = score >= 70 ? 0.45 : score >= 55 ? 0.35 : score >= 40 ? 0.25 : 0.15;
+  const payoff = 3.0;
+  const kellyFull = (winRate * payoff - (1 - winRate)) / payoff;
+  const kellyQ = Math.max(0.05, kellyFull * 0.25); // quarter-Kelly
+
+  // Default exit tiers — Kelly scales the sell percentages
+  // Higher Kelly = more conviction = keep more (smaller sells, bigger moon bag)
+  // Lower Kelly = less conviction = take profits faster
+  const conviction = Math.min(1.5, 0.5 + kellyQ * 8);
+  const mode = settings.mode || "balanced"; // "conservative" | "balanced" | "aggressive" | "moonshot"
+
+  const modeMultipliers = {
+    conservative: { tp: 0.7, sell: 1.3, moon: 0.5 },
+    balanced:     { tp: 1.0, sell: 1.0, moon: 1.0 },
+    aggressive:   { tp: 1.4, sell: 0.8, moon: 1.3 },
+    moonshot:     { tp: 2.0, sell: 0.6, moon: 2.0 },
+  };
+  const mm = modeMultipliers[mode] || modeMultipliers.balanced;
+
+  // Exit tiers with Kelly-adjusted sizing
+  const baseSellPct1 = Math.round(Math.min(50, Math.max(15, 35 / conviction)) * mm.sell);
+  const baseSellPct2 = Math.round(Math.min(40, Math.max(15, 30 / conviction)) * mm.sell);
+  const baseSellPct3 = Math.round(Math.min(40, Math.max(10, 25 / conviction)) * mm.sell);
+  const moonBagPct = Math.max(5, Math.min(40, 100 - baseSellPct1 - baseSellPct2 - baseSellPct3));
+
+  return {
+    ca, wallet, entrySol, entryMcap, entryTime: Date.now(),
+    peakMcap: entryMcap,
+    score, kellyQ, conviction,
+    mode,
+    // Exit levels (% gain from entry)
+    exits: [
+      { name: "TP1", triggerPct: Math.round(35 * mm.tp * conviction), sellPct: baseSellPct1, hit: false, hitTime: null },
+      { name: "TP2", triggerPct: Math.round(100 * mm.tp * conviction), sellPct: baseSellPct2, hit: false, hitTime: null },
+      { name: "TP3", triggerPct: Math.round(250 * mm.tp * conviction), sellPct: baseSellPct3, hit: false, hitTime: null },
+    ],
+    moonBagPct, // what's left after all TPs — never sold unless SL
+    // Stop loss
+    stopLoss: settings.stopLoss ?? -15, // % loss to full exit
+    trailingStop: settings.trailingStop ?? 40, // % from peak to exit moon bag
+    // State
+    totalSoldPct: 0,
+    active: true,
+    log: [],
+  };
+}
+
+// Execute a partial sell for auto-exit
+async function autoExitSell(wallet, ca, sellPct, reason) {
+  try {
+    const tw = await getTradingWallet(wallet);
+    if (!tw) return null;
+    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+
+    // Try PumpPortal first
+    const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        publicKey: tw.pubkey, action: "sell", mint: ca,
+        amount: sellPct + "%", denominatedInSol: "false",
+        slippage: 30, priorityFee: 0.005, pool: "auto",
+      }),
+    });
+    if (sellResp.ok) {
+      const txBytes = await sellResp.arrayBuffer();
+      if (txBytes.byteLength > 100) {
+        const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+        tx.sign([kp]);
+        const sig = await rpcSendRawTx(connection, tx.serialize());
+        console.log(`[AUTO-EXIT] ${reason}: sold ${sellPct}% of ${ca.slice(0, 8)} | sig=${sig?.slice(0, 12)}`);
+        broadcastWS({ event: "auto-exit-sell", data: { ca, wallet, sellPct, reason, sig: sig?.slice(0, 12) } });
+        return sig;
+      }
+    }
+
+    // Fallback to Jupiter
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") });
+    const account = tokenAccounts.value.find(ta => ta.account.data.parsed.info.mint === ca);
+    if (account) {
+      const tokenBalance = parseFloat(account.account.data.parsed.info.tokenAmount.uiAmountString || "0");
+      const tokenDecimals = account.account.data.parsed.info.tokenAmount.decimals || 6;
+      const sellAmount = Math.round(tokenBalance * (sellPct / 100) * Math.pow(10, tokenDecimals));
+      if (sellAmount > 0) {
+        const orderResp = await fetch("https://lite-api.jup.ag/ultra/v1/order", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ inputMint: ca, outputMint: "So11111111111111111111111111111111111111112", amount: sellAmount, taker: tw.pubkey }),
+          signal: AbortSignal.timeout(10000),
+        });
+        if (orderResp.ok) {
+          const order = await orderResp.json();
+          if (order.transaction) {
+            const txBuf = Buffer.from(order.transaction, "base64");
+            const tx = VersionedTransaction.deserialize(txBuf);
+            tx.sign([kp]);
+            const rawTx = Buffer.from(tx.serialize()).toString("base64");
+            const execResp = await fetch("https://lite-api.jup.ag/ultra/v1/execute", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ signedTransaction: rawTx, requestId: order.requestId }),
+              signal: AbortSignal.timeout(15000),
+            });
+            if (execResp.ok) {
+              const r = await execResp.json();
+              const sig = r.signature || r.txid;
+              console.log(`[AUTO-EXIT] ${reason} (Jupiter): sold ${sellPct}% of ${ca.slice(0, 8)} | sig=${sig?.slice(0, 12)}`);
+              broadcastWS({ event: "auto-exit-sell", data: { ca, wallet, sellPct, reason, sig: sig?.slice(0, 12) } });
+              return sig;
+            }
+          }
+        }
+      }
+    }
+    return null;
+  } catch (e) {
+    console.log(`[AUTO-EXIT] Error selling ${ca.slice(0, 8)}: ${e.message}`);
+    return null;
+  }
+}
+
+// Main auto-exit check loop — runs every 5 seconds
+setInterval(() => {
+  const now = Date.now();
+  for (const [wallet, positions] of autoExitPositions) {
+    for (const [ca, plan] of positions) {
+      if (!plan.active) continue;
+      const token = radar.tokens.get(ca);
+      if (!token) continue;
+
+      const currentMcap = token.mcapUsd || 0;
+      if (currentMcap <= 0) continue;
+
+      // Update peak
+      if (currentMcap > plan.peakMcap) plan.peakMcap = currentMcap;
+
+      const changePct = plan.entryMcap > 0 ? ((currentMcap - plan.entryMcap) / plan.entryMcap) * 100 : 0;
+      const fromPeak = plan.peakMcap > 0 ? ((plan.peakMcap - currentMcap) / plan.peakMcap) * 100 : 0;
+
+      // ── STOP LOSS: full exit ──
+      if (changePct <= plan.stopLoss) {
+        const remainPct = 100 - plan.totalSoldPct;
+        if (remainPct > 0) {
+          plan.log.push({ msg: `STOP LOSS ${plan.stopLoss}% hit — selling ${remainPct}%`, time: now });
+          autoExitSell(wallet, ca, remainPct, `SL ${changePct.toFixed(1)}%`);
+          plan.totalSoldPct = 100;
+          plan.active = false;
+        }
+        continue;
+      }
+
+      // ── TRAILING STOP on moon bag: exit if drops too far from peak ──
+      if (plan.totalSoldPct >= (100 - plan.moonBagPct) && fromPeak >= plan.trailingStop && changePct > 0) {
+        const remainPct = 100 - plan.totalSoldPct;
+        if (remainPct > 0) {
+          plan.log.push({ msg: `TRAIL STOP: ${fromPeak.toFixed(0)}% from peak — selling moon bag ${remainPct}%`, time: now });
+          autoExitSell(wallet, ca, remainPct, `trail-stop ${fromPeak.toFixed(0)}% from peak`);
+          plan.totalSoldPct = 100;
+          plan.active = false;
+        }
+        continue;
+      }
+
+      // ── TAKE PROFIT tiers ──
+      for (const exit of plan.exits) {
+        if (exit.hit) continue;
+        if (changePct >= exit.triggerPct) {
+          exit.hit = true;
+          exit.hitTime = now;
+          // Adjust sellPct for remaining position
+          const remainBefore = 100 - plan.totalSoldPct;
+          const actualSell = Math.min(remainBefore, exit.sellPct);
+          if (actualSell > 0) {
+            plan.log.push({ msg: `${exit.name} +${changePct.toFixed(0)}% — selling ${actualSell}%`, time: now });
+            autoExitSell(wallet, ca, actualSell, `${exit.name} +${changePct.toFixed(0)}%`);
+            plan.totalSoldPct += actualSell;
+          }
+        }
+      }
+    }
+  }
+}, 5000);
+
+// ── Auto-Exit API Routes ──
+
+app.post("/api/auto-exit/enable", async (req, res) => {
+  try {
+    const { wallet, ca, entryMcap, entrySol, settings } = req.body;
+    if (!wallet || !ca) return res.status(400).json({ error: "wallet and ca required" });
+
+    // Get current mcap if not provided
+    let mcap = entryMcap;
+    if (!mcap) {
+      const token = radar.tokens.get(ca);
+      mcap = token?.mcapUsd || 0;
+    }
+
+    if (!autoExitPositions.has(wallet)) autoExitPositions.set(wallet, new Map());
+    const plan = createExitPlan(ca, wallet, mcap, entrySol || 0, settings || {});
+    autoExitPositions.get(wallet).set(ca, plan);
+
+    console.log(`[AUTO-EXIT] Enabled for ${ca.slice(0, 8)} | mode=${plan.mode} kelly=${plan.kellyQ.toFixed(3)} exits=${plan.exits.map(e => `${e.name}:+${e.triggerPct}%→${e.sellPct}%`).join(" ")} moon=${plan.moonBagPct}% SL=${plan.stopLoss}%`);
+
+    res.json({
+      ok: true,
+      plan: {
+        exits: plan.exits.map(e => ({ name: e.name, triggerPct: e.triggerPct, sellPct: e.sellPct })),
+        moonBagPct: plan.moonBagPct,
+        stopLoss: plan.stopLoss,
+        trailingStop: plan.trailingStop,
+        kellyQ: +plan.kellyQ.toFixed(3),
+        conviction: +plan.conviction.toFixed(2),
+        mode: plan.mode,
+      },
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/auto-exit/disable", (req, res) => {
+  const { wallet, ca } = req.body;
+  const positions = autoExitPositions.get(wallet);
+  if (positions) {
+    positions.delete(ca);
+    if (positions.size === 0) autoExitPositions.delete(wallet);
+  }
+  res.json({ ok: true });
+});
+
+app.get("/api/auto-exit/status", (req, res) => {
+  const wallet = req.query.wallet;
+  const positions = autoExitPositions.get(wallet);
+  if (!positions || positions.size === 0) return res.json({ active: false, positions: [] });
+
+  const result = [];
+  for (const [ca, plan] of positions) {
+    const token = radar.tokens.get(ca);
+    const currentMcap = token?.mcapUsd || 0;
+    const changePct = plan.entryMcap > 0 ? ((currentMcap - plan.entryMcap) / plan.entryMcap) * 100 : 0;
+    result.push({
+      ca, active: plan.active, mode: plan.mode,
+      entryMcap: plan.entryMcap, currentMcap, changePct: +changePct.toFixed(1),
+      peakMcap: plan.peakMcap,
+      exits: plan.exits.map(e => ({ ...e })),
+      moonBagPct: plan.moonBagPct,
+      totalSoldPct: plan.totalSoldPct,
+      stopLoss: plan.stopLoss, trailingStop: plan.trailingStop,
+      kellyQ: +plan.kellyQ.toFixed(3), conviction: +plan.conviction.toFixed(2),
+      log: plan.log.slice(-10),
+    });
+  }
+  res.json({ active: true, positions: result });
+});
+
 // ═══════════════════════════════════════
 // SESSION LOG EXPORT — full dump for offline analysis/training
 // ═══════════════════════════════════════
