@@ -5891,7 +5891,7 @@ app.get("/api/auto-trade/status", (req, res) => {
 
 const autoExitPositions = new Map(); // wallet -> Map<ca, exitPlan>
 
-function createExitPlan(ca, wallet, entryMcap, entrySol, settings = {}) {
+function createManualExitPlan(ca, wallet, entryMcap, entrySol, settings = {}) {
   // Kelly-based win rate estimate from token score
   const token = radar.tokens.get(ca);
   const score = token?._apeScore || 40;
@@ -6090,7 +6090,7 @@ app.post("/api/auto-exit/enable", async (req, res) => {
     }
 
     if (!autoExitPositions.has(wallet)) autoExitPositions.set(wallet, new Map());
-    const plan = createExitPlan(ca, wallet, mcap, entrySol || 0, settings || {});
+    const plan = createManualExitPlan(ca, wallet, mcap, entrySol || 0, settings || {});
     autoExitPositions.get(wallet).set(ca, plan);
 
     console.log(`[AUTO-EXIT] Enabled for ${ca.slice(0, 8)} | mode=${plan.mode} kelly=${plan.kellyQ.toFixed(3)} exits=${plan.exits.map(e => `${e.name}:+${e.triggerPct}%→${e.sellPct}%`).join(" ")} moon=${plan.moonBagPct}% SL=${plan.stopLoss}%`);
