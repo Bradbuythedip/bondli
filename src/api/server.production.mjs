@@ -2358,6 +2358,48 @@ async function pollBagsFeed() {
 
 startBagsMonitor();
 
+// ═══ BAGS MC REFRESH ═══
+// Bags.fm feed doesn't include marketCap — periodically fetch from DexScreener
+async function refreshBagsMcap() {
+  const bagsTokens = [...radar.tokens.values()].filter(t => t._source === "bags" && t.ca);
+  if (bagsTokens.length === 0) return;
+  // Batch up to 30 tokens per DexScreener call (comma-separated)
+  const BATCH = 30;
+  for (let i = 0; i < bagsTokens.length; i += BATCH) {
+    const batch = bagsTokens.slice(i, i + BATCH);
+    const cas = batch.map(t => t.ca).join(",");
+    try {
+      const r = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${cas}`, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) continue;
+      const d = await r.json();
+      const pairs = d?.pairs || [];
+      // Group pairs by baseToken.address, take first (highest liquidity)
+      const mcByMint = new Map();
+      for (const p of pairs) {
+        const mint = p.baseToken?.address;
+        if (!mint || mcByMint.has(mint)) continue;
+        const mc = p.marketCap || p.fdv || 0;
+        if (mc > 0) mcByMint.set(mint, mc);
+      }
+      for (const t of batch) {
+        const mc = mcByMint.get(t.ca);
+        if (mc && mc > 0) {
+          t.mcapUsd = Math.round(mc);
+          t.mcapSol = solUsdPrice > 0 ? Math.round(mc / solUsdPrice) : t.mcapSol;
+          if (t.spark.length === 0 || t.spark[t.spark.length - 1] !== t.mcapUsd) {
+            t.spark.push(t.mcapUsd);
+            if (t.spark.length > 30) t.spark = t.spark.slice(-30);
+          }
+        }
+      }
+    } catch {}
+  }
+}
+// Refresh bags MC every 30s
+setInterval(() => refreshBagsMcap().catch(() => {}), 30_000);
+// Initial refresh after 5s (let bags ingest first)
+setTimeout(() => refreshBagsMcap().catch(() => {}), 5000);
+
 // Start memetic background workers (trend poller, KOL monitor, etc.)
 loadMemeticBlacklists().catch(() => {});
 startMemeticWorkers();
@@ -6492,7 +6534,7 @@ app.get("/api/positions/:wallet", async (req, res) => {
         } catch {}
         try {
           const dr = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mint}`, { signal: AbortSignal.timeout(5000) });
-          if (dr.ok) { const dd = await dr.json(); const p = dd?.pairs?.[0]; if (p) metadataCache.set(mint, { name: p.baseToken?.name||"", ticker: p.baseToken?.symbol||"", image: p.info?.imageUrl||"", mcapSol: 0, mcapUsd: p.marketCap||p.fdv||0 }); }
+          if (dr.ok) { const dd = await dr.json(); const p = dd?.pairs?.[0]; if (p) { const mcUsd = p.marketCap||p.fdv||0; metadataCache.set(mint, { name: p.baseToken?.name||"", ticker: p.baseToken?.symbol||"", image: p.info?.imageUrl||"", mcapSol: solUsdPrice>0&&mcUsd>0?Math.round(mcUsd/solUsdPrice):0, mcapUsd: mcUsd }); } }
         } catch {}
       }));
     }
@@ -7985,6 +8027,50 @@ app.post("/api/intel/smart-money/watch", express.json(), (req, res) => {
   }
   const added = smartMoneyTracker.addManualWatch(address);
   res.json({ ok: added, action: "added", watching: smartMoneyTracker.watchlist.size });
+});
+
+// ═══ INTEL TOKENS — full scored token list for Intel tab ═══
+app.get("/api/intel/tokens", (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 100, 200);
+  const sort = req.query.sort || "score"; // score, mcap, buys, recent
+  const source = req.query.source || "all"; // all, pump, bags
+
+  let tokens = [...radar.tokens.values()];
+  if (source === "pump") tokens = tokens.filter(t => t._source !== "bags");
+  if (source === "bags") tokens = tokens.filter(t => t._source === "bags");
+
+  const mapped = tokens.map(t => ({
+    ca: t.ca,
+    name: t.name || "",
+    ticker: t.ticker || "",
+    image: t.image || "",
+    score: t.score || 0,
+    bondProb: t.bondProb || 0,
+    entrySignal: t.entrySignal || "",
+    mcapUsd: t.mcapUsd || 0,
+    mcapSol: t.mcapSol || 0,
+    buys: t.buys || 0,
+    sells: t.sells || 0,
+    volumeSol: +(t.volumeSol || 0).toFixed(2),
+    buyPressure: t.buyPressure || 0,
+    h1Change: t.h1Change || 0,
+    scoreTrend: t.scoreTrend || "",
+    graduated: !!t.graduated,
+    source: t._source || "pump",
+    rugRisk: t.rugRiskScore || 0,
+    rugFlags: t.rugFlags || [],
+    twitter: !!t.twitter,
+    website: !!t.website,
+    spark: (t.spark || []).slice(-10),
+    createdAt: t.createdAt || 0,
+  }));
+
+  if (sort === "score") mapped.sort((a, b) => b.score - a.score);
+  else if (sort === "mcap") mapped.sort((a, b) => b.mcapUsd - a.mcapUsd);
+  else if (sort === "buys") mapped.sort((a, b) => b.buys - a.buys);
+  else if (sort === "recent") mapped.sort((a, b) => b.createdAt - a.createdAt);
+
+  res.json({ tokens: mapped.slice(0, limit), total: tokens.length });
 });
 
 // ═══ DEV WALLET TRACKER API ═══
