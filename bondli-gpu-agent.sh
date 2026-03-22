@@ -40,12 +40,27 @@ GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head 
 echo "[OK] GPU: $GPU_NAME"
 
 # ── Check / Install Docker ──
+DOCKER_INSTALLED=false
 if ! command -v docker &>/dev/null; then
   echo "[..] Installing Docker..."
-  curl -fsSL https://get.docker.com | sh
+  curl -fsSL https://get.docker.com | sudo sh
   sudo usermod -aG docker "$USER"
-  echo "[OK] Docker installed. You may need to log out and back in for group changes."
+  DOCKER_INSTALLED=true
+  echo "[OK] Docker installed"
 fi
+
+# Verify Docker daemon is actually running
+if ! sudo docker info &>/dev/null; then
+  echo "[..] Starting Docker daemon..."
+  sudo systemctl enable docker 2>/dev/null || true
+  sudo systemctl start docker 2>/dev/null || sudo dockerd &>/dev/null &
+  sleep 3
+  if ! sudo docker info &>/dev/null; then
+    echo "Error: Docker daemon failed to start. Please install Docker: https://docs.docker.com/engine/install/"
+    exit 1
+  fi
+fi
+echo "[OK] Docker is running"
 
 # ── Check / Install NVIDIA Container Toolkit ──
 if ! dpkg -l 2>/dev/null | grep -q nvidia-container-toolkit; then
@@ -57,8 +72,20 @@ if ! dpkg -l 2>/dev/null | grep -q nvidia-container-toolkit; then
     | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
   sudo apt-get update -qq && sudo apt-get install -y -qq nvidia-container-toolkit
   sudo nvidia-ctk runtime configure --runtime=docker
-  sudo systemctl restart docker
   echo "[OK] NVIDIA Container Toolkit installed"
+fi
+
+# Restart Docker to pick up NVIDIA runtime (needed after toolkit install or fresh Docker)
+sudo systemctl restart docker 2>/dev/null || true
+echo "[OK] Docker configured with NVIDIA runtime"
+
+# If Docker was just installed, user needs group membership
+if [ "$DOCKER_INSTALLED" = true ]; then
+  echo ""
+  echo "NOTE: You were added to the 'docker' group."
+  echo "      Log out and back in, then re-run this script."
+  echo "      Or run: newgrp docker && curl -s https://bondli.fun/gpu-agent.sh | bash -s -- --wallet $WALLET"
+  exit 0
 fi
 
 # ── Register with Bondli — get node keypair ──
