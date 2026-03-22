@@ -7518,6 +7518,96 @@ app.post("/api/admin/unwhitelist", requireAdmin, async (req, res) => {
   res.json({ ok: true, wallet, tier: "free", whitelisted: false });
 });
 
+// Admin: demo profit snapshot — generates realistic random profit data for demo/pitch purposes
+app.get("/api/admin/demo-profits", requireAdmin, (req, res) => {
+  const r = (min, max) => +(min + Math.random() * (max - min)).toFixed(4);
+  const ri = (min, max) => Math.floor(min + Math.random() * (max - min));
+  const now = Date.now();
+  const hrs = ri(6, 72);
+
+  // Platform-level aggregates
+  const totalTrades = ri(140, 820);
+  const winRate = r(0.52, 0.71);
+  const wins = Math.round(totalTrades * winRate);
+  const totalVolume = r(18, 320);
+  const platformFees = r(totalVolume * 0.02, totalVolume * 0.06);
+  const networkFees = r(totalVolume * 0.015, totalVolume * 0.025);
+  const gpuEarningsNOS = r(12, 480);
+  const gpuTreasuryNOS = r(gpuEarningsNOS * 0.04, gpuEarningsNOS * 0.09);
+  const referralPayouts = r(0.05, platformFees * 0.2);
+
+  // Per-session breakdown (3-8 recent sessions)
+  const sessionCount = ri(3, 9);
+  const sessions = Array.from({ length: sessionCount }, (_, i) => {
+    const trades = ri(4, 60);
+    const sessionWins = Math.round(trades * r(0.4, 0.8));
+    const pnl = r(-2.5, 18);
+    const vol = r(0.5, totalVolume / sessionCount * 2.5);
+    const fee = pnl > 0 ? r(pnl * 0.02, pnl * 0.15) : 0;
+    return {
+      id: "sess_" + Math.random().toString(36).slice(2, 8),
+      trades,
+      wins: sessionWins,
+      losses: trades - sessionWins,
+      pnlSol: pnl,
+      volumeSol: vol,
+      platformFeeSol: fee,
+      startedAgo: ri(600, hrs * 3600) + "s",
+      status: i < 2 ? "active" : (Math.random() > 0.3 ? "closed" : "settled"),
+    };
+  });
+
+  // Top performing tokens
+  const tokenNames = ["BONK", "WIF", "PEPE", "DOGE", "MYRO", "POPCAT", "GIGA", "BRETT", "MOG", "SPX", "MICHI", "NEIRO", "GOAT", "PNUT", "CHILLGUY"];
+  const topTokens = Array.from({ length: ri(4, 8) }, () => {
+    const mult = r(1.2, 12);
+    const entry = r(0.05, 2);
+    return {
+      name: tokenNames[ri(0, tokenNames.length)],
+      entrySol: entry,
+      exitSol: +(entry * mult).toFixed(4),
+      multiple: mult.toFixed(1) + "x",
+      pnlSol: +((entry * mult) - entry).toFixed(4),
+      holdTime: ri(30, 7200) + "s",
+    };
+  }).sort((a, b) => b.pnlSol - a.pnlSol);
+
+  res.json({
+    ok: true,
+    demo: true,
+    generated: new Date().toISOString(),
+    period: `Last ${hrs}h`,
+    platform: {
+      totalTrades,
+      wins,
+      losses: totalTrades - wins,
+      winRate: +(winRate * 100).toFixed(1),
+      totalVolumeSol: totalVolume,
+      grossPnlSol: r(totalVolume * 0.03, totalVolume * 0.18),
+      platformFeesSol: platformFees,
+      networkFeesSol: networkFees,
+      totalRevenueSol: +(platformFees + networkFees).toFixed(4),
+      referralPayoutsSol: referralPayouts,
+      netRevenueSol: +(platformFees + networkFees - referralPayouts).toFixed(4),
+    },
+    gpu: {
+      totalEarnedNOS: gpuEarningsNOS,
+      treasuryCutNOS: gpuTreasuryNOS,
+      userPaidNOS: +(gpuEarningsNOS - gpuTreasuryNOS).toFixed(4),
+      activeNodes: ri(1, 6),
+      jobsCompleted: ri(40, 600),
+    },
+    sessions,
+    topTokens,
+    users: {
+      total: ri(12, 180),
+      active24h: ri(3, 40),
+      vip: ri(0, 8),
+      referrals: ri(2, 30),
+    },
+  });
+});
+
 // ═══════════════════════════════════════
 // ROUTES: INTEL (meme analytics)
 // ═══════════════════════════════════════
