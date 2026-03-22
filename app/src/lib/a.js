@@ -71,5 +71,8 @@ vrd(w){return this.f(`/api/vip/referral-dashboard/${w}`)}
 vcrc(w,c){return this.f("/api/vip/custom-ref-code",{method:"POST",body:{wallet:w,code:c}})}
 vcl(w){return this.f("/api/vip/claim-referral",{method:"POST",body:{wallet:w}})}
 xapi(w){return this.f(`/api/vip/export-api/${w}`,{timeout:30000})}
+// Chat support (Grok AI)
+cht(msgs,w){return this.f("/api/chat",{method:"POST",timeout:30000,body:{messages:msgs,wallet:w}})}
+chts(){return this.f("/api/chat/status")}
 }
 export const a=new A();export default a;

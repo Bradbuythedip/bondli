@@ -51,6 +51,8 @@ import { runPipeline, runExitChecks, classifyConfidence, calculatePositionSize, 
 import { getSpotPrice, getMultiSpotPrices, getCandlesByMint, findPool, analyzeCandles } from "../engine/price-feeds.mjs";
 import { BagsClient } from "../engine/bags-client.mjs";
 import { mountGpuRoutes } from "../engine/gpu-earnings.mjs";
+import { NosanaJobRouter } from "../engine/nosana-job-router.mjs";
+import { mountChatRoutes } from "../engine/grok-client.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -8779,6 +8781,21 @@ mountGpuRoutes(app, {
 });
 
 // ═══════════════════════════════════════
+// NOSANA JOB ROUTER — AI inference via GPU fleet
+// ═══════════════════════════════════════
+const nosanaRouter = new NosanaJobRouter({
+  redis,
+  loraClient,
+});
+nosanaRouter.mountRoutes(app);
+nosanaRouter.init().catch(err => console.warn("[NOSANA] Init error:", err.message));
+
+// ═══════════════════════════════════════
+// GROK AI CHAT — GPU support & help
+// ═══════════════════════════════════════
+mountChatRoutes(app, { redis, getUser, resolveTier });
+
+// ═══════════════════════════════════════
 // START
 // ═══════════════════════════════════════
 server.listen(PORT, async () => {
@@ -8794,6 +8811,9 @@ server.listen(PORT, async () => {
     if (ok) console.log(`  LoRA: ACTIVE — ${loraClient.stats.gpuName || "CPU"}`);
     else console.log(`  LoRA: offline (start with: python src/ml/serve.py)`);
   });
+  // Nosana GPU fleet status
+  const nosanaSummary = nosanaRouter.getStats();
+  console.log(`  Nosana: ${nosanaRouter.enabled ? "ACTIVE" : "disabled"} — ${nosanaSummary.endpointsTotal || 0} endpoints`);
   console.log(`═══════════════════════════════════════\n`);
 
   // Load smart wallet profiles from Redis

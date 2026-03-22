@@ -33,6 +33,7 @@ import {
   transfer,
 } from "@solana/spl-token";
 import bs58 from "bs58";
+import { resolveMarket } from "./nosana-client.mjs";
 
 const NOS_MINT = new PublicKey("nosXBVoaCTtYdLvKY6Csb4AC8JCdQKKAaWYtx2ZMoo7");
 const BONDLI_TREASURY = new PublicKey(
@@ -110,6 +111,9 @@ export function mountGpuRoutes(app, deps) {
 
       const platformFee = tierInfo.isVip ? 0.05 : 0.10;
 
+      // Resolve GPU → Nosana market for node registration
+      const market = resolveMarket(gpuModel);
+
       // Store node data
       await redis.hSet(`bondli:gpu:node:${nodeAddress}`, {
         wallet,
@@ -120,6 +124,9 @@ export function mountGpuRoutes(app, deps) {
         status: "registered",
         totalEarningsNOS: "0",
         totalJobsCompleted: "0",
+        nosanaMarket: market.address,
+        nosanaMarketName: market.name,
+        nosPerSec: market.nosPerSec.toString(),
       });
 
       // Map user wallet → their single node (1:1 enforced)
@@ -141,6 +148,9 @@ export function mountGpuRoutes(app, deps) {
         nodeAddress,
         keypairJson,
         platformFee,
+        nosanaMarket: market.address,
+        nosanaMarketName: market.name,
+        nosPerSec: market.nosPerSec,
         message: "Your node keypair has been generated. The agent will configure it automatically.",
       });
     } catch (err) {
@@ -234,6 +244,8 @@ export function mountGpuRoutes(app, deps) {
           gpuUtil: nodeData.gpuUtil || "0",
           gpuTemp: nodeData.gpuTemp || "0",
           lastHeartbeat: nodeData.lastHeartbeat || null,
+          nosanaMarket: nodeData.nosanaMarketName || null,
+          nosPerSec: parseFloat(nodeData.nosPerSec || "0"),
         },
         earnings: {
           totalNOS: parseFloat(nodeData.totalEarningsNOS || "0"),
@@ -277,6 +289,42 @@ export function mountGpuRoutes(app, deps) {
   });
 
   // ═══════════════════════════════════════
+  // POST /api/gpu/job-completed — Agent reports a completed Nosana job
+  // ═══════════════════════════════════════
+  app.post("/api/gpu/job-completed", heartbeatLimiter, async (req, res) => {
+    try {
+      const { nodeAddress, jobId, durationSec, nosEarned } = req.body;
+      if (!nodeAddress) return res.status(400).json({ error: "nodeAddress required" });
+      if (!redis) return res.status(503).json({ error: "Service unavailable" });
+
+      const exists = await redis.exists(`bondli:gpu:node:${nodeAddress}`);
+      if (!exists) return res.status(404).json({ error: "Unknown node" });
+
+      // Increment job counter
+      await redis.hIncrBy(`bondli:gpu:node:${nodeAddress}`, "totalJobsCompleted", 1);
+
+      // Log the job
+      const nodeData = await redis.hGetAll(`bondli:gpu:node:${nodeAddress}`);
+      if (nodeData.wallet) {
+        await redis.lPush(`bondli:gpu:earnings_log:${nodeData.wallet}`, JSON.stringify({
+          type: "job_completed",
+          nodeAddress,
+          jobId: jobId || null,
+          durationSec: durationSec || 0,
+          nosEarned: nosEarned || 0,
+          timestamp: Date.now(),
+        }));
+        await redis.lTrim(`bondli:gpu:earnings_log:${nodeData.wallet}`, 0, 999);
+      }
+
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("[GPU] Job-completed error:", err.message);
+      res.status(500).json({ error: "Job tracking failed" });
+    }
+  });
+
+  // ═══════════════════════════════════════
   // GET /api/gpu/fleet — Aggregate fleet view (all Bondli GPU nodes)
   // ═══════════════════════════════════════
   app.get("/api/gpu/fleet", gpuLimiter, async (req, res) => {
@@ -299,6 +347,8 @@ export function mountGpuRoutes(app, deps) {
             status: isOnline ? data.status || "idle" : "offline",
             totalEarningsNOS: parseFloat(data.totalEarningsNOS || "0"),
             totalJobsCompleted: parseInt(data.totalJobsCompleted || "0"),
+            nosanaMarket: data.nosanaMarketName || null,
+            nosPerSec: parseFloat(data.nosPerSec || "0"),
           };
         })
       );
