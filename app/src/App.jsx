@@ -671,7 +671,7 @@ const[launched,sLd]=useState(false);const[lCA,sLCA]=useState("");const[asid,sAsi
 const[pSess,sPS]=useState([]);const[fleet,sFl]=useState(null);
 const[trW,sTrW]=useState(null);const[trB,sTrB]=useState(0);const[trSol,sTrSol]=useState(0);const[trTok,sTrTok]=useState(0);const[trK,sTrK]=useState(null);
 const[held,sHeld]=useState(new Set());const[positions,sPos]=useState([]);
-const[tab,sTab]=useState("gpu");const[cUser,sCU]=useState(null);
+const[tab,sTab]=useState("radar");const[cUser,sCU]=useState(null);
 const[toasts,sToasts]=useState([]);
 const[rt,sRT]=useState({new:[],hot:[],bags:[],momentum:[]});
 const[rTab,sRTab]=useState("momentum");const[rLoad,sRL]=useState(true);const[rPool,sRP]=useState(0);const[gradMc,sGradMc]=useState(69000);
@@ -758,7 +758,7 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:mb?"48px 16px 28px":"80px 20px 40px",textAlign:"center"}}>
 <div style={{animation:"pf 3s ease infinite",marginBottom:12}}><Logo s={mb?48:64}/></div>
 <div style={{fontWeight:900,fontSize:mb?44:72,letterSpacing:"-.04em",lineHeight:1,marginBottom:8}}>BOND<span style={{color:T.rd}}>LI</span></div>
-<div style={{fontSize:mb?13:16,color:T.dm,marginBottom:24,maxWidth:440,lineHeight:1.5}}>Earn <span style={{color:T.gn,fontWeight:700}}>$NOS</span> with your GPU. Trade memecoins with AI intelligence.<br/>One platform. Two income streams.</div>
+<div style={{fontSize:mb?13:16,color:T.dm,marginBottom:24,maxWidth:440,lineHeight:1.5}}>AI-powered Solana memecoin intelligence.<br/>Scores. Learns. Exits before the rug.</div>
 <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",justifyContent:"center"}}>
 <B onClick={connect} style={{padding:"14px 36px",fontSize:18,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)",animation:"gl 3s infinite",letterSpacing:".02em"}}><IC.ph/> Connect Wallet</B>
 <button onClick={()=>sU({pubkey:"demo",tier:"demo",demo:true})} style={{padding:"14px 28px",background:T.gn+"12",border:"2px solid "+T.gn+"44",borderRadius:10,fontSize:18,fontWeight:800,color:T.gn,cursor:"pointer",letterSpacing:".02em",transition:"all .15s"}}>Try Demo</button>
@@ -769,7 +769,7 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 {/* ═══ STATS BAR ═══ */}
 <div style={{display:"flex",flexWrap:"wrap",justifyContent:"center",gap:mb?4:8,padding:mb?"0 12px 20px":"0 20px 28px"}}>
 {[
-{n:"GPU",l:"earn $NOS"},{n:"40+",l:"ML features"},{n:"12+",l:"rug signals"},{n:"24/7",l:"auto-trading"},{n:"5%",l:"VIP GPU fee"},
+{n:"40+",l:"ML features"},{n:"12+",l:"rug signals"},{n:"24/7",l:"auto-trading"},{n:"3",l:"exit layers"},{n:"0%",l:"fees (Pro+)"},
 ].map((s,i)=><div key={i} style={{textAlign:"center",padding:mb?"6px 10px":"8px 16px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,minWidth:mb?60:80}}>
 <div style={{fontSize:mb?16:20,fontWeight:900,color:T.gn,lineHeight:1}}>{s.n}</div>
 <div style={{fontSize:mb?8:9,color:T.ft,marginTop:2,textTransform:"uppercase",letterSpacing:".06em"}}>{s.l}</div>
@@ -780,12 +780,12 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 <div style={{maxWidth:940,margin:"0 auto",padding:mb?"0 12px 28px":"0 20px 44px"}}>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"1fr 1fr 1fr",gap:mb?6:12}}>
 {[
-{ic:<IC.gpu s={mb?20:24} c={T.gn}/>,title:"GPU Earnings",desc:"Plug in your NVIDIA GPU. Run a Nosana node. Earn $NOS tokens 24/7.",color:T.gn},
-{ic:<IC.bulb s={mb?20:24} c={T.pu}/>,title:"AI Intelligence",desc:"40+ feature ML scoring. Learns from every outcome. Weights update live.",color:T.pu},
-{ic:<IC.eye s={mb?20:24} c="#ff9800"/>,title:"Rug Detection",desc:"12+ signals: dev dumps, sybil wallets, wash trading, liquidity drains.",color:"#ff9800"},
+{ic:<IC.bulb s={mb?20:24} c={T.pu}/>,title:"40+ Feature ML",desc:"Scores every token. Learns from every outcome. Weights update live.",color:T.pu},
+{ic:<IC.chart s={mb?20:24} c={T.gn}/>,title:"Score Derivatives",desc:"Velocity + acceleration detect problems 2 cycles before price drops.",color:T.gn},
+{ic:<IC.eye s={mb?20:24} c="#ff9800"/>,title:"12+ Rug Signals",desc:"Dev dumps, sybil wallets, wash trading, liquidity drains. 3+ = reject.",color:"#ff9800"},
 {ic:<IC.bolt s={mb?20:24} c={T.yl}/>,title:"Auto-Ape",desc:"Set rules. Walk away. Finds, buys, manages positions, takes profit.",color:T.yl},
-{ic:<IC.chart s={mb?20:24} c={T.cy||"#00bcd4"}/>,title:"Smart Money",desc:"Track profitable wallets. See what they buy before the chart moves.",color:T.cy||"#00bcd4"},
-{ic:<IC.fleet s={mb?20:24} c={T.rd}/>,title:"Fleet Trading",desc:"Multi-wallet coordinated launches. Nash equilibrium. Kelly sizing.",color:T.rd},
+{ic:<IC.scan s={mb?20:24} c={T.cy||"#00bcd4"}/>,title:"Smart Money",desc:"Track profitable wallets. See what they buy before the chart moves.",color:T.cy||"#00bcd4"},
+{ic:<IC.gpu s={mb?20:24} c={T.gn}/>,title:"GPU Earnings",desc:"Plug in your NVIDIA GPU. Earn $NOS tokens via Nosana compute network.",color:T.gn},
 ].map((f,i)=><div key={i} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?"12px 10px":"16px 14px"}}>
 <div style={{marginBottom:6}}>{f.ic}</div>
 <div style={{fontSize:mb?12:13,fontWeight:800,color:f.color,marginBottom:4}}>{f.title}</div>
@@ -801,9 +801,9 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"1fr 1fr 1fr 1fr",gap:mb?4:10}}>
 {[
 {step:"1",title:"Connect",desc:"Phantom wallet"},
-{step:"2",title:"Plug In GPU",desc:"Run one script"},
-{step:"3",title:"Earn $NOS",desc:"GPU processes AI jobs"},
-{step:"4",title:"Trade",desc:"AI scores & trades for you"},
+{step:"2",title:"Fund",desc:"Deposit SOL"},
+{step:"3",title:"Configure",desc:"Score, size, TP/SL"},
+{step:"4",title:"Earn",desc:"It trades. You verify."},
 ].map((s,i)=><div key={i} style={{padding:mb?"8px 6px":"12px 10px",textAlign:"center"}}>
 <div style={{width:mb?24:32,height:mb?24:32,borderRadius:"50%",background:"linear-gradient(135deg,#534bb1,#551bf9)",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:mb?12:16,fontWeight:900,color:"#fff",marginBottom:6}}>{s.step}</div>
 <div style={{fontSize:mb?11:13,fontWeight:800,color:T.tx,marginBottom:2}}>{s.title}</div>
@@ -816,9 +816,9 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 <div style={{marginTop:mb?28:40}}>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:12}}>
 {[
-{tier:"Free",price:"0 SOL",color:T.ft,features:["ML scoring + radar","Auto-Ape","2 positions","No GPU earning"]},
-{tier:"Pro",price:"1 SOL",color:T.pu,features:["GPU earning (10% fee)","Fleet multi-wallet","Smart money signals","0% trading fee"]},
-{tier:"VIP",price:"10 SOL",color:T.yl,features:["GPU earning (5% fee)","Everything in Pro","Priority queue","Direct to dev"]},
+{tier:"Free",price:"0 SOL",color:T.ft,features:["ML scoring + radar","Auto-Ape","2 positions","25% profit share"]},
+{tier:"Pro",price:"1 SOL",color:T.pu,features:["0% profit share","Fleet multi-wallet","Smart money signals","GPU earnings"]},
+{tier:"VIP",price:"10 SOL",color:T.yl,features:["Everything in Pro","API access","Priority queue","GPU earnings (5% fee)"]},
 ].map((t,i)=><div key={i} onClick={connect} style={{background:T.sf,border:"1px solid "+(t.color)+"33",borderRadius:10,padding:mb?"14px 12px":"18px 16px",position:"relative",cursor:"pointer",transition:"all .15s ease"}} onMouseEnter={e=>{e.currentTarget.style.borderColor=t.color+"88";e.currentTarget.style.transform="translateY(-2px)"}} onMouseLeave={e=>{e.currentTarget.style.borderColor=t.color+"33";e.currentTarget.style.transform="none"}}>
 {i===1&&<div style={{position:"absolute",top:-8,right:12,fontSize:8,fontWeight:900,padding:"2px 7px",borderRadius:4,background:T.pu,color:"#fff",letterSpacing:".05em"}}>POPULAR</div>}
 <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:6}}><span style={{fontSize:mb?18:22,fontWeight:900,color:t.color}}>{t.tier}</span><span style={{fontSize:mb?12:14,color:T.tx,fontWeight:800}}>{t.price}</span></div>
@@ -958,7 +958,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 </div>
 </div></EB>
 :<>
-{!mb&&<div style={{display:"flex",margin:0,overflow:"hidden",background:T.bg,borderBottom:"1px solid "+T.bd,position:"sticky",top:0,zIndex:19,backdropFilter:"blur(10px)"}}>{[{id:"gpu",l:"GPU Earn",ic:IC.gpu},{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);window.scrollTo({top:0,behavior:"smooth"})}} style={{flex:1,padding:"12px 0",background:ac?T.gn+"08":"transparent",borderBottom:ac?"2px solid "+T.gn:"2px solid transparent",border:"none",fontSize:16,fontWeight:ac?800:500,color:ac?T.gn:T.dm,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}><t.ic s={16} c={ac?T.gn:T.dm}/>{t.l}</button>})}</div>}
+{!mb&&<div style={{display:"flex",margin:0,overflow:"hidden",background:T.bg,borderBottom:"1px solid "+T.bd,position:"sticky",top:0,zIndex:19,backdropFilter:"blur(10px)"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},{id:"gpu",l:"GPU",ic:IC.gpu},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);window.scrollTo({top:0,behavior:"smooth"})}} style={{flex:1,padding:"12px 0",background:ac?T.gn+"08":"transparent",borderBottom:ac?"2px solid "+T.gn:"2px solid transparent",border:"none",fontSize:16,fontWeight:ac?800:500,color:ac?T.gn:T.dm,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}><t.ic s={16} c={ac?T.gn:T.dm}/>{t.l}</button>})}</div>}
 <div id="tc" style={{padding:mb?"0 6px 6px":"0 16px 16px",marginTop:mb?4:8,scrollMarginTop:50}}>
 
 {/* ═══ GPU EARN TAB ═══ */}
@@ -2365,7 +2365,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 </div></div>}
 
 {mb&&!launched&&<div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:15,background:T.bg+"f6",backdropFilter:"blur(10px)",borderTop:"1px solid "+T.bd,paddingBottom:"max(2px,env(safe-area-inset-bottom,2px))"}}>
-<div style={{display:"flex"}}>{[{id:"gpu",l:"GPU",ic:IC.gpu},{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"8px 0 4px",background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"pointer"}}><t.ic s={20} c={ac?T.gn:T.ft}/><span style={{fontSize:11,fontWeight:ac?700:400,color:ac?T.gn:T.ft}}>{t.l}</span></button>})}</div>
+<div style={{display:"flex"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},{id:"gpu",l:"GPU",ic:IC.gpu},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"8px 0 4px",background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"pointer"}}><t.ic s={20} c={ac?T.gn:T.ft}/><span style={{fontSize:11,fontWeight:ac?700:400,color:ac?T.gn:T.ft}}>{t.l}</span></button>})}</div>
 <div style={{textAlign:"center",padding:"2px 0 4px",display:"flex",justifyContent:"center",gap:10}}><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:3,color:T.dm,textDecoration:"none",fontSize:10}}><IC.tw s={10} c={T.dm}/>@Bondlifun</a><a href="https://github.com/Bradbuythedip/BONDLIv4" target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:3,color:T.dm,textDecoration:"none",fontSize:10}}><IC.gh s={10} c={T.dm}/>GitHub</a></div>
 </div>}
 {!mb&&<footer style={{padding:"8px 16px",borderTop:"1px solid "+T.bd,marginTop:12,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:T.ft}}><span>BONDLI v4</span><div style={{display:"flex",gap:12,alignItems:"center"}}><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"flex",alignItems:"center",gap:4,color:T.dm,textDecoration:"none",fontSize:13,fontWeight:700}}><IC.tw s={16} c={T.dm}/>@Bondlifun</a><a href="https://github.com/Bradbuythedip/BONDLIv4" target="_blank" rel="noopener" style={{display:"flex",alignItems:"center",gap:4,color:T.dm,textDecoration:"none",fontSize:13,fontWeight:700}}><IC.gh s={16} c={T.dm}/>GitHub</a></div><span>{launched?"ACTIVE":"IDLE"}</span></footer>}

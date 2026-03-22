@@ -4,17 +4,15 @@
 
 # bondli
 
-**earn with your GPU. trade with AI.**
+**if you know, you know.**
 
 ---
 
-bondli is two things:
+bondli is an intelligence layer for Solana meme tokens. it watches everything, scores everything, learns from everything, and never sleeps.
 
-1. **GPU earnings** — plug in your NVIDIA GPU, run a Nosana node, earn $NOS tokens by processing AI inference jobs from a decentralized compute marketplace on Solana.
+built because we were tired of losing money to rugs, snipers, and fake charts — so we taught a machine to see what humans can't.
 
-2. **AI trading intelligence** — a scoring engine that watches every token on pump.fun, learns from every outcome, and trades before humans can react.
-
-one platform. two income streams. built on Solana.
+Pro and VIP users can also earn $NOS tokens by plugging in their GPU to the Nosana decentralized compute network.
 
 ---
 
