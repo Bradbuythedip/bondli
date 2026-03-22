@@ -728,7 +728,7 @@ useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>{if(!r.ok)throw new Error(r.status);return r.json()}).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
 // GPU Earn tab polling
-useEffect(()=>{if(tab!=="gpu")return;const poll=()=>{if(user?.pubkey&&!user.demo){fetch(API+"/api/gpu/dashboard?wallet="+user.pubkey).then(r=>r.json()).then(d=>sGpuDash(d)).catch(()=>{})}fetch(API+"/api/gpu/fleet").then(r=>r.json()).then(d=>sGpuFleet(d)).catch(()=>{})};poll();const iv=setInterval(poll,15000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
+useEffect(()=>{if(tab!=="gpu"||demoProfits)return;const poll=()=>{if(user?.pubkey&&!user.demo){fetch(API+"/api/gpu/dashboard?wallet="+user.pubkey).then(r=>r.json()).then(d=>sGpuDash(d)).catch(()=>{})}fetch(API+"/api/gpu/fleet").then(r=>r.json()).then(d=>sGpuFleet(d)).catch(()=>{})};poll();const iv=setInterval(poll,15000);return()=>clearInterval(iv)},[tab,user?.pubkey,demoProfits]);
 // Engine state polling (for visualization)
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{a.ges().then(d=>sEngineState(d)).catch(()=>{})};poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?3000:10000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
