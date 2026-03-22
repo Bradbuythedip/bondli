@@ -230,16 +230,33 @@ export function mountGpuRoutes(app, deps) {
         // ATA might not exist yet or node has zero balance
       }
 
+      // Fetch recent command log
+      const cmdLogRaw = await redis.lRange(`bondli:gpu:cmd_log:${nodeAddress}`, 0, 9);
+      const commandLog = cmdLogRaw.map(c => { try { return JSON.parse(c); } catch { return null; } }).filter(Boolean);
+
+      // Check for command results
+      for (const cmd of commandLog) {
+        const resultRaw = await redis.get(`bondli:gpu:cmd_result:${nodeAddress}:${cmd.id}`);
+        if (resultRaw) {
+          try { cmd.result = JSON.parse(resultRaw); } catch {}
+        }
+      }
+
+      const isOnline = nodeData.lastHeartbeat && Date.now() - parseInt(nodeData.lastHeartbeat) < 300_000;
+
       res.json({
         registered: true,
         node: {
           address: nodeAddress,
           gpuModel: nodeData.gpuModel,
-          tier: nodeData.tier,
-          platformFee: parseFloat(nodeData.platformFee || "0.10"),
-          status: nodeData.status || "offline",
+          status: isOnline ? (nodeData.status || "idle") : "offline",
           gpuUtil: nodeData.gpuUtil || "0",
           gpuTemp: nodeData.gpuTemp || "0",
+          powerDraw: nodeData.powerDraw || null,
+          powerLimit: nodeData.powerLimit || null,
+          fanSpeed: nodeData.fanSpeed || null,
+          gpuClock: nodeData.gpuClock || null,
+          memClock: nodeData.memClock || null,
           lastHeartbeat: nodeData.lastHeartbeat || null,
           nosanaMarket: nodeData.nosanaMarketName || null,
           nosPerSec: parseFloat(nodeData.nosPerSec || "0"),
@@ -250,6 +267,7 @@ export function mountGpuRoutes(app, deps) {
           pendingNOS,
         },
         recentJobs: logs.slice(0, 20),
+        commandLog,
       });
     } catch (err) {
       console.error("[GPU] Dashboard error:", err.message);
@@ -262,26 +280,149 @@ export function mountGpuRoutes(app, deps) {
   // ═══════════════════════════════════════
   app.post("/api/gpu/heartbeat", heartbeatLimiter, async (req, res) => {
     try {
-      const { nodeAddress, gpuUtil, gpuTemp, memUsed, memTotal, status } = req.body;
+      const { nodeAddress, gpuUtil, gpuTemp, memUsed, memTotal, status,
+              powerDraw, powerLimit, fanSpeed, gpuClock, memClock,
+              commandResults } = req.body;
       if (!nodeAddress) return res.status(400).json({ error: "nodeAddress required" });
       if (!redis) return res.status(503).json({ error: "Service unavailable" });
 
       const exists = await redis.exists(`bondli:gpu:node:${nodeAddress}`);
       if (!exists) return res.status(404).json({ error: "Unknown node" });
 
-      await redis.hSet(`bondli:gpu:node:${nodeAddress}`, {
+      const updates = {
         lastHeartbeat: Date.now().toString(),
         gpuUtil: String(gpuUtil || 0),
         gpuTemp: String(gpuTemp || 0),
         memUsed: String(memUsed || 0),
         memTotal: String(memTotal || 0),
         status: status || "idle",
-      });
+      };
+      // Extended GPU metrics
+      if (powerDraw !== undefined) updates.powerDraw = String(powerDraw);
+      if (powerLimit !== undefined) updates.powerLimit = String(powerLimit);
+      if (fanSpeed !== undefined) updates.fanSpeed = String(fanSpeed);
+      if (gpuClock !== undefined) updates.gpuClock = String(gpuClock);
+      if (memClock !== undefined) updates.memClock = String(memClock);
 
-      res.json({ ok: true });
+      await redis.hSet(`bondli:gpu:node:${nodeAddress}`, updates);
+
+      // Store command results from agent
+      if (Array.isArray(commandResults)) {
+        for (const result of commandResults) {
+          if (!result.id) continue;
+          await redis.set(
+            `bondli:gpu:cmd_result:${nodeAddress}:${result.id}`,
+            JSON.stringify(result),
+            { EX: 3600 }
+          );
+          // Store logs if get_logs command
+          if (result.type === "get_logs" && result.output) {
+            const lines = result.output.split("\n").slice(-200);
+            await redis.del(`bondli:gpu:node_logs:${nodeAddress}`);
+            if (lines.length > 0) {
+              await redis.lPush(`bondli:gpu:node_logs:${nodeAddress}`, lines.reverse());
+              await redis.lTrim(`bondli:gpu:node_logs:${nodeAddress}`, 0, 199);
+              await redis.expire(`bondli:gpu:node_logs:${nodeAddress}`, 3600);
+            }
+          }
+        }
+      }
+
+      // Pop pending commands for this node
+      const pendingRaw = await redis.lRange(`bondli:gpu:cmd_queue:${nodeAddress}`, 0, -1);
+      if (pendingRaw.length > 0) {
+        await redis.del(`bondli:gpu:cmd_queue:${nodeAddress}`);
+      }
+      const commands = pendingRaw.map(c => { try { return JSON.parse(c); } catch { return null; } }).filter(Boolean);
+
+      res.json({ ok: true, commands });
     } catch (err) {
       console.error("[GPU] Heartbeat error:", err.message);
       res.status(500).json({ error: "Heartbeat failed" });
+    }
+  });
+
+  // ═══════════════════════════════════════
+  // POST /api/gpu/command — Send command to node via heartbeat relay
+  // ═══════════════════════════════════════
+  const ALLOWED_COMMANDS = ["stop_node", "restart_node", "get_logs", "set_power_limit", "get_gpu_details"];
+
+  app.post("/api/gpu/command", gpuLimiter, async (req, res) => {
+    try {
+      const { wallet, command, params } = req.body;
+      if (!wallet) return res.status(400).json({ error: "wallet required" });
+      if (!command || !ALLOWED_COMMANDS.includes(command)) {
+        return res.status(400).json({ error: `Invalid command. Allowed: ${ALLOWED_COMMANDS.join(", ")}` });
+      }
+      if (!redis) return res.status(503).json({ error: "Service unavailable" });
+
+      const nodeAddress = await redis.get(`bondli:gpu:user_node:${wallet}`);
+      if (!nodeAddress) return res.status(404).json({ error: "No registered node for this wallet" });
+
+      // Validate power limit range
+      if (command === "set_power_limit") {
+        const pl = parseInt(params?.powerLimit);
+        if (!pl || pl < 50 || pl > 500) {
+          return res.status(400).json({ error: "powerLimit must be between 50 and 500 watts" });
+        }
+      }
+
+      const cmdId = `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const cmdObj = { id: cmdId, type: command, params: params || {}, issuedAt: Date.now(), issuedBy: wallet };
+
+      // Queue command for agent pickup on next heartbeat
+      await redis.lPush(`bondli:gpu:cmd_queue:${nodeAddress}`, JSON.stringify(cmdObj));
+
+      // Log command history
+      await redis.lPush(`bondli:gpu:cmd_log:${nodeAddress}`, JSON.stringify(cmdObj));
+      await redis.lTrim(`bondli:gpu:cmd_log:${nodeAddress}`, 0, 99);
+
+      res.json({ success: true, cmdId, message: "Command queued — will execute on next heartbeat (~60s)" });
+    } catch (err) {
+      console.error("[GPU] Command error:", err.message);
+      res.status(500).json({ error: "Command failed" });
+    }
+  });
+
+  // ═══════════════════════════════════════
+  // GET /api/gpu/command-status — Check result of a sent command
+  // ═══════════════════════════════════════
+  app.get("/api/gpu/command-status", gpuLimiter, async (req, res) => {
+    try {
+      const { wallet, cmdId } = req.query;
+      if (!wallet || !cmdId) return res.status(400).json({ error: "wallet and cmdId required" });
+      if (!redis) return res.status(503).json({ error: "Service unavailable" });
+
+      const nodeAddress = await redis.get(`bondli:gpu:user_node:${wallet}`);
+      if (!nodeAddress) return res.status(404).json({ error: "No registered node" });
+
+      const resultRaw = await redis.get(`bondli:gpu:cmd_result:${nodeAddress}:${cmdId}`);
+      if (!resultRaw) return res.json({ status: "pending" });
+
+      res.json(JSON.parse(resultRaw));
+    } catch (err) {
+      console.error("[GPU] Command-status error:", err.message);
+      res.status(500).json({ error: "Status check failed" });
+    }
+  });
+
+  // ═══════════════════════════════════════
+  // GET /api/gpu/node-logs — Get recent Docker logs from node
+  // ═══════════════════════════════════════
+  app.get("/api/gpu/node-logs", gpuLimiter, async (req, res) => {
+    try {
+      const { wallet } = req.query;
+      if (!wallet) return res.status(400).json({ error: "wallet required" });
+      if (!redis) return res.status(503).json({ error: "Service unavailable" });
+
+      const nodeAddress = await redis.get(`bondli:gpu:user_node:${wallet}`);
+      if (!nodeAddress) return res.status(404).json({ error: "No registered node" });
+
+      const logs = await redis.lRange(`bondli:gpu:node_logs:${nodeAddress}`, 0, 199);
+      res.json({ logs });
+    } catch (err) {
+      console.error("[GPU] Node-logs error:", err.message);
+      res.status(500).json({ error: "Logs unavailable" });
     }
   });
 
