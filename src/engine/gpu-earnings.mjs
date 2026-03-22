@@ -377,7 +377,14 @@ export function mountGpuRoutes(app, deps) {
       await redis.lPush(`bondli:gpu:cmd_log:${nodeAddress}`, JSON.stringify(cmdObj));
       await redis.lTrim(`bondli:gpu:cmd_log:${nodeAddress}`, 0, 99);
 
-      res.json({ success: true, cmdId, message: "Command queued — will execute on next heartbeat (~60s)" });
+      // Immediately update node status for stop/restart so dashboard reflects it
+      if (command === "stop_node") {
+        await redis.hSet(`bondli:gpu:node:${nodeAddress}`, { status: "stopping" });
+      } else if (command === "restart_node") {
+        await redis.hSet(`bondli:gpu:node:${nodeAddress}`, { status: "restarting" });
+      }
+
+      res.json({ success: true, cmdId, message: "Command queued — will execute on next heartbeat (~15s)" });
     } catch (err) {
       console.error("[GPU] Command error:", err.message);
       res.status(500).json({ error: "Command failed" });

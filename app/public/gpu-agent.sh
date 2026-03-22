@@ -353,7 +353,7 @@ for i, cmd in enumerate(cmds):
     fi
   fi
 
-  sleep 60
+  sleep 15
 done
 HEARTBEAT
 sed -i "s|__BONDLI_API__|$BONDLI_API|g" ~/.bondli-heartbeat.sh
