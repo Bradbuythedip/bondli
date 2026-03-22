@@ -71,12 +71,12 @@ else
 fi
 
 # Make sure Docker daemon is running
-if ! sudo docker info &>/dev/null; then
+if ! sudo systemctl is-active --quiet docker 2>/dev/null; then
   echo "[..] Starting Docker daemon..."
   sudo systemctl enable docker 2>/dev/null || true
   sudo systemctl start docker 2>/dev/null || true
   sleep 3
-  if ! sudo docker info &>/dev/null; then
+  if ! sudo systemctl is-active --quiet docker 2>/dev/null; then
     echo ""
     echo "Error: Docker daemon won't start."
     echo "  Try: sudo systemctl status docker"
