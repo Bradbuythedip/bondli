@@ -671,7 +671,9 @@ const[launched,sLd]=useState(false);const[lCA,sLCA]=useState("");const[asid,sAsi
 const[pSess,sPS]=useState([]);const[fleet,sFl]=useState(null);
 const[trW,sTrW]=useState(null);const[trB,sTrB]=useState(0);const[trSol,sTrSol]=useState(0);const[trTok,sTrTok]=useState(0);const[trK,sTrK]=useState(null);
 const[held,sHeld]=useState(new Set());const[positions,sPos]=useState([]);
-const[tab,sTab]=useState("radar");const[cUser,sCU]=useState(null);
+const[tab,sTab]=useState(()=>{const p=window.location.pathname.replace(/^\//,"").toLowerCase();return["radar","wallet","deploy","intel","gpu"].includes(p)?p:"radar"});const[cUser,sCU]=useState(null);
+useEffect(()=>{const p="/"+tab;if(window.location.pathname!==p)window.history.pushState(null,"",p)},[tab]);
+useEffect(()=>{const h=()=>{const p=window.location.pathname.replace(/^\//,"").toLowerCase();if(["radar","wallet","deploy","intel","gpu"].includes(p)&&p!==tab)sTab(p)};window.addEventListener("popstate",h);return()=>window.removeEventListener("popstate",h)},[tab]);
 const[toasts,sToasts]=useState([]);
 const[rt,sRT]=useState({new:[],hot:[],momentum:[]});
 const[rTab,sRTab]=useState("momentum");const[rLoad,sRL]=useState(true);const[rPool,sRP]=useState(0);const[gradMc,sGradMc]=useState(69000);
