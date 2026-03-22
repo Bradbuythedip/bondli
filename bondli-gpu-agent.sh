@@ -34,32 +34,90 @@ echo "  BONDLI GPU AGENT"
 echo "  1 user - 1 GPU - 1 node"
 echo "======================================="
 
-# ── Check NVIDIA GPU ──
+# ── Check NVIDIA GPU + driver ──
+if ! command -v nvidia-smi &>/dev/null; then
+  echo "Error: nvidia-smi not found."
+  echo "  Install NVIDIA drivers first:"
+  echo "  sudo apt install -y nvidia-driver-560   # or latest version"
+  echo "  sudo reboot"
+  exit 1
+fi
 GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
-[ -z "$GPU_NAME" ] && echo "Error: No NVIDIA GPU detected. nvidia-smi not found or no GPU available." && exit 1
+if [ -z "$GPU_NAME" ]; then
+  echo "Error: NVIDIA driver installed but no GPU detected."
+  echo "  Check: nvidia-smi"
+  exit 1
+fi
 echo "[OK] GPU: $GPU_NAME"
 
 # ── Check / Install Docker ──
-if ! command -v docker &>/dev/null; then
-  echo "[..] Installing Docker..."
-  curl -fsSL https://get.docker.com | sh
-  sudo usermod -aG docker "$USER"
-  echo "[OK] Docker installed. You may need to log out and back in for group changes."
+NEED_RELOGIN=false
+
+# Remove snap Docker if present (conflicts with docker-ce)
+if snap list docker &>/dev/null 2>&1; then
+  echo "[..] Removing snap Docker (conflicts with docker-ce)..."
+  sudo snap remove docker --purge 2>/dev/null || sudo snap remove docker
+  echo "[OK] Snap Docker removed"
 fi
 
+if ! command -v docker &>/dev/null || ! dpkg -l docker-ce &>/dev/null 2>&1; then
+  echo "[..] Installing Docker..."
+  curl -fsSL https://get.docker.com | sudo sh
+  sudo usermod -aG docker "$USER"
+  NEED_RELOGIN=true
+  echo "[OK] Docker installed"
+else
+  echo "[OK] Docker already installed"
+fi
+
+# Make sure Docker daemon is running
+if ! sudo docker info &>/dev/null; then
+  echo "[..] Starting Docker daemon..."
+  sudo systemctl enable docker 2>/dev/null || true
+  sudo systemctl start docker 2>/dev/null || true
+  sleep 3
+  if ! sudo docker info &>/dev/null; then
+    echo ""
+    echo "Error: Docker daemon won't start."
+    echo "  Try: sudo systemctl status docker"
+    echo "  Or reinstall: sudo apt-get remove -y docker-ce docker-ce-cli && curl -fsSL https://get.docker.com | sudo sh"
+    exit 1
+  fi
+fi
+echo "[OK] Docker daemon running"
+
 # ── Check / Install NVIDIA Container Toolkit ──
-if ! dpkg -l 2>/dev/null | grep -q nvidia-container-toolkit; then
+if ! dpkg -l nvidia-container-toolkit &>/dev/null 2>&1; then
   echo "[..] Installing NVIDIA Container Toolkit..."
+  # Add NVIDIA repo key (overwrite if exists)
   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-    | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    | sudo gpg --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
     | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
   sudo apt-get update -qq && sudo apt-get install -y -qq nvidia-container-toolkit
-  sudo nvidia-ctk runtime configure --runtime=docker
-  sudo systemctl restart docker
   echo "[OK] NVIDIA Container Toolkit installed"
+else
+  echo "[OK] NVIDIA Container Toolkit already installed"
 fi
+
+# Configure NVIDIA runtime and restart Docker
+sudo nvidia-ctk runtime configure --runtime=docker 2>/dev/null || true
+sudo systemctl restart docker 2>/dev/null || true
+sleep 2
+echo "[OK] Docker configured with NVIDIA GPU runtime"
+
+# Verify GPU is visible to Docker
+if ! sudo docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi &>/dev/null; then
+  echo ""
+  echo "Warning: Docker can't see your GPU yet."
+  echo "  This usually fixes itself after a reboot."
+  echo "  Try: sudo reboot, then re-run this script."
+fi
+
+# Note: if Docker was just installed, user won't be in docker group yet.
+# We use sudo for docker commands below so it works on first run.
+# User can run without sudo after logging out and back in.
 
 # ── Register with Bondli — get node keypair ──
 echo ""
