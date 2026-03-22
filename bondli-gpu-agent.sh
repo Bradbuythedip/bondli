@@ -81,9 +81,12 @@ fi
 NODE_ADDRESS=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['nodeAddress'])")
 KEYPAIR_JSON=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['keypairJson'])")
 PLATFORM_FEE=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['platformFee'])")
+NOSANA_MARKET=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosanaMarketName','unknown'))" 2>/dev/null)
+NOS_PER_SEC=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosPerSec',0))" 2>/dev/null)
 
 echo "[OK] Registered: $NODE_ADDRESS"
 echo "     Platform fee: ${PLATFORM_FEE}"
+echo "     Nosana market: ${NOSANA_MARKET} (~${NOS_PER_SEC} NOS/sec)"
 
 # ── Write keypair to Nosana location ──
 mkdir -p ~/.nosana
@@ -135,6 +138,7 @@ echo "======================================="
 echo ""
 echo "  Node:     $NODE_ADDRESS"
 echo "  GPU:      $GPU_NAME"
+echo "  Market:   $NOSANA_MARKET (~${NOS_PER_SEC} NOS/sec)"
 echo "  Wallet:   $WALLET"
 echo "  Fee:      ${PLATFORM_FEE} (to Bondli)"
 echo ""
