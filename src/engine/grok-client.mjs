@@ -40,16 +40,15 @@ Bondli is two things:
 2. AI Trading Intelligence — ML-powered memecoin scoring, auto-trading, and rug detection on Solana
 
 Tiers:
-- Free (0 SOL): radar, scoring, auto-ape, no GPU earning
-- Pro (1 SOL): GPU earning (10% platform fee), fleet trading, smart money signals
-- VIP (10 SOL): GPU earning (5% platform fee), everything in Pro, priority queue, API access
+- Free (0 SOL): radar, scoring, auto-ape, GPU earning, fleet trading
+- VIP (10 SOL): everything in Free, 0% profit share, priority queue, API access
 
 ## GPU Earnings Architecture
 - Constraint: 1 user = 1 GPU = 1 node = 1 keypair (enforced by Nosana)
 - Each user's PC runs one Nosana node via Docker
 - Bondli generates a Solana keypair for each node (custody model)
 - Nosana pays $NOS to the node keypair
-- Bondli sweeps hourly: 90% (Pro) or 95% (VIP) to user's wallet, remainder to treasury
+- Bondli sweeps hourly: 85% (Free) or 95% (VIP) to user's wallet, remainder to treasury
 - All transfers on-chain, verifiable on Solana explorer
 
 ## Setup Flow
@@ -124,7 +123,7 @@ Tiers:
 - Current sweep threshold: 1 NOS minimum
 
 ## Bondli API Endpoints (GPU)
-- POST /api/gpu/register — register node (Pro/VIP only)
+- POST /api/gpu/register — register node (free for all users)
 - POST /api/gpu/deregister — remove node, sweep remaining balance
 - GET /api/gpu/dashboard?wallet=X — node status, earnings
 - POST /api/gpu/heartbeat — agent reports metrics

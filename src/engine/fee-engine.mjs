@@ -1,5 +1,5 @@
 // BONDLI v5.0 — Fee Engine (profit ladder + share-to-earn viral loop)
-// Tiers: Free (25% → 5% sliding), Pro (0% visible, 2% network fee), VIP (0% visible, 2% network fee)
+// Tiers: Free (25% → 5% sliding, 2% network fee), VIP (0% visible, 2% network fee)
 // Profit ladder: more profit = lower fees (rewards winning, incentivizes retention)
 // Share-to-earn: profitable trades generate shareable win cards → viral growth
 // Referral splits: referrer gets portion of platform revenue from referred users
@@ -9,13 +9,11 @@ import crypto from "crypto";
 const PLATFORM_WALLET = process.env.PLATFORM_WALLET || "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
 const FREE_PROFIT_CUT = parseFloat(process.env.FREE_PROFIT_CUT || "25"); // % — visible to free users
 const NETWORK_FEE_PCT = parseFloat(process.env.NETWORK_FEE_PCT || "2");  // % — silent fee on Pro/VIP profits
-const PRO_FEE_SOL = parseFloat(process.env.PRO_FEE_SOL || "1");
 const VIP_FEE_SOL = parseFloat(process.env.VIP_FEE_SOL || "10");
 const MIN_PROFIT_THRESHOLD = 0.001; // SOL — don't skim dust
 
 // Referral commission rates (% of platform's take that goes to referrer)
 const REFERRAL_RATE_FREE = parseFloat(process.env.REFERRAL_RATE_FREE || "20");   // 20% of platform cut → referrer
-const REFERRAL_RATE_PRO  = parseFloat(process.env.REFERRAL_RATE_PRO  || "30");   // 30% of platform cut → referrer
 const REFERRAL_RATE_VIP  = parseFloat(process.env.REFERRAL_RATE_VIP  || "40");   // 40% of platform cut → referrer (VIP referrers earn more)
 
 // ── Profit Ladder (free tier fee reduction based on cumulative profit) ──
@@ -157,7 +155,6 @@ export function resolveTier(wallet, userRecord) {
   if (isOwnerWallet(wallet)) return { tier: "vip", profitCut: 0, whitelisted: true };
   if (getWhitelist().has(wallet)) return { tier: "vip", profitCut: 0, whitelisted: true };
   if (userRecord?.whitelisted) return { tier: "vip", profitCut: 0, whitelisted: true };
-  if (userRecord?.tier === "pro") return { tier: "pro", profitCut: 0, whitelisted: false };
   return { tier: "free", profitCut: FREE_PROFIT_CUT, whitelisted: false };
 }
 
@@ -198,7 +195,7 @@ export function calculateReferralSplit(platformCut, referrerTier = "free") {
   let rate;
   switch (referrerTier) {
     case "vip": rate = REFERRAL_RATE_VIP; break;
-    case "pro": rate = REFERRAL_RATE_PRO; break;
+    case "pro": rate = REFERRAL_RATE_FREE; break; // legacy pro users get free rate
     default:    rate = REFERRAL_RATE_FREE; break;
   }
   const referrerCut = +(platformCut * rate / 100).toFixed(6);
@@ -214,7 +211,7 @@ export function buildProfitConfig(tier, whitelisted = false, wallet = null) {
     const cutPercent = wallet ? getEffectiveFeeRate(wallet).rate : FREE_PROFIT_CUT;
     return { cutPercent, platformWallet: PLATFORM_WALLET };
   }
-  // Pro/VIP: silent network fee
+  // VIP (and legacy pro): silent network fee
   if ((tier === "pro" || tier === "vip") && !whitelisted) {
     return { cutPercent: NETWORK_FEE_PCT, platformWallet: PLATFORM_WALLET, silent: true };
   }
@@ -228,7 +225,7 @@ export function buildProfitConfig(tier, whitelisted = false, wallet = null) {
 // ── Fee tier info (for UI display) ──
 // Note: Pro/VIP still shows 0% to users — network fee is invisible
 export function getFeeTier(tier = "free", wallet = null) {
-  if (tier === "pro" || tier === "vip") return { profitCut: 0, label: "0% — Pro" };
+  if (tier === "pro" || tier === "vip") return { profitCut: 0, label: "0% — VIP" };
   if (wallet) {
     const { rate, ladder } = getEffectiveFeeRate(wallet);
     return { profitCut: rate, label: `${rate}% — ${ladder.name}`, ladder };
@@ -246,11 +243,9 @@ export {
   PLATFORM_WALLET,
   FREE_PROFIT_CUT,
   NETWORK_FEE_PCT,
-  PRO_FEE_SOL,
   VIP_FEE_SOL,
   MIN_PROFIT_THRESHOLD,
   REFERRAL_RATE_FREE,
-  REFERRAL_RATE_PRO,
   REFERRAL_RATE_VIP,
   PROFIT_LADDER,
   SHARE_CREDIT_SOL,

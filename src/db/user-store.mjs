@@ -174,7 +174,7 @@ export class UserStore {
   async createCustomRefCode(wallet, code) {
     const user = await this.getOrCreate(wallet);
     if (user.tier !== "vip" && user.tier !== "pro" && !user.whitelisted) {
-      return { ok: false, error: "VIP or Pro tier required" };
+      return { ok: false, error: "VIP tier required" };
     }
     // Validate code
     const clean = code.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");

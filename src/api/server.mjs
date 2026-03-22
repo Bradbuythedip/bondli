@@ -43,7 +43,7 @@ import { createToken } from "../engine/token-creator.mjs";
 // ═══════════════════════════════════════
 // TIER + ACCESS SYSTEM
 // ═══════════════════════════════════════
-const PRO_FEE_SOL = parseFloat(process.env.PRO_FEE_SOL || "10");
+const VIP_FEE_SOL = parseFloat(process.env.VIP_FEE_SOL || "10");
 const FREE_PROFIT_CUT = parseFloat(process.env.FREE_PROFIT_CUT || "25"); // percent
 const PLATFORM_WALLET = process.env.PLATFORM_WALLET || "anal.sol";
 
@@ -52,26 +52,26 @@ function getWhitelist() {
   return new Set(raw.split(",").map(w => w.trim()).filter(Boolean));
 }
 
-// tier: "free" | "pro" | "none"
+// tier: "free" | "vip" | "none"
 // whitelisted wallets bypass everything
 async function getWalletTier(wallet) {
   // Platform wallet is always VIP
-  if (wallet === PLATFORM_WALLET) return { tier: "pro", whitelisted: true, paid: true, profitCut: 0 };
+  if (wallet === PLATFORM_WALLET) return { tier: "vip", whitelisted: true, paid: true, profitCut: 0 };
 
   const whitelist = getWhitelist();
-  if (whitelist.has(wallet)) return { tier: "pro", whitelisted: true, paid: true, profitCut: 0 };
+  if (whitelist.has(wallet)) return { tier: "vip", whitelisted: true, paid: true, profitCut: 0 };
 
   const redis = getRedis();
   if (redis) {
     try {
       const tier = await redis.get("tier:" + wallet);
-      if (tier === "pro") return { tier: "pro", whitelisted: false, paid: true, profitCut: 0 };
+      if (tier === "vip" || tier === "pro") return { tier: "vip", whitelisted: false, paid: true, profitCut: 0 };
       if (tier === "free") return { tier: "free", whitelisted: false, paid: false, profitCut: FREE_PROFIT_CUT };
     } catch {
       return { tier: "error", whitelisted: false, paid: false, profitCut: 0 };
     }
   }
-  return { tier: "none", whitelisted: false, paid: false, profitCut: 0 };
+  return { tier: "free", whitelisted: false, paid: false, profitCut: FREE_PROFIT_CUT };
 }
 
 async function setWalletTier(wallet, tier) {
@@ -242,7 +242,7 @@ app.get("/api/access/check", apiLimiter, async (req, res) => {
     whitelisted: info.whitelisted,
     paid: info.paid,
     profitCut: info.profitCut,
-    fee: info.tier === "none" ? PRO_FEE_SOL : 0,
+    fee: info.tier === "none" ? VIP_FEE_SOL : 0,
   });
 });
 
@@ -280,10 +280,10 @@ app.post("/api/access/activate-pro", apiLimiter, async (req, res) => {
     if (!tx) return res.status(400).json({ error: "Transaction not found. Wait for confirmation and retry." });
     if (tx.meta?.err) return res.status(400).json({ error: "Transaction failed on-chain" });
 
-    // Verify amount: at least PRO_FEE_SOL sent
+    // Verify amount: at least VIP_FEE_SOL sent
     // Check all instructions for a SOL transfer to platform wallet
     let verified = false;
-    const requiredLamports = PRO_FEE_SOL * LAMPORTS_PER_SOL;
+    const requiredLamports = VIP_FEE_SOL * LAMPORTS_PER_SOL;
 
     // Check pre/post balances for platform wallet receiving funds
     const accountKeys = tx.transaction.message.staticAccountKeys
@@ -304,14 +304,14 @@ app.post("/api/access/activate-pro", apiLimiter, async (req, res) => {
     // Fallback: check if we can verify via paymentVerifier
     if (!verified && paymentVerifier) {
       try {
-        const pvResult = await paymentVerifier.verify(txSig, wallet, PRO_FEE_SOL);
+        const pvResult = await paymentVerifier.verify(txSig, wallet, VIP_FEE_SOL);
         if (pvResult?.verified) verified = true;
       } catch {}
     }
 
     if (!verified) {
       return res.status(400).json({
-        error: `Payment not verified. Send exactly ${PRO_FEE_SOL} SOL to ${PLATFORM_WALLET}`,
+        error: `Payment not verified. Send exactly ${VIP_FEE_SOL} SOL to ${PLATFORM_WALLET}`,
       });
     }
 
@@ -341,7 +341,7 @@ app.get("/api/access/whitelist", async (req, res) => {
   const secret = req.headers["x-api-secret"];
   if (secret !== CONFIG.API_SECRET) return res.status(403).json({ error: "forbidden" });
   const whitelist = getWhitelist();
-  res.json({ wallets: [...whitelist], count: whitelist.size, proFee: PRO_FEE_SOL, profitCut: FREE_PROFIT_CUT });
+  res.json({ wallets: [...whitelist], count: whitelist.size, proFee: VIP_FEE_SOL, profitCut: FREE_PROFIT_CUT });
 });
 
 // Admin: view wallet profit history
@@ -380,7 +380,7 @@ app.get("/api/config", apiLimiter, (req, res) => {
     slippageBps: CONFIG.SLIPPAGE_BPS,
     purgePercent: CONFIG.PURGE_PERCENT,
     platformWallet: PLATFORM_WALLET,
-    proFee: PRO_FEE_SOL,
+    proFee: VIP_FEE_SOL,
     freeProfitCut: FREE_PROFIT_CUT,
   });
 });
@@ -1536,13 +1536,10 @@ app.post("/api/sim/update", apiLimiter, (req, res) => {
   res.json({ ok: true, settings: state.settings });
 });
 
-// Graduate: apply sim settings to real auto-ape (pro+ only)
+// Graduate: apply sim settings to real auto-ape
 app.post("/api/sim/graduate", apiLimiter, walletAuth, async (req, res) => {
   try {
     const wallet = req.user.wallet;
-    if (req.user.tier !== "pro" && !req.user.whitelisted) {
-      return res.status(403).json({ error: "Auto-ape requires Pro tier. Sim mode is free for everyone." });
-    }
     const simState = liveSims.get(wallet);
     if (!simState) return res.status(404).json({ error: "No sim running" });
     if (!simState.graduation.ready) {
@@ -1844,7 +1841,7 @@ async function start() {
       console.log(`  WS:        ws://localhost:${PORT}/ws`);
       console.log(`  Mode:      ${CONFIG.DRY_RUN ? "\x1b[33mDRY RUN\x1b[0m" : "\x1b[31mLIVE\x1b[0m"}`);
       console.log(`  Env:       ${IS_PROD ? "production" : "development"}`);
-      console.log(`  Pro fee:   ${PRO_FEE_SOL} SOL`);
+      console.log(`  Pro fee:   ${VIP_FEE_SOL} SOL`);
       console.log(`  Free cut:  ${FREE_PROFIT_CUT}%`);
       console.log(`  VIPs:      ${wl.size > 0 ? [...wl].join(", ") : "none"}`);
       console.log("");
