@@ -92,6 +92,24 @@ GET  /api/nosana/markets    — available Nosana GPU markets
 GET  /api/nosana/credits    — Nosana credits balance
 ```
 
+### AI GPU support (Grok 4)
+
+built-in AI chat assistant powered by xAI's Grok 4, trained on Nosana and Bondli knowledge. lives in the GPU Earn tab and helps with:
+
+- node setup troubleshooting (driver issues, Docker problems, NVIDIA toolkit)
+- earnings questions (why earnings are low, how fees work, sweep timing)
+- common GPU issues (node offline, heartbeat failing, keypair problems)
+- platform navigation (tiers, features, API endpoints)
+
+the AI has full context of your node status, GPU model, tier, and earnings when responding. suggested quick-questions get users started immediately.
+
+```
+POST /api/chat         — send messages, get AI response (rate-limited per user)
+GET  /api/chat/status  — check if AI chat is enabled
+```
+
+env: `XAI_API_KEY` (xAI API key), `GROK_MODEL` (default: grok-4)
+
 ---
 
 ## AI trading intelligence
@@ -253,6 +271,10 @@ NOSANA_DEPLOY_MARKET=    # Default market for deployments
 NOSANA_DEPLOY_REPLICAS=  # Replica count (default 2)
 NOSANA_DEPLOY_SCHEDULE=  # Cron schedule (default hourly)
 NOSANA_INFERENCE=        # Set to "false" to disable Nosana routing
+
+# AI Chat Support
+XAI_API_KEY=             # xAI API key for Grok 4 chat support
+GROK_MODEL=              # Model override (default: grok-4)
 
 # Trading
 MASTER_SEED=             # Trading wallet master seed

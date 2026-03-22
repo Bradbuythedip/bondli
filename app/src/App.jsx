@@ -684,6 +684,10 @@ const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const
 const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);
 // GPU Earn tab state
 const[gpuDash,sGpuDash]=useState(null);const[gpuFleet,sGpuFleet]=useState(null);const[gpuLoading,sGpuLoading]=useState(false);const[gpuRegWallet,sGpuRegWallet]=useState("");
+// Chat support state
+const[chatOpen,sChatOpen]=useState(false);const[chatMsgs,sChatMsgs]=useState([]);const[chatInput,sChatInput]=useState("");const[chatLoading,sChatLoading]=useState(false);const chatEndRef=useRef(null);
+const sendChat=useCallback(async()=>{const msg=chatInput.trim();if(!msg||chatLoading)return;const userMsg={role:"user",content:msg};const newMsgs=[...chatMsgs,userMsg];sChatMsgs(newMsgs);sChatInput("");sChatLoading(true);try{const r=await a.cht(newMsgs,user?.pubkey);if(r.reply){sChatMsgs(m=>[...m,{role:"assistant",content:r.reply}])}else{sChatMsgs(m=>[...m,{role:"assistant",content:r.error||"Something went wrong. Try again."}])}}catch(e){sChatMsgs(m=>[...m,{role:"assistant",content:"Connection error. Check your internet and try again."}])}sChatLoading(false)},[chatInput,chatMsgs,chatLoading,user?.pubkey]);
+useEffect(()=>{chatEndRef.current?.scrollIntoView({behavior:"smooth"})},[chatMsgs]);
 // Intel trade settings — slippage, tip, buy amount, auto mode
 const[iTrade,sITrade]=useState({ca:null,slip:25,tip:0.005,amt:0.1,auto:false});
 // Auto-trade settings calculator (shared between intel trade panel and auto-ape section)
@@ -1070,6 +1074,42 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <span style={{color:T.ft}}>{g.vram}</span>
 </div>)}
 </div>
+</div>
+
+{/* ═══ AI SUPPORT CHAT (Grok 4) ═══ */}
+<div style={{marginTop:8}}>
+{!chatOpen?<button onClick={()=>sChatOpen(true)} style={{width:"100%",padding:mb?"12px":"14px 16px",background:"linear-gradient(135deg,"+T.sf+","+T.bg+")",border:"1px solid "+T.pu+"33",borderRadius:10,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+<IC.brain s={20} c={T.pu}/><span style={{fontSize:14,fontWeight:800,color:T.pu}}>GPU Support AI</span><span style={{fontSize:11,color:T.dm}}>Powered by Grok</span>
+</button>
+:<div style={{background:T.sf,border:"1px solid "+T.pu+"22",borderRadius:10,overflow:"hidden"}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",borderBottom:"1px solid "+T.bd,background:T.pu+"08"}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}><IC.brain s={16} c={T.pu}/><span style={{fontSize:14,fontWeight:800,color:T.pu}}>GPU Support AI</span><span style={{fontSize:10,color:T.dm}}>Grok 4</span></div>
+<div style={{display:"flex",gap:4}}>
+<button onClick={()=>{sChatMsgs([]);sChatInput("")}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:4,padding:"2px 8px",fontSize:10,color:T.ft,cursor:"pointer"}}>Clear</button>
+<button onClick={()=>sChatOpen(false)} style={{background:"none",border:"1px solid "+T.bd,borderRadius:4,padding:"2px 6px",fontSize:14,color:T.ft,cursor:"pointer"}}>×</button>
+</div></div>
+{/* Messages */}
+<div style={{maxHeight:mb?300:400,overflowY:"auto",padding:"8px 10px",display:"flex",flexDirection:"column",gap:6}}>
+{chatMsgs.length===0&&<div style={{padding:"20px 10px",textAlign:"center"}}>
+<IC.brain s={32} c={T.pu+"44"}/>
+<div style={{fontSize:13,color:T.dm,marginTop:8}}>Ask me anything about GPU earnings, Nosana nodes, or Bondli.</div>
+<div style={{display:"flex",flexWrap:"wrap",gap:4,justifyContent:"center",marginTop:10}}>
+{["My node is offline","How do I start earning?","Why are my earnings low?","How does the fee work?"].map(q=><button key={q} onClick={()=>{const userMsg={role:"user",content:q};const newMsgs=[...chatMsgs,userMsg];sChatMsgs(newMsgs);sChatLoading(true);a.cht(newMsgs,user?.pubkey).then(r=>{if(r.reply)sChatMsgs(m=>[...m,{role:"assistant",content:r.reply}]);else sChatMsgs(m=>[...m,{role:"assistant",content:r.error||"Something went wrong."}]);sChatLoading(false)}).catch(()=>{sChatMsgs(m=>[...m,{role:"assistant",content:"Connection error."}]);sChatLoading(false)})}} style={{padding:"5px 10px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,fontSize:10,color:T.dm,cursor:"pointer",fontFamily:M}}>{q}</button>)}
+</div>
+</div>}
+{chatMsgs.map((m,i)=><div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}}>
+<div style={{maxWidth:"85%",padding:"8px 12px",borderRadius:m.role==="user"?"12px 12px 2px 12px":"12px 12px 12px 2px",background:m.role==="user"?T.pu+"18":T.bg,border:"1px solid "+(m.role==="user"?T.pu+"33":T.bd),fontSize:12,color:T.tx,lineHeight:1.5,whiteSpace:"pre-wrap",wordBreak:"break-word"}}>
+{m.content}
+</div></div>)}
+{chatLoading&&<div style={{display:"flex",justifyContent:"flex-start"}}><div style={{padding:"8px 12px",borderRadius:"12px 12px 12px 2px",background:T.bg,border:"1px solid "+T.bd}}><Sp s={12} c={T.pu}/></div></div>}
+<div ref={chatEndRef}/>
+</div>
+{/* Input */}
+<div style={{display:"flex",gap:4,padding:"6px 8px",borderTop:"1px solid "+T.bd}}>
+<input value={chatInput} onChange={e=>sChatInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendChat()}}} placeholder="Ask about GPU issues..." style={{flex:1,padding:"8px 10px",background:T.bg,border:"1px solid "+T.bd,borderRadius:8,color:T.tx,fontSize:13,outline:"none",fontFamily:M}} disabled={chatLoading}/>
+<button onClick={sendChat} disabled={chatLoading||!chatInput.trim()} style={{padding:"8px 14px",background:chatInput.trim()?T.pu+"18":"transparent",border:"1px solid "+(chatInput.trim()?T.pu+"33":T.bd),borderRadius:8,fontSize:13,fontWeight:700,color:chatInput.trim()?T.pu:T.ft,cursor:chatInput.trim()?"pointer":"default"}}>Send</button>
+</div>
+</div>}
 </div>
 
 </div></EB>}

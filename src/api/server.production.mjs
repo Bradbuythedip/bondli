@@ -52,6 +52,7 @@ import { getSpotPrice, getMultiSpotPrices, getCandlesByMint, findPool, analyzeCa
 import { BagsClient } from "../engine/bags-client.mjs";
 import { mountGpuRoutes } from "../engine/gpu-earnings.mjs";
 import { NosanaJobRouter } from "../engine/nosana-job-router.mjs";
+import { mountChatRoutes } from "../engine/grok-client.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -8788,6 +8789,11 @@ const nosanaRouter = new NosanaJobRouter({
 });
 nosanaRouter.mountRoutes(app);
 nosanaRouter.init().catch(err => console.warn("[NOSANA] Init error:", err.message));
+
+// ═══════════════════════════════════════
+// GROK AI CHAT — GPU support & help
+// ═══════════════════════════════════════
+mountChatRoutes(app, { redis, getUser, resolveTier });
 
 // ═══════════════════════════════════════
 // START
