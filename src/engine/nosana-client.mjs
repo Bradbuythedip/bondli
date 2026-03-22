@@ -55,13 +55,15 @@ export function resolveMarket(gpuModel) {
 
   // Laptop GPUs have less VRAM than desktop equivalents — map by comparable desktop VRAM
   if (isLaptop) {
-    // High-end laptop GPUs (5070+, 4080+, 4090) → ~12GB VRAM → RTX 4070 market
+    // Extract the GPU model for display (e.g. "5070 Ti Laptop" stays recognizable)
+    const shortName = gpuModel.replace(/NVIDIA\s*GeForce\s*/i, "").replace(/\s+/g, " ").trim();
+    // High-end laptop GPUs (5070+, 4080+, 4090) → ~8-12GB VRAM → RTX 4070 tier
     if (normalized.includes("5090") || normalized.includes("5080") || normalized.includes("5070") ||
         normalized.includes("4090") || normalized.includes("4080")) {
-      return { ...NOSANA_MARKETS["RTX 4070"], name: "RTX 4070 (laptop)" };
+      return { ...NOSANA_MARKETS["RTX 4070"], name: shortName + " (12GB tier)" };
     }
-    // Lower-end laptop GPUs → RTX 3060 market
-    return { ...NOSANA_MARKETS["RTX 3060"], name: "RTX 3060 (laptop)" };
+    // Lower-end laptop GPUs → RTX 3060 tier
+    return { ...NOSANA_MARKETS["RTX 3060"], name: shortName + " (12GB tier)" };
   }
 
   // Exact match first
