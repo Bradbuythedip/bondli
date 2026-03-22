@@ -238,10 +238,21 @@ echo "[OK] Node keypair written to ~/.nosana/nosana_key.json"
 
 # ── Fund node wallet with SOL for tx fees ──
 echo ""
-echo "IMPORTANT: Send ~0.05 SOL to your node wallet for transaction fees:"
+echo "======================================="
+echo "  ACTION REQUIRED: Fund your node"
+echo "======================================="
+echo "  Your node needs ~0.05 SOL to pay Solana"
+echo "  transaction fees (claiming jobs, submitting"
+echo "  results on the Nosana network)."
+echo ""
+echo "  Send SOL to this address:"
 echo "  $NODE_ADDRESS"
 echo ""
-read -p "Press Enter once funded (or Ctrl+C to fund later)..."
+echo "  Without SOL, your node will start but"
+echo "  cannot accept or complete any jobs."
+echo "======================================="
+echo ""
+read -p "Press Enter once funded (or Ctrl+C to fund later and restart)..."
 
 # ── Start Nosana node ──
 echo "[..] Starting Nosana node..."
