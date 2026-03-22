@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="hero.png" alt="bondli" width="100%" />
+  <img src="app/public/hero.png" alt="bondli" width="100%" />
 </p>
 
 # bondli
