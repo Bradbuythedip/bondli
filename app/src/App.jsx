@@ -1072,7 +1072,13 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 </div>}
 </div>
 
-/* Not registered — setup prompt */
+/* Not registered — setup prompt or connect wallet */
+:user?.demo||!user?.pubkey?<div style={{background:T.sf,border:"1px solid "+T.yl+"22",borderRadius:10,padding:mb?16:24,marginBottom:8,textAlign:"center"}}>
+<IC.gpu s={32} c={T.yl}/>
+<div style={{fontSize:18,fontWeight:900,color:T.tx,marginTop:10,marginBottom:6}}>Connect Wallet to Set Up Your GPU</div>
+<div style={{fontSize:12,color:T.dm,lineHeight:1.6,marginBottom:16,maxWidth:400,margin:"0 auto 16px"}}>Sign in with your Phantom wallet to register your GPU node and start earning $NOS tokens.</div>
+<B onClick={connect} style={{padding:"12px 32px",fontSize:16,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)"}}><IC.ph/> Connect Wallet</B>
+</div>
 :<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?12:18,marginBottom:8}}>
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.gpu s={16} c={T.gn}/><span style={{fontSize:15,fontWeight:800}}>Setup Your GPU Node</span></div>
 <div style={{fontSize:12,color:T.dm,lineHeight:1.6,marginBottom:12}}>
