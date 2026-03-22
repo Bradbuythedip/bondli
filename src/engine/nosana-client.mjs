@@ -51,6 +51,18 @@ export function resolveMarket(gpuModel) {
   if (!gpuModel) return NOSANA_MARKETS["RTX 4090"]; // default
 
   const normalized = gpuModel.toUpperCase();
+  const isLaptop = normalized.includes("LAPTOP") || normalized.includes("MOBILE") || normalized.includes("MAX-Q");
+
+  // Laptop GPUs have significantly less VRAM — cap at RTX 4070 tier (12GB)
+  if (isLaptop) {
+    // High-end laptop GPUs (5070+, 4080+, 4090) → RTX 4070 market (12GB VRAM jobs)
+    if (normalized.includes("5090") || normalized.includes("5080") || normalized.includes("5070") ||
+        normalized.includes("4090") || normalized.includes("4080")) {
+      return { ...NOSANA_MARKETS["RTX 4070"], name: "RTX 4070 (laptop)" };
+    }
+    // Everything else laptop → RTX 3060 market
+    return { ...NOSANA_MARKETS["RTX 3060"], name: "RTX 3060 (laptop)" };
+  }
 
   // Exact match first
   for (const [name, market] of Object.entries(NOSANA_MARKETS)) {
