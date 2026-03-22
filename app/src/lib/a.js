@@ -73,6 +73,7 @@ vcl(w){return this.f("/api/vip/claim-referral",{method:"POST",body:{wallet:w}})}
 xapi(w){return this.f(`/api/vip/export-api/${w}`,{timeout:30000})}
 // GPU dashboard
 gpd(w){return this.f(`/api/gpu/dashboard?wallet=${w}`)}
+gpdr(w){return this.f("/api/gpu/deregister",{method:"POST",body:{wallet:w}})}
 // Chat support (Grok AI)
 cht(msgs,w){return this.f("/api/chat",{method:"POST",timeout:30000,body:{messages:msgs,wallet:w}})}
 chts(){return this.f("/api/chat/status")}
