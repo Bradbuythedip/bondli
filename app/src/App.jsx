@@ -1138,9 +1138,9 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4}}>
 {[
 {gpu:"RTX 3060",rate:"~0.000043 NOS/s",vram:"12 GB"},
-{gpu:"RTX 4070",rate:"~0.000035 NOS/s",vram:"12 GB"},
+{gpu:"RTX 4070 / Laptop 50-series",rate:"~0.000035 NOS/s",vram:"12 GB"},
 {gpu:"RTX 3090",rate:"~0.00009 NOS/s",vram:"24 GB"},
-{gpu:"RTX 4090",rate:"~0.000097 NOS/s",vram:"24 GB"},
+{gpu:"RTX 4090 / Desktop 5070+",rate:"~0.000097 NOS/s",vram:"24 GB"},
 {gpu:"A100",rate:"~0.000115 NOS/s",vram:"80 GB"},
 ].map(g=><div key={g.gpu} style={{display:"flex",justifyContent:"space-between",padding:"6px 8px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,fontSize:11}}>
 <span style={{fontWeight:700,color:T.tx}}>{g.gpu}</span>
@@ -1148,6 +1148,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <span style={{color:T.ft}}>{g.vram}</span>
 </div>)}
 </div>
+<div style={{fontSize:9,color:T.ft,marginTop:4,padding:"0 4px"}}>Laptop GPUs are matched to Nosana markets by VRAM tier, not GPU name. Your 5070 Ti Laptop (8-12GB) joins the 12GB tier.</div>
 </div>
 
 {/* ═══ AI SUPPORT CHAT (Grok 4) ═══ */}
