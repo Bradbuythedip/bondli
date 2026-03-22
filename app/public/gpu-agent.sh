@@ -180,6 +180,17 @@ HTTP_CODE=$(curl -s -o /tmp/bondli-register.json -w "%{http_code}" -X POST "$BON
   -H "Content-Type: application/json" \
   -d "{\"wallet\":\"$WALLET\",\"gpuModel\":\"$GPU_NAME\"}")
 
+if [ "$HTTP_CODE" = "409" ]; then
+  echo "[..] Existing node found — deregistering and re-registering..."
+  curl -s -X POST "$BONDLI_API/api/gpu/deregister" \
+    -H "Content-Type: application/json" \
+    -d "{\"wallet\":\"$WALLET\"}" >/dev/null 2>&1
+  sleep 1
+  HTTP_CODE=$(curl -s -o /tmp/bondli-register.json -w "%{http_code}" -X POST "$BONDLI_API/api/gpu/register" \
+    -H "Content-Type: application/json" \
+    -d "{\"wallet\":\"$WALLET\",\"gpuModel\":\"$GPU_NAME\"}")
+fi
+
 if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
   echo "Error: Registration failed (HTTP $HTTP_CODE)"
   cat /tmp/bondli-register.json 2>/dev/null
