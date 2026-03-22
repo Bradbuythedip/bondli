@@ -101,11 +101,40 @@ else
   echo "[OK] NVIDIA Container Toolkit already installed"
 fi
 
-# Configure NVIDIA runtime and restart Docker
-sudo nvidia-ctk runtime configure --runtime=docker 2>/dev/null || true
+# Configure NVIDIA runtime for Docker
+if sudo nvidia-ctk runtime configure --runtime=docker 2>/dev/null; then
+  echo "[OK] NVIDIA runtime configured via nvidia-ctk"
+else
+  echo "[..] nvidia-ctk configure failed, writing daemon.json manually..."
+  # Manually configure Docker to use the NVIDIA runtime
+  sudo mkdir -p /etc/docker
+  if [ -f /etc/docker/daemon.json ] && [ -s /etc/docker/daemon.json ]; then
+    # Merge with existing config
+    sudo python3 -c "
+import json
+with open('/etc/docker/daemon.json') as f:
+    cfg = json.load(f)
+cfg.setdefault('runtimes', {})['nvidia'] = {'path': 'nvidia-container-runtime', 'runtimeArgs': []}
+cfg['default-runtime'] = 'nvidia'
+with open('/etc/docker/daemon.json', 'w') as f:
+    json.dump(cfg, f, indent=2)
+"
+  else
+    echo '{"default-runtime":"nvidia","runtimes":{"nvidia":{"path":"nvidia-container-runtime","runtimeArgs":[]}}}' | sudo tee /etc/docker/daemon.json > /dev/null
+  fi
+  echo "[OK] NVIDIA runtime configured in /etc/docker/daemon.json"
+fi
+
+# Verify the config was actually written
+if ! grep -q '"nvidia"' /etc/docker/daemon.json 2>/dev/null; then
+  echo "Error: Failed to configure NVIDIA runtime in /etc/docker/daemon.json"
+  echo "  Try manually: sudo nvidia-ctk runtime configure --runtime=docker"
+  exit 1
+fi
+
 sudo systemctl restart docker 2>/dev/null || true
 sleep 3
-echo "[OK] Docker configured with NVIDIA GPU runtime"
+echo "[OK] Docker restarted with NVIDIA GPU runtime"
 
 # Verify GPU is visible to Docker (retry up to 3 times — image pull + runtime init can be slow)
 echo "[..] Verifying GPU is visible to Docker (this may pull an image on first run)..."
