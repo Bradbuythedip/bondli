@@ -1008,6 +1008,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 {l:"EARNED",v:(gpuDash.earnings?.totalNOS||0).toFixed(2)+" NOS",c:T.gn},
 {l:"PENDING",v:(gpuDash.earnings?.pendingNOS||0).toFixed(4)+" NOS",c:T.yl},
 {l:"JOBS",v:gpuDash.earnings?.totalJobsCompleted||0,c:T.pu},
+{l:"POWER",v:gpuDash.node?.powerDraw&&gpuDash.node?.powerLimit?(Math.round(parseFloat(gpuDash.node.powerDraw))+"W / "+Math.round(parseFloat(gpuDash.node.powerLimit))+"W"):gpuDash.node?.powerDraw?(Math.round(parseFloat(gpuDash.node.powerDraw))+"W"):"—",c:T.cy||"#00bcd4"},
 ].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:mb?14:18,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginTop:2}}>{s.l}</div></div>)}
 </div>
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
