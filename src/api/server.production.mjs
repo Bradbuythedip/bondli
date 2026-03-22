@@ -2611,17 +2611,9 @@ async function verifyPayment(wallet, txSig, minSol) {
   return received;
 }
 
+// Legacy endpoint — Pro tier removed, redirect to VIP
 app.post("/api/access/activate-pro", async (req, res) => {
-  const { wallet, txSig } = req.body;
-  if (!wallet || !txSig) return res.status(400).json({ error: "wallet and txSig required" });
-  try {
-    await verifyPayment(wallet, txSig, 1); // Pro = 1 SOL
-  } catch (err) {
-    return res.status(400).json({ error: err.message });
-  }
-  await saveUser(wallet, { tier: "pro", paid: true, proTx: txSig });
-  applyDefaultReferral(wallet);
-  res.json({ ok: true, tier: "pro" });
+  res.status(410).json({ error: "Pro tier has been removed. All features are now free. Upgrade to VIP for 0% fees." });
 });
 
 app.post("/api/access/activate-vip", async (req, res) => {
@@ -2640,9 +2632,8 @@ app.post("/api/access/activate-vip", async (req, res) => {
 app.get("/api/pricing", (req, res) => {
   const wallet = req.query.wallet;
   const base = {
-    free: { fee: "25% → 5% (profit ladder)", price: "0 SOL", label: "Free — earn lower fees by winning" },
-    pro: { fee: "0%", price: "1 SOL", label: "Pro — 0% fee" },
-    vip: { fee: "0%", price: "10 SOL", label: "VIP — full sovereignty" },
+    free: { fee: "25% → 5% (profit ladder)", price: "0 SOL", label: "Free — full access, earn lower fees by winning" },
+    vip: { fee: "0%", price: "10 SOL", label: "VIP — 0% fee, priority queue, API access" },
     platformWallet: PLATFORM_WALLET,
     ladder: PROFIT_LADDER,
   };
@@ -2961,7 +2952,7 @@ app.post("/api/trading-wallet/import", async (req, res) => {
     const user = await getUser(wallet);
     const tierInfo = resolveTier(wallet, user);
     if (tierInfo.tier === "free" && !tierInfo.whitelisted) {
-      return res.status(403).json({ error: "Pro/VIP required for multiple wallets. Free tier gets 1 wallet." });
+      return res.status(403).json({ error: "VIP required for multiple wallets. Free tier gets 1 wallet." });
     }
     
     let wallets = [];
@@ -7203,7 +7194,7 @@ app.get("/api/vip/referral-dashboard/:wallet", async (req, res) => {
   const wallet = req.params.wallet;
   const user = await getUser(wallet);
   if (!user || (user.tier !== "vip" && user.tier !== "pro" && !user.whitelisted)) {
-    return res.status(403).json({ error: "VIP or Pro tier required" });
+    return res.status(403).json({ error: "VIP tier required" });
   }
 
   // Get all referred users
@@ -7260,7 +7251,7 @@ app.post("/api/vip/custom-ref-code", async (req, res) => {
   if (!wallet || !code) return res.status(400).json({ error: "wallet and code required" });
   const user = await getUser(wallet);
   if (!user || (user.tier !== "vip" && user.tier !== "pro" && !user.whitelisted)) {
-    return res.status(403).json({ error: "VIP or Pro tier required" });
+    return res.status(403).json({ error: "VIP tier required" });
   }
   const clean = code.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
   if (clean.length < 3 || clean.length > 20) {
@@ -7321,7 +7312,7 @@ app.get("/api/vip/export-api/:wallet", async (req, res) => {
     if (!wallet) return res.status(400).json({ error: "wallet required" });
     const user = await getUser(wallet);
     if (user.tier !== "vip" && user.tier !== "pro" && !user.whitelisted) {
-      return res.status(403).json({ error: "VIP/Pro access required" });
+      return res.status(403).json({ error: "VIP access required" });
     }
 
     // Collect full intel snapshot

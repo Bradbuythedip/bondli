@@ -88,11 +88,8 @@ export function mountGpuRoutes(app, deps) {
 
       if (!redis) return res.status(503).json({ error: "Service unavailable — Redis required" });
 
-      // Verify Pro or VIP
+      // Resolve tier (GPU is free for everyone)
       const tierInfo = await getWalletTier(wallet);
-      if (!tierInfo.isPro && !tierInfo.isVip) {
-        return res.status(403).json({ error: "Pro or VIP required to register a GPU node" });
-      }
 
       // Enforce 1 node per user
       const existingNode = await redis.get(`bondli:gpu:user_node:${wallet}`);
@@ -109,7 +106,7 @@ export function mountGpuRoutes(app, deps) {
       const nodeAddress = nodeKeypair.publicKey.toBase58();
       const nodeSecret = bs58.encode(nodeKeypair.secretKey);
 
-      const platformFee = tierInfo.isVip ? 0.05 : 0.10;
+      const platformFee = tierInfo.isVip ? 0.05 : 0.15;
 
       // Resolve GPU → Nosana market for node registration
       const market = resolveMarket(gpuModel);
@@ -118,7 +115,7 @@ export function mountGpuRoutes(app, deps) {
       await redis.hSet(`bondli:gpu:node:${nodeAddress}`, {
         wallet,
         gpuModel,
-        tier: tierInfo.isVip ? "VIP" : "PRO",
+        tier: tierInfo.isVip ? "VIP" : "FREE",
         platformFee: platformFee.toString(),
         registeredAt: Date.now().toString(),
         status: "registered",

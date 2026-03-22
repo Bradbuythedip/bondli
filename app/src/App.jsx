@@ -699,11 +699,11 @@ const[liveSim,sLiveSim]=useState(null);const[simStarting,sSimStarting]=useState(
 const[caLookup,sCaLookup]=useState(null);const[caLoading,sCaLoading]=useState(false);const caLookupRef=useRef(null);
 
 const toast=useCallback((m,t="info")=>{const id=Date.now()+Math.random();sToasts(x=>[...x,{id,msg:m,type:t}]);setTimeout(()=>sToasts(x=>x.filter(y=>y.id!==id)),5000)},[]);
-const hasAccess=user&&(user.demo||user.tier==="free"||user.tier==="pro"||user.tier==="vip");
+const hasAccess=user&&(user.demo||user.tier==="free"||user.tier==="pro"||user.tier==="vip"); // pro kept for legacy
 const OWNER_WALLET="4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
 const isOwner=user?.pubkey===OWNER_WALLET;
-const tierColor=isOwner?T.yl:user?.whitelisted?T.yl:user?.tier==="pro"?T.pu:T.gn;
-const tierLabel=isOwner?"OWNER":user?.whitelisted?"VIP":user?.tier==="pro"?"PRO":user?.demo?"DEMO":"FREE";
+const tierColor=isOwner?T.yl:user?.whitelisted?T.yl:user?.tier==="vip"?T.yl:T.gn;
+const tierLabel=isOwner?"OWNER":user?.whitelisted?"VIP":user?.tier==="vip"?"VIP":user?.demo?"DEMO":"FREE";
 const isApe=!!eCA;const pv=dbp(sol,isApe);const nw=wc(sol);
 const canLaunch=(trW||isApe)&&(eCA||tkr)&&sol>=0.2&&trB>=sol;
 const applyPreset=p=>{sSol(p.sol);sSn(p.snc);sSl(p.slip);sDur(p.dur);sJt(p.jt)};
@@ -735,7 +735,7 @@ useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=awa
 if(!tabs.bags)tabs.bags=[];// Preload all token images before rendering
 const allTokens=[...(tabs.new||[]),...(tabs.hot||[]),...(tabs.momentum||[]),...(tabs.bags||[])];preloadTokenImages(allTokens);sRT(tabs)}if(d.poolSize!=null)sRP(d.poolSize);if(d.gradMc)sGradMc(d.gradMc);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,5000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
 // VIP Dashboard polling
-useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;if(user.tier!=="vip"&&user.tier!=="pro"&&!user.whitelisted&&!isOwner)return;const poll=()=>a.vrd(user.pubkey).then(d=>sVipDash(d)).catch(()=>{});poll();const iv=setInterval(poll,15000);return()=>clearInterval(iv)},[tab,user?.pubkey,user?.tier]);
+useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;if(user.tier!=="vip"&&!user.whitelisted&&!isOwner)return;const poll=()=>a.vrd(user.pubkey).then(d=>sVipDash(d)).catch(()=>{});poll();const iv=setInterval(poll,15000);return()=>clearInterval(iv)},[tab,user?.pubkey,user?.tier]);
 useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){preloadTokenImages(d.positions.map(p=>({image:p.image})));const onChainMints=new Set(d.positions.map(p=>p.mint));const serverPositions=d.positions.map(p=>{if(p.pending&&p.time&&(Date.now()-p.time)>120000)return{...p,pending:false,pendingExpired:true};return p});sPos(prev=>{const now=Date.now();const recentPending=prev.filter(p=>{if(!p.pendingSince)return false;const age=now-p.pendingSince;// Already expired — keep the expired state, don't re-add as pending
 if(p.pendingExpired&&!p.pending)return!onChainMints.has(p.mint)&&age<60000;// Still pending — keep if not on-chain yet and under 20s (reduced from 30s)
 return p.pending&&!onChainMints.has(p.mint)&&age<20000});return[...serverPositions,...recentPending]});sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,8000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
@@ -814,13 +814,11 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 
 {/* ═══ TIERS ═══ */}
 <div style={{marginTop:mb?28:40}}>
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:12}}>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:mb?8:12}}>
 {[
-{tier:"Free",price:"0 SOL",color:T.ft,features:["ML scoring + radar","Auto-Ape","2 positions","25% profit share"]},
-{tier:"Pro",price:"1 SOL",color:T.pu,features:["0% profit share","Fleet multi-wallet","Smart money signals","GPU earnings"]},
-{tier:"VIP",price:"10 SOL",color:T.yl,features:["Everything in Pro","API access","Priority queue","GPU earnings (5% fee)"]},
+{tier:"Free",price:"0 SOL",color:T.ft,features:["ML scoring + radar","Auto-Ape","Fleet multi-wallet","GPU earnings","Smart money signals"]},
+{tier:"VIP",price:"10 SOL",color:T.yl,features:["Everything in Free","0% profit share","Priority queue","API access"]},
 ].map((t,i)=><div key={i} onClick={connect} style={{background:T.sf,border:"1px solid "+(t.color)+"33",borderRadius:10,padding:mb?"14px 12px":"18px 16px",position:"relative",cursor:"pointer",transition:"all .15s ease"}} onMouseEnter={e=>{e.currentTarget.style.borderColor=t.color+"88";e.currentTarget.style.transform="translateY(-2px)"}} onMouseLeave={e=>{e.currentTarget.style.borderColor=t.color+"33";e.currentTarget.style.transform="none"}}>
-{i===1&&<div style={{position:"absolute",top:-8,right:12,fontSize:8,fontWeight:900,padding:"2px 7px",borderRadius:4,background:T.pu,color:"#fff",letterSpacing:".05em"}}>POPULAR</div>}
 <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:6}}><span style={{fontSize:mb?18:22,fontWeight:900,color:t.color}}>{t.tier}</span><span style={{fontSize:mb?12:14,color:T.tx,fontWeight:800}}>{t.price}</span></div>
 {t.features.map((f,j)=><div key={j} style={{fontSize:mb?10:11,color:T.dm,padding:"1px 0"}}>{f}</div>)}
 </div>)}
@@ -1008,10 +1006,9 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 :<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?12:18,marginBottom:8}}>
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.gpu s={16} c={T.gn}/><span style={{fontSize:15,fontWeight:800}}>Setup Your GPU Node</span></div>
 <div style={{fontSize:12,color:T.dm,lineHeight:1.6,marginBottom:12}}>
-{user?.tier==="free"?<><span style={{color:T.yl,fontWeight:700}}>Pro or VIP required.</span> Upgrade to start earning with your GPU.</>
-:<>Ready to earn! Run this one-liner on your GPU machine:</>}
+<>Ready to earn! Run this one-liner on your GPU machine:</>
 </div>
-{(user?.tier==="pro"||user?.tier==="vip"||user?.whitelisted)&&<>
+{<>
 <div style={{background:T.bg,border:"1px solid "+T.gn+"33",borderRadius:8,padding:mb?10:14,fontFamily:"'IBM Plex Mono',monospace",fontSize:mb?10:12,color:T.gn,wordBreak:"break-all",lineHeight:1.6,cursor:"pointer",position:"relative"}} onClick={()=>{navigator.clipboard?.writeText("curl -s https://bondli.fun/gpu-agent.sh | bash -s -- --wallet "+user.pubkey);toast("Copied!","success")}}>
 <span style={{color:T.ft}}>$</span> curl -s https://bondli.fun/gpu-agent.sh | bash -s -- --wallet {user.pubkey}
 <div style={{position:"absolute",top:4,right:6,fontSize:8,color:T.ft,fontWeight:700}}>CLICK TO COPY</div>
@@ -1716,7 +1713,7 @@ return<div style={{display:"flex",alignItems:"center",gap:mb?4:8,padding:"4px 8p
 </>}
 
 {/* Live ML Behavior — Pro/VIP only — collapsible */}
-{(user?.tier==="pro"||user?.tier==="vip"||user?.whitelisted)&&intelData?.scorer?.topFeatures?.length>0&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,marginTop:6}}>
+{(user?.tier==="vip"||user?.whitelisted)&&intelData?.scorer?.topFeatures?.length>0&&<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,marginTop:6}}>
 <div onClick={()=>sShowModel(!showModel)} style={{display:"flex",alignItems:"center",gap:6,padding:mb?"8px":"12px",cursor:"pointer"}}><IC.sim s={14} c={T.pu}/><span style={{fontSize:11,fontWeight:800}}>Model Behavior</span><span style={{fontSize:7,color:T.dm}}>live feature weights</span><span style={{marginLeft:"auto",fontSize:10,color:T.ft}}>{showModel?"▾":"▸"}</span></div>
 {showModel&&<div style={{padding:mb?"0 8px 8px":"0 12px 12px"}}>
 {/* Feature weight bars */}
@@ -1936,7 +1933,6 @@ return<div style={{background:T.bg,borderRadius:6,border:"1px solid "+(simActive
 </div>
 {/* Graduate button */}
 {grad.ready&&(user?.tier==="pro"||user?.whitelisted)&&<button onClick={async()=>{try{const r=await a.simg(user.pubkey);sLiveSim(null);sAutoTrade(p=>({...p,open:true,settings:r.graduatedSettings}));toast(`Graduated! ${r.simStats.trades} trades, ${r.simStats.winRate}% win rate. Settings applied to Auto-Ape.`,"success")}catch(e){toast(e.message,"error")}}} style={{width:"100%",padding:mb?"10px 0":"7px 0",borderRadius:6,border:"none",background:T.gn,color:"#000",fontWeight:800,fontSize:mb?13:11,cursor:"pointer",marginBottom:4}}>GRADUATE TO LIVE AUTO-APE</button>}
-{grad.ready&&user?.tier==="free"&&<div style={{padding:"4px 6px",background:T.yl+"0a",borderRadius:4,border:"1px solid "+T.yl+"18",fontSize:mb?8:7,color:T.yl,marginBottom:4,textAlign:"center"}}>Auto-ape requires Pro tier. Sim is free for everyone.</div>}
 </div>
 {/* ── LIVE DECISIONS FEED ── */}
 <div style={{borderTop:"1px solid "+T.bd}}>
@@ -2330,7 +2326,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 {vipDash?.referredUsers?.length>0&&<div style={{maxHeight:150,overflowY:"auto",borderTop:"1px solid "+T.bd+"44",paddingTop:4,marginBottom:4}}>
 {vipDash.referredUsers.map((u,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0",fontSize:10}}>
 <span style={{color:T.dm,fontFamily:"monospace"}}>{u.wallet}</span>
-<span style={{padding:"0 4px",borderRadius:3,fontSize:8,fontWeight:700,background:u.tier==="vip"?T.yl+"18":u.tier==="pro"?T.pu+"18":T.gn+"18",color:u.tier==="vip"?T.yl:u.tier==="pro"?T.pu:T.gn}}>{(u.tier||"free").toUpperCase()}</span>
+<span style={{padding:"0 4px",borderRadius:3,fontSize:8,fontWeight:700,background:u.tier==="vip"?T.yl+"18":T.gn+"18",color:u.tier==="vip"?T.yl:T.gn}}>{(u.tier==="vip"?"VIP":"FREE").toUpperCase()}</span>
 <span style={{flex:1}}/>
 <span style={{color:T.gn,fontWeight:700}}>{fs(u.volume||0,2)}</span>
 <span style={{color:(u.profit||0)>=0?T.gn:"#ff4444",fontWeight:600}}>{(u.profit||0)>=0?"+":""}{fs(u.profit||0,3)}</span>

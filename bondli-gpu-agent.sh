@@ -216,10 +216,6 @@ fi
 # Extract registration data
 NODE_ADDRESS=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['nodeAddress'])" 2>/dev/null)
 KEYPAIR_JSON=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['keypairJson'])" 2>/dev/null)
-PLATFORM_FEE=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['platformFee'])" 2>/dev/null)
-NOSANA_MARKET=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosanaMarketName','unknown'))" 2>/dev/null)
-NOS_PER_SEC=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosPerSec',0))" 2>/dev/null)
-
 if [ -z "$NODE_ADDRESS" ] || [ -z "$KEYPAIR_JSON" ]; then
   echo "Error: Registration response missing required fields."
   echo "  Response: $REGISTER"
@@ -227,8 +223,6 @@ if [ -z "$NODE_ADDRESS" ] || [ -z "$KEYPAIR_JSON" ]; then
 fi
 
 echo "[OK] Registered: $NODE_ADDRESS"
-echo "     Platform fee: ${PLATFORM_FEE}"
-echo "     Nosana market: ${NOSANA_MARKET} (~${NOS_PER_SEC} NOS/sec)"
 
 # ── Write keypair to Nosana location ──
 mkdir -p ~/.nosana
@@ -236,10 +230,20 @@ echo "$KEYPAIR_JSON" > ~/.nosana/nosana_key.json
 chmod 600 ~/.nosana/nosana_key.json
 echo "[OK] Node keypair written to ~/.nosana/nosana_key.json"
 
-# ── Fund node wallet with SOL for tx fees ──
+# ── Fund node wallet with SOL for Nosana tx fees ──
 echo ""
-echo "IMPORTANT: Send ~0.05 SOL to your node wallet for transaction fees:"
+echo "======================================="
+echo "  Send ~0.05 SOL to your node wallet"
+echo "======================================="
+echo "  Nosana requires SOL for on-chain"
+echo "  transaction fees (claiming jobs,"
+echo "  submitting results)."
+echo ""
+echo "  Node wallet:"
 echo "  $NODE_ADDRESS"
+echo ""
+echo "  Without SOL your node cannot accept jobs."
+echo "======================================="
 echo ""
 read -p "Press Enter once funded (or Ctrl+C to fund later)..."
 
@@ -280,12 +284,10 @@ echo "======================================="
 echo ""
 echo "  Node:     $NODE_ADDRESS"
 echo "  GPU:      $GPU_NAME"
-echo "  Market:   $NOSANA_MARKET (~${NOS_PER_SEC} NOS/sec)"
 echo "  Wallet:   $WALLET"
-echo "  Fee:      ${PLATFORM_FEE} (to Bondli)"
 echo ""
 echo "  Your GPU is now accepting AI inference jobs."
-echo "  Earnings split hourly to your Bondli wallet."
+echo "  Earnings are split hourly to your Bondli wallet."
 echo "  Dashboard: https://bondli.fun/gpu"
 echo ""
 echo "  Stop:   docker stop nosana-node"
