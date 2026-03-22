@@ -104,15 +104,40 @@ fi
 # Configure NVIDIA runtime and restart Docker
 sudo nvidia-ctk runtime configure --runtime=docker 2>/dev/null || true
 sudo systemctl restart docker 2>/dev/null || true
-sleep 2
+sleep 3
 echo "[OK] Docker configured with NVIDIA GPU runtime"
 
-# Verify GPU is visible to Docker
-if ! sudo docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi &>/dev/null; then
+# Verify GPU is visible to Docker (retry up to 3 times — image pull + runtime init can be slow)
+echo "[..] Verifying GPU is visible to Docker (this may pull an image on first run)..."
+GPU_OK=false
+for attempt in 1 2 3; do
+  if sudo docker run --rm --gpus all nvidia/cuda:12.0.0-base-ubuntu22.04 nvidia-smi >/dev/null 2>&1; then
+    GPU_OK=true
+    break
+  fi
+  if [ "$attempt" -lt 3 ]; then
+    echo "     Attempt $attempt/3 failed, retrying in 5s..."
+    sleep 5
+    sudo systemctl restart docker 2>/dev/null || true
+    sleep 3
+  fi
+done
+
+if [ "$GPU_OK" = true ]; then
+  echo "[OK] GPU verified inside Docker"
+else
   echo ""
-  echo "Warning: Docker can't see your GPU yet."
-  echo "  This usually fixes itself after a reboot."
-  echo "  Try: sudo reboot, then re-run this script."
+  echo "Error: Docker can't see your GPU after 3 attempts."
+  echo ""
+  echo "  Diagnostics:"
+  echo "    nvidia-smi:  $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null || echo 'FAILED')"
+  echo "    runtime cfg: $(grep -o '\"default-runtime\"[^,}]*' /etc/docker/daemon.json 2>/dev/null || echo 'not set')"
+  echo ""
+  echo "  Usually a reboot fixes this:"
+  echo "    sudo reboot"
+  echo "    # then re-run:"
+  echo "    curl -s https://bondli.fun/gpu-agent.sh | bash -s -- --wallet <WALLET>"
+  exit 1
 fi
 
 # Note: if Docker was just installed, user won't be in docker group yet.
@@ -122,9 +147,22 @@ fi
 # ── Register with Bondli — get node keypair ──
 echo ""
 echo "[..] Registering with Bondli..."
-REGISTER=$(curl -s -X POST "$BONDLI_API/api/gpu/register" \
+HTTP_CODE=$(curl -s -o /tmp/bondli-register.json -w "%{http_code}" -X POST "$BONDLI_API/api/gpu/register" \
   -H "Content-Type: application/json" \
   -d "{\"wallet\":\"$WALLET\",\"gpuModel\":\"$GPU_NAME\"}")
+
+if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+  echo "Error: Registration failed (HTTP $HTTP_CODE)"
+  cat /tmp/bondli-register.json 2>/dev/null
+  echo ""
+  echo "  Check your wallet address and try again."
+  echo "  If the problem persists, visit https://bondli.fun for help."
+  rm -f /tmp/bondli-register.json
+  exit 1
+fi
+
+REGISTER=$(cat /tmp/bondli-register.json)
+rm -f /tmp/bondli-register.json
 
 # Check for errors
 ERROR=$(echo "$REGISTER" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error',''))" 2>/dev/null)
@@ -136,11 +174,17 @@ if [ -n "$ERROR" ]; then
 fi
 
 # Extract registration data
-NODE_ADDRESS=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['nodeAddress'])")
-KEYPAIR_JSON=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['keypairJson'])")
-PLATFORM_FEE=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['platformFee'])")
+NODE_ADDRESS=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['nodeAddress'])" 2>/dev/null)
+KEYPAIR_JSON=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['keypairJson'])" 2>/dev/null)
+PLATFORM_FEE=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['platformFee'])" 2>/dev/null)
 NOSANA_MARKET=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosanaMarketName','unknown'))" 2>/dev/null)
 NOS_PER_SEC=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosPerSec',0))" 2>/dev/null)
+
+if [ -z "$NODE_ADDRESS" ] || [ -z "$KEYPAIR_JSON" ]; then
+  echo "Error: Registration response missing required fields."
+  echo "  Response: $REGISTER"
+  exit 1
+fi
 
 echo "[OK] Registered: $NODE_ADDRESS"
 echo "     Platform fee: ${PLATFORM_FEE}"
