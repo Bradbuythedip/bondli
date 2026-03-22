@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/(radar|wallet|deploy|intel|gpu)", "destination": "/index.html" }
+  ]
+}
