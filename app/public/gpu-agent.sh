@@ -230,6 +230,23 @@ echo "$KEYPAIR_JSON" > ~/.nosana/nosana_key.json
 chmod 600 ~/.nosana/nosana_key.json
 echo "[OK] Node keypair written to ~/.nosana/nosana_key.json"
 
+# ── Fund node wallet with SOL for Nosana tx fees ──
+echo ""
+echo "======================================="
+echo "  Send ~0.05 SOL to your node wallet"
+echo "======================================="
+echo "  Nosana requires SOL for on-chain"
+echo "  transaction fees (claiming jobs,"
+echo "  submitting results)."
+echo ""
+echo "  Node wallet:"
+echo "  $NODE_ADDRESS"
+echo ""
+echo "  Without SOL your node cannot accept jobs."
+echo "======================================="
+echo ""
+read -p "Press Enter once funded (or Ctrl+C to fund later)..."
+
 # ── Start Nosana node ──
 echo "[..] Starting Nosana node..."
 bash <(curl -s https://nosana.com/start.sh)
