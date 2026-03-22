@@ -1,7 +1,7 @@
 {
   "name": "Bondli",
   "short_name": "Bondli",
-  "description": "Launchpad + trading engine for Pump.fun. Deploy tokens, run multi-wallet fleet trading, and trade bonding curves.",
+  "description": "AI-powered Solana trading terminal. ML-scored token radar, auto-ape engine, rug detection, smart money tracking, and GPU earnings.",
   "start_url": "/",
   "id": "/",
   "display": "standalone",
