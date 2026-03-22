@@ -46,6 +46,8 @@ scan:({s:z=20,c="#00bcd4"})=><svg width={z} height={z} viewBox="0 0 24 24" fill=
 bolt:({s:z=20,c="#ffd600"})=><svg width={z} height={z} viewBox="0 0 24 24" fill={c} stroke="none"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>,
 fleet:({s:z=20,c="#ff1744"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><circle cx="8" cy="8" r="3"/><circle cx="16" cy="8" r="3"/><circle cx="12" cy="16" r="3"/><path d="M10.5 9.5l1 4.5M13.5 9.5l-1 4.5M5.5 9.5l4.5 5M18.5 9.5l-4.5 5"/></svg>,
 eye:({s:z=20,c="#ff9800"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><path d="M12 5v-.5M12 19v.5" strokeDasharray="2 2"/></svg>,
+gpu:({s:z=20,c="#00e676"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="4" width="16" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/><path d="M7 8h2v4H7zM11 8h2v4h-2zM15 8h2v4h-2"/></svg>,
+nos:({s:z=14,c="#00e676"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-6"/></svg>,
 };
 const Sp=({s:z=12,c})=><svg width={z} height={z} viewBox="0 0 24 24" style={{animation:"sp .7s linear infinite"}}><circle cx="12" cy="12" r="10" fill="none" stroke={c||"#00e676"} strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round"/></svg>;
 const Av=({pk,s:z=18})=>{const h=hW(pk||"x"),hu=h%360;return<svg width={z} height={z}><rect width={z} height={z} rx={z*.25} fill={`hsl(${hu},55%,42%)`}/></svg>};
@@ -669,7 +671,7 @@ const[launched,sLd]=useState(false);const[lCA,sLCA]=useState("");const[asid,sAsi
 const[pSess,sPS]=useState([]);const[fleet,sFl]=useState(null);
 const[trW,sTrW]=useState(null);const[trB,sTrB]=useState(0);const[trSol,sTrSol]=useState(0);const[trTok,sTrTok]=useState(0);const[trK,sTrK]=useState(null);
 const[held,sHeld]=useState(new Set());const[positions,sPos]=useState([]);
-const[tab,sTab]=useState("radar");const[cUser,sCU]=useState(null);
+const[tab,sTab]=useState("gpu");const[cUser,sCU]=useState(null);
 const[toasts,sToasts]=useState([]);
 const[rt,sRT]=useState({new:[],hot:[],bags:[],momentum:[]});
 const[rTab,sRTab]=useState("momentum");const[rLoad,sRL]=useState(true);const[rPool,sRP]=useState(0);const[gradMc,sGradMc]=useState(69000);
@@ -680,6 +682,8 @@ const[vipDash,sVipDash]=useState(null);const[vipCustomCode,sVipCustomCode]=useSt
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);const[showModel,sShowModel]=useState(false);const[launchTarget,sLTarget]=useState("pump"); // "pump" | "bags"
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
 const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);
+// GPU Earn tab state
+const[gpuDash,sGpuDash]=useState(null);const[gpuFleet,sGpuFleet]=useState(null);const[gpuLoading,sGpuLoading]=useState(false);const[gpuRegWallet,sGpuRegWallet]=useState("");
 // Intel trade settings — slippage, tip, buy amount, auto mode
 const[iTrade,sITrade]=useState({ca:null,slip:25,tip:0.005,amt:0.1,auto:false});
 // Auto-trade settings calculator (shared between intel trade panel and auto-ape section)
@@ -715,6 +719,8 @@ useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null){cons
 useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(d=>sFl(d)).catch(()=>{})},5000);return()=>clearInterval(iv)},[launched,lCA]);
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>{if(!r.ok)throw new Error(r.status);return r.json()}).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
+// GPU Earn tab polling
+useEffect(()=>{if(tab!=="gpu")return;const poll=()=>{if(user?.pubkey&&!user.demo){fetch(API+"/api/gpu/dashboard?wallet="+user.pubkey).then(r=>r.json()).then(d=>sGpuDash(d)).catch(()=>{})}fetch(API+"/api/gpu/fleet").then(r=>r.json()).then(d=>sGpuFleet(d)).catch(()=>{})};poll();const iv=setInterval(poll,15000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
 // Engine state polling (for visualization)
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{a.ges().then(d=>sEngineState(d)).catch(()=>{})};poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?3000:10000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
@@ -748,7 +754,7 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:mb?"48px 16px 28px":"80px 20px 40px",textAlign:"center"}}>
 <div style={{animation:"pf 3s ease infinite",marginBottom:12}}><Logo s={mb?48:64}/></div>
 <div style={{fontWeight:900,fontSize:mb?44:72,letterSpacing:"-.04em",lineHeight:1,marginBottom:8}}>BOND<span style={{color:T.rd}}>LI</span></div>
-<div style={{fontSize:mb?13:16,color:T.dm,marginBottom:24,maxWidth:380,lineHeight:1.5}}>AI-powered Solana memecoin intelligence.<br/>Scores. Learns. Exits before the rug.</div>
+<div style={{fontSize:mb?13:16,color:T.dm,marginBottom:24,maxWidth:440,lineHeight:1.5}}>Earn <span style={{color:T.gn,fontWeight:700}}>$NOS</span> with your GPU. Trade memecoins with AI intelligence.<br/>One platform. Two income streams.</div>
 <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",justifyContent:"center"}}>
 <B onClick={connect} style={{padding:"14px 36px",fontSize:18,borderRadius:10,background:"linear-gradient(135deg,#534bb1,#551bf9)",animation:"gl 3s infinite",letterSpacing:".02em"}}><IC.ph/> Connect Wallet</B>
 <button onClick={()=>sU({pubkey:"demo",tier:"demo",demo:true})} style={{padding:"14px 28px",background:T.gn+"12",border:"2px solid "+T.gn+"44",borderRadius:10,fontSize:18,fontWeight:800,color:T.gn,cursor:"pointer",letterSpacing:".02em",transition:"all .15s"}}>Try Demo</button>
@@ -759,7 +765,7 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 {/* ═══ STATS BAR ═══ */}
 <div style={{display:"flex",flexWrap:"wrap",justifyContent:"center",gap:mb?4:8,padding:mb?"0 12px 20px":"0 20px 28px"}}>
 {[
-{n:"40+",l:"ML features"},{n:"12+",l:"rug signals"},{n:"24/7",l:"auto-trading"},{n:"3",l:"exit layers"},{n:"0%",l:"fees (Pro+)"},
+{n:"GPU",l:"earn $NOS"},{n:"40+",l:"ML features"},{n:"12+",l:"rug signals"},{n:"24/7",l:"auto-trading"},{n:"5%",l:"VIP GPU fee"},
 ].map((s,i)=><div key={i} style={{textAlign:"center",padding:mb?"6px 10px":"8px 16px",background:T.sf,border:"1px solid "+T.bd,borderRadius:8,minWidth:mb?60:80}}>
 <div style={{fontSize:mb?16:20,fontWeight:900,color:T.gn,lineHeight:1}}>{s.n}</div>
 <div style={{fontSize:mb?8:9,color:T.ft,marginTop:2,textTransform:"uppercase",letterSpacing:".06em"}}>{s.l}</div>
@@ -770,12 +776,12 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 <div style={{maxWidth:940,margin:"0 auto",padding:mb?"0 12px 28px":"0 20px 44px"}}>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"1fr 1fr 1fr",gap:mb?6:12}}>
 {[
-{ic:<IC.bulb s={mb?20:24} c={T.pu}/>,title:"40+ Feature ML",desc:"Scores every token. Learns from every outcome. Weights update live.",color:T.pu},
-{ic:<IC.chart s={mb?20:24} c={T.gn}/>,title:"Score Derivatives",desc:"Velocity + acceleration detect problems 2 cycles before price drops.",color:T.gn},
-{ic:<IC.eye s={mb?20:24} c="#ff9800"/>,title:"12+ Rug Signals",desc:"Dev dumps, sybil wallets, wash trading, liquidity drains. 3+ = reject.",color:"#ff9800"},
+{ic:<IC.gpu s={mb?20:24} c={T.gn}/>,title:"GPU Earnings",desc:"Plug in your NVIDIA GPU. Run a Nosana node. Earn $NOS tokens 24/7.",color:T.gn},
+{ic:<IC.bulb s={mb?20:24} c={T.pu}/>,title:"AI Intelligence",desc:"40+ feature ML scoring. Learns from every outcome. Weights update live.",color:T.pu},
+{ic:<IC.eye s={mb?20:24} c="#ff9800"/>,title:"Rug Detection",desc:"12+ signals: dev dumps, sybil wallets, wash trading, liquidity drains.",color:"#ff9800"},
 {ic:<IC.bolt s={mb?20:24} c={T.yl}/>,title:"Auto-Ape",desc:"Set rules. Walk away. Finds, buys, manages positions, takes profit.",color:T.yl},
+{ic:<IC.chart s={mb?20:24} c={T.cy||"#00bcd4"}/>,title:"Smart Money",desc:"Track profitable wallets. See what they buy before the chart moves.",color:T.cy||"#00bcd4"},
 {ic:<IC.fleet s={mb?20:24} c={T.rd}/>,title:"Fleet Trading",desc:"Multi-wallet coordinated launches. Nash equilibrium. Kelly sizing.",color:T.rd},
-{ic:<IC.scan s={mb?20:24} c={T.cy||"#00bcd4"}/>,title:"Smart Money",desc:"Track profitable wallets. See what they buy before the chart moves.",color:T.cy||"#00bcd4"},
 ].map((f,i)=><div key={i} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?"12px 10px":"16px 14px"}}>
 <div style={{marginBottom:6}}>{f.ic}</div>
 <div style={{fontSize:mb?12:13,fontWeight:800,color:f.color,marginBottom:4}}>{f.title}</div>
@@ -791,9 +797,9 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr 1fr":"1fr 1fr 1fr 1fr",gap:mb?4:10}}>
 {[
 {step:"1",title:"Connect",desc:"Phantom wallet"},
-{step:"2",title:"Fund",desc:"Deposit SOL"},
-{step:"3",title:"Configure",desc:"Score, size, TP/SL"},
-{step:"4",title:"Earn",desc:"It trades. You verify."},
+{step:"2",title:"Plug In GPU",desc:"Run one script"},
+{step:"3",title:"Earn $NOS",desc:"GPU processes AI jobs"},
+{step:"4",title:"Trade",desc:"AI scores & trades for you"},
 ].map((s,i)=><div key={i} style={{padding:mb?"8px 6px":"12px 10px",textAlign:"center"}}>
 <div style={{width:mb?24:32,height:mb?24:32,borderRadius:"50%",background:"linear-gradient(135deg,#534bb1,#551bf9)",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:mb?12:16,fontWeight:900,color:"#fff",marginBottom:6}}>{s.step}</div>
 <div style={{fontSize:mb?11:13,fontWeight:800,color:T.tx,marginBottom:2}}>{s.title}</div>
@@ -806,9 +812,9 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 <div style={{marginTop:mb?28:40}}>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?8:12}}>
 {[
-{tier:"Free",price:"0 SOL",color:T.ft,features:["ML scoring + radar","Auto-Ape","2 positions","25% profit share"]},
-{tier:"Pro",price:"1 SOL",color:T.pu,features:["0% profit share","Fleet multi-wallet","Smart money signals","Export keys"]},
-{tier:"VIP",price:"10 SOL",color:T.yl,features:["Everything in Pro","API access","Priority queue","Direct to dev"]},
+{tier:"Free",price:"0 SOL",color:T.ft,features:["ML scoring + radar","Auto-Ape","2 positions","No GPU earning"]},
+{tier:"Pro",price:"1 SOL",color:T.pu,features:["GPU earning (10% fee)","Fleet multi-wallet","Smart money signals","0% trading fee"]},
+{tier:"VIP",price:"10 SOL",color:T.yl,features:["GPU earning (5% fee)","Everything in Pro","Priority queue","Direct to dev"]},
 ].map((t,i)=><div key={i} onClick={connect} style={{background:T.sf,border:"1px solid "+(t.color)+"33",borderRadius:10,padding:mb?"14px 12px":"18px 16px",position:"relative",cursor:"pointer",transition:"all .15s ease"}} onMouseEnter={e=>{e.currentTarget.style.borderColor=t.color+"88";e.currentTarget.style.transform="translateY(-2px)"}} onMouseLeave={e=>{e.currentTarget.style.borderColor=t.color+"33";e.currentTarget.style.transform="none"}}>
 {i===1&&<div style={{position:"absolute",top:-8,right:12,fontSize:8,fontWeight:900,padding:"2px 7px",borderRadius:4,background:T.pu,color:"#fff",letterSpacing:".05em"}}>POPULAR</div>}
 <div style={{display:"flex",alignItems:"baseline",gap:6,marginBottom:6}}><span style={{fontSize:mb?18:22,fontWeight:900,color:t.color}}>{t.tier}</span><span style={{fontSize:mb?12:14,color:T.tx,fontWeight:800}}>{t.price}</span></div>
@@ -948,8 +954,125 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 </div>
 </div></EB>
 :<>
-{!mb&&<div style={{display:"flex",margin:0,overflow:"hidden",background:T.bg,borderBottom:"1px solid "+T.bd,position:"sticky",top:0,zIndex:19,backdropFilter:"blur(10px)"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);window.scrollTo({top:0,behavior:"smooth"})}} style={{flex:1,padding:"12px 0",background:ac?T.gn+"08":"transparent",borderBottom:ac?"2px solid "+T.gn:"2px solid transparent",border:"none",fontSize:16,fontWeight:ac?800:500,color:ac?T.gn:T.dm,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}><t.ic s={16} c={ac?T.gn:T.dm}/>{t.l}</button>})}</div>}
+{!mb&&<div style={{display:"flex",margin:0,overflow:"hidden",background:T.bg,borderBottom:"1px solid "+T.bd,position:"sticky",top:0,zIndex:19,backdropFilter:"blur(10px)"}}>{[{id:"gpu",l:"GPU Earn",ic:IC.gpu},{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);window.scrollTo({top:0,behavior:"smooth"})}} style={{flex:1,padding:"12px 0",background:ac?T.gn+"08":"transparent",borderBottom:ac?"2px solid "+T.gn:"2px solid transparent",border:"none",fontSize:16,fontWeight:ac?800:500,color:ac?T.gn:T.dm,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}><t.ic s={16} c={ac?T.gn:T.dm}/>{t.l}</button>})}</div>}
 <div id="tc" style={{padding:mb?"0 6px 6px":"0 16px 16px",marginTop:mb?4:8,scrollMarginTop:50}}>
+
+{/* ═══ GPU EARN TAB ═══ */}
+{tab==="gpu"&&<EB l="GPU Earn"><div style={{animation:"si .2s ease"}}>
+{/* GPU Hero */}
+<div style={{background:"linear-gradient(135deg,"+T.sf+","+T.bg+")",border:"1px solid "+T.gn+"22",borderRadius:12,padding:mb?14:20,marginBottom:8,textAlign:"center"}}>
+<IC.gpu s={mb?36:48} c={T.gn}/>
+<div style={{fontSize:mb?20:28,fontWeight:900,marginTop:8}}>Earn <span style={{color:T.gn}}>$NOS</span> With Your GPU</div>
+<div style={{fontSize:mb?12:14,color:T.dm,marginTop:6,maxWidth:500,margin:"6px auto 0",lineHeight:1.5}}>Plug in your NVIDIA GPU. Run a Nosana node. Earn NOS tokens by processing AI inference jobs from the decentralized compute marketplace.</div>
+<div style={{display:"flex",gap:6,justifyContent:"center",marginTop:12,flexWrap:"wrap"}}>
+<div style={{padding:"6px 14px",background:T.gn+"12",border:"1px solid "+T.gn+"33",borderRadius:8,fontSize:12,fontWeight:700,color:T.gn}}>1 User = 1 GPU = 1 Node</div>
+<div style={{padding:"6px 14px",background:T.pu+"12",border:"1px solid "+T.pu+"33",borderRadius:8,fontSize:12,fontWeight:700,color:T.pu}}>Pro: 10% fee | VIP: 5% fee</div>
+</div>
+</div>
+
+{/* User's Node Dashboard */}
+{gpuDash?.registered?<div style={{background:T.sf,border:"1px solid "+T.gn+"22",borderRadius:10,padding:mb?10:14,marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.gpu s={16} c={T.gn}/><span style={{fontSize:15,fontWeight:800}}>Your Node</span><span style={{width:6,height:6,borderRadius:"50%",background:gpuDash.node?.status==="offline"?T.rd:T.gn,animation:gpuDash.node?.status!=="offline"?"gp 2s infinite":"none"}}/><span style={{fontSize:11,color:gpuDash.node?.status==="offline"?T.rd:T.gn,fontWeight:700,textTransform:"uppercase"}}>{gpuDash.node?.status||"offline"}</span></div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:mb?4:6,marginBottom:10}}>
+{[
+{l:"EARNED",v:(gpuDash.earnings?.totalNOS||0).toFixed(2)+" NOS",c:T.gn},
+{l:"PENDING",v:(gpuDash.earnings?.pendingNOS||0).toFixed(4)+" NOS",c:T.yl},
+{l:"JOBS",v:gpuDash.earnings?.totalJobsCompleted||0,c:T.pu},
+{l:"FEE",v:((gpuDash.node?.platformFee||0.1)*100)+"%",c:T.dm},
+].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:mb?14:18,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginTop:2}}>{s.l}</div></div>)}
+</div>
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 10px"}}><div style={{fontSize:9,color:T.ft,fontWeight:700}}>GPU</div><div style={{fontSize:13,fontWeight:800,color:T.tx,marginTop:2}}>{gpuDash.node?.gpuModel||"—"}</div></div>
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 10px"}}><div style={{fontSize:9,color:T.ft,fontWeight:700}}>MARKET</div><div style={{fontSize:13,fontWeight:800,color:T.tx,marginTop:2}}>{gpuDash.node?.nosanaMarket||"—"}</div></div>
+</div>
+{gpuDash.node?.gpuUtil&&gpuDash.node.status!=="offline"&&<div style={{marginTop:8}}>
+<div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:T.dm,marginBottom:3}}><span>GPU Utilization</span><span style={{fontWeight:700,color:parseInt(gpuDash.node.gpuUtil)>50?T.gn:T.dm}}>{gpuDash.node.gpuUtil}%</span></div>
+<div style={{height:4,borderRadius:2,background:T.bd,overflow:"hidden"}}><div style={{width:gpuDash.node.gpuUtil+"%",height:"100%",borderRadius:2,background:parseInt(gpuDash.node.gpuUtil)>80?T.gn:parseInt(gpuDash.node.gpuUtil)>50?T.yl:T.dm,transition:"width .5s"}}/></div>
+<div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:T.ft,marginTop:4}}><span>Temp: {gpuDash.node.gpuTemp||"—"}C</span><span>Node: {(gpuDash.node?.address||"").slice(0,8)}...</span></div>
+</div>}
+{/* Recent jobs */}
+{gpuDash.recentJobs?.length>0&&<div style={{marginTop:10}}><div style={{fontSize:11,fontWeight:700,color:T.dm,marginBottom:4}}>Recent Earnings</div>
+{gpuDash.recentJobs.slice(0,5).map((j,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 6px",fontSize:10,color:T.dm,borderBottom:"1px solid "+T.bd}}>
+<span>{j.type==="job_completed"?"Job":"Sweep"}</span>
+<span style={{color:T.gn,fontWeight:700}}>+{(j.userNOS||j.nosEarned||0).toFixed(4)} NOS</span>
+<span>{new Date(j.timestamp).toLocaleTimeString()}</span>
+</div>)}
+</div>}
+</div>
+
+/* Not registered — setup prompt */
+:<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?12:18,marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.gpu s={16} c={T.gn}/><span style={{fontSize:15,fontWeight:800}}>Setup Your GPU Node</span></div>
+<div style={{fontSize:12,color:T.dm,lineHeight:1.6,marginBottom:12}}>
+{user?.tier==="free"?<><span style={{color:T.yl,fontWeight:700}}>Pro or VIP required.</span> Upgrade to start earning with your GPU.</>
+:<>Ready to earn! Run this one-liner on your GPU machine:</>}
+</div>
+{(user?.tier==="pro"||user?.tier==="vip"||user?.whitelisted)&&<>
+<div style={{background:T.bg,border:"1px solid "+T.gn+"33",borderRadius:8,padding:mb?10:14,fontFamily:"'IBM Plex Mono',monospace",fontSize:mb?10:12,color:T.gn,wordBreak:"break-all",lineHeight:1.6,cursor:"pointer",position:"relative"}} onClick={()=>{navigator.clipboard?.writeText("curl -s https://bondli.fun/gpu-agent.sh | bash -s -- --wallet "+user.pubkey);toast("Copied!","success")}}>
+<span style={{color:T.ft}}>$</span> curl -s https://bondli.fun/gpu-agent.sh | bash -s -- --wallet {user.pubkey}
+<div style={{position:"absolute",top:4,right:6,fontSize:8,color:T.ft,fontWeight:700}}>CLICK TO COPY</div>
+</div>
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginTop:12}}>
+{[{step:"1",title:"Run Script",desc:"Installs Docker + NVIDIA toolkit"},{step:"2",title:"Fund Node",desc:"Send ~0.05 SOL for tx fees"},{step:"3",title:"Start Earning",desc:"GPU accepts AI jobs automatically"}].map(s=><div key={s.step} style={{textAlign:"center",padding:"8px 4px"}}>
+<div style={{width:24,height:24,borderRadius:"50%",background:"linear-gradient(135deg,#534bb1,#551bf9)",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:900,color:"#fff",marginBottom:4}}>{s.step}</div>
+<div style={{fontSize:11,fontWeight:800,color:T.tx,marginBottom:2}}>{s.title}</div>
+<div style={{fontSize:9,color:T.dm}}>{s.desc}</div>
+</div>)}
+</div>
+</>}
+<div style={{marginTop:12,fontSize:10,color:T.ft}}>Requirements: NVIDIA GPU (RTX 3060+), Linux/WSL, Docker, Internet</div>
+</div>}
+
+{/* Fleet Stats */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:14}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}><IC.fleet s={16} c={T.pu}/><span style={{fontSize:15,fontWeight:800}}>Bondli GPU Fleet</span></div>
+<button onClick={()=>{fetch(API+"/api/gpu/fleet").then(r=>r.json()).then(d=>sGpuFleet(d)).catch(()=>{})}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:5,padding:"4px 9px",cursor:"pointer",fontSize:14,color:T.dm}}>↻</button>
+</div>
+<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:10}}>
+{[
+{l:"TOTAL NODES",v:gpuFleet?.totalNodes||0,c:T.pu},
+{l:"ONLINE",v:gpuFleet?.onlineNodes||0,c:T.gn},
+{l:"FEES EARNED",v:(gpuFleet?.totalPlatformFees||0).toFixed(2)+" NOS",c:T.yl},
+].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:mb?16:22,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginTop:2}}>{s.l}</div></div>)}
+</div>
+{gpuFleet?.nodes?.length>0&&<div>
+<div style={{fontSize:11,fontWeight:700,color:T.dm,marginBottom:4}}>Active Nodes</div>
+{gpuFleet.nodes.slice(0,20).map((n,i)=><div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"5px 6px",fontSize:11,borderBottom:"1px solid "+T.bd}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}>
+<span style={{width:6,height:6,borderRadius:"50%",background:n.status==="offline"?T.rd:T.gn}}/>
+<span style={{color:T.dm,fontFamily:"'IBM Plex Mono',monospace",fontSize:10}}>{n.nodeId}</span>
+<span style={{fontSize:9,color:T.ft}}>{n.gpuModel}</span>
+</div>
+<div style={{display:"flex",alignItems:"center",gap:8}}>
+<span style={{fontSize:9,color:n.tier==="VIP"?T.yl:T.pu,fontWeight:700}}>{n.tier}</span>
+<span style={{fontSize:10,color:T.gn,fontWeight:700}}>{n.totalEarningsNOS.toFixed(2)} NOS</span>
+<span style={{fontSize:9,color:T.ft}}>{n.totalJobsCompleted} jobs</span>
+</div>
+</div>)}
+</div>}
+{(!gpuFleet?.nodes||gpuFleet.nodes.length===0)&&<div style={{padding:20,textAlign:"center",fontSize:12,color:T.ft}}>No nodes registered yet. Be the first to plug in your GPU!</div>}
+</div>
+
+{/* Supported GPUs */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:14,marginTop:8}}>
+<div style={{fontSize:13,fontWeight:800,marginBottom:8}}>Supported GPUs & Nosana Markets</div>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4}}>
+{[
+{gpu:"RTX 3060",rate:"~0.000043 NOS/s",vram:"12 GB"},
+{gpu:"RTX 4070",rate:"~0.000035 NOS/s",vram:"12 GB"},
+{gpu:"RTX 3090",rate:"~0.00009 NOS/s",vram:"24 GB"},
+{gpu:"RTX 4090",rate:"~0.000097 NOS/s",vram:"24 GB"},
+{gpu:"A100",rate:"~0.000115 NOS/s",vram:"80 GB"},
+].map(g=><div key={g.gpu} style={{display:"flex",justifyContent:"space-between",padding:"6px 8px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,fontSize:11}}>
+<span style={{fontWeight:700,color:T.tx}}>{g.gpu}</span>
+<span style={{color:T.gn,fontWeight:600}}>{g.rate}</span>
+<span style={{color:T.ft}}>{g.vram}</span>
+</div>)}
+</div>
+</div>
+
+</div></EB>}
 
 {tab==="radar"&&<EB l="Radar"><div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden",animation:"si .2s ease"}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"7px 10px",borderBottom:"1px solid "+T.bd}}><div style={{display:"flex",alignItems:"center",gap:5}}><IC.radar s={16} c={T.gn}/><span style={{fontSize:15,fontWeight:800}}>Radar</span><span style={{width:6,height:6,borderRadius:"50%",background:rEnabled?T.gn:T.rd}}/><span style={{fontSize:13,color:T.ft}}>{rPool}</span>{online>0&&<span style={{fontSize:11,color:T.gn+"66"}}>{online} online</span>}</div><div style={{display:"flex",gap:3}}><button onClick={()=>{sRL(true);a.gr().then(d=>{if(d.tabs){const tabs={...d.tabs};delete tabs.graduating;if(!tabs.bags)tabs.bags=[];sRT(tabs)}if(d.poolSize!=null)sRP(d.poolSize);sRL(false)}).catch(()=>sRL(false))}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:5,padding:"4px 9px",cursor:"pointer",fontSize:14,color:T.dm}}>↻</button><button onClick={()=>sRE(!rEnabled)} style={{background:rEnabled?T.gn+"08":T.rd+"08",border:"1px solid "+(rEnabled?T.gn:T.rd)+"18",borderRadius:5,padding:"4px 10px",cursor:"pointer",fontSize:12,fontWeight:700,color:rEnabled?T.gn:T.rd}}>{rEnabled?"ON":"OFF"}</button></div></div>
 <div style={{borderBottom:"1px solid "+T.bd}}><div style={{display:"flex",alignItems:"center",overflowX:"auto"}}>{[{id:"momentum",l:"Momentum",ic:IC.trend},{id:"hot",l:"Hot",ic:IC.fire},{id:"new",l:"New",ic:IC.star},{id:"bags",l:"Bags",ic:IC.bags}].map(t=>{const ac=rTab===t.id;const n=(rt[t.id]||[]).length;return<button key={t.id} onClick={()=>{sRTab(t.id);sRExp(null);sRS("")}} style={{padding:mb?"8px 6px":"8px 12px",background:"none",border:"none",borderBottom:ac?"1.5px solid "+T.gn:"1.5px solid transparent",fontSize:mb?13:15,fontWeight:700,color:ac?T.gn:T.dm,cursor:"pointer",display:"flex",alignItems:"center",gap:4,whiteSpace:"nowrap"}}><t.ic s={14} c={ac?T.gn:T.dm}/>{t.l}{n>0&&<span style={{fontSize:10,opacity:.5}}>{n}</span>}</button>})}{!mb&&<><div style={{flex:1}}/><input value={rSearch} onChange={e=>{sRS(e.target.value);sRExp(null)}} placeholder="Search / CA" style={{width:180,padding:"6px 9px",margin:"3px 5px",background:T.bg,border:"1px solid "+T.bd,borderRadius:5,color:T.tx,fontSize:14,outline:"none"}}/></>}</div>{mb&&<div style={{padding:"4px 8px"}}><input value={rSearch} onChange={e=>{sRS(e.target.value);sRExp(null)}} placeholder="Search token name or paste CA..." style={{width:"100%",padding:"8px 10px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,color:T.tx,fontSize:14,outline:"none",boxSizing:"border-box"}}/></div>}</div>
@@ -2202,7 +2325,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 </div></div>}
 
 {mb&&!launched&&<div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:15,background:T.bg+"f6",backdropFilter:"blur(10px)",borderTop:"1px solid "+T.bd,paddingBottom:"max(2px,env(safe-area-inset-bottom,2px))"}}>
-<div style={{display:"flex"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"8px 0 4px",background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"pointer"}}><t.ic s={20} c={ac?T.gn:T.ft}/><span style={{fontSize:11,fontWeight:ac?700:400,color:ac?T.gn:T.ft}}>{t.l}</span></button>})}</div>
+<div style={{display:"flex"}}>{[{id:"gpu",l:"GPU",ic:IC.gpu},{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"8px 0 4px",background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"pointer"}}><t.ic s={20} c={ac?T.gn:T.ft}/><span style={{fontSize:11,fontWeight:ac?700:400,color:ac?T.gn:T.ft}}>{t.l}</span></button>})}</div>
 <div style={{textAlign:"center",padding:"2px 0 4px",display:"flex",justifyContent:"center",gap:10}}><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:3,color:T.dm,textDecoration:"none",fontSize:10}}><IC.tw s={10} c={T.dm}/>@Bondlifun</a><a href="https://github.com/Bradbuythedip/BONDLIv4" target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:3,color:T.dm,textDecoration:"none",fontSize:10}}><IC.gh s={10} c={T.dm}/>GitHub</a></div>
 </div>}
 {!mb&&<footer style={{padding:"8px 16px",borderTop:"1px solid "+T.bd,marginTop:12,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:T.ft}}><span>BONDLI v4</span><div style={{display:"flex",gap:12,alignItems:"center"}}><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"flex",alignItems:"center",gap:4,color:T.dm,textDecoration:"none",fontSize:13,fontWeight:700}}><IC.tw s={16} c={T.dm}/>@Bondlifun</a><a href="https://github.com/Bradbuythedip/BONDLIv4" target="_blank" rel="noopener" style={{display:"flex",alignItems:"center",gap:4,color:T.dm,textDecoration:"none",fontSize:13,fontWeight:700}}><IC.gh s={16} c={T.dm}/>GitHub</a></div><span>{launched?"ACTIVE":"IDLE"}</span></footer>}

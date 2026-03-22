@@ -4,17 +4,99 @@
 
 # bondli
 
-**if you know, you know.**
+**earn with your GPU. trade with AI.**
 
 ---
 
-bondli is an intelligence layer for Solana meme tokens. it watches everything, scores everything, learns from everything, and never sleeps.
+bondli is two things:
 
-built because we were tired of losing money to rugs, snipers, and fake charts — so we taught a machine to see what humans can't.
+1. **GPU earnings** — plug in your NVIDIA GPU, run a Nosana node, earn $NOS tokens by processing AI inference jobs from a decentralized compute marketplace on Solana.
+
+2. **AI trading intelligence** — a scoring engine that watches every token on pump.fun, learns from every outcome, and trades before humans can react.
+
+one platform. two income streams. built on Solana.
 
 ---
 
-## the brain
+## GPU earnings
+
+bondli is an aggregation layer for the [Nosana](https://nosana.com) decentralized GPU compute network. each Pro/VIP user runs one Nosana node on their machine — 1 user, 1 GPU, 1 node, 1 keypair.
+
+the "Bondli GPU Fleet" is the collective of all user nodes. bondli makes setup easy, tracks earnings across users, and routes its own AI inference jobs to the fleet.
+
+```
+┌──────────────────────────────────────────────────────┐
+│                BONDLI GPU FLEET                       │
+│                                                       │
+│  User A (Pro)  → nodeKey_A → RTX 4070  → earns NOS  │
+│  User B (VIP)  → nodeKey_B → RTX 5070Ti→ earns NOS  │
+│  User C (Pro)  → nodeKey_C → RTX 3090  → earns NOS  │
+│  User D (VIP)  → nodeKey_D → RTX 5080  → earns NOS  │
+│                                                       │
+│  Each user = 1 node = 1 GPU = 1 keypair              │
+└──────────────────────────────────────────────────────┘
+```
+
+### how it works
+
+1. user runs `curl -s https://bondli.fun/gpu-agent.sh | bash -s -- --wallet <WALLET>`
+2. agent registers with bondli, gets a generated Solana keypair
+3. keypair is written to `~/.nosana/nosana_key.json`, Nosana node starts
+4. GPU accepts AI inference jobs from the Nosana marketplace
+5. $NOS earnings flow to the node wallet
+6. bondli sweeps hourly: 90% (Pro) or 95% (VIP) to user, remainder to treasury
+7. all transfers on-chain, verifiable on Solana explorer
+
+### supported GPUs & rates
+
+| GPU | Nosana Market | ~NOS/sec | VRAM |
+|-----|---------------|----------|------|
+| RTX 3060 | `7AtiXM...cGHq` | 0.000043 | 12 GB |
+| RTX 4070 | `EzuHhk...8Aso` | 0.000035 | 12 GB |
+| RTX 3090 | `CA5pMp...CpuQ` | 0.00009 | 24 GB |
+| RTX 4090 | `97G9Nn...odAf` | 0.000097 | 24 GB |
+| A100 | `GLJHzq...M22` | 0.000115 | 80 GB |
+
+also supports RTX 5070, 5080, 5090, A4000–A6500, H100 — mapped to the nearest market tier.
+
+### trust model
+
+bondli generates and manages the node keypair (Option C: Custody Wallet). users trust bondli with keypair custody and honest fee accounting. users retain physical control (their hardware), kill switch (stop Docker anytime), and can deregister to sweep remaining balance. all NOS transfers are on-chain.
+
+### GPU API endpoints
+
+```
+POST /api/gpu/register      — generate keypair, register node (Pro/VIP only)
+POST /api/gpu/deregister    — sweep balance, remove node
+GET  /api/gpu/dashboard     — user's node status, earnings, telemetry
+POST /api/gpu/heartbeat     — agent reports GPU util/temp every 60s
+POST /api/gpu/job-completed — agent reports completed Nosana job
+GET  /api/gpu/fleet         — aggregate view of all Bondli GPU nodes
+```
+
+### Nosana integration
+
+bondli integrates with Nosana via the `@nosana/kit` v2.0 SDK and REST API for:
+
+- **job posting** — bondli's AI inference needs (rug scoring, price prediction) are posted as jobs to Nosana markets where user nodes are registered
+- **deployment management** — SCHEDULED strategy with 2 replicas for always-on ML services
+- **endpoint routing** — `https://{NODE_KEY}.node.k8s.prd.nos.ci` pattern for direct inference access
+- **market discovery** — programmatic GPU tier → market address resolution
+
+```
+POST /api/nosana/deploy     — deploy inference service to Nosana fleet
+POST /api/nosana/job        — post one-off inference job
+GET  /api/nosana/job/:id    — get job status/results
+GET  /api/nosana/status     — router status, deployment, endpoints
+GET  /api/nosana/markets    — available Nosana GPU markets
+GET  /api/nosana/credits    — Nosana credits balance
+```
+
+---
+
+## AI trading intelligence
+
+### the brain
 
 ```
                     ┌──────────────────────────────────────────────┐
@@ -37,143 +119,59 @@ built because we were tired of losing money to rugs, snipers, and fake charts �
                     └──────────────────────────────────────────────┘
 ```
 
-17 modules. 4 tiers. every token passes through all of them before a decision is made.
-
----
-
-## what it does
-
 ### intelligence & scoring
 
-- **40+ feature ML scoring** — behavioral economics (Kahneman), network effects (Tipping Point), on-chain forensics, chart shape analysis, social signals. weighted, learned, updated on every outcome.
+- **40+ feature ML** — behavioral economics (Kahneman), network effects (Tipping Point), on-chain forensics, chart shape analysis, social signals. weighted, learned, updated on every outcome.
 
-- **score dynamics** — the score itself lags. the *velocity* and *acceleration* of the score are leading indicators. by the time a token's score drops, the derivatives already told you 2 cycles ago. physics applied to meme coins.
+- **score dynamics** — velocity and acceleration of the score are leading indicators. by the time a score drops, the derivatives told you 2 cycles ago.
 
-- **survivorship bias engine** — stores feature snapshots of every winner and loser. Fisher's linear discriminant analysis per feature. cosine similarity to a "survivor archetype" built from tokens that actually graduated. kill signals for dead-zone exclusion.
+- **survivorship bias engine** — Fisher's discriminant analysis per feature. cosine similarity to a "survivor archetype" built from tokens that graduated.
 
-- **game theory engine** — real-time opponent modeling. Bayesian wallet classification: snipers, whales, bots, retail, accumulators. posterior probability updates on each trade. Nash equilibrium shift detection.
+- **game theory engine** — real-time opponent modeling. Bayesian wallet classification: snipers, whales, bots, retail, accumulators.
 
-- **memetic pipeline** — stateless meme scoring in two passes. quick 3-module pre-filter (<50ms), then full 7-module deep score via workers. language processing, absurdity detection, KOL/trend polling.
+- **memetic pipeline** — stateless meme scoring. quick 3-module pre-filter (<50ms), then full 7-module deep score. language processing, absurdity detection, KOL/trend polling.
 
-- **velocity-potential scoring** — separates what already moved from what will move. MCap headroom, liquidity/mcap ratio, holder quality, bonding curve progress. identifies the goldilocks zone.
-
-- **meta engine** — narrative tracking across 8 categories (animals, AI, political, celebrity, culture, DeFi, food, absurdist). Signal Detection Theory optimization (d' & beta) for entries during peak metas.
+- **meta engine** — narrative tracking across 8 categories. Signal Detection Theory optimization for entries during peak metas.
 
 ### security & rug detection
 
-- **12+ rug signals** — dev sell speed, coordinated dumps, sybil bots, wash trading, holder concentration, liquidity drain, flatline-spike patterns, pump-and-dump shapes, quick-flip detection. 3 moderate signals = hard reject.
+- **12+ rug signals** — dev sell speed, coordinated dumps, sybil bots, wash trading, holder concentration, liquidity drain, flatline-spike patterns. 3 moderate = hard reject.
 
-- **artwork originality scanner** — perceptual hashing catches duplicates even when resized, compressed, or cropped. exact content hash matching. entropy analysis. AI-generated image detection.
+- **artwork scanner** — perceptual hashing catches duplicates even resized/compressed. AI-generated image detection.
 
-- **dev wallet profiling** — balance monitoring, launch history, rug rate calculation, serial rugger identification. $0 balance dev? penalty. 12 launches and 10 rugs? hard reject.
+- **dev wallet profiling** — balance monitoring, launch history, rug rate calculation, serial rugger ID.
 
-- **chart pattern recognition** — stores the price curve of every token. classifies into trajectory patterns (pump, consolidation, grind, crash). learns which shapes graduate vs rug.
-
-### smart money & social
-
-- **smart money tracker** — identifies consistently profitable wallets. leaderboard ranking by win rate, avg return, consistency. polls top wallets for new buys via RPC. emits signals before radar picks up the token.
-
-- **X/Twitter social intel** — profile verification, account age, follower/following ratio (bot detection), engagement scoring, sentiment analysis. fake social = rug signal.
-
-- **wallet age cache** — on-chain wallet age tracking. aged wallets buying = real users. fresh wallets clustered = likely sybils.
+- **chart pattern recognition** — classifies price trajectories. learns which shapes graduate vs rug.
 
 ### trading
 
-- **auto-ape** — walk-away trading. set parameters, it finds tokens, enters, manages positions, takes profits, cuts losses, exits on momentum collapse. 3-layer exit: derivatives first, absolute thresholds second, trailing stops third.
+- **auto-ape** — walk-away trading. finds tokens, enters, manages positions, takes profit, cuts losses. 3-layer exit: derivatives first, absolute thresholds second, trailing stops third.
 
-- **quick-ape** — one-click sniping with configurable slippage, priority fees, and Jito tips.
+- **quick-ape** — one-click sniping with configurable slippage, priority fees, Jito tips.
 
-- **position management** — live P&L, dual-axis analytics (score + price overlaid), TP/SL zones, batch sell-all, emergency recovery.
+- **fleet trading** — multi-wallet coordinated launches. 7 axioms, 5 personality archetypes. Nash equilibrium. Kelly sizing.
 
-- **simulation mode** — dry-run auto-trading with real signals and real settings. validate strategy before risking SOL.
-
-### deployment
-
-- **token deploy wizard** — create and launch tokens directly from the dashboard. name, ticker, image, socials. pre-built presets (Quick, Scout, Standard, Swarm).
-
-- **fleet trading** — multi-wallet coordinated launches with independent wallet personalities. see [axiomatic design](#axiomatic-design).
+- **smart money tracker** — identifies consistently profitable wallets. signals before radar picks up the token.
 
 ---
 
-## fee system — win more, pay less
-
-bondli's fee model is designed so that **winning is the unlock**.
+## fee system
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    PROFIT LADDER                        │
-├──────────────┬──────────┬───────────────────────────────┤
-│  lifetime    │   fee    │  tier                         │
-├──────────────┼──────────┼───────────────────────────────┤
-│  0 SOL       │   25%    │  Bronze                       │
-│  1+ SOL      │   20%    │  Silver                       │
-│  5+ SOL      │   15%    │  Gold                         │
-│  15+ SOL     │   10%    │  Platinum                     │
-│  50+ SOL     │    5%    │  Diamond                      │
-├──────────────┼──────────┼───────────────────────────────┤
-│  Pro (1 SOL) │    0%    │  flat access                  │
-│  VIP (10 SOL)│    0%    │  full sovereignty             │
-└──────────────┴──────────┴───────────────────────────────┘
+│                    FEE STRUCTURE                         │
+├──────────────────┬──────────┬────────────────────────────┤
+│  tier            │  trading │  GPU earnings              │
+├──────────────────┼──────────┼────────────────────────────┤
+│  Free (0 SOL)    │  25-5%   │  not available             │
+│  Pro (1 SOL)     │  0%      │  10% platform fee          │
+│  VIP (10 SOL)    │  0%      │  5% platform fee           │
+└──────────────────┴──────────┴────────────────────────────┘
 
-+ win streak bonus:  -2% per consecutive win (up to -10%)
-+ share-to-earn:     share wins → earn fee credits
-+ referrals:         20-40% of platform revenue from referrals
+Free tier profit ladder: 0 SOL → 25% | 1+ → 20% | 5+ → 15% | 15+ → 10% | 50+ → 5%
+Win streak bonus: -2% per consecutive win (up to -10%)
+Referrals: 20-40% of platform revenue from referred users
 ```
-
-### share-to-earn (viral loop)
-
-every profitable trade generates a **win card** — a shareable snapshot of your trade. shows your profit, hold time, streak, and ladder tier.
-
-when someone signs up through your win card link, **you earn fee credits** that reduce your next fees. the best traders become the best advertisers — automatically.
-
-the mechanic: **winning → sharing → growing → winning**. the platform markets itself through the performance of its users.
-
----
-
-## axiomatic design
-
-the fleet trading system is built on 7 non-negotiable axioms.
-
-```
-AXIOM 1  Every wallet is an independent actor.
-         No coordinated on-chain footprint. Each wallet has its own
-         personality, risk tolerance, timing, and decision function.
-
-AXIOM 2  Volume is oxygen — but only when we're alone.
-         externalBuyers = 0  →  volume HIGH (we are the market)
-         externalBuyers = 1  →  volume MEDIUM (someone found us)
-         externalBuyers ≥ 2  →  volume OFF (they ARE the market)
-         externalBuyers ≥ 3  →  START SELLING (exit into their demand)
-
-AXIOM 3  The bonding curve is the only truth.
-         pump.fun graduation at ~$69K MC. Every action pushes toward
-         graduation or profits before the dump.
-
-AXIOM 4  Dev buy is the foundation — dev sell is profit.
-         Dev never sells first. Dev sells LAST, after fleet distributes.
-
-AXIOM 5  Sell into demand, never into vacuum.
-         Only sell when external buy pressure exists.
-
-AXIOM 6  Information asymmetry is our edge.
-         External traders don't know which wallets are ours.
-
-AXIOM 7  Time pressure creates urgency.
-         Tokens die without movement in 10 min. Volume must peak
-         in a 3-5 minute window.
-```
-
-each wallet runs its own **brain** — one of 5 personality archetypes:
-
-| brain | style | sells when |
-|---|---|---|
-| `degen_aper` | aggressive, fast entry | momentum turns negative |
-| `accumulator` | patient, DCA in | profit target hit (2-3x) |
-| `whale_bluffer` | large single buys | time-based exit (60-120s) |
-| `volume_painter` | micro-burst trades | external demand appears |
-| `momentum_rider` | reactive, follows flow | chart shape deteriorates |
-
-brains have independent traits: aggression, patience, greed, fear factor, conviction. no two wallets behave the same way on-chain.
 
 ---
 
@@ -183,59 +181,41 @@ brains have independent traits: aggression, patience, greed, fear factor, convic
 bondli/
 ├── app/                          # frontend (React/Vite)
 │   └── src/
-│       ├── App.jsx               # main app — radar, wallet, intel, deploy tabs
+│       ├── App.jsx               # main app — GPU, radar, wallet, intel, deploy tabs
 │       ├── IntelDashboard.jsx    # intel analytics panel
 │       ├── MemeticRadar.jsx      # token radar view
-│       ├── api.js                # API client
 │       └── lib/                  # shared utilities
 │
 ├── src/
 │   ├── api/
-│   │   ├── server.production.mjs # production server (Express + WS + all routes)
-│   │   ├── server.mjs            # development server
-│   │   └── access-check.mjs      # tier access control
+│   │   └── server.production.mjs # production server (Express + WS + all routes)
 │   │
-│   └── engine/                   # 32 engine modules
-│       ├── meme-intelligence.mjs # core ML scoring (40+ features, online learning)
-│       ├── memetic-pipeline.mjs  # 7-module meme DNA scoring pipeline
-│       ├── survivorship-bias.mjs # Fisher discriminant survivor archetype matching
-│       ├── game-theory.mjs       # Bayesian opponent modeling + Nash equilibrium
-│       ├── meta-engine.mjs       # narrative tracking (8 categories, SDT)
-│       ├── velocity-scorer.mjs   # velocity vs potential separation
-│       ├── trajectory-classifier.mjs  # price curve classification
-│       │
-│       ├── rug-scanner.mjs       # token safety checks (12+ signals)
-│       ├── artwork-scanner.mjs   # perceptual hash image forensics
-│       ├── dev-wallet-tracker.mjs # creator profiling + serial rugger detection
-│       ├── smart-money-tracker.mjs # profitable wallet following
-│       ├── x-social-intel.mjs    # X/Twitter validation + sentiment
-│       ├── signal-detector.mjs   # wallet profiling via Tatum RPC
-│       │
-│       ├── fleet-brains.mjs      # 7 axioms + 5 wallet personalities
-│       ├── fleet-trader.mjs      # fleet trading v4 (organic + game theory)
-│       ├── volume-engine.mjs     # continuous volume painting + auto-rug
-│       ├── anti-detection.mjs    # human-like timing + trade patterns
-│       ├── wallet-optimizer.mjs  # Kelly sizing + role assignment
-│       │
-│       ├── fee-engine.mjs        # profit ladder + share-to-earn + referrals
-│       ├── session-manager.mjs   # trading session lifecycle
-│       ├── trade-router.mjs      # PumpFun vs Raydium routing
-│       ├── orchestrator.mjs      # multi-CA phase orchestration
-│       │
-│       ├── pumpfun-client.mjs    # pump.fun bonding curve client
-│       ├── raydium-client.mjs    # Raydium/Jupiter post-grad trading
-│       ├── token-creator.mjs     # pump.fun token deployment
-│       ├── rpc-enhanced.mjs      # priority fees + optimized tx sending
-│       ├── alchemy-client.mjs    # Alchemy SDK integration
-│       │
-│       ├── historical-movers.mjs # DexScreener/Birdeye top performers
-│       ├── exit.mjs              # position exit + SOL sweep
-│       ├── recover.mjs           # fund recovery (sub-wallet scan)
-│       ├── wallet-saver.mjs      # seed persistence for recovery
-│       └── config.mjs            # environment configuration
+│   ├── engine/
+│   │   ├── gpu-earnings.mjs      # GPU earnings — register, dashboard, sweep cron
+│   │   ├── nosana-client.mjs     # Nosana SDK/REST API client
+│   │   ├── nosana-job-router.mjs # AI inference routing via GPU fleet
+│   │   │
+│   │   ├── meme-intelligence.mjs # core ML scoring (40+ features)
+│   │   ├── memetic-pipeline.mjs  # meme DNA scoring pipeline
+│   │   ├── survivorship-bias.mjs # survivor archetype matching
+│   │   ├── game-theory.mjs       # Bayesian opponent modeling
+│   │   ├── meta-engine.mjs       # narrative tracking
+│   │   │
+│   │   ├── rug-scanner.mjs       # 12+ rug signals
+│   │   ├── artwork-scanner.mjs   # perceptual hash image forensics
+│   │   ├── smart-money-tracker.mjs # profitable wallet following
+│   │   │
+│   │   ├── fleet-trader.mjs      # fleet trading v4
+│   │   ├── fee-engine.mjs        # profit ladder + referrals
+│   │   ├── session-manager.mjs   # trading session lifecycle
+│   │   └── config.mjs            # environment configuration
+│   │
+│   └── ml/                       # LoRA GPU inference
+│       ├── serve.py              # FastAPI scoring server
+│       ├── model.py              # BondliScorer (128d, 4 layers, LoRA rank 16)
+│       └── train.py              # online training from trade outcomes
 │
-├── deploy/                       # deployment scripts
-├── hero.png                      # hero image
+├── bondli-gpu-agent.sh           # one-command GPU node setup script
 ├── package.json
 └── README.md
 ```
@@ -245,75 +225,94 @@ bondli/
 ## the stack
 
 ```
-frontend    React/Vite — radar, wallet, intel dashboard, deploy wizard
-backend     Node.js/Express — WebSocket feeds, scoring pipeline, auto-trader
-chain       Solana mainnet — Helius RPC, PumpPortal Lightning, Jito bundles
-memory      Redis — sessions, learned weights, chart patterns, artwork hashes
-intel       Custom ML — online learning, RAG memory, 100+ feature extractors
+frontend    React/Vite — GPU earn, radar, wallet, intel dashboard, deploy wizard
+backend     Node.js/Express — WebSocket feeds, scoring pipeline, GPU fleet management
+chain       Solana mainnet — Alchemy RPC, PumpPortal Lightning, Jito bundles
+GPU         Nosana Network — decentralized compute, @nosana/kit v2.0 SDK
+memory      Redis — sessions, learned weights, node registry, earnings logs
+ML          Custom LoRA — online learning, 115-feature scorer, <5ms inference
 social      X/Twitter API — profile validation, engagement scoring, sentiment
+```
+
+---
+
+## environment variables
+
+```
+# Core
+ALCHEMY_API_KEY=         # Alchemy RPC
+RPC_URL=                 # Custom RPC (overrides Alchemy)
+REDIS_URL=               # Redis connection
+API_PORT=3001            # Server port
+PLATFORM_WALLET=         # Fee destination
+
+# GPU / Nosana
+NOSANA_API_KEY=          # Nosana API bearer token (nos_xxx_...)
+NOSANA_API_URL=          # Nosana API base URL
+NOSANA_DEPLOY_MARKET=    # Default market for deployments
+NOSANA_DEPLOY_REPLICAS=  # Replica count (default 2)
+NOSANA_DEPLOY_SCHEDULE=  # Cron schedule (default hourly)
+NOSANA_INFERENCE=        # Set to "false" to disable Nosana routing
+
+# Trading
+MASTER_SEED=             # Trading wallet master seed
+BONDLI_LORA_URL=         # GPU scoring server (default http://127.0.0.1:8420)
+PRO_FEE_SOL=1            # Pro tier cost
+VIP_FEE_SOL=10           # VIP tier cost
+
+# Social
+X_BEARER_TOKEN=          # Twitter/X API bearer
+```
+
+---
+
+## quick start
+
+```bash
+# Clone and install
+git clone https://github.com/Bradbuythedip/bondli.git
+cd bondli
+npm run setup
+
+# Start development
+npm run dev
+
+# Start GPU earning (on a machine with NVIDIA GPU)
+curl -s https://bondli.fun/gpu-agent.sh | bash -s -- --wallet <YOUR_WALLET>
+
+# Production
+npm start
 ```
 
 ---
 
 ## philosophy
 
-most trading tools show you data. bondli makes decisions.
+bondli exists because:
 
-the core insight is borrowed from physics: **position is a lagging indicator. velocity and acceleration are leading indicators.** applied to token scores, this means we can detect rug pulls and runners *before* the price moves — by watching how fast the score is changing and whether that change is accelerating or decelerating.
+1. **GPUs should earn money when idle.** Nosana's decentralized compute marketplace pays NOS tokens per second for AI inference. bondli makes it one command to start earning.
 
-the scoring draws from three frameworks:
+2. **trading tools should make decisions, not just show data.** the scoring engine applies physics to token scores — velocity and acceleration are leading indicators. combine with Kahneman's behavioral economics, Gladwell's Tipping Point, and game theory to predict crowd behavior before it happens.
 
-- **Kahneman's System 1/2** — how do humans actually decide what to buy? cognitive ease, emotional valence, herd signals, anchoring bias, loss aversion. model the psychology, predict the crowd.
-
-- **Gladwell's Tipping Point** — what makes a token tip from obscurity to virality? connectors (influencers), mavens (alpha wallets), salesmen (viral tweets). the law of the few. stickiness. context.
-
-- **Game Theory** — every trade is a move in a game with imperfect information. classify opponents (Bayesian posteriors), detect equilibrium shifts, exploit information asymmetry. cooperate when the game is positive-sum, defect when it's not.
-
-combine these with hard on-chain data (buy velocity, holder distribution, dev behavior, chart shape) and you get something that understands *both* the math and the psychology of why tokens pump.
-
----
-
-## what makes it different
-
-1. **it learns** — not static rules. online ML with gradient updates on every outcome.
-
-2. **derivatives, not thresholds** — exits when d(score)/dt is collapsing. 1-2 cycles earlier than price.
-
-3. **survivorship analysis** — Fisher discriminant + cosine similarity to the survivor archetype.
-
-4. **artwork forensics** — perceptual hashing, entropy analysis, AI-generation detection. stolen art = rug.
-
-5. **opponent modeling** — Bayesian classification of every wallet. knows bots from real users.
-
-6. **axiomatic fleet design** — 7 hard constraints, 5 personality archetypes. sells into demand, not vacuum.
-
-7. **win more, pay less** — the fee ladder rewards profitable traders. winning is the unlock.
-
-8. **viral by design** — share-to-earn win cards make every winning trade an advertisement.
-
-9. **it never sleeps** — 24/7 WebSocket monitoring. auto-ape, auto-exit, auto-learn.
+3. **the fee model should reward performance.** winning traders pay less. GPU earnings compound. the platform grows through user success, not extraction.
 
 ---
 
 ## access tiers
 
-| tier | fee | what you get |
-|---|---|---|
-| **free** | 25% → 5% (ladder) | radar, scoring, rug detection, chart patterns, quick-ape, profit ladder |
-| **pro** | 0% | auto-ape, smart money signals, artwork forensics, survivor analysis, simulation |
-| **vip** | 0% | fleet trading, deploy wizard, dev wallet profiling, referral dashboard |
+| tier | trading fee | GPU earning | what you get |
+|------|-------------|-------------|--------------|
+| **Free** | 25% → 5% (ladder) | — | radar, scoring, rug detection, quick-ape |
+| **Pro** | 0% | 10% platform fee | auto-ape, smart money, fleet, GPU earnings |
+| **VIP** | 0% | 5% platform fee | everything + priority queue + API access |
 
 ---
 
 ## status
 
-live on Solana mainnet. learning every day.
+live on Solana mainnet. GPUs earning. AI learning.
 
 **$BONDLI** — [pump.fun](https://pump.fun)
-
----
-
-*"if you want to make enemies, try to change something."*
 
 ---
 
