@@ -680,7 +680,7 @@ const[rTab,sRTab]=useState("momentum");const[rLoad,sRL]=useState(true);const[rPo
 const[rExp,sRExp]=useState(null);const[buying,sBuy]=useState(null);const[selling,sSell]=useState(null);const[rSearch,sRS]=useState("");
 const[rEnabled,sRE]=useState(true);const[rFilterOpen,sRFO]=useState(false);const[rMinBP,sRMinBP]=useState(0);const[rMinMC,sRMinMC]=useState(0);const[rSignalFilter,sRSF]=useState("ALL");const[rSourceFilter,sRSrcF]=useState("ALL");const[rCustomBuy,sRCB]=useState("");const[autoTrade,sAutoTrade]=useState(null);const[autoExitSt,sAutoExitSt]=useState(null);const[img,sImg]=useState(null);const[showKeys,sShowKeys]=useState(false);const[aaAdvanced,sAAAdvanced]=useState(false);
 const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");const[refMsg,sRefMsg]=useState("");
-const[vipDash,sVipDash]=useState(null);const[vipCustomCode,sVipCustomCode]=useState("");const[vipClaiming,sVipClaiming]=useState(false);
+const[vipDash,sVipDash]=useState(null);const[vipCustomCode,sVipCustomCode]=useState("");const[vipClaiming,sVipClaiming]=useState(false);const[demoProfits,sDemoProfits]=useState(null);const[demoLoading,sDemoLoading]=useState(false);
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);const[showModel,sShowModel]=useState(false);const[launchTarget,sLTarget]=useState("pump"); // "pump" | "bags"
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
 const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);
@@ -2384,9 +2384,73 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 {isOwner&&<button onClick={async()=>{try{const r=await fetch(API+"/api/admin/stats",{headers:{"x-admin-secret":"bondli_default"}});const d=await r.json();if(d.ok)toast(`Users: ${d.totalUsers} | Active: ${d.activeUsers} | Free: ${d.tiers?.free} Pro: ${d.tiers?.pro} VIP: ${d.tiers?.vip} | Sessions: ${d.activeSessions}`,"success");else toast(d.error||"Failed","error")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 12px",background:T.yl+"08",border:"1px solid "+T.yl+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.yl,cursor:"pointer"}}>Platform Stats</button>}
 {isOwner&&<button onClick={async()=>{try{const r=await fetch(API+"/api/sol-price");const d=await r.json();toast(`SOL: $${d.price?.toFixed(2)||"??"}`,"success")}catch(e){toast("Add /api/sol-price route","error")}}} style={{padding:"6px 12px",background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.gn,cursor:"pointer"}}>SOL Price</button>}
 {isOwner&&<button onClick={()=>{const w=prompt("Wallet address to whitelist as VIP:");if(!w||w.length<32)return;fetch(API+"/api/admin/whitelist",{method:"POST",headers:{"Content-Type":"application/json","x-admin-secret":"bondli_default"},body:JSON.stringify({wallet:w})}).then(r=>r.json()).then(d=>d.ok?toast(`${w.slice(0,8)}… → VIP`,"success"):toast(d.error||"Failed","error")).catch(e=>toast(e.message,"error"))}} style={{padding:"6px 12px",background:T.pu+"08",border:"1px solid "+T.pu+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.pu,cursor:"pointer"}}>Whitelist VIP</button>}
+{isOwner&&<button disabled={demoLoading} onClick={async()=>{sDemoLoading(true);try{const r=await fetch(API+"/api/admin/demo-profits",{headers:{"x-admin-secret":"bondli_default"}});const d=await r.json();if(d.ok){sDemoProfits(d);toast(`Demo: ${d.platform.totalTrades} trades | +${d.platform.grossPnlSol?.toFixed(2)} SOL | ${d.platform.winRate}% WR`,"success")}else toast(d.error||"Failed","error")}catch(e){toast(e.message,"error")}sDemoLoading(false)}} style={{padding:"6px 12px",background:T.gn+"08",border:"1px solid "+T.gn+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.gn,cursor:demoLoading?"wait":"pointer",opacity:demoLoading?.5:1}}>{demoLoading?"Loading...":"Test Profits"}</button>}
 <button onClick={async()=>{try{toast("Exporting session logs...","info");const r=await fetch(API+"/api/auto-trade/export-session?wallet="+(user?.pubkey||""));const d=await r.json();const blob=new Blob([JSON.stringify(d,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const el=document.createElement("a");el.href=url;el.download="bondli-session-"+Date.now()+".json";document.body.appendChild(el);el.click();document.body.removeChild(el);URL.revokeObjectURL(url);toast(`Exported: ${d.learner?.history?.length||0} trades, ${d.radarSnapshot?.length||0} radar tokens, scorer weights`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 12px",background:T.cy+"08",border:"1px solid "+T.cy+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.cy,cursor:"pointer"}}>Export Session Logs</button>
 <button onClick={async()=>{try{toast("Exporting intel API data...","info");const d=await a.xapi(user.pubkey);const blob=new Blob([JSON.stringify(d,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const el=document.createElement("a");el.href=url;el.download="bondli-api-export-"+Date.now()+".json";document.body.appendChild(el);el.click();document.body.removeChild(el);URL.revokeObjectURL(url);toast(`API Export: ${d.radar?.count||0} tokens, ${d.positions?.length||0} positions`,"success")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 12px",background:T.yl+"08",border:"1px solid "+T.yl+"18",borderRadius:6,fontSize:9,fontWeight:700,color:T.yl,cursor:"pointer"}}>Export API</button>
 </div>
+
+{/* ── Demo Profits Panel (owner only) ── */}
+{isOwner&&demoProfits&&<div style={{background:T.bg,border:"1px solid "+T.gn+"22",borderRadius:8,padding:10,marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}><div style={{display:"flex",alignItems:"center",gap:6}}><IC.sol s={14} c={T.gn}/><span style={{fontSize:11,fontWeight:800,color:T.gn}}>Platform Profits</span><span style={{fontSize:9,color:T.dm}}>{demoProfits.period}</span></div><button onClick={()=>sDemoProfits(null)} style={{background:"none",border:"none",color:T.ft,fontSize:12,cursor:"pointer"}}>×</button></div>
+
+{/* Revenue overview */}
+<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,marginBottom:8}}>
+{[{l:"Revenue",v:(demoProfits.platform.totalRevenueSol||0).toFixed(3)+" SOL",c:T.gn},{l:"Volume",v:(demoProfits.platform.totalVolumeSol||0).toFixed(1)+" SOL",c:T.cy},{l:"Win Rate",v:demoProfits.platform.winRate+"%",c:T.yl},{l:"Trades",v:demoProfits.platform.totalTrades,c:T.pu}].map((s,i)=><div key={i} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 4px",textAlign:"center"}}><div style={{fontSize:13,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:7,color:T.ft,textTransform:"uppercase"}}>{s.l}</div></div>)}
+</div>
+
+{/* Fee breakdown */}
+<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4,marginBottom:8}}>
+{[{l:"Platform Fees",v:(demoProfits.platform.platformFeesSol||0).toFixed(3),c:T.gn},{l:"Network Fees",v:(demoProfits.platform.networkFeesSol||0).toFixed(3),c:T.cy},{l:"Net (after ref)",v:(demoProfits.platform.netRevenueSol||0).toFixed(3),c:T.yl}].map((s,i)=><div key={i} style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:5,padding:"5px 4px",textAlign:"center"}}><div style={{fontSize:12,fontWeight:800,color:s.c}}>{s.v}</div><div style={{fontSize:7,color:T.ft,textTransform:"uppercase"}}>{s.l}</div></div>)}
+</div>
+
+{/* GPU earnings */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 8px",marginBottom:8}}>
+<div style={{fontSize:9,fontWeight:700,color:T.pu,textTransform:"uppercase",marginBottom:4}}>GPU Earnings</div>
+<div style={{display:"flex",gap:10,fontSize:10}}>
+<span style={{color:T.dm}}>Earned: <b style={{color:T.gn}}>{(demoProfits.gpu.totalEarnedNOS||0).toFixed(1)} NOS</b></span>
+<span style={{color:T.dm}}>Treasury: <b style={{color:T.yl}}>{(demoProfits.gpu.treasuryCutNOS||0).toFixed(1)} NOS</b></span>
+<span style={{color:T.dm}}>Nodes: <b style={{color:T.cy}}>{demoProfits.gpu.activeNodes}</b></span>
+<span style={{color:T.dm}}>Jobs: <b style={{color:T.pu}}>{demoProfits.gpu.jobsCompleted}</b></span>
+</div>
+</div>
+
+{/* Top tokens */}
+{demoProfits.topTokens?.length>0&&<div style={{marginBottom:8}}>
+<div style={{fontSize:9,fontWeight:700,color:T.yl,textTransform:"uppercase",marginBottom:4}}>Top Trades</div>
+<div style={{maxHeight:100,overflowY:"auto"}}>
+{demoProfits.topTokens.map((t,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0",fontSize:10,borderBottom:"1px solid "+T.bd+"33"}}>
+<span style={{fontWeight:800,color:T.tx,minWidth:50}}>{t.name}</span>
+<span style={{color:T.gn,fontWeight:700}}>{t.multiple}</span>
+<span style={{color:T.dm}}>{t.entrySol}→{t.exitSol} SOL</span>
+<span style={{flex:1}}/>
+<span style={{color:T.gn,fontWeight:800}}>+{t.pnlSol} SOL</span>
+</div>)}
+</div>
+</div>}
+
+{/* Sessions */}
+<div style={{fontSize:9,fontWeight:700,color:T.cy,textTransform:"uppercase",marginBottom:4}}>Sessions ({demoProfits.sessions?.length||0})</div>
+<div style={{maxHeight:80,overflowY:"auto"}}>
+{demoProfits.sessions?.map((s,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"2px 0",fontSize:9}}>
+<span style={{color:T.dm,fontFamily:"monospace"}}>{s.id}</span>
+<span style={{padding:"1px 4px",borderRadius:3,fontSize:7,fontWeight:700,background:s.status==="active"?T.gn+"18":s.status==="settled"?T.pu+"18":T.ft+"18",color:s.status==="active"?T.gn:s.status==="settled"?T.pu:T.ft}}>{s.status}</span>
+<span style={{color:T.dm}}>{s.trades}t</span>
+<span style={{color:T.gn}}>{s.wins}W</span>
+<span style={{color:"#ff4444"}}>{s.losses}L</span>
+<span style={{flex:1}}/>
+<span style={{fontWeight:700,color:s.pnlSol>=0?T.gn:"#ff4444"}}>{s.pnlSol>=0?"+":""}{s.pnlSol.toFixed(3)}</span>
+</div>)}
+</div>
+
+{/* Users */}
+<div style={{display:"flex",gap:8,marginTop:6,padding:"4px 0",borderTop:"1px solid "+T.bd+"44",fontSize:9,color:T.dm}}>
+<span>Users: <b style={{color:T.tx}}>{demoProfits.users.total}</b></span>
+<span>Active 24h: <b style={{color:T.gn}}>{demoProfits.users.active24h}</b></span>
+<span>VIP: <b style={{color:T.yl}}>{demoProfits.users.vip}</b></span>
+<span>Referrals: <b style={{color:T.pu}}>{demoProfits.users.referrals}</b></span>
+</div>
+<div style={{textAlign:"center",marginTop:4,fontSize:8,color:T.ft}}>Demo data — {demoProfits.generated}</div>
+</div>}
 
 {/* ── Referral Dashboard (inline) ── */}
 <div style={{borderTop:"1px solid "+T.bd,paddingTop:8}}>
