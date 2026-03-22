@@ -50,6 +50,7 @@ import { scoreMemeticQuick, scoreTokenMemetic, loadBlacklists as loadMemeticBlac
 import { runPipeline, runExitChecks, classifyConfidence, calculatePositionSize, createExitPlan, checkPostExitReentry, checkDipDCA } from "../autoape/pipeline.js";
 import { getSpotPrice, getMultiSpotPrices, getCandlesByMint, findPool, analyzeCandles } from "../engine/price-feeds.mjs";
 import { BagsClient } from "../engine/bags-client.mjs";
+import { mountGpuRoutes } from "../engine/gpu-earnings.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -8764,6 +8765,18 @@ app.get("/", (req, res) => {
 });
 
 app.get("/health", (req, res) => res.json({ ok: true }));
+
+// ═══════════════════════════════════════
+// GPU EARNINGS — 1 user = 1 GPU = 1 node
+// ═══════════════════════════════════════
+mountGpuRoutes(app, {
+  redis,
+  connection,
+  getUser,
+  saveUser,
+  resolveTier,
+  rateLimit: null, // production server uses its own rate limiting
+});
 
 // ═══════════════════════════════════════
 // START
