@@ -91,15 +91,14 @@ Bondli is a **two-sided platform** connecting GPU compute supply with AI-powered
 
 ---
 
-## Grant Request & Use of Funds
+## Grant Request: $25,000
 
-| Allocation                  | Purpose                                                  |
-|-----------------------------|----------------------------------------------------------|
-| **GPU Fleet Scaling**       | Subsidize onboarding for first 1,000 GPU nodes           |
-| **ML Model Training**       | Expand training dataset, improve rug detection accuracy   |
-| **Nosana Integration**      | Deeper SDK integration, multi-GPU support, job routing    |
-| **Security Audit**          | Smart contract and platform security audit                |
-| **Community & Growth**      | Developer documentation, GPU owner acquisition            |
+| Allocation | Amount | Purpose |
+|---|---|---|
+| **GPU Fleet Expansion** | $10,000 (40%) | Onboard first 50 nodes — NOS staking subsidies, GPU owner acquisition |
+| **ML on Nosana** | $7,500 (30%) | Run LoRA training + inference on Nosana GPUs, expand scoring dataset |
+| **SDK Integration & Dev** | $5,000 (20%) | Multi-GPU job routing, encrypted key management, heartbeat hardening |
+| **Community & Docs** | $2,500 (10%) | GPU owner guides, video tutorials, node operator support |
 
 ---
 
