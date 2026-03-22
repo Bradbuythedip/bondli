@@ -684,6 +684,8 @@ const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const
 const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);
 // GPU Earn tab state
 const[gpuDash,sGpuDash]=useState(null);const[gpuFleet,sGpuFleet]=useState(null);const[gpuLoading,sGpuLoading]=useState(false);const[gpuRegWallet,sGpuRegWallet]=useState("");
+const[gpuCmdLoading,sGpuCmdLoading]=useState(false);const[gpuLogs,sGpuLogs]=useState(null);const[gpuShowLogs,sGpuShowLogs]=useState(false);const[gpuShowDetails,sGpuShowDetails]=useState(false);
+const sendGpuCmd=useCallback(async(command,params={})=>{if(!user?.pubkey||gpuCmdLoading)return;sGpuCmdLoading(true);try{const r=await fetch(API+"/api/gpu/command",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({wallet:user.pubkey,command,params})});const d=await r.json();if(d.success){toast(d.message,"success");if(command==="get_logs"){setTimeout(async()=>{try{const lr=await fetch(API+"/api/gpu/node-logs?wallet="+user.pubkey);const ld=await lr.json();sGpuLogs(ld.logs||[]);sGpuShowLogs(true)}catch{}},3000)}setTimeout(()=>a.gpd(user.pubkey).then(d=>sGpuDash(d)).catch(()=>{}),5000)}else{toast(d.error||"Command failed","error")}}catch(e){toast("Failed to send command","error")}sGpuCmdLoading(false)},[user?.pubkey,gpuCmdLoading]);
 // Chat support state
 const[chatOpen,sChatOpen]=useState(false);const[chatMsgs,sChatMsgs]=useState([]);const[chatInput,sChatInput]=useState("");const[chatLoading,sChatLoading]=useState(false);const chatEndRef=useRef(null);
 const sendChat=useCallback(async()=>{const msg=chatInput.trim();if(!msg||chatLoading)return;const userMsg={role:"user",content:msg};const newMsgs=[...chatMsgs,userMsg];sChatMsgs(newMsgs);sChatInput("");sChatLoading(true);try{const r=await a.cht(newMsgs,user?.pubkey);if(r.reply){sChatMsgs(m=>[...m,{role:"assistant",content:r.reply}])}else{sChatMsgs(m=>[...m,{role:"assistant",content:r.error||"Something went wrong. Try again."}])}}catch(e){sChatMsgs(m=>[...m,{role:"assistant",content:"Connection error. Check your internet and try again."}])}sChatLoading(false)},[chatInput,chatMsgs,chatLoading,user?.pubkey]);
@@ -968,7 +970,6 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <div style={{fontSize:mb?12:14,color:T.dm,marginTop:6,maxWidth:500,margin:"6px auto 0",lineHeight:1.5}}>Plug in your NVIDIA GPU. Run a Nosana node. Earn NOS tokens by processing AI inference jobs from the decentralized compute marketplace.</div>
 <div style={{display:"flex",gap:6,justifyContent:"center",marginTop:12,flexWrap:"wrap"}}>
 <div style={{padding:"6px 14px",background:T.gn+"12",border:"1px solid "+T.gn+"33",borderRadius:8,fontSize:12,fontWeight:700,color:T.gn}}>1 User = 1 GPU = 1 Node</div>
-<div style={{padding:"6px 14px",background:T.pu+"12",border:"1px solid "+T.pu+"33",borderRadius:8,fontSize:12,fontWeight:700,color:T.pu}}>Pro: 10% fee | VIP: 5% fee</div>
 </div>
 </div>
 
@@ -980,7 +981,6 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 {l:"EARNED",v:(gpuDash.earnings?.totalNOS||0).toFixed(2)+" NOS",c:T.gn},
 {l:"PENDING",v:(gpuDash.earnings?.pendingNOS||0).toFixed(4)+" NOS",c:T.yl},
 {l:"JOBS",v:gpuDash.earnings?.totalJobsCompleted||0,c:T.pu},
-{l:"FEE",v:((gpuDash.node?.platformFee||0.1)*100)+"%",c:T.dm},
 ].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:mb?14:18,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginTop:2}}>{s.l}</div></div>)}
 </div>
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
@@ -992,6 +992,46 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <div style={{height:4,borderRadius:2,background:T.bd,overflow:"hidden"}}><div style={{width:gpuDash.node.gpuUtil+"%",height:"100%",borderRadius:2,background:parseInt(gpuDash.node.gpuUtil)>80?T.gn:parseInt(gpuDash.node.gpuUtil)>50?T.yl:T.dm,transition:"width .5s"}}/></div>
 <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:T.ft,marginTop:4}}><span>Temp: {gpuDash.node.gpuTemp||"—"}C</span><span>Node: {(gpuDash.node?.address||"").slice(0,8)}...</span></div>
 </div>}
+
+{/* ── Node Control Buttons ── */}
+<div style={{display:"flex",gap:6,marginTop:10,flexWrap:"wrap"}}>
+<button disabled={gpuCmdLoading} onClick={()=>sendGpuCmd("restart_node")} style={{flex:1,padding:"6px 10px",background:T.yl+"18",border:"1px solid "+T.yl+"44",borderRadius:6,color:T.yl,fontSize:10,fontWeight:700,cursor:gpuCmdLoading?"wait":"pointer",opacity:gpuCmdLoading?.5:1}}>Restart Node</button>
+<button disabled={gpuCmdLoading} onClick={()=>{if(confirm("Stop your GPU node? You can restart from the dashboard."))sendGpuCmd("stop_node")}} style={{flex:1,padding:"6px 10px",background:T.rd+"18",border:"1px solid "+T.rd+"44",borderRadius:6,color:T.rd,fontSize:10,fontWeight:700,cursor:gpuCmdLoading?"wait":"pointer",opacity:gpuCmdLoading?.5:1}}>Stop Node</button>
+<button disabled={gpuCmdLoading} onClick={()=>sendGpuCmd("get_logs")} style={{flex:1,padding:"6px 10px",background:T.pu+"18",border:"1px solid "+T.pu+"44",borderRadius:6,color:T.pu,fontSize:10,fontWeight:700,cursor:gpuCmdLoading?"wait":"pointer",opacity:gpuCmdLoading?.5:1}}>View Logs</button>
+<button onClick={()=>sGpuShowDetails(!gpuShowDetails)} style={{flex:1,padding:"6px 10px",background:T.dm+"18",border:"1px solid "+T.dm+"44",borderRadius:6,color:T.dm,fontSize:10,fontWeight:700,cursor:"pointer"}}>{gpuShowDetails?"Hide":"GPU"} Details</button>
+</div>
+
+{/* ── GPU Details Panel ── */}
+{gpuShowDetails&&<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 10px",marginTop:8}}>
+<div style={{fontSize:10,fontWeight:700,color:T.dm,marginBottom:6}}>GPU Details</div>
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4}}>
+{[
+{l:"Power",v:(gpuDash.node?.powerDraw||"—")+" / "+(gpuDash.node?.powerLimit||"—")+" W"},
+{l:"Fan",v:(gpuDash.node?.fanSpeed||"—")+"%"},
+{l:"GPU Clock",v:(gpuDash.node?.gpuClock||"—")+" MHz"},
+{l:"Mem Clock",v:(gpuDash.node?.memClock||"—")+" MHz"},
+{l:"VRAM",v:gpuDash.node?.gpuUtil?Math.round((parseInt(gpuDash.node.gpuUtil)||0))+"% used":"—"},
+{l:"Temp",v:(gpuDash.node?.gpuTemp||"—")+"C"},
+].map(d=><div key={d.l} style={{padding:"4px 6px",fontSize:9}}><div style={{color:T.ft,fontWeight:700}}>{d.l}</div><div style={{color:T.tx,fontWeight:800,marginTop:1}}>{d.v}</div></div>)}
+</div>
+</div>}
+
+{/* ── Log Viewer ── */}
+{gpuShowLogs&&gpuLogs&&<div style={{background:"#0a0a0a",border:"1px solid "+T.bd,borderRadius:6,padding:"8px 10px",marginTop:8,maxHeight:200,overflow:"auto"}}>
+<div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}><span style={{fontSize:10,fontWeight:700,color:T.dm}}>Node Logs</span><button onClick={()=>sGpuShowLogs(false)} style={{background:"none",border:"none",color:T.ft,cursor:"pointer",fontSize:10}}>Close</button></div>
+<div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:9,color:T.gn,lineHeight:1.5,whiteSpace:"pre-wrap"}}>{gpuLogs.length?gpuLogs.join("\n"):"No logs yet — waiting for agent response (~60s)"}</div>
+</div>}
+
+{/* ── Command History ── */}
+{gpuDash.commandLog?.length>0&&<div style={{marginTop:8}}>
+<div style={{fontSize:10,fontWeight:700,color:T.dm,marginBottom:4}}>Recent Commands</div>
+{gpuDash.commandLog.slice(0,5).map((cmd,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",padding:"3px 6px",fontSize:9,color:T.dm,borderBottom:"1px solid "+T.bd}}>
+<span style={{fontWeight:700}}>{cmd.type.replace(/_/g," ")}</span>
+<span style={{color:cmd.result?.status==="success"?T.gn:cmd.result?.status==="error"?T.rd:T.yl}}>{cmd.result?.status||"pending"}</span>
+<span style={{color:T.ft}}>{new Date(cmd.issuedAt).toLocaleTimeString()}</span>
+</div>)}
+</div>}
+
 {/* Recent jobs */}
 {gpuDash.recentJobs?.length>0&&<div style={{marginTop:10}}><div style={{fontSize:11,fontWeight:700,color:T.dm,marginBottom:4}}>Recent Earnings</div>
 {gpuDash.recentJobs.slice(0,5).map((j,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",padding:"4px 6px",fontSize:10,color:T.dm,borderBottom:"1px solid "+T.bd}}>
@@ -1034,7 +1074,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 {[
 {l:"TOTAL NODES",v:gpuFleet?.totalNodes||0,c:T.pu},
 {l:"ONLINE",v:gpuFleet?.onlineNodes||0,c:T.gn},
-{l:"FEES EARNED",v:(gpuFleet?.totalPlatformFees||0).toFixed(2)+" NOS",c:T.yl},
+{l:"TOTAL EARNED",v:(gpuFleet?.totalEarned||0).toFixed(2)+" NOS",c:T.yl},
 ].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:mb?16:22,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginTop:2}}>{s.l}</div></div>)}
 </div>
 {gpuFleet?.nodes?.length>0&&<div>
@@ -1046,7 +1086,6 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <span style={{fontSize:9,color:T.ft}}>{n.gpuModel}</span>
 </div>
 <div style={{display:"flex",alignItems:"center",gap:8}}>
-<span style={{fontSize:9,color:n.tier==="VIP"?T.yl:T.pu,fontWeight:700}}>{n.tier}</span>
 <span style={{fontSize:10,color:T.gn,fontWeight:700}}>{n.totalEarningsNOS.toFixed(2)} NOS</span>
 <span style={{fontSize:9,color:T.ft}}>{n.totalJobsCompleted} jobs</span>
 </div>
