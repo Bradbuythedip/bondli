@@ -968,7 +968,6 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <div style={{fontSize:mb?12:14,color:T.dm,marginTop:6,maxWidth:500,margin:"6px auto 0",lineHeight:1.5}}>Plug in your NVIDIA GPU. Run a Nosana node. Earn NOS tokens by processing AI inference jobs from the decentralized compute marketplace.</div>
 <div style={{display:"flex",gap:6,justifyContent:"center",marginTop:12,flexWrap:"wrap"}}>
 <div style={{padding:"6px 14px",background:T.gn+"12",border:"1px solid "+T.gn+"33",borderRadius:8,fontSize:12,fontWeight:700,color:T.gn}}>1 User = 1 GPU = 1 Node</div>
-<div style={{padding:"6px 14px",background:T.pu+"12",border:"1px solid "+T.pu+"33",borderRadius:8,fontSize:12,fontWeight:700,color:T.pu}}>Pro: 10% fee | VIP: 5% fee</div>
 </div>
 </div>
 
@@ -980,7 +979,6 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 {l:"EARNED",v:(gpuDash.earnings?.totalNOS||0).toFixed(2)+" NOS",c:T.gn},
 {l:"PENDING",v:(gpuDash.earnings?.pendingNOS||0).toFixed(4)+" NOS",c:T.yl},
 {l:"JOBS",v:gpuDash.earnings?.totalJobsCompleted||0,c:T.pu},
-{l:"FEE",v:((gpuDash.node?.platformFee||0.1)*100)+"%",c:T.dm},
 ].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:mb?14:18,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginTop:2}}>{s.l}</div></div>)}
 </div>
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
@@ -1034,7 +1032,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 {[
 {l:"TOTAL NODES",v:gpuFleet?.totalNodes||0,c:T.pu},
 {l:"ONLINE",v:gpuFleet?.onlineNodes||0,c:T.gn},
-{l:"FEES EARNED",v:(gpuFleet?.totalPlatformFees||0).toFixed(2)+" NOS",c:T.yl},
+{l:"TOTAL EARNED",v:(gpuFleet?.totalEarned||0).toFixed(2)+" NOS",c:T.yl},
 ].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 4px",textAlign:"center"}}><div style={{fontSize:mb?16:22,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginTop:2}}>{s.l}</div></div>)}
 </div>
 {gpuFleet?.nodes?.length>0&&<div>
@@ -1046,7 +1044,6 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <span style={{fontSize:9,color:T.ft}}>{n.gpuModel}</span>
 </div>
 <div style={{display:"flex",alignItems:"center",gap:8}}>
-<span style={{fontSize:9,color:n.tier==="VIP"?T.yl:T.pu,fontWeight:700}}>{n.tier}</span>
 <span style={{fontSize:10,color:T.gn,fontWeight:700}}>{n.totalEarningsNOS.toFixed(2)} NOS</span>
 <span style={{fontSize:9,color:T.ft}}>{n.totalJobsCompleted} jobs</span>
 </div>
