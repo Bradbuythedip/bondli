@@ -173,22 +173,21 @@ fi
 # We use sudo for docker commands below so it works on first run.
 # User can run without sudo after logging out and back in.
 
-# ── Register with Bondli — get node keypair ──
+# ── Register with Bondli (or reconnect to existing node) ──
 echo ""
 echo "[..] Registering with Bondli..."
+RECONNECTED=false
 HTTP_CODE=$(curl -s -o /tmp/bondli-register.json -w "%{http_code}" -X POST "$BONDLI_API/api/gpu/register" \
   -H "Content-Type: application/json" \
   -d "{\"wallet\":\"$WALLET\",\"gpuModel\":\"$GPU_NAME\"}")
 
 if [ "$HTTP_CODE" = "409" ]; then
-  echo "[..] Existing node found — deregistering and re-registering..."
-  curl -s -X POST "$BONDLI_API/api/gpu/deregister" \
-    -H "Content-Type: application/json" \
-    -d "{\"wallet\":\"$WALLET\"}" >/dev/null 2>&1
-  sleep 1
-  HTTP_CODE=$(curl -s -o /tmp/bondli-register.json -w "%{http_code}" -X POST "$BONDLI_API/api/gpu/register" \
+  # Node already exists — reconnect to preserve funded SOL balance
+  echo "[..] Existing node found — reconnecting (preserving your SOL balance)..."
+  HTTP_CODE=$(curl -s -o /tmp/bondli-register.json -w "%{http_code}" -X POST "$BONDLI_API/api/gpu/reconnect" \
     -H "Content-Type: application/json" \
     -d "{\"wallet\":\"$WALLET\",\"gpuModel\":\"$GPU_NAME\"}")
+  RECONNECTED=true
 fi
 
 if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
@@ -222,7 +221,11 @@ if [ -z "$NODE_ADDRESS" ] || [ -z "$KEYPAIR_JSON" ]; then
   exit 1
 fi
 
-echo "[OK] Registered: $NODE_ADDRESS"
+if [ "$RECONNECTED" = true ]; then
+  echo "[OK] Reconnected: $NODE_ADDRESS (existing node, SOL preserved)"
+else
+  echo "[OK] Registered: $NODE_ADDRESS (new node)"
+fi
 
 # ── Write keypair to Nosana location ──
 mkdir -p ~/.nosana
@@ -231,21 +234,26 @@ chmod 600 ~/.nosana/nosana_key.json
 echo "[OK] Node keypair written to ~/.nosana/nosana_key.json"
 
 # ── Fund node wallet with SOL for Nosana tx fees ──
-echo ""
-echo "======================================="
-echo "  Send ~0.05 SOL to your node wallet"
-echo "======================================="
-echo "  Nosana requires SOL for on-chain"
-echo "  transaction fees (claiming jobs,"
-echo "  submitting results)."
-echo ""
-echo "  Node wallet:"
-echo "  $NODE_ADDRESS"
-echo ""
-echo "  Without SOL your node cannot accept jobs."
-echo "======================================="
-echo ""
-read -p "Press Enter once funded (or Ctrl+C to fund later)..."
+if [ "$RECONNECTED" = true ]; then
+  echo ""
+  echo "[OK] Using existing node wallet — SOL balance preserved"
+  echo "     Node wallet: $NODE_ADDRESS"
+else
+  echo ""
+  echo "======================================="
+  echo "  Send ~0.05 SOL to your node wallet"
+  echo "======================================="
+  echo "  Nosana requires SOL for on-chain"
+  echo "  transaction fees (claiming jobs,"
+  echo "  submitting results)."
+  echo ""
+  echo "  Node wallet:"
+  echo "  $NODE_ADDRESS"
+  echo ""
+  echo "  Without SOL your node cannot accept jobs."
+  echo "  Fund via Bondli dashboard: https://bondli.fun/gpu"
+  echo "======================================="
+fi
 
 # ── Start Nosana node ──
 echo "[..] Starting Nosana node..."
