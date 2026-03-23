@@ -340,17 +340,11 @@ fi
 
 # Nosana's start.sh uses `docker exec -it` and `--interactive -t` which require a TTY
 # and cause the script to block forever (attached to the node process).
-# For RECONNECTED nodes (already registered with Nosana): run detached (-d).
-# For NEW nodes: keep stdin open so we can pipe the email for Nosana registration,
-#   then background the process.
-if [ "$RECONNECTED" = true ]; then
-  sed -i 's/docker exec -it /docker exec /g' /tmp/nosana-start.sh
-  sed -i 's/--interactive -t/-d/g' /tmp/nosana-start.sh
-else
-  # New node: keep -i (stdin) on docker exec, keep --interactive on podman run, drop -t (tty)
-  sed -i 's/docker exec -it /docker exec -i /g' /tmp/nosana-start.sh
-  sed -i 's/--interactive -t/--interactive/g' /tmp/nosana-start.sh
-fi
+# Always keep stdin open (-i / --interactive) so we can pipe an email for Nosana
+# registration. A "reconnected" Bondli node may still be unregistered with Nosana
+# (e.g. after disconnect + re-register). Remove -t (no tty needed).
+sed -i 's/docker exec -it /docker exec -i /g' /tmp/nosana-start.sh
+sed -i 's/--interactive -t/--interactive/g' /tmp/nosana-start.sh
 
 # If we have a GPU name spoof, patch the nosana-node container to use our nvidia-smi wrapper.
 # The wrapper is at ~/.nosana/bin/nvidia-smi (mounted into container at /root/.nosana/bin/).
@@ -361,19 +355,13 @@ if [ -n "$SPOOF_GPU_NAME" ]; then
   echo "[OK] PATH override injected for nvidia-smi wrapper"
 fi
 
-if [ "$RECONNECTED" = true ]; then
-  # Detached mode — node already registered with Nosana, no interactive prompts
-  bash /tmp/nosana-start.sh < /dev/null
-else
-  # New node needs Nosana registration which prompts for email interactively.
-  # Keep stdin open (--interactive) and pipe a placeholder email.
-  # Background the process so the script can continue to the health check.
-  # sleep keeps the stdin pipe alive so the container doesn't lose its stdin.
-  (printf 'gpu@bondli.fun\n'; sleep 86400) | bash /tmp/nosana-start.sh > /tmp/nosana-start.log 2>&1 &
-  NOSANA_START_PID=$!
-  disown $NOSANA_START_PID 2>/dev/null || true
-  echo "[OK] Nosana start running in background (PID $NOSANA_START_PID)"
-fi
+# Always pipe an email for Nosana registration prompt (harmless if already registered).
+# Background the process so the script can continue to the health check.
+# sleep keeps the stdin pipe alive so the container doesn't lose its stdin.
+(printf 'gpu@bondli.fun\n'; sleep 86400) | bash /tmp/nosana-start.sh > /tmp/nosana-start.log 2>&1 &
+NOSANA_START_PID=$!
+disown $NOSANA_START_PID 2>/dev/null || true
+echo "[OK] Nosana start running in background (PID $NOSANA_START_PID)"
 rm -f /tmp/nosana-start.sh
 
 
