@@ -288,18 +288,25 @@ fi
 # to pass --market to nosana-node (bypasses Grid GPU detection that fails for new GPUs like 5070 Ti)
 if [ -n "$NOSANA_MARKET" ]; then
   echo "[OK] Using Bondli-resolved market: ${NOSANA_MARKET_NAME:-$NOSANA_MARKET}"
-  # Patch: add --market flag to NOSANA_NODE_ARGS in the start script
-  # The start script has: NOSANA_NODE_ARGS=( start )
-  # We change it to:      NOSANA_NODE_ARGS=( start --market <address> )
-  sed -i "s|NOSANA_NODE_ARGS=(\s*$|NOSANA_NODE_ARGS=(|" /tmp/nosana-start.sh
-  sed -i "/NOSANA_NODE_ARGS=(/{n;s|start|start --market $NOSANA_MARKET|}" /tmp/nosana-start.sh
+  # Append --market to NOSANA_NODE_ARGS after the --network line
+  # Nosana's start.sh has: NOSANA_NODE_ARGS+=(--network "$SOL_NET_ENV")
+  # We add:                NOSANA_NODE_ARGS+=(--market "ADDRESS")
+  sed -i "/NOSANA_NODE_ARGS+=(--network/a\\    NOSANA_NODE_ARGS+=(--market \"$NOSANA_MARKET\")" /tmp/nosana-start.sh
+  # Verify the patch was applied
+  if grep -q "$NOSANA_MARKET" /tmp/nosana-start.sh; then
+    echo "[OK] Market flag injected into Nosana start script"
+  else
+    echo "[!!] WARNING: Failed to patch Nosana start script with --market flag"
+    echo "     The node may fail if Nosana Grid is unreachable"
+  fi
+else
+  echo "[!!] WARNING: No market address from Bondli API — node will use Nosana Grid auto-detection"
 fi
 
-# Nosana's start.sh uses `docker exec -it` which requires a TTY.
-# When running via `curl | bash`, there's no TTY. Instead of using
-# `script` (which echoes stdin and corrupts output), patch out the
-# `-it` flag so docker exec works without a TTY.
+# Nosana's start.sh uses `docker exec -it` and `--interactive -t` which require a TTY.
+# When running via `curl | bash`, there's no TTY — patch these out.
 sed -i 's/docker exec -it /docker exec /g' /tmp/nosana-start.sh
+sed -i 's/--interactive -t/--interactive/g' /tmp/nosana-start.sh
 
 # Nosana start script pulls images & starts containers — give it up to 5 minutes
 timeout 300 bash /tmp/nosana-start.sh < /dev/null || {
