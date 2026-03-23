@@ -304,11 +304,13 @@ export function mountGpuRoutes(app, deps) {
       const cmdLogRaw = await redis.lRange(`bondli:gpu:cmd_log:${nodeAddress}`, 0, 9);
       const commandLog = cmdLogRaw.map(c => { try { return JSON.parse(c); } catch { return null; } }).filter(Boolean);
 
-      // Check for command results
+      // Check for command results (auto-expire commands older than 5 minutes)
       for (const cmd of commandLog) {
         const resultRaw = await redis.get(`bondli:gpu:cmd_result:${nodeAddress}:${cmd.id}`);
         if (resultRaw) {
           try { cmd.result = JSON.parse(resultRaw); } catch {}
+        } else if (cmd.issuedAt && Date.now() - cmd.issuedAt > 300_000) {
+          cmd.result = { status: "expired", output: "Command timed out" };
         }
       }
 
