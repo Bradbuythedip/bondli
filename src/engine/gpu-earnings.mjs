@@ -26,7 +26,7 @@
  * ═══════════════════════════════════════════════════════════════
  */
 
-import { Keypair, PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram, Transaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL } from "@solana/web3.js";
 import {
   getAssociatedTokenAddress,
   getAccount,
@@ -227,10 +227,18 @@ export function mountGpuRoutes(app, deps) {
       }
 
       // Sweep any remaining NOS balance to user first
+      let nosSwept = 0, solSwept = 0;
       try {
         await sweepNodeBalance(redis, connection, nodeAddress, wallet);
       } catch (err) {
-        console.warn(`[GPU] Sweep on deregister failed for ${nodeAddress}:`, err.message);
+        console.warn(`[GPU] NOS sweep on deregister failed for ${nodeAddress}:`, err.message);
+      }
+
+      // Sweep SOL back to user wallet
+      try {
+        solSwept = await sweepNodeSol(redis, connection, nodeAddress, wallet);
+      } catch (err) {
+        console.warn(`[GPU] SOL sweep on deregister failed for ${nodeAddress}:`, err.message);
       }
 
       // Cleanup all Redis keys
@@ -239,9 +247,15 @@ export function mountGpuRoutes(app, deps) {
       await redis.del(`bondli:gpu:nodekey:${nodeAddress}`);
       await redis.sRem("bondli:gpu:all_nodes", nodeAddress);
 
-      console.log(`[GPU] Deregistered node ${nodeAddress.slice(0, 8)}... for wallet ${wallet.slice(0, 8)}...`);
+      console.log(`[GPU] Deregistered node ${nodeAddress.slice(0, 8)}... for wallet ${wallet.slice(0, 8)}... (swept ${solSwept.toFixed(6)} SOL)`);
 
-      res.json({ success: true, message: "Node deregistered. You can register a new GPU." });
+      res.json({
+        success: true,
+        solSwept: solSwept > 0 ? solSwept : undefined,
+        message: solSwept > 0
+          ? `Node deregistered. ${solSwept.toFixed(6)} SOL swept back to your wallet.`
+          : "Node deregistered. You can register a new GPU.",
+      });
     } catch (err) {
       console.error("[GPU] Deregister error:", err.message);
       res.status(500).json({ error: "Deregistration failed" });
@@ -691,4 +705,35 @@ async function sweepNodeBalance(redis, connection, nodeAddress, overrideWallet =
   return true;
 }
 
-export { sweepNodeBalance };
+/**
+ * Sweep native SOL balance from a node wallet back to the user.
+ * Keeps a tiny amount for rent exemption. Returns the amount swept in SOL.
+ */
+async function sweepNodeSol(redis, connection, nodeAddress, userWallet) {
+  const nodeSecret = await redis.get(`bondli:gpu:nodekey:${nodeAddress}`);
+  if (!nodeSecret) return 0;
+
+  const nodeKeypair = Keypair.fromSecretKey(bs58.decode(nodeSecret));
+  const balance = await connection.getBalance(nodeKeypair.publicKey);
+
+  // Keep 5000 lamports for tx fee, sweep the rest
+  const fee = 5000;
+  const sweepAmount = balance - fee;
+  if (sweepAmount <= 0) return 0;
+
+  const tx = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: nodeKeypair.publicKey,
+      toPubkey: new PublicKey(userWallet),
+      lamports: sweepAmount,
+    })
+  );
+
+  await sendAndConfirmTransaction(connection, tx, [nodeKeypair]);
+
+  const solAmount = sweepAmount / LAMPORTS_PER_SOL;
+  console.log(`[GPU SOL SWEEP] ${nodeAddress.slice(0, 8)}...: ${solAmount.toFixed(6)} SOL → ${userWallet.slice(0, 8)}...`);
+  return solAmount;
+}
+
+export { sweepNodeBalance, sweepNodeSol };
