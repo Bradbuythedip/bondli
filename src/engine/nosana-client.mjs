@@ -24,23 +24,45 @@ const NOSANA_API_KEY = process.env.NOSANA_API_KEY || ""; // nos_xxx_...
 export const NOS_MINT = "nosXBVoaCTtYdLvKY6Csb4AC8JCdQKKAaWYtx2ZMoo7";
 
 // ═══════════════════════════════════════
-// GPU MARKET ADDRESSES — Nosana market IDs
+// GPU MARKET ADDRESSES — Nosana market IDs (updated 2026-03-23 from dashboard API)
 // ═══════════════════════════════════════
 export const NOSANA_MARKETS = {
   "RTX 3060":  { address: "7AtiXMSH6R1jjBxrcYjehCkkSF7zvYWte63gwEDBcGHq", nosPerSec: 0.000043, vram: 12 },
-  "RTX 4070":  { address: "EzuHhkrhmV98HWzREsgLenKj2iHdJgrKmzfL8psP8Aso", nosPerSec: 0.000035, vram: 12 },
+  "RTX 3070":  { address: "RXP7JK8MTY4uPJng4UjC9ZJdDDSG6wGr8pvVf3mwgXF", nosPerSec: 0.000043, vram: 8 },
+  "RTX 3080":  { address: "7RepDm4Xt9k6qV5oiSHvi8oBoty4Q2tfBGnCYjFLj6vA", nosPerSec: 0.000045, vram: 10 },
   "RTX 3090":  { address: "CA5pMpqkYFKtme7K31pNB1s62X2SdhEv1nN9RdxKCpuQ", nosPerSec: 0.00009,  vram: 24 },
+  "RTX 4060":  { address: "47LQHZwT7gfVoBDYnRYhsYv6vKk8a1oW3Y3SdHAp1gTr", nosPerSec: 0.000035, vram: 8 },
+  "RTX 4070":  { address: "EzuHhkrhmV98HWzREsgLenKj2iHdJgrKmzfL8psP8Aso", nosPerSec: 0.000045, vram: 12 },
+  "RTX 4080":  { address: "77wdaAuYVxBW5u2QiqddkAzoBZ5cuKxH9ZCbx5HfFUb2", nosPerSec: 0.000075, vram: 16 },
   "RTX 4090":  { address: "97G9NnvBDQ2WpKu6fasoMsAKmfj63C9rhysJnkeWodAf", nosPerSec: 0.000097, vram: 24 },
+  "RTX 5070":  { address: "5eX3kWkrcbwejEc1svbfP4F7NKYjtPDuyU5KnV1hUBKg", nosPerSec: 0.000070, vram: 12 },
+  "RTX 5080":  { address: "9HnJacS25TnErsKMYJmKqWeCAMYuwY7gzhz9Eqhp5VE7", nosPerSec: 0.000095, vram: 16 },
+  "RTX 5090":  { address: "6Xt8hgVLLL2PSHC9NtJP8E8oTdA5ZJc95hZEnHcdqKqb", nosPerSec: 0.000120, vram: 32 },
+  "A40":       { address: "BLqSzPzcXMX5gseNXE4Ma45f31Eo6tNFVYoRmPG7kxP2", nosPerSec: 0.000090, vram: 48 },
+  "A100 40GB": { address: "F3aGGSMb73XHbJbDXVbcXo7iYM9fyevvAZGQfwgrnWtB", nosPerSec: 0.000100, vram: 40 },
   "A100":      { address: "GLJHzqRN9fKGBsvsFzmGnaQGknUtLN1dqaFR8n3YdM22", nosPerSec: 0.000115, vram: 80 },
+  "H100":      { address: "Crop49jpc7prcgAcS82WbWyGHwbN5GgDym3uFbxxCTZg", nosPerSec: 0.000150, vram: 80 },
+  "A4000":     { address: "7fnuvPYzfd961iRDPRgMSKLrUf1QjTGnn7viu3P12Zuc", nosPerSec: 0.000060, vram: 16 },
+  "A5000":     { address: "4uBye3vJ1FAYukDdrvqQ36MZZZxqW3o8utWu8fyomRuN", nosPerSec: 0.000080, vram: 24 },
+  "A6000":     { address: "EjryZ6XEthz3z7nnLfjXBYafyn7VyHgChfbfM47LfAao", nosPerSec: 0.000100, vram: 48 },
 };
 
 // Slug-based market lookup (for CLI compatibility)
 export const MARKET_SLUGS = {
   "nvidia-3060": NOSANA_MARKETS["RTX 3060"],
-  "nvidia-4070": NOSANA_MARKETS["RTX 4070"],
+  "nvidia-3070": NOSANA_MARKETS["RTX 3070"],
+  "nvidia-3080": NOSANA_MARKETS["RTX 3080"],
   "nvidia-3090": NOSANA_MARKETS["RTX 3090"],
+  "nvidia-4060": NOSANA_MARKETS["RTX 4060"],
+  "nvidia-4070": NOSANA_MARKETS["RTX 4070"],
+  "nvidia-4080": NOSANA_MARKETS["RTX 4080"],
   "nvidia-4090": NOSANA_MARKETS["RTX 4090"],
+  "nvidia-5070": NOSANA_MARKETS["RTX 5070"],
+  "nvidia-5080": NOSANA_MARKETS["RTX 5080"],
+  "nvidia-5090": NOSANA_MARKETS["RTX 5090"],
+  "nvidia-a40":  NOSANA_MARKETS["A40"],
   "nvidia-a100": NOSANA_MARKETS["A100"],
+  "nvidia-h100": NOSANA_MARKETS["H100"],
 };
 
 /**
@@ -53,18 +75,30 @@ export function resolveMarket(gpuModel) {
   const normalized = gpuModel.toUpperCase();
   const isLaptop = normalized.includes("LAPTOP") || normalized.includes("MOBILE") || normalized.includes("MAX-Q");
 
-  // Laptop GPUs have less VRAM than desktop equivalents — map by comparable desktop VRAM
-  // spoofGpuName: the desktop GPU name Grid recognizes (for access key minting)
+  // Laptop GPUs: map to the same desktop tier market (Nosana now supports 5070 directly)
+  // spoofGpuName is no longer needed for most GPUs since markets exist for 50-series
   if (isLaptop) {
-    // Extract the GPU model for display (e.g. "5070 Ti Laptop" stays recognizable)
     const shortName = gpuModel.replace(/NVIDIA\s*GeForce\s*/i, "").replace(/\s+/g, " ").trim();
-    // High-end laptop GPUs (5070+, 4080+, 4090) → ~8-12GB VRAM → RTX 4070 tier
-    if (normalized.includes("5090") || normalized.includes("5080") || normalized.includes("5070") ||
-        normalized.includes("4090") || normalized.includes("4080")) {
-      return { ...NOSANA_MARKETS["RTX 4070"], name: shortName + " (12GB tier)", spoofGpuName: "NVIDIA GeForce RTX 4070" };
+    if (normalized.includes("5090")) {
+      return { ...NOSANA_MARKETS["RTX 5090"], name: shortName + " (5090 tier)" };
+    }
+    if (normalized.includes("5080")) {
+      return { ...NOSANA_MARKETS["RTX 5080"], name: shortName + " (5080 tier)" };
+    }
+    if (normalized.includes("5070")) {
+      return { ...NOSANA_MARKETS["RTX 5070"], name: shortName + " (5070 tier)" };
+    }
+    if (normalized.includes("4090")) {
+      return { ...NOSANA_MARKETS["RTX 4090"], name: shortName + " (4090 tier)" };
+    }
+    if (normalized.includes("4080")) {
+      return { ...NOSANA_MARKETS["RTX 4080"], name: shortName + " (4080 tier)" };
+    }
+    if (normalized.includes("4070")) {
+      return { ...NOSANA_MARKETS["RTX 4070"], name: shortName + " (4070 tier)" };
     }
     // Lower-end laptop GPUs → RTX 3060 tier
-    return { ...NOSANA_MARKETS["RTX 3060"], name: shortName + " (12GB tier)", spoofGpuName: "NVIDIA GeForce RTX 3060" };
+    return { ...NOSANA_MARKETS["RTX 3060"], name: shortName + " (3060 tier)" };
   }
 
   // Exact match first
@@ -75,17 +109,44 @@ export function resolveMarket(gpuModel) {
   }
 
   // Tier-based fallback: newer/higher cards get best available market
-  if (normalized.includes("5090") || normalized.includes("5080") || normalized.includes("A100") || normalized.includes("H100")) {
+  if (normalized.includes("H100")) {
+    return { ...NOSANA_MARKETS["H100"], name: "H100" };
+  }
+  if (normalized.includes("A100")) {
     return { ...NOSANA_MARKETS["A100"], name: "A100" };
   }
-  if (normalized.includes("5070") || normalized.includes("4090") || normalized.includes("4080")) {
+  if (normalized.includes("5090")) {
+    return { ...NOSANA_MARKETS["RTX 5090"], name: "RTX 5090" };
+  }
+  if (normalized.includes("5080")) {
+    return { ...NOSANA_MARKETS["RTX 5080"], name: "RTX 5080" };
+  }
+  if (normalized.includes("5070")) {
+    return { ...NOSANA_MARKETS["RTX 5070"], name: "RTX 5070" };
+  }
+  if (normalized.includes("4090")) {
     return { ...NOSANA_MARKETS["RTX 4090"], name: "RTX 4090" };
   }
-  if (normalized.includes("3090") || normalized.includes("3080") || normalized.includes("A4000") || normalized.includes("A5000")) {
-    return { ...NOSANA_MARKETS["RTX 3090"], name: "RTX 3090" };
+  if (normalized.includes("4080")) {
+    return { ...NOSANA_MARKETS["RTX 4080"], name: "RTX 4080" };
   }
   if (normalized.includes("4070") || normalized.includes("4060")) {
     return { ...NOSANA_MARKETS["RTX 4070"], name: "RTX 4070" };
+  }
+  if (normalized.includes("3090") || normalized.includes("3080")) {
+    return { ...NOSANA_MARKETS["RTX 3090"], name: "RTX 3090" };
+  }
+  if (normalized.includes("A6000")) {
+    return { ...NOSANA_MARKETS["A6000"], name: "A6000" };
+  }
+  if (normalized.includes("A5000")) {
+    return { ...NOSANA_MARKETS["A5000"], name: "A5000" };
+  }
+  if (normalized.includes("A4000") || normalized.includes("4000")) {
+    return { ...NOSANA_MARKETS["A4000"], name: "A4000" };
+  }
+  if (normalized.includes("A40")) {
+    return { ...NOSANA_MARKETS["A40"], name: "A40" };
   }
 
   // Fallback to lowest tier
