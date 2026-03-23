@@ -14,6 +14,8 @@
 # Nosana constraint: 1 private key per GPU, 1 GPU per PC
 # ═══════════════════════════════════════════════════════════════
 
+{ # this ensures the entire script is downloaded before execution begins
+
 set -e
 
 WALLET=""
@@ -438,3 +440,5 @@ echo "  Stop:   docker exec podman podman stop nosana-node"
 echo "  Logs:   docker exec podman podman logs nosana-node --tail 20"
 echo "  Status: nvidia-smi"
 echo "======================================="
+
+} # end of curl|bash safety wrapper
