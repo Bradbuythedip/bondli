@@ -879,6 +879,18 @@ function processRadarMessage(data) {
       fetchTokenImage(mint, data.uri).catch(() => {});
     }
 
+    // Delayed image fallback: if token still has no image after 5s, try pump.fun API
+    setTimeout(() => {
+      const t2 = radar.tokens.get(mint);
+      if (t2 && !t2.image) {
+        fetchPumpFunMetadata(mint).then(meta => {
+          if (!meta?.image) return;
+          const t3 = radar.tokens.get(mint);
+          if (t3 && !t3.image) t3.image = meta.image;
+        }).catch(() => {});
+      }
+    }, 5000);
+
     // Fallback: if WS didn't send name, try pump.fun API (may be blocked)
     if (!data.name) {
       fetchPumpFunMetadata(mint).then(meta => {
@@ -2148,29 +2160,6 @@ setInterval(() => {
   radar.tabs.new = rugFiltered
     .filter(t => (now - t.createdAt) < 600000)
     .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, 50).map(serialize);
-
-  // ── HOT: Tokens with actual buy activity ──
-  radar.tabs.hot = rugFiltered
-    .filter(t => t.buys >= 2)
-    .map(t => {
-      const ageMin = Math.max(0.3, (now - t.createdAt) / 60000);
-      const ub = t.uniqueBuyers?.size || 0;
-      // Penalize rug patterns in HOT tab too
-      let rugHeatPenalty = 0;
-      try {
-        const qf = extractQuickFeatures(t);
-        if (qf) {
-          if (qf._rg_zeroSellFlag > 0.5) rugHeatPenalty += qf._rg_zeroSellFlag * 30;
-          if (qf._rg_buySellImbalance > 0.5) rugHeatPenalty += qf._rg_buySellImbalance * 20;
-          if (qf.ch_staircaseScore > 0.3) rugHeatPenalty += qf.ch_staircaseScore * 15;
-          if (qf.ch_smoothGrind > 0.35) rugHeatPenalty += qf.ch_smoothGrind * 10;
-          if (qf.ch_flatlineSpike > 0.25) rugHeatPenalty += qf.ch_flatlineSpike * 20;
-        }
-      } catch {}
-      return { ...t, _heat: (t.buys/ageMin)*10 + ub*8 + t.volumeSol*5 + (t.mcapUsd>5000?10:0) - rugHeatPenalty };
-    })
-    .sort((a, b) => b._heat - a._heat)
     .slice(0, 50).map(serialize);
 
   // ── GRAD: Real traction MC ($10K+) or graduated ($69K+) ──
@@ -6742,9 +6731,9 @@ app.get("/api/img", async (req, res) => {
     return res.send(cached.buf);
   }
 
-  // Negative cache: if this URL failed recently, don't retry for 5s
+  // Negative cache: if this URL failed recently, don't retry for 30s
   const failTs = imgFailing.get(url);
-  if (failTs && Date.now() - failTs < 5000) {
+  if (failTs && Date.now() - failTs < 30000) {
     return res.status(404).end();
   }
 
@@ -6844,7 +6833,7 @@ app.get("/api/img", async (req, res) => {
       imgFailing.set(url, Date.now());
       // Evict old negative cache entries
       if (imgFailing.size > 5000) {
-        const cutoff = Date.now() - 5000;
+        const cutoff = Date.now() - 30000;
         for (const [k, v] of imgFailing) { if (v < cutoff) imgFailing.delete(k); }
       }
       return res.status(404).end();
