@@ -228,10 +228,23 @@ else
 fi
 
 # ── Write keypair to Nosana location ──
+# Nosana's podman container mounts /root/.nosana/ — write there too if we can
 mkdir -p ~/.nosana
 echo "$KEYPAIR_JSON" > ~/.nosana/nosana_key.json
 chmod 600 ~/.nosana/nosana_key.json
+if [ "$(id -u)" != "0" ]; then
+  sudo mkdir -p /root/.nosana
+  sudo tee /root/.nosana/nosana_key.json > /dev/null <<< "$KEYPAIR_JSON"
+  sudo chmod 600 /root/.nosana/nosana_key.json
+fi
 echo "[OK] Node keypair written to ~/.nosana/nosana_key.json"
+
+# Stop old podman container so Nosana picks up the new key
+if docker ps -q --filter name=podman 2>/dev/null | grep -q .; then
+  echo "[..] Stopping old podman to pick up new key..."
+  docker stop podman >/dev/null 2>&1 || true
+  docker rm podman >/dev/null 2>&1 || true
+fi
 
 # ── Fund node wallet with SOL for Nosana tx fees ──
 if [ "$RECONNECTED" = true ]; then
