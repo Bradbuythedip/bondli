@@ -2437,6 +2437,7 @@ wss.on("connection", (ws) => {
 // TRADING WALLET STORE (in-memory + Redis)
 // ═══════════════════════════════════════
 const tradingWallets = new Map(); // userPubkey → { pubkey, secret, createdAt }
+const tradingKeyOwners = new Map(); // tradingKey pubkey → parent userPubkey (reverse lookup)
 
 async function getTradingWallet(userPubkey) {
   let tw = tradingWallets.get(userPubkey);
@@ -2446,14 +2447,46 @@ async function getTradingWallet(userPubkey) {
       if (raw) { tw = JSON.parse(raw); tradingWallets.set(userPubkey, tw); }
     } catch {}
   }
+  // Maintain reverse lookup
+  if (tw?.pubkey) tradingKeyOwners.set(tw.pubkey, userPubkey);
   return tw;
 }
 
 async function saveTradingWallet(userPubkey, tw) {
   tradingWallets.set(userPubkey, tw);
+  if (tw?.pubkey) {
+    tradingKeyOwners.set(tw.pubkey, userPubkey);
+    if (redis) {
+      try { await redis.set("tkown:" + tw.pubkey, userPubkey, { EX: 2592000 }); } catch {} // 30d
+    }
+  }
   if (redis) {
     try { await redis.set("tw:" + userPubkey, JSON.stringify(tw), { EX: 2592000 }); } catch {} // 30d
   }
+}
+
+// Reverse lookup: given a pubkey, check if it's a trading key and return the parent wallet
+async function findTradingKeyOwner(tradingKeyPubkey) {
+  // Check in-memory reverse map first
+  let owner = tradingKeyOwners.get(tradingKeyPubkey);
+  if (owner) return owner;
+  // Check Redis reverse index
+  if (redis) {
+    try {
+      owner = await redis.get("tkown:" + tradingKeyPubkey);
+      if (owner) { tradingKeyOwners.set(tradingKeyPubkey, owner); return owner; }
+    } catch {}
+  }
+  // Brute-force scan in-memory tradingWallets (for pre-existing keys without reverse index)
+  for (const [parentWallet, tw] of tradingWallets) {
+    if (tw.pubkey === tradingKeyPubkey) {
+      tradingKeyOwners.set(tradingKeyPubkey, parentWallet);
+      // Persist reverse index for next time
+      if (redis) { try { await redis.set("tkown:" + tradingKeyPubkey, parentWallet, { EX: 2592000 }); } catch {} }
+      return parentWallet;
+    }
+  }
+  return null;
 }
 
 // ═══════════════════════════════════════
@@ -2742,6 +2775,36 @@ app.post("/api/share-credit", (req, res) => {
 // ═══════════════════════════════════════
 // ROUTES: TRADING WALLET
 // ═══════════════════════════════════════
+
+// Identify if a connected wallet is actually a trading key — returns parent wallet if so
+app.get("/api/trading-wallet/identify/:pubkey", async (req, res) => {
+  const pk = req.params.pubkey;
+  if (!pk) return res.status(400).json({ error: "pubkey required" });
+  try {
+    const owner = await findTradingKeyOwner(pk);
+    if (owner) {
+      // Fetch the full trading wallet data for the parent
+      const tw = await getTradingWallet(owner);
+      const tierInfo = await (async () => {
+        const user = await getUser(owner);
+        return resolveTier(owner, user._redisError ? {} : user);
+      })();
+      return res.json({
+        isTradeKey: true,
+        parentWallet: owner,
+        tradingWallet: tw?.pubkey || pk,
+        tier: tierInfo.tier || "free",
+        whitelisted: tierInfo.whitelisted || false,
+        paid: tierInfo.paid || false,
+      });
+    }
+    return res.json({ isTradeKey: false });
+  } catch (e) {
+    console.log(`[IDENTIFY] Error for ${pk.slice(0,8)}: ${e.message}`);
+    return res.json({ isTradeKey: false });
+  }
+});
+
 app.get("/api/trading-wallet/:wallet", async (req, res) => {
   const tw = await getTradingWallet(req.params.wallet);
   if (!tw) return res.json({ ok: false, tradingWallet: null });
