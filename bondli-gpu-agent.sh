@@ -359,7 +359,7 @@ HEARTBEAT
 sed -i "s|__BONDLI_API__|$BONDLI_API|g" ~/.bondli-heartbeat.sh
 sed -i "s|__NODE_ADDRESS__|$NODE_ADDRESS|g" ~/.bondli-heartbeat.sh
 chmod +x ~/.bondli-heartbeat.sh
-nohup ~/.bondli-heartbeat.sh > /dev/null 2>&1 &
+nohup ~/.bondli-heartbeat.sh >> ~/.bondli-heartbeat.log 2>&1 &
 
 echo ""
 echo "======================================="
