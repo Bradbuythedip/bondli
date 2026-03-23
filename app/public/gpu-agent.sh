@@ -246,8 +246,9 @@ echo "[OK] Node keypair written to ~/.nosana/nosana_key.json"
 # Stop old podman container so Nosana picks up the new key
 if docker ps -q --filter name=podman 2>/dev/null | grep -q .; then
   echo "[..] Stopping old podman to pick up new key..."
-  docker stop podman >/dev/null 2>&1 || true
-  docker rm podman >/dev/null 2>&1 || true
+  timeout 15 docker stop podman >/dev/null 2>&1 || true
+  timeout 10 docker rm podman >/dev/null 2>&1 || true
+  echo "[OK] Old podman stopped"
 fi
 
 # ── Fund node wallet with SOL for Nosana tx fees ──
@@ -276,7 +277,12 @@ fi
 echo "[..] Starting Nosana node..."
 
 # Download Nosana's start script so we can patch it for unsupported GPUs
-curl -s https://nosana.com/start.sh -o /tmp/nosana-start.sh
+curl -s --connect-timeout 10 --max-time 30 https://nosana.com/start.sh -o /tmp/nosana-start.sh
+if [ ! -s /tmp/nosana-start.sh ]; then
+  echo "[!!] Failed to download Nosana start script"
+  echo "     Try running manually: bash <(curl -s https://nosana.com/start.sh)"
+  exit 1
+fi
 
 # If we have a pre-resolved market from Bondli, patch the start script
 # to pass --market to nosana-node (bypasses Grid GPU detection that fails for new GPUs like 5070 Ti)
@@ -295,7 +301,11 @@ fi
 # `-it` flag so docker exec works without a TTY.
 sed -i 's/docker exec -it /docker exec /g' /tmp/nosana-start.sh
 
-bash /tmp/nosana-start.sh < /dev/null
+# Nosana start script pulls images & starts containers — give it up to 5 minutes
+timeout 300 bash /tmp/nosana-start.sh < /dev/null || {
+  echo "[!!] Nosana start script timed out or failed"
+  echo "     Try running manually: bash <(curl -s https://nosana.com/start.sh)"
+}
 rm -f /tmp/nosana-start.sh
 
 # Verify the node container is actually running
