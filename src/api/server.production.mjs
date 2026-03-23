@@ -702,10 +702,18 @@ async function fetchTokenImage(ca, uri) {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
     });
     if (!r.ok) return;
-    const meta = await r.json();
+    const ct = r.headers.get("content-type") || "";
     const token = radar.tokens.get(ca);
     if (!token) return;
-    
+
+    // If the URI points directly to an image (not JSON metadata), use it as the image URL
+    if (ct.includes("image") || ct.includes("octet")) {
+      token.image = url;
+      return;
+    }
+
+    let meta;
+    try { meta = await r.json(); } catch { token.image = url; return; }
     let img = meta.image || meta.imageUri || "";
     if (img.startsWith("ipfs://")) img = "https://pump.mypinata.cloud/ipfs/" + img.slice(7);
     if (img && !img.startsWith("http")) img = "https://pump.mypinata.cloud/ipfs/" + img;
@@ -6681,14 +6689,14 @@ app.get("/api/img", async (req, res) => {
     let fetchUrl = url;
     if (fetchUrl.startsWith("ipfs://")) fetchUrl = fetchUrl.slice(7);
 
-    // Extract IPFS hash if present
-    const ipfsMatch = fetchUrl.match(/(Qm[a-zA-Z0-9]{44,}|bafkrei[a-zA-Z0-9]{50,}|bafy[a-zA-Z0-9]{50,})/);
+    // Extract IPFS hash if present — supports CIDv0 (Qm...) and CIDv1 (bafy.../bafk...)
+    const ipfsMatch = fetchUrl.match(/(Qm[a-zA-Z0-9]{44,}|bafk[a-zA-Z0-9]{50,}|bafy[a-zA-Z0-9]{50,})/);
     const ipfsHash = ipfsMatch ? ipfsMatch[1] : null;
 
     // Build gateway URLs — fastest/most reliable first
     const urls = [];
     if (ipfsHash) {
-      urls.push(`https://pump.mypinata.cloud/ipfs/${ipfsHash}?img-width=256&img-dpr=2&img-onerror=redirect`);
+      urls.push(`https://pump.mypinata.cloud/ipfs/${ipfsHash}?img-width=256&img-dpr=2`);
       urls.push(`https://img.fotofolio.xyz/?url=https%3A%2F%2Fcf-ipfs.com%2Fipfs%2F${ipfsHash}`);
       urls.push(`https://gateway.pinata.cloud/ipfs/${ipfsHash}`);
       urls.push(`https://cf-ipfs.com/ipfs/${ipfsHash}`);
@@ -6698,7 +6706,7 @@ app.get("/api/img", async (req, res) => {
     }
     if (fetchUrl.includes("pump.fun") || fetchUrl.includes("cf-ipfs")) {
       const pumpMatch = fetchUrl.match(/\/ipfs\/([a-zA-Z0-9]+)/);
-      if (pumpMatch) urls.unshift(`https://pump.mypinata.cloud/ipfs/${pumpMatch[1]}?img-width=256&img-dpr=2&img-onerror=redirect`);
+      if (pumpMatch) urls.unshift(`https://pump.mypinata.cloud/ipfs/${pumpMatch[1]}?img-width=256&img-dpr=2`);
     }
     if (!fetchUrl.startsWith("http")) fetchUrl = "https://" + fetchUrl;
     // For any external URL, also try via image proxy services as fallback
@@ -6706,10 +6714,36 @@ app.get("/api/img", async (req, res) => {
       urls.push(fetchUrl);
       urls.push(`https://img.fotofolio.xyz/?url=${encodeURIComponent(fetchUrl)}`);
     } else {
-      urls.push(fetchUrl);
+      // Also try the original URL directly (might be a valid HTTP image URL)
+      if (!urls.includes(fetchUrl)) urls.push(fetchUrl);
+    }
+    // For pump.mypinata URLs that fail, try the raw hash on other gateways
+    if (!ipfsHash && fetchUrl.includes("pump.mypinata.cloud/ipfs/")) {
+      const m = fetchUrl.match(/\/ipfs\/([a-zA-Z0-9]+)/);
+      if (m) {
+        urls.push(`https://gateway.pinata.cloud/ipfs/${m[1]}`);
+        urls.push(`https://cf-ipfs.com/ipfs/${m[1]}`);
+        urls.push(`https://ipfs.io/ipfs/${m[1]}`);
+      }
     }
 
-    // Helper: fetch a single URL with short timeout
+    // Helper: fetch a single URL with short timeout + magic byte validation
+    const isImageBuf = (buf) => {
+      if (buf.length < 4) return false;
+      // PNG: 89 50 4E 47
+      if (buf[0]===0x89&&buf[1]===0x50&&buf[2]===0x4E&&buf[3]===0x47) return true;
+      // JPEG: FF D8 FF
+      if (buf[0]===0xFF&&buf[1]===0xD8&&buf[2]===0xFF) return true;
+      // GIF: 47 49 46 38
+      if (buf[0]===0x47&&buf[1]===0x49&&buf[2]===0x46&&buf[3]===0x38) return true;
+      // WebP: RIFF....WEBP
+      if (buf[0]===0x52&&buf[1]===0x49&&buf[2]===0x46&&buf[3]===0x46&&buf.length>11&&buf[8]===0x57&&buf[9]===0x45&&buf[10]===0x42&&buf[11]===0x50) return true;
+      // BMP: 42 4D
+      if (buf[0]===0x42&&buf[1]===0x4D) return true;
+      // SVG: starts with < (XML/SVG)
+      if (buf[0]===0x3C) { const head=buf.slice(0,200).toString("utf8").toLowerCase(); if (head.includes("<svg")||head.includes("<?xml")) return true; }
+      return false;
+    };
     const tryFetch = async (u, timeout) => {
       const r = await fetch(u, {
         signal: AbortSignal.timeout(timeout),
@@ -6721,7 +6755,11 @@ app.get("/api/img", async (req, res) => {
       if (!ct.includes("image") && !ct.includes("octet")) throw new Error("not image");
       const buf = Buffer.from(await r.arrayBuffer());
       if (buf.length < 10) throw new Error("too small");
-      return { buf, ct };
+      // Reject HTML error pages disguised as images
+      if (!isImageBuf(buf) && ct.includes("octet")) throw new Error("not real image");
+      const head = buf.slice(0,50).toString("utf8").toLowerCase();
+      if (head.includes("<!doctype") || head.includes("<html")) throw new Error("html error page");
+      return { buf, ct: isImageBuf(buf) && ct.includes("octet") ? "image/png" : ct };
     };
 
     // Race strategy: fire first 3 gateways concurrently (5s timeout),
