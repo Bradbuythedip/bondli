@@ -93,19 +93,31 @@ check_nosana_health() {
 
 HEALTH_CHECK_COUNTER=0
 
+# Sanitize nvidia-smi output: strip whitespace, replace [N/A] or non-numeric with 0
+sanitize_metric() {
+  local val="$1"
+  val=$(echo "$val" | tr -d '[:space:]')
+  # If it's a valid number (int or float), keep it; otherwise default to 0
+  if echo "$val" | grep -qE '^[0-9]+\.?[0-9]*$'; then
+    echo "$val"
+  else
+    echo "0"
+  fi
+}
+
 log "Heartbeat daemon started for node $NODE_ADDRESS"
 
 while true; do
-  # Collect GPU metrics
-  GPU_UTIL=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  GPU_TEMP=$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader 2>/dev/null || echo "0")
-  MEM_USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  MEM_TOTAL=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  POWER_DRAW=$(nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  POWER_LIMIT=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  FAN_SPEED=$(nvidia-smi --query-gpu=fan.speed --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  GPU_CLOCK=$(nvidia-smi --query-gpu=clocks.gr --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  MEM_CLOCK=$(nvidia-smi --query-gpu=clocks.mem --format=csv,noheader,nounits 2>/dev/null || echo "0")
+  # Collect GPU metrics (sanitize: laptop GPUs return [N/A] for fan speed etc.)
+  GPU_UTIL=$(sanitize_metric "$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null)")
+  GPU_TEMP=$(sanitize_metric "$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null)")
+  MEM_USED=$(sanitize_metric "$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null)")
+  MEM_TOTAL=$(sanitize_metric "$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null)")
+  POWER_DRAW=$(sanitize_metric "$(nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits 2>/dev/null)")
+  POWER_LIMIT=$(sanitize_metric "$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits 2>/dev/null)")
+  FAN_SPEED=$(sanitize_metric "$(nvidia-smi --query-gpu=fan.speed --format=csv,noheader,nounits 2>/dev/null)")
+  GPU_CLOCK=$(sanitize_metric "$(nvidia-smi --query-gpu=clocks.gr --format=csv,noheader,nounits 2>/dev/null)")
+  MEM_CLOCK=$(sanitize_metric "$(nvidia-smi --query-gpu=clocks.mem --format=csv,noheader,nounits 2>/dev/null)")
 
   STATUS="idle"
   [ "$GPU_UTIL" -gt 50 ] 2>/dev/null && STATUS="working"
