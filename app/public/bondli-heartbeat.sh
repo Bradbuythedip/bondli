@@ -6,7 +6,22 @@
 BONDLI_API="__BONDLI_API__"
 NODE_ADDRESS="__NODE_ADDRESS__"
 PENDING_RESULTS_FILE="/tmp/bondli-cmd-results.json"
+HEARTBEAT_LOG="${HOME}/.bondli-heartbeat.log"
+CONSECUTIVE_FAILURES=0
+MAX_BACKOFF=120  # max sleep between heartbeats on repeated failure
+
 echo "[]" > "$PENDING_RESULTS_FILE"
+
+log() {
+  echo "[$(date '+%H:%M:%S')] $*" >> "$HEARTBEAT_LOG"
+}
+
+# Keep log file from growing unbounded (trim to last 500 lines)
+trim_log() {
+  if [ -f "$HEARTBEAT_LOG" ] && [ "$(wc -l < "$HEARTBEAT_LOG")" -gt 1000 ]; then
+    tail -500 "$HEARTBEAT_LOG" > "${HEARTBEAT_LOG}.tmp" && mv "${HEARTBEAT_LOG}.tmp" "$HEARTBEAT_LOG"
+  fi
+}
 
 execute_command() {
   local CMD_TYPE="$1"
@@ -62,6 +77,24 @@ with open('$PENDING_RESULTS_FILE', 'w') as f:
 " 2>/dev/null
 }
 
+# Check if nosana-node container is running, restart if dead
+check_nosana_health() {
+  local RUNNING=$(docker exec podman podman ps --format '{{.Names}}' 2>/dev/null | grep -c "nosana-node" || echo "0")
+  if [ "$RUNNING" -eq 0 ]; then
+    log "WARN: nosana-node not running, attempting restart..."
+    docker exec podman podman start nosana-node 2>/dev/null
+    if [ $? -eq 0 ]; then
+      log "OK: nosana-node restarted"
+    else
+      log "ERROR: failed to restart nosana-node"
+    fi
+  fi
+}
+
+HEALTH_CHECK_COUNTER=0
+
+log "Heartbeat daemon started for node $NODE_ADDRESS"
+
 while true; do
   # Collect GPU metrics
   GPU_UTIL=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null || echo "0")
@@ -81,16 +114,29 @@ while true; do
   # Read pending command results
   CMD_RESULTS=$(cat "$PENDING_RESULTS_FILE" 2>/dev/null || echo "[]")
 
-  # Send heartbeat and capture response
-  RESPONSE=$(curl -s -X POST "$BONDLI_API/api/gpu/heartbeat" \
-    -H "Content-Type: application/json" \
-    -d "{\"nodeAddress\":\"$NODE_ADDRESS\",\"gpuUtil\":$GPU_UTIL,\"gpuTemp\":$GPU_TEMP,\"memUsed\":$MEM_USED,\"memTotal\":$MEM_TOTAL,\"status\":\"$STATUS\",\"powerDraw\":$POWER_DRAW,\"powerLimit\":$POWER_LIMIT,\"fanSpeed\":$FAN_SPEED,\"gpuClock\":$GPU_CLOCK,\"memClock\":$MEM_CLOCK,\"commandResults\":$CMD_RESULTS}" 2>/dev/null)
+  # Send heartbeat with timeout and retry
+  RESPONSE=""
+  for ATTEMPT in 1 2 3; do
+    RESPONSE=$(curl -s --connect-timeout 10 --max-time 20 -X POST "$BONDLI_API/api/gpu/heartbeat" \
+      -H "Content-Type: application/json" \
+      -d "{\"nodeAddress\":\"$NODE_ADDRESS\",\"gpuUtil\":$GPU_UTIL,\"gpuTemp\":$GPU_TEMP,\"memUsed\":$MEM_USED,\"memTotal\":$MEM_TOTAL,\"status\":\"$STATUS\",\"powerDraw\":$POWER_DRAW,\"powerLimit\":$POWER_LIMIT,\"fanSpeed\":$FAN_SPEED,\"gpuClock\":$GPU_CLOCK,\"memClock\":$MEM_CLOCK,\"commandResults\":$CMD_RESULTS}" 2>/dev/null)
+    CURL_EXIT=$?
 
-  # Clear pending results after successful send
-  echo "[]" > "$PENDING_RESULTS_FILE"
+    if [ $CURL_EXIT -eq 0 ] && [ -n "$RESPONSE" ]; then
+      break
+    fi
 
-  # Process commands from server
-  if [ -n "$RESPONSE" ]; then
+    if [ $ATTEMPT -lt 3 ]; then
+      sleep $((ATTEMPT * 2))
+    fi
+  done
+
+  # Only clear results on successful send
+  if [ $CURL_EXIT -eq 0 ] && [ -n "$RESPONSE" ]; then
+    echo "[]" > "$PENDING_RESULTS_FILE"
+    CONSECUTIVE_FAILURES=0
+
+    # Process commands from server
     CMD_COUNT=$(echo "$RESPONSE" | python3 -c "import sys,json; cmds=json.load(sys.stdin).get('commands',[]); print(len(cmds))" 2>/dev/null || echo "0")
     if [ "$CMD_COUNT" -gt 0 ] 2>/dev/null; then
       echo "$RESPONSE" | python3 -c "
@@ -99,11 +145,29 @@ cmds = json.load(sys.stdin).get('commands', [])
 for i, cmd in enumerate(cmds):
     print(f\"{i}|{cmd['id']}|{cmd['type']}|{json.dumps(cmd.get('params', {}))}\")
 " 2>/dev/null | while IFS='|' read -r IDX CMD_ID CMD_TYPE CMD_PARAMS; do
-        echo "[bondli] Executing command: $CMD_TYPE ($CMD_ID)"
+        log "Executing command: $CMD_TYPE ($CMD_ID)"
         execute_command "$CMD_TYPE" "$CMD_PARAMS" "$CMD_ID"
       done
     fi
+  else
+    CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+    log "WARN: heartbeat failed (attempt $CONSECUTIVE_FAILURES, curl exit=$CURL_EXIT)"
   fi
 
-  sleep 15
+  # Periodic nosana-node health check (every ~2 minutes = every 8 heartbeats)
+  HEALTH_CHECK_COUNTER=$((HEALTH_CHECK_COUNTER + 1))
+  if [ $HEALTH_CHECK_COUNTER -ge 8 ]; then
+    check_nosana_health
+    trim_log
+    HEALTH_CHECK_COUNTER=0
+  fi
+
+  # Adaptive sleep: normal 15s, back off on repeated failures (max 120s)
+  if [ $CONSECUTIVE_FAILURES -gt 0 ]; then
+    BACKOFF=$((15 + CONSECUTIVE_FAILURES * 5))
+    [ $BACKOFF -gt $MAX_BACKOFF ] && BACKOFF=$MAX_BACKOFF
+    sleep $BACKOFF
+  else
+    sleep 15
+  fi
 done

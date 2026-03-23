@@ -343,8 +343,9 @@ sed -i "s|__NODE_ADDRESS__|$NODE_ADDRESS|g" ~/.bondli-heartbeat.sh
 chmod +x ~/.bondli-heartbeat.sh
 # Kill any existing heartbeat before starting new one
 pkill -f bondli-heartbeat 2>/dev/null || true
-nohup ~/.bondli-heartbeat.sh > /dev/null 2>&1 &
+nohup ~/.bondli-heartbeat.sh >> ~/.bondli-heartbeat.log 2>&1 &
 echo "[OK] Heartbeat daemon started (PID $!)"
+echo "     Heartbeat log: ~/.bondli-heartbeat.log"
 
 echo ""
 echo "======================================="
