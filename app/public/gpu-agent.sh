@@ -219,6 +219,7 @@ NODE_ADDRESS=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(s
 KEYPAIR_JSON=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['keypairJson'])" 2>/dev/null)
 NOSANA_MARKET=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosanaMarket',''))" 2>/dev/null)
 NOSANA_MARKET_NAME=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosanaMarketName',''))" 2>/dev/null)
+SPOOF_GPU_NAME=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('spoofGpuName',''))" 2>/dev/null)
 if [ -z "$NODE_ADDRESS" ] || [ -z "$KEYPAIR_JSON" ]; then
   echo "Error: Registration response missing required fields."
   echo "  Response: $REGISTER"
@@ -273,6 +274,29 @@ else
   echo "======================================="
 fi
 
+# ── GPU name spoof for laptop/unrecognized GPUs ──
+# Nosana Grid can't mint access keys for GPUs it doesn't recognize (e.g. laptop GPUs).
+# We create a nvidia-smi wrapper that reports a recognized desktop GPU name.
+# The wrapper lives in ~/.nosana/bin/ which is mounted into the nosana-node container.
+if [ -n "$SPOOF_GPU_NAME" ]; then
+  echo "[..] Laptop GPU detected — creating nvidia-smi wrapper for Grid registration"
+  echo "     Real GPU: $GPU_NAME"
+  echo "     Spoof:   $SPOOF_GPU_NAME"
+  mkdir -p ~/.nosana/bin
+  # The wrapper runs inside the nosana-node container where PATH puts our dir first.
+  # We call the real nvidia-smi by temporarily removing our dir from PATH.
+  cat > ~/.nosana/bin/nvidia-smi << 'NVWRAPPER'
+#!/bin/bash
+# Bondli nvidia-smi wrapper — spoofs GPU name for Nosana Grid access key minting
+CLEAN_PATH=$(echo "$PATH" | sed 's|/root/.nosana/bin:||g; s|:/root/.nosana/bin||g')
+REAL_NVSMI=$(PATH="$CLEAN_PATH" which nvidia-smi 2>/dev/null || echo "/usr/bin/nvidia-smi")
+NVWRAPPER
+  # Append the sed line with actual GPU names (not inside single-quoted heredoc)
+  echo "\"\$REAL_NVSMI\" \"\$@\" 2>&1 | sed 's/$GPU_NAME/$SPOOF_GPU_NAME/g'" >> ~/.nosana/bin/nvidia-smi
+  chmod +x ~/.nosana/bin/nvidia-smi
+  echo "[OK] nvidia-smi wrapper created at ~/.nosana/bin/nvidia-smi"
+fi
+
 # ── Start Nosana node ──
 echo "[..] Starting Nosana node..."
 
@@ -313,8 +337,18 @@ fi
 sed -i 's/docker exec -it /docker exec /g' /tmp/nosana-start.sh
 sed -i 's/--interactive -t/-d/g' /tmp/nosana-start.sh
 
+# If we have a GPU name spoof, patch the nosana-node container to use our nvidia-smi wrapper.
+# The wrapper is at ~/.nosana/bin/nvidia-smi (mounted into container at /root/.nosana/bin/).
+# Add PATH override so nosana-node finds our wrapper before /usr/bin/nvidia-smi.
+if [ -n "$SPOOF_GPU_NAME" ]; then
+  # Add -e PATH=/root/.nosana/bin:$PATH to the nosana-node container's DOCKER_ARGS
+  sed -i 's|-e NOSANA_NODE_VERSION=|-e PATH=/root/.nosana/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin -e NOSANA_NODE_VERSION=|' /tmp/nosana-start.sh
+  echo "[OK] PATH override injected for nvidia-smi wrapper"
+fi
+
 bash /tmp/nosana-start.sh < /dev/null
 rm -f /tmp/nosana-start.sh
+
 
 # Wait for the nosana-node container to be running (it pulls images in detached mode)
 echo "[..] Waiting for Nosana node to start (image pulls may take several minutes)..."
