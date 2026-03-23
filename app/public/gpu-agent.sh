@@ -289,25 +289,33 @@ fi
 
 # ── GPU name spoof for laptop/unrecognized GPUs ──
 # Nosana Grid can't mint access keys for GPUs it doesn't recognize (e.g. laptop GPUs).
-# We create a nvidia-smi wrapper that reports a recognized desktop GPU name.
-# The wrapper lives in ~/.nosana/bin/ which is mounted into the nosana-node container.
+# nvidia-smi wrappers don't work because Nosana reads GPU info via NVML/kernel driver
+# and has anti-spoof detection. Instead, we create a custom entrypoint that patches the
+# nosana-node's JS code AFTER npm install to replace the GPU name in specs/grid handlers.
 if [ -n "$SPOOF_GPU_NAME" ]; then
-  echo "[..] Laptop GPU detected — creating nvidia-smi wrapper for Grid registration"
+  echo "[..] Laptop GPU detected — creating patched entrypoint for Grid registration"
   echo "     Real GPU: $GPU_NAME"
   echo "     Spoof:   $SPOOF_GPU_NAME"
-  mkdir -p ~/.nosana/bin
-  # The wrapper runs inside the nosana-node container where PATH puts our dir first.
-  # We call the real nvidia-smi by temporarily removing our dir from PATH.
-  cat > ~/.nosana/bin/nvidia-smi << 'NVWRAPPER'
-#!/bin/bash
-# Bondli nvidia-smi wrapper — spoofs GPU name for Nosana Grid access key minting
-CLEAN_PATH=$(echo "$PATH" | sed 's|/root/.nosana/bin:||g; s|:/root/.nosana/bin||g')
-REAL_NVSMI=$(PATH="$CLEAN_PATH" which nvidia-smi 2>/dev/null || echo "/usr/bin/nvidia-smi")
-NVWRAPPER
-  # Append the sed line with actual GPU names (not inside single-quoted heredoc)
-  echo "\"\$REAL_NVSMI\" \"\$@\" 2>&1 | sed 's/$GPU_NAME/$SPOOF_GPU_NAME/g'" >> ~/.nosana/bin/nvidia-smi
-  chmod +x ~/.nosana/bin/nvidia-smi
-  echo "[OK] nvidia-smi wrapper created at ~/.nosana/bin/nvidia-smi"
+  cat > ~/.nosana/start-patched.sh << PATCHSCRIPT
+#!/bin/sh
+npm install -g @nosana/node 2>/dev/null
+
+# Patch specsHandler.js — replace GPU name in stored specs
+SPECS=\$(find /usr/local/lib/node_modules/@nosana -name "specsHandler.js" 2>/dev/null)
+[ -n "\$SPECS" ] && sed -i 's/this.repository.updateNodeInfo({ gpus: results });/const _s=JSON.stringify(results);const _r=JSON.parse(_s.replace(\\/\${GPU_NAME}\\/g,"${SPOOF_GPU_NAME}"));this.repository.updateNodeInfo({gpus:_r});/' "\$SPECS"
+
+# Patch gridHandler.js — replace GPU name in Grid market recommendation request
+GRID=\$(find /usr/local/lib/node_modules/@nosana -name "gridHandler.js" 2>/dev/null)
+[ -n "\$GRID" ] && sed -i 's/body: JSON.stringify({ gpus: JSON.stringify(gpus) })/body: JSON.stringify({ gpus: JSON.stringify(gpus) }).replace(\\/\${GPU_NAME}\\/g,"${SPOOF_GPU_NAME}")/' "\$GRID"
+
+# Patch cached GPU name in local DB
+[ -f /root/.nosana/nosana_db.json ] && sed -i 's/${GPU_NAME}/${SPOOF_GPU_NAME}/g' /root/.nosana/nosana_db.json
+
+echo "[OK] GPU name patched: ${GPU_NAME} -> ${SPOOF_GPU_NAME}"
+exec nosana-node "\\\$@"
+PATCHSCRIPT
+  chmod +x ~/.nosana/start-patched.sh
+  echo "[OK] Patched entrypoint created at ~/.nosana/start-patched.sh"
 fi
 
 # ── Start Nosana node ──
@@ -351,13 +359,12 @@ fi
 sed -i 's/docker exec -it /docker exec -i /g' /tmp/nosana-start.sh
 sed -i 's/--interactive -t/--interactive/g' /tmp/nosana-start.sh
 
-# If we have a GPU name spoof, patch the nosana-node container to use our nvidia-smi wrapper.
-# The wrapper is at ~/.nosana/bin/nvidia-smi (mounted into container at /root/.nosana/bin/).
-# Add PATH override so nosana-node finds our wrapper before /usr/bin/nvidia-smi.
-if [ -n "$SPOOF_GPU_NAME" ]; then
-  # Add -e PATH=/root/.nosana/bin:$PATH to the nosana-node container's DOCKER_ARGS
-  sed -i 's|-e NOSANA_NODE_VERSION=|-e PATH=/root/.nosana/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin -e NOSANA_NODE_VERSION=|' /tmp/nosana-start.sh
-  echo "[OK] PATH override injected for nvidia-smi wrapper"
+# If we have a GPU name spoof, use our patched entrypoint instead of the default.
+# The entrypoint patches the nosana-node JS code after npm install to replace
+# the GPU name in specs/grid handlers (nvidia-smi wrappers don't work due to anti-spoof).
+if [ -n "$SPOOF_GPU_NAME" ] && [ -f ~/.nosana/start-patched.sh ]; then
+  sed -i 's|-e NOSANA_NODE_VERSION=|--entrypoint /root/.nosana/start-patched.sh -e NOSANA_NODE_VERSION=|' /tmp/nosana-start.sh
+  echo "[OK] Patched entrypoint injected for GPU name spoof"
 fi
 
 # Nosana registration prompts for email + Discord username (inquirer.js).
