@@ -157,6 +157,62 @@ export function mountGpuRoutes(app, deps) {
   });
 
   // ═══════════════════════════════════════
+  // POST /api/gpu/reconnect — Retrieve existing node keypair for re-setup
+  // ═══════════════════════════════════════
+  app.post("/api/gpu/reconnect", gpuLimiter, async (req, res) => {
+    try {
+      const { wallet, gpuModel } = req.body;
+      if (!wallet) return res.status(400).json({ error: "wallet required" });
+      if (!redis) return res.status(503).json({ error: "Service unavailable" });
+
+      const nodeAddress = await redis.get(`bondli:gpu:user_node:${wallet}`);
+      if (!nodeAddress) {
+        return res.status(404).json({ error: "No registered node found", hint: "Register first" });
+      }
+
+      const nodeData = await redis.hGetAll(`bondli:gpu:node:${nodeAddress}`);
+      const nodeSecret = await redis.get(`bondli:gpu:nodekey:${nodeAddress}`);
+      if (!nodeSecret) {
+        return res.status(500).json({ error: "Node keypair not found — please deregister and re-register" });
+      }
+
+      // Reconstruct keypair JSON for the agent
+      const keypair = Keypair.fromSecretKey(bs58.decode(nodeSecret));
+      const keypairJson = JSON.stringify(Array.from(keypair.secretKey));
+
+      // Update GPU model if changed (e.g. user upgraded)
+      if (gpuModel && gpuModel !== nodeData.gpuModel) {
+        const market = resolveMarket(gpuModel);
+        await redis.hSet(`bondli:gpu:node:${nodeAddress}`, {
+          gpuModel,
+          nosanaMarket: market.address,
+          nosanaMarketName: market.name,
+          nosPerSec: market.nosPerSec.toString(),
+        });
+      }
+
+      const market = resolveMarket(gpuModel || nodeData.gpuModel);
+
+      console.log(`[GPU] Reconnect node ${nodeAddress.slice(0, 8)}... for wallet ${wallet.slice(0, 8)}...`);
+
+      res.json({
+        success: true,
+        reconnected: true,
+        nodeAddress,
+        keypairJson,
+        platformFee: parseFloat(nodeData.platformFee || "0.15"),
+        nosanaMarket: market.address,
+        nosanaMarketName: market.name,
+        nosPerSec: market.nosPerSec,
+        message: "Reconnected to existing node. Your funded SOL balance is preserved.",
+      });
+    } catch (err) {
+      console.error("[GPU] Reconnect error:", err.message);
+      res.status(500).json({ error: "Reconnect failed" });
+    }
+  });
+
+  // ═══════════════════════════════════════
   // POST /api/gpu/deregister — Remove node, allow re-registration
   // ═══════════════════════════════════════
   app.post("/api/gpu/deregister", gpuLimiter, async (req, res) => {
