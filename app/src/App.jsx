@@ -1003,7 +1003,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 
 {/* User's Node Dashboard */}
 {gpuDash?.registered?<div style={{background:T.sf,border:"1px solid "+T.gn+"22",borderRadius:10,padding:mb?10:14,marginBottom:8}}>
-<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.gpu s={16} c={T.gn}/><span style={{fontSize:15,fontWeight:800}}>Your Node</span><span style={{width:6,height:6,borderRadius:"50%",background:gpuDash.node?.status==="offline"?T.rd:T.gn,animation:gpuDash.node?.status!=="offline"?"gp 2s infinite":"none"}}/><span style={{fontSize:11,color:gpuDash.node?.status==="offline"?T.rd:T.gn,fontWeight:700,textTransform:"uppercase"}}>{gpuDash.node?.status||"offline"}</span></div>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.gpu s={16} c={T.gn}/><span style={{fontSize:15,fontWeight:800}}>Your Node</span><span style={{width:6,height:6,borderRadius:"50%",background:(gpuDash.node?.status==="offline"||gpuDash.node?.status==="disconnected")?T.rd:T.gn,animation:(gpuDash.node?.status!=="offline"&&gpuDash.node?.status!=="disconnected")?"gp 2s infinite":"none"}}/><span style={{fontSize:11,color:(gpuDash.node?.status==="offline"||gpuDash.node?.status==="disconnected")?T.rd:T.gn,fontWeight:700,textTransform:"uppercase"}}>{gpuDash.node?.status||"offline"}</span></div>
 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:mb?4:6,marginBottom:10}}>
 {[
 {l:"EARNED",v:(gpuDash.earnings?.totalNOS||0).toFixed(2)+" NOS",c:T.gn},
@@ -1018,7 +1018,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 </div>
 {/* ── Node Setup Steps / Status Guide ── */}
 {gpuDash.node?.address&&(()=>{
-const isOffline=gpuDash.node?.status==="offline";
+const isOffline=gpuDash.node?.status==="offline"||gpuDash.node?.status==="disconnected";
 const isOnline=!isOffline;
 const hasEarnings=(gpuDash.earnings?.totalNOS||0)>0||(gpuDash.earnings?.pendingNOS||0)>0;
 const steps=[
@@ -1074,7 +1074,7 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 </details>
 </div>})()}
 
-{gpuDash.node?.gpuUtil&&gpuDash.node.status!=="offline"&&<div style={{marginTop:8}}>
+{gpuDash.node?.gpuUtil&&gpuDash.node.status!=="offline"&&gpuDash.node.status!=="disconnected"&&<div style={{marginTop:8}}>
 <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:T.dm,marginBottom:3}}><span>GPU Utilization</span><span style={{fontWeight:700,color:parseInt(gpuDash.node.gpuUtil)>50?T.gn:T.dm}}>{gpuDash.node.gpuUtil}%</span></div>
 <div style={{height:4,borderRadius:2,background:T.bd,overflow:"hidden"}}><div style={{width:gpuDash.node.gpuUtil+"%",height:"100%",borderRadius:2,background:parseInt(gpuDash.node.gpuUtil)>80?T.gn:parseInt(gpuDash.node.gpuUtil)>50?T.yl:T.dm,transition:"width .5s"}}/></div>
 <div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:T.ft,marginTop:4}}><span>Temp: {gpuDash.node.gpuTemp||"—"}C</span><span>Node: {(gpuDash.node?.address||"").slice(0,8)}...</span></div>
@@ -1175,7 +1175,7 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 <div style={{fontSize:11,fontWeight:700,color:T.dm,marginBottom:4}}>Active Nodes</div>
 {gpuFleet.nodes.slice(0,20).map((n,i)=><div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"5px 6px",fontSize:11,borderBottom:"1px solid "+T.bd}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
-<span style={{width:6,height:6,borderRadius:"50%",background:n.status==="offline"?T.rd:T.gn}}/>
+<span style={{width:6,height:6,borderRadius:"50%",background:(n.status==="offline"||n.status==="disconnected")?T.rd:T.gn}}/>
 <span style={{color:T.dm,fontFamily:"'IBM Plex Mono',monospace",fontSize:10}}>{n.nodeId}</span>
 <span style={{fontSize:9,color:T.ft}}>{n.gpuModel}</span>
 </div>
