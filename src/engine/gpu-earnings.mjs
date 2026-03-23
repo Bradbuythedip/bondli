@@ -363,13 +363,15 @@ export function mountGpuRoutes(app, deps) {
       const exists = await redis.exists(`bondli:gpu:node:${nodeAddress}`);
       if (!exists) return res.status(404).json({ error: "Unknown node" });
 
+      // If agent sends "offline", set lastHeartbeat to 0 so dashboard shows offline immediately
+      const isOfflineSignal = status === "offline";
       const updates = {
-        lastHeartbeat: Date.now().toString(),
+        lastHeartbeat: isOfflineSignal ? "0" : Date.now().toString(),
         gpuUtil: String(gpuUtil || 0),
         gpuTemp: String(gpuTemp || 0),
         memUsed: String(memUsed || 0),
         memTotal: String(memTotal || 0),
-        status: status || "idle",
+        status: isOfflineSignal ? "offline" : (status || "idle"),
       };
       // Extended GPU metrics
       if (powerDraw !== undefined) updates.powerDraw = String(powerDraw);
