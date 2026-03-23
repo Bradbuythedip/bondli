@@ -20,7 +20,7 @@ set -e
 
 WALLET=""
 EMAIL=""
-DISCORD_USER="bondli"
+DISCORD_USER="bondli-user"
 BONDLI_API="${BONDLI_API:-https://api.bondli.fun}"
 
 while [[ $# -gt 0 ]]; do
@@ -360,13 +360,36 @@ if [ -n "$SPOOF_GPU_NAME" ]; then
   echo "[OK] PATH override injected for nvidia-smi wrapper"
 fi
 
-# Always pipe answers for Nosana registration prompts (harmless if already registered).
-# Nosana asks: 1) email address  2) Discord username
-# Background the process so the script can continue to the health check.
-# sleep keeps the stdin pipe alive so the container doesn't lose its stdin.
-(printf '%s\n%s\n' "$EMAIL" "$DISCORD_USER"; sleep 86400) | bash /tmp/nosana-start.sh > /tmp/nosana-start.log 2>&1 &
-NOSANA_START_PID=$!
-disown $NOSANA_START_PID 2>/dev/null || true
+# Nosana registration prompts for email + Discord username (inquirer.js).
+# Plain stdin piping doesn't work because inquirer drains stdin between prompts.
+# Use `expect` to answer both prompts via a pseudo-TTY, then interact (keep alive).
+if command -v expect &>/dev/null; then
+  cat > /tmp/nosana-expect.sh << EXPECT_SCRIPT
+set timeout 300
+spawn bash /tmp/nosana-start.sh
+expect {
+  "Email Address" {
+    send "${EMAIL}\r"
+    exp_continue
+  }
+  "Discord username" {
+    send "${DISCORD_USER}\r"
+    exp_continue
+  }
+  eof
+}
+EXPECT_SCRIPT
+  expect /tmp/nosana-expect.sh > /tmp/nosana-start.log 2>&1 &
+  NOSANA_START_PID=$!
+  disown $NOSANA_START_PID 2>/dev/null || true
+  rm -f /tmp/nosana-expect.sh
+else
+  echo "[!!] 'expect' not installed — falling back to stdin pipe"
+  echo "     If registration fails, install it: sudo apt-get install -y expect"
+  (printf '%s\n' "$EMAIL"; sleep 5; printf '%s\n' "$DISCORD_USER"; sleep 86400) | bash /tmp/nosana-start.sh > /tmp/nosana-start.log 2>&1 &
+  NOSANA_START_PID=$!
+  disown $NOSANA_START_PID 2>/dev/null || true
+fi
 echo "[OK] Nosana start running in background (PID $NOSANA_START_PID)"
 rm -f /tmp/nosana-start.sh
 
