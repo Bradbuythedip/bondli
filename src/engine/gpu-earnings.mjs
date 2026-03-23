@@ -91,14 +91,49 @@ export function mountGpuRoutes(app, deps) {
       // Resolve tier (GPU is free for everyone)
       const tierInfo = await getWalletTier(wallet);
 
-      // Enforce 1 node per user
+      // Enforce 1 node per user — but reactivate disconnected nodes
       const existingNode = await redis.get(`bondli:gpu:user_node:${wallet}`);
       if (existingNode) {
-        return res.status(409).json({
-          error: "You already have a registered GPU node",
-          nodeAddress: existingNode,
-          hint: "1 GPU per user. To re-register, deregister first via POST /api/gpu/deregister",
-        });
+        const existingData = await redis.hGetAll(`bondli:gpu:node:${existingNode}`);
+        if (existingData.status === "disconnected") {
+          // Reactivate the disconnected node (preserve keypair + on-chain identity)
+          const nodeSecret = await redis.get(`bondli:gpu:nodekey:${existingNode}`);
+          if (nodeSecret) {
+            const market = resolveMarket(gpuModel);
+            await redis.hSet(`bondli:gpu:node:${existingNode}`, {
+              status: "registered",
+              gpuModel,
+              nosanaMarket: market.address,
+              nosanaMarketName: market.name,
+              nosPerSec: market.nosPerSec.toString(),
+            });
+            await redis.sAdd("bondli:gpu:all_nodes", existingNode);
+            const keypair = Keypair.fromSecretKey(bs58.decode(nodeSecret));
+            const keypairJson = JSON.stringify(Array.from(keypair.secretKey));
+            console.log(`[GPU] Reactivated disconnected node ${existingNode.slice(0, 8)}... for wallet ${wallet.slice(0, 8)}...`);
+            return res.json({
+              success: true,
+              reconnected: true,
+              nodeAddress: existingNode,
+              keypairJson,
+              platformFee: parseFloat(existingData.platformFee || "0.15"),
+              nosanaMarket: market.address,
+              nosanaMarketName: market.name,
+              nosPerSec: market.nosPerSec,
+              spoofGpuName: market.spoofGpuName || "",
+              message: "Reactivated your previous node. Keypair and on-chain identity preserved.",
+            });
+          }
+          // Keypair lost — clean up stale mapping and fall through to new registration
+          await redis.del(`bondli:gpu:user_node:${wallet}`);
+          await redis.del(`bondli:gpu:node:${existingNode}`);
+        } else {
+          return res.status(409).json({
+            error: "You already have a registered GPU node",
+            nodeAddress: existingNode,
+            hint: "1 GPU per user. To re-register, deregister first via POST /api/gpu/deregister",
+          });
+        }
       }
 
       // Generate a new Solana keypair for this user's node
@@ -243,13 +278,19 @@ export function mountGpuRoutes(app, deps) {
         console.warn(`[GPU] SOL sweep on deregister failed for ${nodeAddress}:`, err.message);
       }
 
-      // Cleanup all Redis keys
-      await redis.del(`bondli:gpu:node:${nodeAddress}`);
-      await redis.del(`bondli:gpu:user_node:${wallet}`);
-      await redis.del(`bondli:gpu:nodekey:${nodeAddress}`);
+      // Soft-delete: mark disconnected but PRESERVE keypair for reconnection.
+      // The keypair is a Solana identity — deleting it means a new node address,
+      // which loses any on-chain registration with Nosana (and triggers an
+      // interactive email prompt on re-register that fails in detached mode).
+      await redis.hSet(`bondli:gpu:node:${nodeAddress}`, {
+        status: "disconnected",
+        disconnectedAt: Date.now().toString(),
+      });
+      // Remove from active fleet (won't show in dashboard fleet list)
       await redis.sRem("bondli:gpu:all_nodes", nodeAddress);
+      // Keep: user_node mapping + nodekey — so reconnect works seamlessly
 
-      console.log(`[GPU] Deregistered node ${nodeAddress.slice(0, 8)}... for wallet ${wallet.slice(0, 8)}... (swept ${solSwept.toFixed(6)} SOL)`);
+      console.log(`[GPU] Disconnected node ${nodeAddress.slice(0, 8)}... for wallet ${wallet.slice(0, 8)}... (swept ${solSwept.toFixed(6)} SOL)`);
 
       res.json({
         success: true,
@@ -317,13 +358,15 @@ export function mountGpuRoutes(app, deps) {
       }
 
       const isOnline = nodeData.lastHeartbeat && Date.now() - parseInt(nodeData.lastHeartbeat) < 300_000;
+      const displayStatus = nodeData.status === "disconnected" ? "disconnected"
+        : isOnline ? (nodeData.status || "idle") : "offline";
 
       res.json({
         registered: true,
         node: {
           address: nodeAddress,
           gpuModel: nodeData.gpuModel,
-          status: isOnline ? (nodeData.status || "idle") : "offline",
+          status: displayStatus,
           gpuUtil: nodeData.gpuUtil || "0",
           gpuTemp: nodeData.gpuTemp || "0",
           powerDraw: nodeData.powerDraw || null,
