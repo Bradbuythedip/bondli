@@ -215,6 +215,8 @@ fi
 # Extract registration data
 NODE_ADDRESS=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['nodeAddress'])" 2>/dev/null)
 KEYPAIR_JSON=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['keypairJson'])" 2>/dev/null)
+NOSANA_MARKET=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosanaMarket',''))" 2>/dev/null)
+NOSANA_MARKET_NAME=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosanaMarketName',''))" 2>/dev/null)
 if [ -z "$NODE_ADDRESS" ] || [ -z "$KEYPAIR_JSON" ]; then
   echo "Error: Registration response missing required fields."
   echo "  Response: $REGISTER"
@@ -228,10 +230,23 @@ else
 fi
 
 # ── Write keypair to Nosana location ──
+# Nosana's podman container mounts /root/.nosana/ — write there too if we can
 mkdir -p ~/.nosana
 echo "$KEYPAIR_JSON" > ~/.nosana/nosana_key.json
 chmod 600 ~/.nosana/nosana_key.json
+if [ "$(id -u)" != "0" ]; then
+  sudo mkdir -p /root/.nosana
+  sudo tee /root/.nosana/nosana_key.json > /dev/null <<< "$KEYPAIR_JSON"
+  sudo chmod 600 /root/.nosana/nosana_key.json
+fi
 echo "[OK] Node keypair written to ~/.nosana/nosana_key.json"
+
+# Stop old podman container so Nosana picks up the new key
+if docker ps -q --filter name=podman 2>/dev/null | grep -q .; then
+  echo "[..] Stopping old podman to pick up new key..."
+  docker stop podman >/dev/null 2>&1 || true
+  docker rm podman >/dev/null 2>&1 || true
+fi
 
 # ── Fund node wallet with SOL for Nosana tx fees ──
 if [ "$RECONNECTED" = true ]; then
@@ -257,13 +272,29 @@ fi
 
 # ── Start Nosana node ──
 echo "[..] Starting Nosana node..."
+
+# Download Nosana's start script so we can patch it for unsupported GPUs
+curl -s https://nosana.com/start.sh -o /tmp/nosana-start.sh
+
+# If we have a pre-resolved market from Bondli, patch the start script
+# to pass --market to nosana-node (bypasses Grid GPU detection that fails for new GPUs like 5070 Ti)
+if [ -n "$NOSANA_MARKET" ]; then
+  echo "[OK] Using Bondli-resolved market: ${NOSANA_MARKET_NAME:-$NOSANA_MARKET}"
+  # Patch: add --market flag to NOSANA_NODE_ARGS in the start script
+  # The start script has: NOSANA_NODE_ARGS=( start )
+  # We change it to:      NOSANA_NODE_ARGS=( start --market <address> )
+  sed -i "s|NOSANA_NODE_ARGS=(\s*$|NOSANA_NODE_ARGS=(|" /tmp/nosana-start.sh
+  sed -i "/NOSANA_NODE_ARGS=(/{n;s|start|start --market $NOSANA_MARKET|}" /tmp/nosana-start.sh
+fi
+
 # Nosana's start script uses `docker exec -it` which needs a TTY.
 # When running via `curl | bash`, there's no TTY — use `script` to provide one.
 if [ -t 0 ]; then
-  bash <(curl -s https://nosana.com/start.sh)
+  bash /tmp/nosana-start.sh
 else
-  script -qec "bash <(curl -s https://nosana.com/start.sh)" /dev/null
+  script -qec "bash /tmp/nosana-start.sh" /dev/null
 fi
+rm -f /tmp/nosana-start.sh
 
 # Verify the node container is actually running
 sleep 2
