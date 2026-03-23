@@ -14,6 +14,8 @@
 # Nosana constraint: 1 private key per GPU, 1 GPU per PC
 # ═══════════════════════════════════════════════════════════════
 
+{ # this ensures the entire script is downloaded before execution begins
+
 set -e
 
 WALLET=""
@@ -173,22 +175,21 @@ fi
 # We use sudo for docker commands below so it works on first run.
 # User can run without sudo after logging out and back in.
 
-# ── Register with Bondli — get node keypair ──
+# ── Register with Bondli (or reconnect to existing node) ──
 echo ""
 echo "[..] Registering with Bondli..."
+RECONNECTED=false
 HTTP_CODE=$(curl -s -o /tmp/bondli-register.json -w "%{http_code}" -X POST "$BONDLI_API/api/gpu/register" \
   -H "Content-Type: application/json" \
   -d "{\"wallet\":\"$WALLET\",\"gpuModel\":\"$GPU_NAME\"}")
 
 if [ "$HTTP_CODE" = "409" ]; then
-  echo "[..] Existing node found — deregistering and re-registering..."
-  curl -s -X POST "$BONDLI_API/api/gpu/deregister" \
-    -H "Content-Type: application/json" \
-    -d "{\"wallet\":\"$WALLET\"}" >/dev/null 2>&1
-  sleep 1
-  HTTP_CODE=$(curl -s -o /tmp/bondli-register.json -w "%{http_code}" -X POST "$BONDLI_API/api/gpu/register" \
+  # Node already exists — reconnect to preserve funded SOL balance
+  echo "[..] Existing node found — reconnecting (preserving your SOL balance)..."
+  HTTP_CODE=$(curl -s -o /tmp/bondli-register.json -w "%{http_code}" -X POST "$BONDLI_API/api/gpu/reconnect" \
     -H "Content-Type: application/json" \
     -d "{\"wallet\":\"$WALLET\",\"gpuModel\":\"$GPU_NAME\"}")
+  RECONNECTED=true
 fi
 
 if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
@@ -216,150 +217,169 @@ fi
 # Extract registration data
 NODE_ADDRESS=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['nodeAddress'])" 2>/dev/null)
 KEYPAIR_JSON=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin)['keypairJson'])" 2>/dev/null)
+NOSANA_MARKET=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosanaMarket',''))" 2>/dev/null)
+NOSANA_MARKET_NAME=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('nosanaMarketName',''))" 2>/dev/null)
+SPOOF_GPU_NAME=$(echo "$REGISTER" | python3 -c "import sys,json; print(json.load(sys.stdin).get('spoofGpuName',''))" 2>/dev/null)
 if [ -z "$NODE_ADDRESS" ] || [ -z "$KEYPAIR_JSON" ]; then
   echo "Error: Registration response missing required fields."
   echo "  Response: $REGISTER"
   exit 1
 fi
 
-echo "[OK] Registered: $NODE_ADDRESS"
+if [ "$RECONNECTED" = true ]; then
+  echo "[OK] Reconnected: $NODE_ADDRESS (existing node, SOL preserved)"
+else
+  echo "[OK] Registered: $NODE_ADDRESS (new node)"
+fi
 
 # ── Write keypair to Nosana location ──
+# Nosana's podman container mounts /root/.nosana/ — write there too if we can
 mkdir -p ~/.nosana
 echo "$KEYPAIR_JSON" > ~/.nosana/nosana_key.json
 chmod 600 ~/.nosana/nosana_key.json
+if [ "$(id -u)" != "0" ]; then
+  sudo mkdir -p /root/.nosana
+  sudo tee /root/.nosana/nosana_key.json > /dev/null <<< "$KEYPAIR_JSON"
+  sudo chmod 600 /root/.nosana/nosana_key.json
+fi
 echo "[OK] Node keypair written to ~/.nosana/nosana_key.json"
 
+# Stop old podman container so Nosana picks up the new key
+if docker ps -q --filter name=podman 2>/dev/null | grep -q .; then
+  echo "[..] Stopping old podman to pick up new key..."
+  timeout 15 docker stop podman >/dev/null 2>&1 || true
+  timeout 10 docker rm podman >/dev/null 2>&1 || true
+  echo "[OK] Old podman stopped"
+fi
+
 # ── Fund node wallet with SOL for Nosana tx fees ──
-echo ""
-echo "======================================="
-echo "  Send ~0.05 SOL to your node wallet"
-echo "======================================="
-echo "  Nosana requires SOL for on-chain"
-echo "  transaction fees (claiming jobs,"
-echo "  submitting results)."
-echo ""
-echo "  Node wallet:"
-echo "  $NODE_ADDRESS"
-echo ""
-echo "  Without SOL your node cannot accept jobs."
-echo "======================================="
-echo ""
-read -p "Press Enter once funded (or Ctrl+C to fund later)..."
+if [ "$RECONNECTED" = true ]; then
+  echo ""
+  echo "[OK] Using existing node wallet — SOL balance preserved"
+  echo "     Node wallet: $NODE_ADDRESS"
+else
+  echo ""
+  echo "======================================="
+  echo "  Send ~0.05 SOL to your node wallet"
+  echo "======================================="
+  echo "  Nosana requires SOL for on-chain"
+  echo "  transaction fees (claiming jobs,"
+  echo "  submitting results)."
+  echo ""
+  echo "  Node wallet:"
+  echo "  $NODE_ADDRESS"
+  echo ""
+  echo "  Without SOL your node cannot accept jobs."
+  echo "  Fund via Bondli dashboard: https://bondli.fun/gpu"
+  echo "======================================="
+fi
+
+# ── GPU name spoof for laptop/unrecognized GPUs ──
+# Nosana Grid can't mint access keys for GPUs it doesn't recognize (e.g. laptop GPUs).
+# We create a nvidia-smi wrapper that reports a recognized desktop GPU name.
+# The wrapper lives in ~/.nosana/bin/ which is mounted into the nosana-node container.
+if [ -n "$SPOOF_GPU_NAME" ]; then
+  echo "[..] Laptop GPU detected — creating nvidia-smi wrapper for Grid registration"
+  echo "     Real GPU: $GPU_NAME"
+  echo "     Spoof:   $SPOOF_GPU_NAME"
+  mkdir -p ~/.nosana/bin
+  # The wrapper runs inside the nosana-node container where PATH puts our dir first.
+  # We call the real nvidia-smi by temporarily removing our dir from PATH.
+  cat > ~/.nosana/bin/nvidia-smi << 'NVWRAPPER'
+#!/bin/bash
+# Bondli nvidia-smi wrapper — spoofs GPU name for Nosana Grid access key minting
+CLEAN_PATH=$(echo "$PATH" | sed 's|/root/.nosana/bin:||g; s|:/root/.nosana/bin||g')
+REAL_NVSMI=$(PATH="$CLEAN_PATH" which nvidia-smi 2>/dev/null || echo "/usr/bin/nvidia-smi")
+NVWRAPPER
+  # Append the sed line with actual GPU names (not inside single-quoted heredoc)
+  echo "\"\$REAL_NVSMI\" \"\$@\" 2>&1 | sed 's/$GPU_NAME/$SPOOF_GPU_NAME/g'" >> ~/.nosana/bin/nvidia-smi
+  chmod +x ~/.nosana/bin/nvidia-smi
+  echo "[OK] nvidia-smi wrapper created at ~/.nosana/bin/nvidia-smi"
+fi
 
 # ── Start Nosana node ──
 echo "[..] Starting Nosana node..."
-bash <(curl -s https://nosana.com/start.sh)
+
+# Download Nosana's start script so we can patch it for unsupported GPUs
+curl -s --connect-timeout 10 --max-time 30 https://nosana.com/start.sh -o /tmp/nosana-start.sh
+if [ ! -s /tmp/nosana-start.sh ]; then
+  echo "[!!] Failed to download Nosana start script"
+  echo "     Try running manually: bash <(curl -s https://nosana.com/start.sh)"
+  exit 1
+fi
+
+# If we have a pre-resolved market from Bondli, patch the start script
+# to pass market address to nosana-node (bypasses Grid GPU detection that fails for new GPUs like 5070 Ti)
+# Note: market is a POSITIONAL argument: `nosana node start <market-address> --network mainnet`
+if [ -n "$NOSANA_MARKET" ]; then
+  echo "[OK] Using Bondli-resolved market: ${NOSANA_MARKET_NAME:-$NOSANA_MARKET}"
+  # Nosana's start.sh has:
+  #   NOSANA_NODE_ARGS=( start )
+  #   NOSANA_NODE_ARGS+=(--network "$SOL_NET_ENV")
+  # We need: NOSANA_NODE_ARGS=( start <MARKET_ADDRESS> )
+  # Inject market address as positional arg right after "start" in the array
+  sed -i "s|^\\([[:space:]]*\\)start[[:space:]]*$|\\1start\\n\\1$NOSANA_MARKET|" /tmp/nosana-start.sh
+  # Verify the patch was applied
+  if grep -q "$NOSANA_MARKET" /tmp/nosana-start.sh; then
+    echo "[OK] Market address injected into Nosana start script"
+  else
+    echo "[!!] WARNING: Failed to patch Nosana start script with market address"
+    echo "     The node may fail if Nosana Grid is unreachable"
+  fi
+else
+  echo "[!!] WARNING: No market address from Bondli API — node will use Nosana Grid auto-detection"
+fi
+
+# Nosana's start.sh uses `docker exec -it` and `--interactive -t` which require a TTY
+# and cause the script to block forever (attached to the node process).
+# Patch: remove TTY flags and run the inner nosana-node container in detached mode (-d)
+# so the start script returns after launching the node.
+sed -i 's/docker exec -it /docker exec /g' /tmp/nosana-start.sh
+sed -i 's/--interactive -t/-d/g' /tmp/nosana-start.sh
+
+# If we have a GPU name spoof, patch the nosana-node container to use our nvidia-smi wrapper.
+# The wrapper is at ~/.nosana/bin/nvidia-smi (mounted into container at /root/.nosana/bin/).
+# Add PATH override so nosana-node finds our wrapper before /usr/bin/nvidia-smi.
+if [ -n "$SPOOF_GPU_NAME" ]; then
+  # Add -e PATH=/root/.nosana/bin:$PATH to the nosana-node container's DOCKER_ARGS
+  sed -i 's|-e NOSANA_NODE_VERSION=|-e PATH=/root/.nosana/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin -e NOSANA_NODE_VERSION=|' /tmp/nosana-start.sh
+  echo "[OK] PATH override injected for nvidia-smi wrapper"
+fi
+
+bash /tmp/nosana-start.sh < /dev/null
+rm -f /tmp/nosana-start.sh
+
+
+# Wait for the nosana-node container to be running (it pulls images in detached mode)
+echo "[..] Waiting for Nosana node to start (image pulls may take several minutes)..."
+NODE_STARTED=false
+for i in $(seq 1 60); do
+  if docker exec podman podman ps --format '{{.Names}}' 2>/dev/null | grep -q "nosana-node"; then
+    NODE_STARTED=true
+    break
+  fi
+  sleep 5
+done
+
+if [ "$NODE_STARTED" = true ]; then
+  echo "[OK] Nosana node running inside podman"
+else
+  echo "[!!] WARNING: Nosana node may not have started. Check logs:"
+  echo "     docker exec podman podman logs nosana-node"
+fi
 
 # ── Start heartbeat daemon ──
 echo "[..] Starting Bondli heartbeat..."
-cat > ~/.bondli-heartbeat.sh << 'HEARTBEAT'
-#!/bin/bash
-BONDLI_API="__BONDLI_API__"
-NODE_ADDRESS="__NODE_ADDRESS__"
-PENDING_RESULTS_FILE="/tmp/bondli-cmd-results.json"
-echo "[]" > "$PENDING_RESULTS_FILE"
-
-execute_command() {
-  local CMD_TYPE="$1"
-  local CMD_PARAMS="$2"
-  local CMD_ID="$3"
-  local OUTPUT=""
-  local STATUS="success"
-
-  case "$CMD_TYPE" in
-    stop_node)
-      OUTPUT=$(docker stop nosana-node 2>&1) || STATUS="error"
-      ;;
-    restart_node)
-      OUTPUT=$(docker restart nosana-node 2>&1) || STATUS="error"
-      ;;
-    get_logs)
-      OUTPUT=$(docker logs nosana-node --tail 50 2>&1 | head -c 10000) || STATUS="error"
-      ;;
-    set_power_limit)
-      local PL=$(echo "$CMD_PARAMS" | python3 -c "import sys,json; print(json.load(sys.stdin).get('powerLimit',0))" 2>/dev/null)
-      if [ -n "$PL" ] && [ "$PL" -gt 0 ] 2>/dev/null; then
-        OUTPUT=$(sudo nvidia-smi -pl "$PL" 2>&1) || STATUS="error"
-      else
-        OUTPUT="Invalid power limit"
-        STATUS="error"
-      fi
-      ;;
-    get_gpu_details)
-      OUTPUT=$(nvidia-smi --query-gpu=clocks.gr,clocks.mem,power.draw,power.limit,fan.speed,driver_version,name --format=csv,noheader 2>&1) || STATUS="error"
-      ;;
-    *)
-      OUTPUT="Unknown command: $CMD_TYPE"
-      STATUS="error"
-      ;;
-  esac
-
-  # Escape output for JSON
-  local ESCAPED_OUTPUT=$(echo "$OUTPUT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))" 2>/dev/null || echo '""')
-
-  # Append result to pending results
-  local RESULT="{\"id\":\"$CMD_ID\",\"type\":\"$CMD_TYPE\",\"status\":\"$STATUS\",\"output\":$ESCAPED_OUTPUT,\"executedAt\":$(date +%s000)}"
-  python3 -c "
-import json
-with open('$PENDING_RESULTS_FILE') as f:
-    results = json.load(f)
-results.append(json.loads('$RESULT'))
-with open('$PENDING_RESULTS_FILE', 'w') as f:
-    json.dump(results, f)
-" 2>/dev/null
-}
-
-while true; do
-  # Collect GPU metrics
-  GPU_UTIL=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  GPU_TEMP=$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader 2>/dev/null || echo "0")
-  MEM_USED=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  MEM_TOTAL=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  POWER_DRAW=$(nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  POWER_LIMIT=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  FAN_SPEED=$(nvidia-smi --query-gpu=fan.speed --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  GPU_CLOCK=$(nvidia-smi --query-gpu=clocks.gr --format=csv,noheader,nounits 2>/dev/null || echo "0")
-  MEM_CLOCK=$(nvidia-smi --query-gpu=clocks.mem --format=csv,noheader,nounits 2>/dev/null || echo "0")
-
-  STATUS="idle"
-  [ "$GPU_UTIL" -gt 50 ] 2>/dev/null && STATUS="working"
-  [ "$GPU_UTIL" -gt 80 ] 2>/dev/null && STATUS="earning"
-
-  # Read pending command results
-  CMD_RESULTS=$(cat "$PENDING_RESULTS_FILE" 2>/dev/null || echo "[]")
-
-  # Send heartbeat and capture response
-  RESPONSE=$(curl -s -X POST "$BONDLI_API/api/gpu/heartbeat" \
-    -H "Content-Type: application/json" \
-    -d "{\"nodeAddress\":\"$NODE_ADDRESS\",\"gpuUtil\":$GPU_UTIL,\"gpuTemp\":$GPU_TEMP,\"memUsed\":$MEM_USED,\"memTotal\":$MEM_TOTAL,\"status\":\"$STATUS\",\"powerDraw\":$POWER_DRAW,\"powerLimit\":$POWER_LIMIT,\"fanSpeed\":$FAN_SPEED,\"gpuClock\":$GPU_CLOCK,\"memClock\":$MEM_CLOCK,\"commandResults\":$CMD_RESULTS}" 2>/dev/null)
-
-  # Clear pending results after successful send
-  echo "[]" > "$PENDING_RESULTS_FILE"
-
-  # Process commands from server
-  if [ -n "$RESPONSE" ]; then
-    CMD_COUNT=$(echo "$RESPONSE" | python3 -c "import sys,json; cmds=json.load(sys.stdin).get('commands',[]); print(len(cmds))" 2>/dev/null || echo "0")
-    if [ "$CMD_COUNT" -gt 0 ] 2>/dev/null; then
-      echo "$RESPONSE" | python3 -c "
-import sys, json
-cmds = json.load(sys.stdin).get('commands', [])
-for i, cmd in enumerate(cmds):
-    print(f\"{i}|{cmd['id']}|{cmd['type']}|{json.dumps(cmd.get('params', {}))}\")
-" 2>/dev/null | while IFS='|' read -r IDX CMD_ID CMD_TYPE CMD_PARAMS; do
-        echo "[bondli] Executing command: $CMD_TYPE ($CMD_ID)"
-        execute_command "$CMD_TYPE" "$CMD_PARAMS" "$CMD_ID"
-      done
-    fi
-  fi
-
-  sleep 15
-done
-HEARTBEAT
+# Download heartbeat script (not heredoc — heredocs break with curl|bash)
+curl -s "https://bondli.fun/bondli-heartbeat.sh" -o ~/.bondli-heartbeat.sh
 sed -i "s|__BONDLI_API__|$BONDLI_API|g" ~/.bondli-heartbeat.sh
 sed -i "s|__NODE_ADDRESS__|$NODE_ADDRESS|g" ~/.bondli-heartbeat.sh
 chmod +x ~/.bondli-heartbeat.sh
+# Kill any existing heartbeat before starting new one
+pkill -f bondli-heartbeat 2>/dev/null || true
 nohup ~/.bondli-heartbeat.sh >> ~/.bondli-heartbeat.log 2>&1 &
+echo "[OK] Heartbeat daemon started (PID $!)"
+echo "     Heartbeat log: ~/.bondli-heartbeat.log"
 
 echo ""
 echo "======================================="
@@ -374,7 +394,9 @@ echo "  Your GPU is now accepting AI inference jobs."
 echo "  Earnings are split hourly to your Bondli wallet."
 echo "  Dashboard: https://bondli.fun/gpu"
 echo ""
-echo "  Stop:   docker stop nosana-node"
-echo "  Logs:   docker logs nosana-node --tail 20"
+echo "  Stop:   docker exec podman podman stop nosana-node"
+echo "  Logs:   docker exec podman podman logs --tail 20 nosana-node"
 echo "  Status: nvidia-smi"
 echo "======================================="
+
+} # end of curl|bash safety wrapper

@@ -148,6 +148,7 @@ export function mountGpuRoutes(app, deps) {
         nosanaMarket: market.address,
         nosanaMarketName: market.name,
         nosPerSec: market.nosPerSec,
+        spoofGpuName: market.spoofGpuName || "",
         message: "Your node keypair has been generated. The agent will configure it automatically.",
       });
     } catch (err) {
@@ -204,6 +205,7 @@ export function mountGpuRoutes(app, deps) {
         nosanaMarket: market.address,
         nosanaMarketName: market.name,
         nosPerSec: market.nosPerSec,
+        spoofGpuName: market.spoofGpuName || "",
         message: "Reconnected to existing node. Your funded SOL balance is preserved.",
       });
     } catch (err) {
