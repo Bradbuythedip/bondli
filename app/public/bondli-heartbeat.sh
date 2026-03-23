@@ -105,9 +105,34 @@ sanitize_metric() {
   fi
 }
 
+NODE_GONE_COUNT=0
+
+# Send a final "offline" heartbeat on shutdown
+send_offline() {
+  log "Sending offline heartbeat..."
+  curl -s --connect-timeout 5 --max-time 10 -X POST "$BONDLI_API/api/gpu/heartbeat" \
+    -H "Content-Type: application/json" \
+    -d "{\"nodeAddress\":\"$NODE_ADDRESS\",\"gpuUtil\":0,\"gpuTemp\":0,\"memUsed\":0,\"memTotal\":0,\"status\":\"offline\",\"powerDraw\":0,\"powerLimit\":0,\"fanSpeed\":0,\"gpuClock\":0,\"memClock\":0,\"commandResults\":[]}" >/dev/null 2>&1
+  log "Offline heartbeat sent"
+}
+
+trap 'send_offline; exit 0' SIGTERM SIGINT
+
 log "Heartbeat daemon started for node $NODE_ADDRESS"
 
 while true; do
+  # Check if podman/node container is completely gone — send offline and exit
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "podman"; then
+    NODE_GONE_COUNT=$((NODE_GONE_COUNT + 1))
+    if [ $NODE_GONE_COUNT -ge 2 ]; then
+      log "Podman container gone for 2 checks — going offline"
+      send_offline
+      exit 0
+    fi
+  else
+    NODE_GONE_COUNT=0
+  fi
+
   # Collect GPU metrics (sanitize: laptop GPUs return [N/A] for fan speed etc.)
   GPU_UTIL=$(sanitize_metric "$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null)")
   GPU_TEMP=$(sanitize_metric "$(nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits 2>/dev/null)")
