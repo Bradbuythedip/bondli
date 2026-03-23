@@ -77,5 +77,6 @@ gpdr(w){return this.f("/api/gpu/deregister",{method:"POST",body:{wallet:w}})}
 // Chat support (Grok AI)
 cht(msgs,w){return this.f("/api/chat",{method:"POST",timeout:30000,body:{messages:msgs,wallet:w}})}
 chts(){return this.f("/api/chat/status")}
+itk(pk){return this.f(`/api/trading-wallet/identify/${pk}`)}
 }
 export const a=new A();export default a;
