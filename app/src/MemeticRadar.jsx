@@ -109,18 +109,31 @@ function Dot({ token, onClick, selected }) {
 }
 
 // ═══ TOKEN IMAGE ═══
-function TImg({ src, symbol, size = 64 }) {
-  const [err, setErr] = useState(false);
-  if (!src || err) return (
+const radarImgProxy = (u, base) => !u ? "" : u.startsWith("data:") ? u : u.startsWith("/") ? u : (base || "") + "/api/img?url=" + encodeURIComponent(u);
+
+function TImg({ src, symbol, size = 64, apiBase }) {
+  const [ok, setOk] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [retries, setRetries] = useState(0);
+  const proxyUrl = radarImgProxy(src, apiBase);
+  const letter = (symbol || "?")[0];
+  const fallback = (
     <div style={{ width: size, height: size, borderRadius: 8, background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.35, fontWeight: 900, color: C.ft + "44" }}>
-      {(symbol || "?")[0]}
+      {letter}
     </div>
   );
-  return <img src={src} alt="" style={{ width: size, height: size, borderRadius: 8, objectFit: "cover" }} onError={() => setErr(true)} />;
+  if (!src || !ok) return fallback;
+  const imgSrc = retries > 0 ? proxyUrl + "&_r=" + retries + "&_t=" + Date.now() : proxyUrl;
+  return (
+    <div style={{ width: size, height: size, position: "relative", borderRadius: 8, overflow: "hidden" }}>
+      {!loaded && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.35, fontWeight: 900, color: C.ft + "44", background: C.bg }}>{letter}</div>}
+      <img src={imgSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", opacity: loaded ? 1 : 0, transition: "opacity .25s ease" }} onLoad={() => setLoaded(true)} onError={() => { if (retries < 3) setTimeout(() => setRetries(r => r + 1), 500 * (retries + 1)); else setOk(false); }} />
+    </div>
+  );
 }
 
 // ═══ SCORE PANEL (slide-out with full detail) ═══
-function ScorePanel({ token, onClose, onBuy, onSell, user, tradingBalance, solPrice, held }) {
+function ScorePanel({ token, onClose, onBuy, onSell, user, tradingBalance, solPrice, held, apiBase }) {
   const [buyAmt, setBuyAmt] = useState(0.1);
   const [buying, setBuying] = useState(false);
   const [selling, setSelling] = useState(false);
@@ -168,7 +181,7 @@ function ScorePanel({ token, onClose, onBuy, onSell, user, tradingBalance, solPr
     }}>
       {/* Header with image */}
       <div style={{ display: "flex", gap: 10, padding: "12px 14px", borderBottom: `1px solid ${C.bd}` }}>
-        <TImg src={token.imageUri || token.image} symbol={token.symbol} size={72} />
+        <TImg src={token.imageUri || token.image} symbol={token.symbol} size={72} apiBase={apiBase} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2, flexWrap: "wrap" }}>
             <span style={{ fontSize: 20, fontWeight: 900, color: C.tx }}>{token.name || token.symbol}</span>
@@ -424,7 +437,7 @@ function TokenList({ tokens, selected, onSelect }) {
             transition: "all 0.15s",
           }}>
             <div style={{ width: 28, height: 28, borderRadius: 5, overflow: "hidden", flexShrink: 0, background: C.bg, border: `1px solid ${color}22` }}>
-              {(t.imageUri || t.image) ? <img src={t.imageUri || t.image} alt="" style={{ width: 28, height: 28, objectFit: "cover" }} onError={e => e.target.style.display = "none"} /> : <div style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 900, color: C.ft + "44" }}>{(t.symbol || "?")[0]}</div>}
+              {(t.imageUri || t.image) ? <img src={radarImgProxy(t.imageUri || t.image, API)} alt="" style={{ width: 28, height: 28, objectFit: "cover" }} onError={e => e.target.style.display = "none"} /> : <div style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 900, color: C.ft + "44" }}>{(t.symbol || "?")[0]}</div>}
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.tx, fontFamily: M, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.symbol || t.name}</div>
@@ -488,7 +501,7 @@ function GradPanel({ grads, onSelect, onBuy, user, tradingBalance, buying }) {
           >
             {/* Image */}
             <div style={{ width: 32, height: 32, borderRadius: 6, overflow: "hidden", flexShrink: 0, background: C.bg, border: `1px solid ${C.bd}` }}>
-              {g.image ? <img src={g.image} alt="" style={{ width: 32, height: 32, objectFit: "cover" }} onError={e => e.target.style.display = "none"} /> : <div style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 900, color: C.ft + "44" }}>{(g.ticker || g.name || "?")[0]}</div>}
+              {g.image ? <img src={radarImgProxy(g.image, API)} alt="" style={{ width: 32, height: 32, objectFit: "cover" }} onError={e => e.target.style.display = "none"} /> : <div style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 900, color: C.ft + "44" }}>{(g.ticker || g.name || "?")[0]}</div>}
             </div>
 
             {/* Name + Ticker */}
@@ -779,7 +792,7 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
 
         {/* Score panel */}
         <ScorePanel token={selected} onClose={() => setSelected(null)}
-          onBuy={onBuy} onSell={onSell} user={user} tradingBalance={tradingBalance} solPrice={solPrice} held={held} />
+          onBuy={onBuy} onSell={onSell} user={user} tradingBalance={tradingBalance} solPrice={solPrice} held={held} apiBase={API} />
       </div>
 
       <PlatformBar platformStats={platformStats} />
