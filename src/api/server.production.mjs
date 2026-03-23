@@ -808,9 +808,9 @@ function processRadarMessage(data) {
   if (!data || !data.txType) return;
   const now = Date.now();
 
-  // Debug first messages
-  if (radar._debugCount < 5) {
-    console.log(`[RADAR] ${data.txType}:`, JSON.stringify(data).slice(0, 500));
+  // Debug first messages (log all fields to discover platform identifiers)
+  if (radar._debugCount < 8) {
+    console.log(`[RADAR] ${data.txType}:`, JSON.stringify(data).slice(0, 600));
     radar._debugCount++;
   }
 
@@ -819,11 +819,19 @@ function processRadarMessage(data) {
   //             marketCapSol, vSolInBondingCurve, vTokensInBondingCurve
   // Create only: initialBuy
   // Trade only: tokenAmount, newTokenBalance
+  // Platform detection: pool field ("pump"|"bonk") or bondingCurveKey program
   const mint = data.mint || "";
   if (!mint) return;
   const vSol = data.vSolInBondingCurve || 0;
   const vTokens = data.vTokensInBondingCurve || 0;
   const trader = data.traderPublicKey || "";
+  // Detect launchpad source: pump.fun vs bonk.fun (LetsBonk/Raydium LaunchLab)
+  // PumpPortal may send pool="bonk" or we detect via bondingCurveKey/program
+  const BONK_PROGRAM = "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj";
+  const detectedSource = (data.pool === "bonk" || data.platform === "lets_bonk" || data.platform === "bonk"
+    || (data.bondingCurveKey && data.programId === BONK_PROGRAM)
+    || (data.uri && data.uri.includes("letsbonk")))
+    ? "bonk" : "pump";
   // Use PumpPortal's marketCapSol directly — it matches chart prices (GMGN, pump.fun).
   // Previously computed FDV via (vSol/vTokens)*1B which inflated MC vs chart price.
   const mcSol = data.marketCapSol || (vTokens > 0 ? vSol : 0);
@@ -857,6 +865,7 @@ function processRadarMessage(data) {
       graduated: false,
       bundled: false,
       initialBuy: data.initialBuy || 0,
+      _source: detectedSource, // "pump" | "bonk" (bags set separately)
     };
 
     radar.tokens.set(mint, token);
@@ -1982,9 +1991,10 @@ setInterval(() => {
       age: Math.round((now - t.createdAt) / 1000),
       devWallet: t.devWallet, graduated: t.graduated, bundled: t.bundled,
       marketCapSol: t.mcapSol,
-      source: t._source || "pump",     // "pump" | "bags" — launchpad origin
+      source: t._source || "pump",     // "pump" | "bonk" | "bags" — launchpad origin
       _source: t._source || "pump",    // alias for frontend compatibility
       _meteoraDBC: t._source === "bags", // Bags tokens use Meteora DBC
+      _bonk: t._source === "bonk",      // LetsBonk.fun / Raydium LaunchLab
       dexBoosted: !!radar.dexBoosted.get(t.ca),
       boostAmount: radar.dexBoosted.get(t.ca)?.amount || 0,
       artworkScore: t._artworkScore ?? null,
@@ -3550,6 +3560,7 @@ app.post("/api/quick-ape", async (req, res) => {
     // Check if token is graduated (Raydium) or still on bonding curve
     const radarToken = radar.tokens.get(ca);
     const isGraduated = radarToken?.graduated || radarToken?.raydiumPool;
+    const isBonk = radarToken?._source === "bonk";
 
     let sig = null;
     let method = "pumpportal";
@@ -3577,7 +3588,8 @@ app.post("/api/quick-ape", async (req, res) => {
     };
 
     // Race all strategies — first success wins (Promise.any pattern)
-    const pools = isGraduated ? ["auto", "raydium"] : ["pump", "auto"];
+    // Bonk tokens use "bonk" pool, pump.fun uses "pump", graduated uses "raydium"/"auto"
+    const pools = isGraduated ? ["auto", "raydium"] : isBonk ? ["bonk", "auto"] : ["pump", "auto"];
     const candidates = pools.map(pool =>
       tryPPBuy(pool).catch(e => { errors.push(`PP:${pool}=${e.message.slice(0, 60)}`); throw e; })
     );
@@ -3774,6 +3786,7 @@ app.post("/api/quick-sell", async (req, res) => {
 
     const radarToken = radar.tokens.get(ca);
     let isGraduated = radarToken?.graduated || radarToken?.raydiumPool;
+    const isBonk = radarToken?._source === "bonk";
     // If not in radar, check DexScreener in background (don't block the sell)
     const gradCheckPromise = !radarToken ? fetch(`https://api.dexscreener.com/latest/dex/tokens/${ca}`, { signal: AbortSignal.timeout(3000) })
       .then(r => r.ok ? r.json() : null).then(dd => { if (dd?.pairs?.length > 0) isGraduated = true; }).catch(() => {}) : Promise.resolve();
@@ -3869,7 +3882,7 @@ app.post("/api/quick-sell", async (req, res) => {
 
     // Race all strategies in parallel for maximum speed
     const sellAmount = Math.round(tokenBalance * (pct / 100) * Math.pow(10, tokenDecimals));
-    const pools = isGraduated ? ["auto", "raydium", "pump"] : ["pump", "auto"];
+    const pools = isGraduated ? ["auto", "raydium", "pump"] : isBonk ? ["bonk", "auto"] : ["pump", "auto"];
     const candidates = pools.map(pool =>
       tryPPSell(pool).catch(e => { errors.push(`PP:${pool}=${e.message.slice(0, 60)}`); throw e; })
     );
@@ -8216,10 +8229,11 @@ app.post("/api/intel/smart-money/watch", express.json(), (req, res) => {
 app.get("/api/intel/tokens", (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 100, 200);
   const sort = req.query.sort || "score"; // score, mcap, buys, recent
-  const source = req.query.source || "all"; // all, pump, bags
+  const source = req.query.source || "all"; // all, pump, bonk, bags
 
   let tokens = [...radar.tokens.values()];
-  if (source === "pump") tokens = tokens.filter(t => t._source !== "bags");
+  if (source === "pump") tokens = tokens.filter(t => t._source === "pump" || !t._source);
+  if (source === "bonk") tokens = tokens.filter(t => t._source === "bonk");
   if (source === "bags") tokens = tokens.filter(t => t._source === "bags");
 
   const mapped = tokens.map(t => ({
