@@ -690,11 +690,12 @@ async function fetchPumpFunMetadata(ca) {
 async function fetchTokenImage(ca, uri) {
   try {
     let url = uri;
-    if (url.startsWith("ipfs://")) url = "https://gateway.pinata.cloud/ipfs/" + url.slice(7);
+    if (url.startsWith("ipfs://")) url = "https://pump.mypinata.cloud/ipfs/" + url.slice(7);
     // pump.fun uses IPFS for metadata
-    if (url.includes("bafkrei") && !url.startsWith("http")) url = "https://gateway.pinata.cloud/ipfs/" + url;
-    // Rewrite slow cf-ipfs to Pinata
-    if (url.includes("cf-ipfs.com/ipfs/")) url = url.replace("cf-ipfs.com/ipfs/", "gateway.pinata.cloud/ipfs/");
+    if (url.includes("bafkrei") && !url.startsWith("http")) url = "https://pump.mypinata.cloud/ipfs/" + url;
+    // Rewrite slow gateways to pump's Pinata CDN
+    if (url.includes("cf-ipfs.com/ipfs/")) url = url.replace("cf-ipfs.com/ipfs/", "pump.mypinata.cloud/ipfs/");
+    if (url.includes("gateway.pinata.cloud/ipfs/")) url = url.replace("gateway.pinata.cloud/ipfs/", "pump.mypinata.cloud/ipfs/");
     
     const r = await fetch(url, {
       signal: AbortSignal.timeout(8000),
@@ -706,10 +707,11 @@ async function fetchTokenImage(ca, uri) {
     if (!token) return;
     
     let img = meta.image || meta.imageUri || "";
-    if (img.startsWith("ipfs://")) img = "https://gateway.pinata.cloud/ipfs/" + img.slice(7);
-    if (img && !img.startsWith("http")) img = "https://gateway.pinata.cloud/ipfs/" + img;
-    // Rewrite slow cf-ipfs URLs to Pinata
-    if (img.includes("cf-ipfs.com/ipfs/")) img = img.replace("cf-ipfs.com/ipfs/", "gateway.pinata.cloud/ipfs/");
+    if (img.startsWith("ipfs://")) img = "https://pump.mypinata.cloud/ipfs/" + img.slice(7);
+    if (img && !img.startsWith("http")) img = "https://pump.mypinata.cloud/ipfs/" + img;
+    // Rewrite slow cf-ipfs URLs to pump's Pinata CDN
+    if (img.includes("cf-ipfs.com/ipfs/")) img = img.replace("cf-ipfs.com/ipfs/", "pump.mypinata.cloud/ipfs/");
+    if (img.includes("gateway.pinata.cloud/ipfs/")) img = img.replace("gateway.pinata.cloud/ipfs/", "pump.mypinata.cloud/ipfs/");
     
     if (img) token.image = img;
     if (meta.name && !token.name) token.name = meta.name;
@@ -6669,9 +6671,9 @@ app.get("/api/img", async (req, res) => {
     return res.send(cached.buf);
   }
 
-  // Negative cache: if this URL failed recently, don't retry for 15s
+  // Negative cache: if this URL failed recently, don't retry for 5s
   const failTs = imgFailing.get(url);
-  if (failTs && Date.now() - failTs < 15000) {
+  if (failTs && Date.now() - failTs < 5000) {
     return res.status(404).end();
   }
 
@@ -6686,6 +6688,7 @@ app.get("/api/img", async (req, res) => {
     // Build gateway URLs — fastest/most reliable first
     const urls = [];
     if (ipfsHash) {
+      urls.push(`https://pump.mypinata.cloud/ipfs/${ipfsHash}?img-width=256&img-dpr=2&img-onerror=redirect`);
       urls.push(`https://img.fotofolio.xyz/?url=https%3A%2F%2Fcf-ipfs.com%2Fipfs%2F${ipfsHash}`);
       urls.push(`https://gateway.pinata.cloud/ipfs/${ipfsHash}`);
       urls.push(`https://cf-ipfs.com/ipfs/${ipfsHash}`);
@@ -6695,7 +6698,7 @@ app.get("/api/img", async (req, res) => {
     }
     if (fetchUrl.includes("pump.fun") || fetchUrl.includes("cf-ipfs")) {
       const pumpMatch = fetchUrl.match(/\/ipfs\/([a-zA-Z0-9]+)/);
-      if (pumpMatch) urls.unshift(`https://img.fotofolio.xyz/?url=${encodeURIComponent(fetchUrl)}`);
+      if (pumpMatch) urls.unshift(`https://pump.mypinata.cloud/ipfs/${pumpMatch[1]}?img-width=256&img-dpr=2&img-onerror=redirect`);
     }
     if (!fetchUrl.startsWith("http")) fetchUrl = "https://" + fetchUrl;
     // For any external URL, also try via image proxy services as fallback
@@ -6717,7 +6720,7 @@ app.get("/api/img", async (req, res) => {
       const ct = r.headers.get("content-type") || "image/png";
       if (!ct.includes("image") && !ct.includes("octet")) throw new Error("not image");
       const buf = Buffer.from(await r.arrayBuffer());
-      if (buf.length < 100) throw new Error("too small");
+      if (buf.length < 10) throw new Error("too small");
       return { buf, ct };
     };
 
@@ -6730,9 +6733,9 @@ app.get("/api/img", async (req, res) => {
     try {
       result = await Promise.any(batch1.map(u => tryFetch(u, 8000)));
     } catch {
-      // batch1 all failed, try remaining sequentially with short timeout
+      // batch1 all failed, try remaining sequentially
       for (const u of batch2) {
-        try { result = await tryFetch(u, 4000); break; } catch { continue; }
+        try { result = await tryFetch(u, 8000); break; } catch { continue; }
       }
     }
 
@@ -6740,7 +6743,7 @@ app.get("/api/img", async (req, res) => {
       imgFailing.set(url, Date.now());
       // Evict old negative cache entries
       if (imgFailing.size > 5000) {
-        const cutoff = Date.now() - 15000;
+        const cutoff = Date.now() - 5000;
         for (const [k, v] of imgFailing) { if (v < cutoff) imgFailing.delete(k); }
       }
       return res.status(404).end();
