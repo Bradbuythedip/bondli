@@ -1016,6 +1016,21 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 10px"}}><div style={{fontSize:9,color:T.ft,fontWeight:700}}>GPU</div><div style={{fontSize:13,fontWeight:800,color:T.tx,marginTop:2}}>{gpuDash.node?.gpuModel||"—"}</div></div>
 <div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 10px"}}><div style={{fontSize:9,color:T.ft,fontWeight:700}}>MARKET</div><div style={{fontSize:13,fontWeight:800,color:T.tx,marginTop:2}}>{gpuDash.node?.nosanaMarket||"—"}</div></div>
 </div>
+{/* ── Fund Node Wallet Banner ── */}
+{gpuDash.node?.address&&<div style={{marginTop:8,background:T.yl+"0a",border:"1px solid "+T.yl+"33",borderRadius:8,padding:mb?10:12}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}><IC.sol s={14} c={T.yl}/><span style={{fontSize:12,fontWeight:800,color:T.yl}}>Fund Your Node Wallet</span></div>
+<div style={{fontSize:11,color:T.dm,lineHeight:1.5,marginBottom:8}}>Your node needs <span style={{fontWeight:800,color:T.tx}}>~0.05 SOL</span> for Nosana on-chain fees (claiming jobs, submitting results). Send SOL from Phantom to:</div>
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 10px",display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+<code style={{flex:1,fontSize:mb?10:11,fontWeight:700,color:T.gn,wordBreak:"break-all",fontFamily:"'IBM Plex Mono',monospace"}}>{gpuDash.node.address}</code>
+<button onClick={()=>{navigator.clipboard.writeText(gpuDash.node.address);toast("Node address copied","success")}} style={{background:T.dm+"18",border:"1px solid "+T.bd,borderRadius:4,padding:"4px 8px",color:T.tx,fontSize:10,fontWeight:700,cursor:"pointer",flexShrink:0}}>Copy</button>
+</div>
+<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+<a href={"https://phantom.app/ul/send?to="+gpuDash.node.address} target="_blank" rel="noopener" style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,padding:"8px 12px",background:"#ab9ff222",border:"1px solid #ab9ff244",borderRadius:6,color:"#ab9ff2",fontSize:11,fontWeight:800,textDecoration:"none",cursor:"pointer"}}>Open in Phantom</a>
+<a href={"https://solscan.io/account/"+gpuDash.node.address} target="_blank" rel="noopener" style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",gap:5,padding:"8px 12px",background:T.dm+"0a",border:"1px solid "+T.bd,borderRadius:6,color:T.dm,fontSize:11,fontWeight:700,textDecoration:"none",cursor:"pointer"}}>View on Solscan</a>
+</div>
+<div style={{fontSize:9,color:T.ft,marginTop:6,lineHeight:1.4}}>Without SOL your node cannot accept jobs. This is a one-time funding — fees are tiny (~0.000005 SOL per tx).</div>
+</div>}
+
 {gpuDash.node?.gpuUtil&&gpuDash.node.status!=="offline"&&<div style={{marginTop:8}}>
 <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:T.dm,marginBottom:3}}><span>GPU Utilization</span><span style={{fontWeight:700,color:parseInt(gpuDash.node.gpuUtil)>50?T.gn:T.dm}}>{gpuDash.node.gpuUtil}%</span></div>
 <div style={{height:4,borderRadius:2,background:T.bd,overflow:"hidden"}}><div style={{width:gpuDash.node.gpuUtil+"%",height:"100%",borderRadius:2,background:parseInt(gpuDash.node.gpuUtil)>80?T.gn:parseInt(gpuDash.node.gpuUtil)>50?T.yl:T.dm,transition:"width .5s"}}/></div>
