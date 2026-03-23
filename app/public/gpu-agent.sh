@@ -306,27 +306,32 @@ else
   echo "[!!] WARNING: No market address from Bondli API — node will use Nosana Grid auto-detection"
 fi
 
-# Nosana's start.sh uses `docker exec -it` and `--interactive -t` which require a TTY.
-# When running via `curl | bash`, there's no TTY — patch these out.
+# Nosana's start.sh uses `docker exec -it` and `--interactive -t` which require a TTY
+# and cause the script to block forever (attached to the node process).
+# Patch: remove TTY flags and run the inner nosana-node container in detached mode (-d)
+# so the start script returns after launching the node.
 sed -i 's/docker exec -it /docker exec /g' /tmp/nosana-start.sh
-sed -i 's/--interactive -t/--interactive/g' /tmp/nosana-start.sh
+sed -i 's/--interactive -t/-d/g' /tmp/nosana-start.sh
 
-# Nosana start script pulls images & starts containers — give it up to 5 minutes
-timeout 300 bash /tmp/nosana-start.sh < /dev/null || {
-  echo "[!!] Nosana start script timed out or failed"
-  echo "     Try running manually: bash <(curl -s https://nosana.com/start.sh)"
-}
+bash /tmp/nosana-start.sh < /dev/null
 rm -f /tmp/nosana-start.sh
 
-# Verify the node container is actually running
-sleep 2
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "nosana-node"; then
-  echo "[OK] Nosana node container running"
-elif docker exec podman podman ps --format '{{.Names}}' 2>/dev/null | grep -q "nosana-node"; then
+# Wait for the nosana-node container to be running (it pulls images in detached mode)
+echo "[..] Waiting for Nosana node to start (image pulls may take several minutes)..."
+NODE_STARTED=false
+for i in $(seq 1 60); do
+  if docker exec podman podman ps --format '{{.Names}}' 2>/dev/null | grep -q "nosana-node"; then
+    NODE_STARTED=true
+    break
+  fi
+  sleep 5
+done
+
+if [ "$NODE_STARTED" = true ]; then
   echo "[OK] Nosana node running inside podman"
 else
-  echo "[!!] WARNING: Nosana node may not be running. Try running the command directly:"
-  echo "     bash <(curl -s https://nosana.com/start.sh)"
+  echo "[!!] WARNING: Nosana node may not have started. Check logs:"
+  echo "     docker exec podman podman logs nosana-node"
 fi
 
 # ── Start heartbeat daemon ──
