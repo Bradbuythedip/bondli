@@ -289,13 +289,13 @@ if [ -n "$NOSANA_MARKET" ]; then
   sed -i "/NOSANA_NODE_ARGS=(/{n;s|start|start --market $NOSANA_MARKET|}" /tmp/nosana-start.sh
 fi
 
-# Nosana's start script uses `docker exec -it` which needs a TTY.
-# When running via `curl | bash`, there's no TTY — use `script` to provide one.
-if [ -t 0 ]; then
-  bash /tmp/nosana-start.sh
-else
-  script -qec "bash /tmp/nosana-start.sh" /dev/null
-fi
+# Nosana's start.sh uses `docker exec -it` which requires a TTY.
+# When running via `curl | bash`, there's no TTY. Instead of using
+# `script` (which echoes stdin and corrupts output), patch out the
+# `-it` flag so docker exec works without a TTY.
+sed -i 's/docker exec -it /docker exec /g' /tmp/nosana-start.sh
+
+bash /tmp/nosana-start.sh < /dev/null
 rm -f /tmp/nosana-start.sh
 
 # Verify the node container is actually running
