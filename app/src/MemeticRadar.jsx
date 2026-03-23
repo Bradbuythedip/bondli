@@ -126,8 +126,8 @@ function TImg({ src, symbol, size = 64, apiBase }) {
   const imgSrc = retries > 0 ? proxyUrl + "&_r=" + retries + "&_t=" + Date.now() : proxyUrl;
   return (
     <div style={{ width: size, height: size, position: "relative", borderRadius: 8, overflow: "hidden" }}>
-      {!loaded && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.35, fontWeight: 900, color: C.ft + "44", background: C.bg }}>{letter}</div>}
-      <img src={imgSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", opacity: loaded ? 1 : 0, transition: "opacity .25s ease" }} onLoad={() => setLoaded(true)} onError={() => { if (retries < 3) setTimeout(() => setRetries(r => r + 1), 500 * (retries + 1)); else setOk(false); }} />
+      {!loaded && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.35, fontWeight: 900, color: C.ft + "44", background: C.bg, zIndex: 1 }}>{letter}</div>}
+      <img src={imgSrc} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", filter: loaded ? "blur(0)" : "blur(12px)", opacity: loaded ? 1 : 0.6, transform: loaded ? "scale(1)" : "scale(1.1)", transition: "filter .4s ease, opacity .4s ease, transform .4s ease" }} onLoad={() => setLoaded(true)} onError={() => { if (retries < 3) setTimeout(() => setRetries(r => r + 1), 500 * (retries + 1)); else setOk(false); }} />
     </div>
   );
 }
@@ -437,7 +437,7 @@ function TokenList({ tokens, selected, onSelect }) {
             transition: "all 0.15s",
           }}>
             <div style={{ width: 28, height: 28, borderRadius: 5, overflow: "hidden", flexShrink: 0, background: C.bg, border: `1px solid ${color}22` }}>
-              {(t.imageUri || t.image) ? <img src={radarImgProxy(t.imageUri || t.image, API)} alt="" style={{ width: 28, height: 28, objectFit: "cover" }} onError={e => e.target.style.display = "none"} /> : <div style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 900, color: C.ft + "44" }}>{(t.symbol || "?")[0]}</div>}
+              {(t.imageUri || t.image) ? <img src={radarImgProxy(t.imageUri || t.image, API)} alt="" style={{ width: 28, height: 28, objectFit: "cover", filter: "blur(12px)", opacity: 0.6, transform: "scale(1.1)", transition: "filter .4s ease, opacity .4s ease, transform .4s ease" }} onLoad={e => { e.target.style.filter = "blur(0)"; e.target.style.opacity = "1"; e.target.style.transform = "scale(1)"; }} onError={e => e.target.style.display = "none"} /> : <div style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 900, color: C.ft + "44" }}>{(t.symbol || "?")[0]}</div>}
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: C.tx, fontFamily: M, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.symbol || t.name}</div>
@@ -501,7 +501,7 @@ function GradPanel({ grads, onSelect, onBuy, user, tradingBalance, buying }) {
           >
             {/* Image */}
             <div style={{ width: 32, height: 32, borderRadius: 6, overflow: "hidden", flexShrink: 0, background: C.bg, border: `1px solid ${C.bd}` }}>
-              {g.image ? <img src={radarImgProxy(g.image, API)} alt="" style={{ width: 32, height: 32, objectFit: "cover" }} onError={e => e.target.style.display = "none"} /> : <div style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 900, color: C.ft + "44" }}>{(g.ticker || g.name || "?")[0]}</div>}
+              {g.image ? <img src={radarImgProxy(g.image, API)} alt="" style={{ width: 32, height: 32, objectFit: "cover", filter: "blur(12px)", opacity: 0.6, transform: "scale(1.1)", transition: "filter .4s ease, opacity .4s ease, transform .4s ease" }} onLoad={e => { e.target.style.filter = "blur(0)"; e.target.style.opacity = "1"; e.target.style.transform = "scale(1)"; }} onError={e => e.target.style.display = "none"} /> : <div style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 900, color: C.ft + "44" }}>{(g.ticker || g.name || "?")[0]}</div>}
             </div>
 
             {/* Name + Ticker */}
