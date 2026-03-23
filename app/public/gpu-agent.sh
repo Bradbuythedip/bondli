@@ -285,18 +285,21 @@ if [ ! -s /tmp/nosana-start.sh ]; then
 fi
 
 # If we have a pre-resolved market from Bondli, patch the start script
-# to pass --market to nosana-node (bypasses Grid GPU detection that fails for new GPUs like 5070 Ti)
+# to pass market address to nosana-node (bypasses Grid GPU detection that fails for new GPUs like 5070 Ti)
+# Note: market is a POSITIONAL argument: `nosana node start <market-address> --network mainnet`
 if [ -n "$NOSANA_MARKET" ]; then
   echo "[OK] Using Bondli-resolved market: ${NOSANA_MARKET_NAME:-$NOSANA_MARKET}"
-  # Append --market to NOSANA_NODE_ARGS after the --network line
-  # Nosana's start.sh has: NOSANA_NODE_ARGS+=(--network "$SOL_NET_ENV")
-  # We add:                NOSANA_NODE_ARGS+=(--market "ADDRESS")
-  sed -i "/NOSANA_NODE_ARGS+=(--network/a\\    NOSANA_NODE_ARGS+=(--market \"$NOSANA_MARKET\")" /tmp/nosana-start.sh
+  # Nosana's start.sh has:
+  #   NOSANA_NODE_ARGS=( start )
+  #   NOSANA_NODE_ARGS+=(--network "$SOL_NET_ENV")
+  # We need: NOSANA_NODE_ARGS=( start <MARKET_ADDRESS> )
+  # Inject market address as positional arg right after "start" in the array
+  sed -i "s|^\\([[:space:]]*\\)start[[:space:]]*$|\\1start\\n\\1$NOSANA_MARKET|" /tmp/nosana-start.sh
   # Verify the patch was applied
   if grep -q "$NOSANA_MARKET" /tmp/nosana-start.sh; then
-    echo "[OK] Market flag injected into Nosana start script"
+    echo "[OK] Market address injected into Nosana start script"
   else
-    echo "[!!] WARNING: Failed to patch Nosana start script with --market flag"
+    echo "[!!] WARNING: Failed to patch Nosana start script with market address"
     echo "     The node may fail if Nosana Grid is unreachable"
   fi
 else
