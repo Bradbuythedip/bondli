@@ -339,7 +339,7 @@ export function mountGpuRoutes(app, deps) {
           pendingNOS,
         },
         recentJobs: logs.slice(0, 20),
-        commandLog,
+        commandLog: commandLog.filter(c => !(c.result && c.result.status === "expired")),
       });
     } catch (err) {
       console.error("[GPU] Dashboard error:", err.message);
@@ -445,9 +445,10 @@ export function mountGpuRoutes(app, deps) {
       // Queue command for agent pickup on next heartbeat
       await redis.lPush(`bondli:gpu:cmd_queue:${nodeAddress}`, JSON.stringify(cmdObj));
 
-      // Log command history
+      // Log command history (expires after 1 hour)
       await redis.lPush(`bondli:gpu:cmd_log:${nodeAddress}`, JSON.stringify(cmdObj));
       await redis.lTrim(`bondli:gpu:cmd_log:${nodeAddress}`, 0, 99);
+      await redis.expire(`bondli:gpu:cmd_log:${nodeAddress}`, 3600);
 
       // Immediately update node status for stop/restart so dashboard reflects it
       if (command === "stop_node") {
