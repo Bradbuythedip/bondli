@@ -360,7 +360,7 @@ echo "  Earnings are split hourly to your Bondli wallet."
 echo "  Dashboard: https://bondli.fun/gpu"
 echo ""
 echo "  Stop:   docker exec podman podman stop nosana-node"
-echo "  Logs:   docker exec podman podman logs nosana-node --tail 20"
+echo "  Logs:   docker exec podman podman logs --tail 20 nosana-node"
 echo "  Status: nvidia-smi"
 echo "======================================="
 

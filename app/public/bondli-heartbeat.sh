@@ -26,7 +26,7 @@ execute_command() {
       OUTPUT=$(docker restart nosana-node 2>&1) || STATUS="error"
       ;;
     get_logs)
-      OUTPUT=$(docker exec podman podman logs nosana-node --tail 50 2>&1 | head -c 10000) || \
+      OUTPUT=$(docker exec podman podman logs --tail 50 nosana-node 2>&1 | head -c 10000) || \
       OUTPUT=$(docker logs nosana-node --tail 50 2>&1 | head -c 10000) || STATUS="error"
       ;;
     set_power_limit)
