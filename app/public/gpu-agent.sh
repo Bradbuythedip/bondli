@@ -257,7 +257,24 @@ fi
 
 # ── Start Nosana node ──
 echo "[..] Starting Nosana node..."
-bash <(curl -s https://nosana.com/start.sh)
+# Nosana's start script uses `docker exec -it` which needs a TTY.
+# When running via `curl | bash`, there's no TTY — use `script` to provide one.
+if [ -t 0 ]; then
+  bash <(curl -s https://nosana.com/start.sh)
+else
+  script -qec "bash <(curl -s https://nosana.com/start.sh)" /dev/null
+fi
+
+# Verify the node container is actually running
+sleep 2
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "nosana-node"; then
+  echo "[OK] Nosana node container running"
+elif docker exec podman podman ps --format '{{.Names}}' 2>/dev/null | grep -q "nosana-node"; then
+  echo "[OK] Nosana node running inside podman"
+else
+  echo "[!!] WARNING: Nosana node may not be running. Try running the command directly:"
+  echo "     bash <(curl -s https://nosana.com/start.sh)"
+fi
 
 # ── Start heartbeat daemon ──
 echo "[..] Starting Bondli heartbeat..."
@@ -277,12 +294,16 @@ execute_command() {
 
   case "$CMD_TYPE" in
     stop_node)
+      # Nosana node runs inside the podman container
+      OUTPUT=$(docker exec podman podman stop nosana-node 2>&1) || \
       OUTPUT=$(docker stop nosana-node 2>&1) || STATUS="error"
       ;;
     restart_node)
+      OUTPUT=$(docker exec podman podman restart nosana-node 2>&1) || \
       OUTPUT=$(docker restart nosana-node 2>&1) || STATUS="error"
       ;;
     get_logs)
+      OUTPUT=$(docker exec podman podman logs nosana-node --tail 50 2>&1 | head -c 10000) || \
       OUTPUT=$(docker logs nosana-node --tail 50 2>&1 | head -c 10000) || STATUS="error"
       ;;
     set_power_limit)
@@ -382,7 +403,7 @@ echo "  Your GPU is now accepting AI inference jobs."
 echo "  Earnings are split hourly to your Bondli wallet."
 echo "  Dashboard: https://bondli.fun/gpu"
 echo ""
-echo "  Stop:   docker stop nosana-node"
-echo "  Logs:   docker logs nosana-node --tail 20"
+echo "  Stop:   docker exec podman podman stop nosana-node"
+echo "  Logs:   docker exec podman podman logs nosana-node --tail 20"
 echo "  Status: nvidia-smi"
 echo "======================================="
