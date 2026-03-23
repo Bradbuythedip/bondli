@@ -4,11 +4,11 @@
 # ═══════════════════════════════════════════════════════════════
 #
 # Usage:
-#   curl -s https://bondli.fun/gpu-agent.sh | bash -s -- --wallet <WALLET>
+#   curl -s https://bondli.fun/gpu-agent.sh | bash -s -- --wallet <WALLET> --email <EMAIL>
 #
 # Or download and run:
 #   chmod +x bondli-gpu-agent.sh
-#   ./bondli-gpu-agent.sh --wallet <YOUR_SOLANA_WALLET>
+#   ./bondli-gpu-agent.sh --wallet <YOUR_SOLANA_WALLET> --email <YOUR_EMAIL>
 #
 # Requires: NVIDIA GPU, Docker, internet connection
 # Nosana constraint: 1 private key per GPU, 1 GPU per PC
@@ -19,17 +19,22 @@
 set -e
 
 WALLET=""
+EMAIL=""
+DISCORD_USER="bondli"
 BONDLI_API="${BONDLI_API:-https://api.bondli.fun}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
     --wallet) WALLET="$2"; shift 2 ;;
+    --email) EMAIL="$2"; shift 2 ;;
+    --discord) DISCORD_USER="$2"; shift 2 ;;
     --api) BONDLI_API="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
 
 [ -z "$WALLET" ] && echo "Error: --wallet required" && exit 1
+[ -z "$EMAIL" ] && echo "Error: --email required (for Nosana node registration)" && exit 1
 
 echo "======================================="
 echo "  BONDLI GPU AGENT"
@@ -359,7 +364,7 @@ fi
 # Nosana asks: 1) email address  2) Discord username
 # Background the process so the script can continue to the health check.
 # sleep keeps the stdin pipe alive so the container doesn't lose its stdin.
-(printf 'gpu@bondli.fun\n'; printf 'bondli\n'; sleep 86400) | bash /tmp/nosana-start.sh > /tmp/nosana-start.log 2>&1 &
+(printf '%s\n%s\n' "$EMAIL" "$DISCORD_USER"; sleep 86400) | bash /tmp/nosana-start.sh > /tmp/nosana-start.log 2>&1 &
 NOSANA_START_PID=$!
 disown $NOSANA_START_PID 2>/dev/null || true
 echo "[OK] Nosana start running in background (PID $NOSANA_START_PID)"
