@@ -355,10 +355,11 @@ if [ -n "$SPOOF_GPU_NAME" ]; then
   echo "[OK] PATH override injected for nvidia-smi wrapper"
 fi
 
-# Always pipe an email for Nosana registration prompt (harmless if already registered).
+# Always pipe answers for Nosana registration prompts (harmless if already registered).
+# Nosana asks: 1) email address  2) Discord username
 # Background the process so the script can continue to the health check.
 # sleep keeps the stdin pipe alive so the container doesn't lose its stdin.
-(printf 'gpu@bondli.fun\n'; sleep 86400) | bash /tmp/nosana-start.sh > /tmp/nosana-start.log 2>&1 &
+(printf 'gpu@bondli.fun\n'; printf 'bondli\n'; sleep 86400) | bash /tmp/nosana-start.sh > /tmp/nosana-start.log 2>&1 &
 NOSANA_START_PID=$!
 disown $NOSANA_START_PID 2>/dev/null || true
 echo "[OK] Nosana start running in background (PID $NOSANA_START_PID)"
