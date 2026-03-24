@@ -2190,7 +2190,7 @@ setInterval(() => {
 
   // ── MOMENTUM: Sustained buying pressure ──
   radar.tabs.momentum = rugFiltered
-    .filter(t => t.buys >= 2 && (now - t.createdAt) > 30000 && t.mcapUsd >= 3000)
+    .filter(t => t.buys >= 2 && (now - t.createdAt) > 10000 && t.mcapUsd >= 1500)
     .map(t => {
       const ageMin = Math.max(0.5, (now - t.createdAt) / 60000);
       const buyRate = t.buys / ageMin;
@@ -2248,7 +2248,7 @@ setInterval(() => {
     .slice(0, 50).map(serialize);
 
   radar.poolSize = radar.tokens.size;
-}, 5000);
+}, 2000);
 
 connectPumpPortal();
 
@@ -6747,6 +6747,7 @@ app.get("/api/img", async (req, res) => {
   // Negative cache: if this URL failed recently, don't retry for 30s
   const failTs = imgFailing.get(url);
   if (failTs && Date.now() - failTs < 30000) {
+    res.set("Access-Control-Allow-Origin", "*");
     return res.status(404).end();
   }
 
@@ -6849,6 +6850,7 @@ app.get("/api/img", async (req, res) => {
         const cutoff = Date.now() - 30000;
         for (const [k, v] of imgFailing) { if (v < cutoff) imgFailing.delete(k); }
       }
+      res.set("Access-Control-Allow-Origin", "*");
       return res.status(404).end();
     }
 
@@ -6866,7 +6868,7 @@ app.get("/api/img", async (req, res) => {
     res.set("Cache-Control", "public, max-age=86400");
     res.set("Access-Control-Allow-Origin", "*");
     return res.send(result.buf);
-  } catch { res.status(502).end(); }
+  } catch { res.set("Access-Control-Allow-Origin", "*"); res.status(502).end(); }
 });
 
 // ═══════════════════════════════════════
