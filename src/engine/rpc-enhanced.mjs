@@ -1,6 +1,28 @@
-// BONDLI v4.1 — RPC Enhanced (Priority Fees + Jito Bundles + Multi-RPC Failover)
+// BONDLI v4.2 — RPC Enhanced (Priority Fees + Jito Bundles + Multi-RPC Failover + Caching)
 import bs58 from "bs58";
 import CONFIG from "./config.mjs";
+
+// ── Priority fee cache (avoid calling getRecentPrioritizationFees every trade) ──
+let _cachedPriorityFee = CONFIG.PRIORITY_FEE;
+let _priorityFeeTs = 0;
+const PRIORITY_FEE_TTL = 10_000; // cache for 10s (was called every trade)
+
+// ── Blockhash cache (reuse across trades within same slot window) ──
+let _cachedBlockhash = null;
+let _cachedBlockHeight = 0;
+let _blockhashTs = 0;
+const BLOCKHASH_TTL = 8_000; // cache for 8s (~20 slots, still well within 150-slot validity)
+
+export async function getCachedBlockhash(connection) {
+  if (_cachedBlockhash && Date.now() - _blockhashTs < BLOCKHASH_TTL) {
+    return { blockhash: _cachedBlockhash, lastValidBlockHeight: _cachedBlockHeight };
+  }
+  const result = await connection.getLatestBlockhash("confirmed");
+  _cachedBlockhash = result.blockhash;
+  _cachedBlockHeight = result.lastValidBlockHeight;
+  _blockhashTs = Date.now();
+  return result;
+}
 
 // Jito tip accounts — one is chosen at random per bundle
 const JITO_TIP_ACCOUNTS = [
@@ -15,8 +37,11 @@ const JITO_TIP_ACCOUNTS = [
 ];
 const JITO_BLOCK_ENGINE = "https://mainnet.block-engine.jito.wtf/api/v1/bundles";
 
-// Get optimal priority fee using Solana's getRecentPrioritizationFees RPC
+// Get optimal priority fee — cached for 10s to avoid burning RPC calls every trade
 export async function getOptimalPriorityFee(accountKeys = []) {
+  // Return cached value if fresh
+  if (Date.now() - _priorityFeeTs < PRIORITY_FEE_TTL) return _cachedPriorityFee;
+
   try {
     const response = await fetch(CONFIG.RPC_URL, {
       method: "POST",
@@ -26,7 +51,7 @@ export async function getOptimalPriorityFee(accountKeys = []) {
         method: "getRecentPrioritizationFees",
         params: accountKeys.length > 0 ? [accountKeys] : [],
       }),
-      signal: AbortSignal.timeout(3000), // reduced from 5s
+      signal: AbortSignal.timeout(3000),
     });
 
     if (response.ok) {
@@ -34,14 +59,16 @@ export async function getOptimalPriorityFee(accountKeys = []) {
       if (data.result && data.result.length > 0) {
         const fees = data.result.map(f => f.prioritizationFee).sort((a, b) => a - b);
         const p75 = fees[Math.floor(fees.length * 0.75)] || fees[fees.length - 1];
-        return Math.max(10_000, Math.min(500_000, Math.ceil(p75)));
+        _cachedPriorityFee = Math.max(10_000, Math.min(500_000, Math.ceil(p75)));
+        _priorityFeeTs = Date.now();
+        return _cachedPriorityFee;
       }
     }
   } catch (e) {
     console.warn(`[RPC] Priority fee estimate failed: ${e.message}`);
   }
 
-  return CONFIG.PRIORITY_FEE;
+  return _cachedPriorityFee;
 }
 
 // Send transaction via Jito bundle for MEV protection + faster inclusion
@@ -157,4 +184,4 @@ export async function getTokenMetadata(mintAddress) {
   return null;
 }
 
-export default { getOptimalPriorityFee, smartSend, jitoSend, getJitoTipAccount, getTokenMetadata };
+export default { getOptimalPriorityFee, smartSend, jitoSend, getJitoTipAccount, getTokenMetadata, getCachedBlockhash };

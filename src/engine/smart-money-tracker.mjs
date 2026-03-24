@@ -53,7 +53,7 @@ export class SmartMoneyTracker {
 
     // ── Polling state ──
     this.pollInterval = null;
-    this.POLL_INTERVAL_MS = 15000; // poll every 15s
+    this.POLL_INTERVAL_MS = 30000; // poll every 30s (was 15s — halves RPC cost)
     this.lastPollSignatures = new Map(); // wallet → last seen signature
 
     // ── Manual watch (user-added wallets) ──
@@ -288,7 +288,7 @@ export class SmartMoneyTracker {
   async _pollWallet(address) {
     try {
       const pubkey = new PublicKey(address);
-      const sigs = await this.connection.getSignaturesForAddress(pubkey, { limit: 5 }, "confirmed");
+      const sigs = await this.connection.getSignaturesForAddress(pubkey, { limit: 3 }, "confirmed");
       if (!sigs || !sigs.length) return;
 
       const lastSig = this.lastPollSignatures.get(address);
