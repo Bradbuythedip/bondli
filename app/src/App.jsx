@@ -1467,46 +1467,32 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 {/* ═══ TOP SIGNALS + LIVE RADAR PULSE (above Oracle) ═══ */}
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginBottom:6}}>
 
-{/* Top Signals — top 3-4 scoring tokens */}
+{/* Decision Feed — live ML scoring log */}
 <div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,display:"flex",flexDirection:"column",maxHeight:320}}>
-<div style={{fontSize:13,fontWeight:700,color:T.dm,marginBottom:6}}>Top Signals</div>
-{(()=>{const events=intelData?.recentEvents||[];const allT=[...(rt.momentum||[]),...(rt.new||[]),...(rt.graduating||[])];const topTokens=events.slice(0,4).map(e=>e.data).filter(Boolean);if(!topTokens.length)return<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:T.ft}}>Scanning...</div>;
-return<div style={{display:"flex",flexDirection:"column",gap:4}}>
-{topTokens.map((top,ti)=>{const match=allT.find(t=>t.ca===top.ca);const sc=top.score>=50?T.gn:top.score>=25?T.yl:T.pu;const fullCA=top.ca||"";const mES=match?.entrySignal||"";const mESc=mES==="STRONG"?T.gn:mES==="READY"?T.gn:mES==="EARLY"?T.yl:mES==="CAUTION"?"#ff8800":"#ff4444";
-return<React.Fragment key={fullCA+ti}><div onClick={()=>{if(fullCA.length>=20){sTab("radar");sRS(fullCA);sRExp(fullCA);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",gap:8,alignItems:"center",padding:"6px 4px",borderRadius:6,border:"1px solid "+(ti===0?sc+"33":T.bd+"44"),background:ti===0?sc+"06":"transparent",cursor:"pointer"}}>
-<div style={{width:38,height:38,borderRadius:6,overflow:"hidden",flexShrink:0,position:"relative"}}><TImg src={match?.image} ticker={top.name} size={38}/>
-<div style={{position:"absolute",top:2,left:2,fontSize:8,fontWeight:900,color:"#fff",background:sc,borderRadius:3,padding:"0 3px",lineHeight:"14px"}}>#{ti+1}</div>{mES&&<div style={{position:"absolute",bottom:1,right:1,fontSize:6,fontWeight:900,color:"#fff",background:mESc+"cc",borderRadius:2,padding:"0 2px",lineHeight:"12px"}}>{mES==="STRONG"?"GO":mES==="READY"?"OK":mES==="EARLY"?"NEW":mES==="CAUTION"?"!":"X"}</div>}</div>
-<div style={{flex:1,minWidth:0}}>
-<div style={{display:"flex",alignItems:"center",gap:4}}>
-<span style={{fontSize:12,fontWeight:900,color:T.tx,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{top.name||top.ca?.slice(0,8)}</span>
-{top.bondProb>=100&&<span style={{fontSize:6,fontWeight:800,color:T.gn,background:T.gn+"15",padding:"0 3px",borderRadius:2}}>GRAD</span>}
-{mES&&<span style={{fontSize:7,fontWeight:800,color:mESc,background:mESc+"12",padding:"0 3px",borderRadius:2,lineHeight:"12px"}}>{mES}</span>}
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+<div style={{display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:13,fontWeight:800,color:T.tx}}>Decision Feed</span><span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/></div>
+<span style={{fontSize:9,color:T.ft}}>{(intelData?.recentEvents||[]).length} recent</span>
 </div>
-<div style={{display:"flex",gap:6,alignItems:"center",marginTop:2}}>
-<span style={{fontSize:18,fontWeight:900,color:sc}}>{top.score}</span><span style={{fontSize:9,color:T.ft}}>pts</span>
-<span style={{fontSize:10,fontWeight:700,color:T.yl}}>{top.bondProb}%</span><span style={{fontSize:9,color:T.ft}}>bond</span>
-{top.mcap>0&&<span style={{fontSize:10,color:T.dm}}>${(top.mcap/1000).toFixed(1)}K</span>}
-{match?.buyPressure!=null&&<><div style={{width:30,height:3,borderRadius:2,background:T.bd,overflow:"hidden"}}><div style={{width:Math.round(match.buyPressure*100)+"%",height:"100%",borderRadius:2,background:match.buyPressure>=.7?T.gn:match.buyPressure>=.5?T.yl:"#ff4444"}}/></div><span style={{fontSize:8,color:T.ft}}>{Math.round(match.buyPressure*100)}%</span></>}
+{(()=>{const events=intelData?.recentEvents||[];if(!events.length)return<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:T.ft}}>Waiting for scores...</div>;
+const rugs=events.filter(e=>(e.data?.rugScore||0)>50||(e.data?.rugFlags||[]).length>=2).length;
+const apes=events.filter(e=>(e.data?.score||0)>=50&&!((e.data?.rugScore||0)>50||(e.data?.rugFlags||[]).length>=2)).length;
+const watches=events.filter(e=>{const s=e.data?.score||0;return s>=25&&s<50&&!((e.data?.rugScore||0)>50)}).length;
+const skips=events.length-apes-watches-rugs;
+return<>
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:3,marginBottom:6}}>
+{[{l:"APE",v:apes,c:T.gn},{l:"WATCH",v:watches,c:T.yl},{l:"SKIP",v:skips,c:T.ft},{l:"RUG",v:rugs,c:"#ff1744"}].map(s=><div key={s.l} style={{textAlign:"center",padding:"4px 0",borderRadius:4,background:s.c+"08",border:"1px solid "+s.c+"22"}}><div style={{fontSize:14,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:7,fontWeight:700,color:s.c+"aa"}}>{s.l}</div></div>)}
 </div>
+<div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:1}}>
+{events.slice(0,10).map((e,i)=>{const d=e.data||{};const score=d.score||0;const rugScore=d.rugScore||0;const rugFlags=d.rugFlags||[];const isRug=rugScore>50||rugFlags.length>=2;const name=d.name||d.ca?.slice(0,6)||"?";const mcap=d.mcap||0;const decision=isRug?"RUG":score>=50?"APE":score>=25?"WATCH":"SKIP";const dc=isRug?"#ff1744":score>=50?T.gn:score>=25?T.yl:T.ft;const fullCA=d.ca||"";
+return<div key={fullCA+i} onClick={()=>{if(fullCA.length>=20){sTab("radar");sRS(fullCA);sRExp(fullCA);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 4px",borderRadius:4,background:i===0?dc+"08":"transparent",cursor:"pointer",borderBottom:"1px solid "+T.bd+"33"}}>
+<span style={{fontSize:7,fontWeight:800,color:dc,background:dc+"18",padding:"2px 4px",borderRadius:3,minWidth:28,textAlign:"center"}}>{decision}</span>
+<span style={{fontSize:10,fontWeight:700,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{name.slice(0,16)}</span>
+<span style={{fontSize:11,fontWeight:900,color:dc}}>{score}</span>
+{mcap>0&&<span style={{fontSize:8,color:T.ft}}>${mcap>=1000?(mcap/1000).toFixed(1)+"K":mcap}</span>}
+{isRug&&<span style={{fontSize:7,color:"#ff1744"}} title={rugFlags.join(", ")}>{rugFlags.length}F</span>}
+</div>})}
 </div>
-{trW&&fullCA.length>=20&&top.score>=40&&<div style={{display:"flex",flexDirection:"column",gap:2,flexShrink:0}}>
-<button onClick={(ev)=>{ev.stopPropagation();sITrade(p=>({...p,ca:p.ca===fullCA?null:fullCA}))}} style={{padding:"3px 8px",background:iTrade.ca===fullCA?T.gn:T.gn+"0a",border:"1px solid "+T.gn+"22",borderRadius:4,fontSize:9,fontWeight:800,color:iTrade.ca===fullCA?"#0a0a0f":T.gn,cursor:"pointer"}}>BUY</button>
-</div>}
-</div>
-{/* Inline trade settings panel */}
-{iTrade.ca===fullCA&&<div onClick={ev=>ev.stopPropagation()} style={{padding:"8px 6px",background:T.bg,border:"1px solid "+T.gn+"33",borderRadius:6,marginTop:4}}>
-<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,marginBottom:6}}>
-<div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginBottom:2}}>BUY AMT</div><div style={{display:"flex",alignItems:"center",background:T.sf,borderRadius:4,border:"1px solid "+T.bd,overflow:"hidden"}}><button onClick={()=>sITrade(p=>({...p,amt:Math.max(0.01,+(p.amt-0.05).toFixed(2))}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>-</button><span style={{flex:1,textAlign:"center",fontSize:10,fontWeight:800,color:T.gn}}>{iTrade.amt}</span><button onClick={()=>sITrade(p=>({...p,amt:Math.min(10,+(p.amt+0.05).toFixed(2))}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>+</button></div></div>
-<div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginBottom:2}}>SLIP %</div><div style={{display:"flex",alignItems:"center",background:T.sf,borderRadius:4,border:"1px solid "+T.bd,overflow:"hidden"}}><button onClick={()=>sITrade(p=>({...p,slip:Math.max(1,p.slip-5)}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>-</button><span style={{flex:1,textAlign:"center",fontSize:10,fontWeight:800,color:T.yl}}>{iTrade.slip}</span><button onClick={()=>sITrade(p=>({...p,slip:Math.min(50,p.slip+5)}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>+</button></div></div>
-<div><div style={{fontSize:8,color:T.ft,fontWeight:700,marginBottom:2}}>TIP SOL</div><div style={{display:"flex",alignItems:"center",background:T.sf,borderRadius:4,border:"1px solid "+T.bd,overflow:"hidden"}}><button onClick={()=>sITrade(p=>({...p,tip:Math.max(0.001,+(p.tip-0.001).toFixed(3))}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>-</button><span style={{flex:1,textAlign:"center",fontSize:10,fontWeight:800,color:T.or}}>{iTrade.tip}</span><button onClick={()=>sITrade(p=>({...p,tip:Math.min(0.5,+(p.tip+0.001).toFixed(3))}))} style={{padding:"4px 6px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:"pointer",fontSize:10}}>+</button></div></div>
-</div>
-<div style={{display:"flex",gap:4,alignItems:"center"}}>
-<button onClick={()=>sITrade(p=>({...p,auto:!p.auto}))} style={{padding:"4px 8px",borderRadius:4,border:"1px solid "+(iTrade.auto?T.cy:T.bd),background:iTrade.auto?T.cy+"22":"none",color:iTrade.auto?T.cy:T.ft,fontWeight:800,fontSize:9,cursor:"pointer"}}>{iTrade.auto?"AUTO ON":"AUTO"}</button>
-<button onClick={async()=>{if(iTrade.auto){try{const eff={...autoSettings(iTrade.amt),solPerTrade:iTrade.amt};const r=await a.ats(user.pubkey,eff);sAutoTrade({open:true,active:true,settings:r.settings,positions:[],log:[]});toast("Auto-ape started","success");sITrade(p=>({...p,ca:null}))}catch(e){toast(e.message,"error")}return}try{hp([6,15,6]);toast(`Buying ${iTrade.amt} SOL...`,"info");await quickBuy(fullCA,iTrade.amt,{slippage:iTrade.slip,tip:iTrade.tip});sITrade(p=>({...p,ca:null}))}catch(e){toast(e.message,"error")}}} style={{flex:1,padding:"6px 0",background:"linear-gradient(135deg,#00c853,#00e676)",border:"none",borderRadius:4,fontSize:10,fontWeight:900,color:"#0a0a0f",cursor:"pointer"}}>{iTrade.auto?"START AUTO":"BUY "+iTrade.amt+" SOL"}</button>
-</div>
-</div>}
-</React.Fragment>})}
-</div>})()}
+</>})()}
 </div>
 
 {/* Live Radar Pulse — enhanced activity visualization */}
