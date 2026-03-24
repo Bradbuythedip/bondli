@@ -7220,6 +7220,30 @@ app.get("/api/fleet/wallets/:ca", (req, res) => {
   res.json({ wallets: session.walletDetails || [] });
 });
 
+// Per-wallet sell — sell a specific percentage from a specific fleet wallet
+app.post("/api/fleet/wallet-sell", async (req, res) => {
+  try {
+    const { wallet, ca, walletPubkey, percent } = req.body;
+    if (!ca || !walletPubkey || !percent) return res.status(400).json({ error: "ca, walletPubkey, percent required" });
+    if (percent <= 0 || percent > 100) return res.status(400).json({ error: "percent must be 1-100" });
+    const result = await fleetTrader.sellFromWallet(ca, walletPubkey, percent);
+    res.json(result);
+  } catch (e) {
+    console.error(`[FLEET-SELL] Error:`, e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Per-wallet balances — get live token + SOL balances for all wallets in a session
+app.get("/api/fleet/balances/:ca", async (req, res) => {
+  try {
+    const wallets = await fleetTrader.getWalletBalances(req.params.ca);
+    res.json({ ok: true, wallets });
+  } catch (e) {
+    res.json({ ok: false, wallets: [], error: e.message });
+  }
+});
+
 app.post("/api/close", async (req, res) => {
   try {
     const { ca, wallet } = req.body;

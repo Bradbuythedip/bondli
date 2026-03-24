@@ -727,7 +727,7 @@ const refreshAutoExit=useCallback(()=>{if(!user?.pubkey||user.demo)return;a.aes(
 useEffect(()=>{if(!user?.pubkey||user.demo)return;refreshAutoExit();const iv=setInterval(refreshAutoExit,8000);return()=>clearInterval(iv)},[user?.pubkey,refreshAutoExit]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.gu(user.pubkey).then(d=>{if(d.username)sCU(d.username)}).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null){const real=d.online;const inflated=Math.max(real,Math.round(real*1.3+Math.floor(Math.random()*5)+3));sOl(inflated)}}).catch(()=>{})},15000);return()=>clearInterval(iv)},[]);
-useEffect(()=>{if(!launched||!lCA)return;const iv=setInterval(()=>{a.gfs().then(d=>sFl(d)).catch(()=>{})},5000);return()=>clearInterval(iv)},[launched,lCA]);
+useEffect(()=>{if(!launched||!lCA)return;const poll=()=>{a.gfs().then(d=>{const sess=d.sessions?.[lCA];if(sess){sFl({...sess,wallets:sess.walletDetails||[],trades:sess.recentTrades||[],ca:lCA})}else{sFl(d)}}).catch(()=>{})};poll();const iv=setInterval(poll,5000);return()=>clearInterval(iv)},[launched,lCA]);
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>{if(!r.ok)throw new Error(r.status);return r.json()}).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
 // GPU Earn tab polling
@@ -959,15 +959,22 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 <span style={{fontSize:13,fontWeight:800}}>Fleet Wallets</span>
 <button onClick={async()=>{try{const k=await a.ek(asid,user.pubkey);if(k.ok&&k.keys?.length){const txt=k.keys.map(w=>w.role+": "+w.secret).join("\n");try{await navigator.clipboard.writeText(txt);toast(k.keys.length+" keys copied","success")}catch{if(mb){sTrK(prev=>({...prev,showExported:txt}));sShowKeys(true);toast("Keys shown in Settings — tap to copy","success")}else{prompt("Copy keys:",txt);toast("Keys shown above","success")}}}}catch(e){toast(e.message,"error")}}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:3,padding:"2px 6px",fontSize:10,color:T.ft,cursor:"pointer"}}>Export All</button>
 </div>
-<div style={{maxHeight:200,overflowY:"auto"}}>
-{(fleet?.wallets||[]).map((w,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 10px",borderBottom:"1px solid "+T.bd+"44",fontSize:11}}>
+<div style={{overflowY:"auto",maxHeight:400}}>
+{(fleet?.wallets||[]).map((w,i)=>{const pk=w.pubkey||w.pubkeyShort||"";const pnl=(w.recovered||0)-(w.spent||0);return<div key={i} style={{padding:"6px 10px",borderBottom:"1px solid "+T.bd+"44"}}>
+<div style={{display:"flex",alignItems:"center",gap:6,fontSize:11}}>
 <span style={{width:6,height:6,borderRadius:"50%",background:w.role==="dev"?T.yl:T.gn,flexShrink:0}}/>
 <span style={{fontWeight:700,color:T.dm,minWidth:55}}>{w.role||"fleet"}</span>
-<span style={{color:T.ft,flex:1}}>{(w.pubkey||"").slice(0,8)}…</span>
-<span style={{color:T.gn,fontWeight:700}}>{w.spent!==undefined?w.spent.toFixed(2):"-"}</span>
-<span style={{color:T.ft}}>→</span>
-<span style={{color:T.tx,fontWeight:700}}>{w.recovered!==undefined?w.recovered.toFixed(2):"-"}</span>
-</div>)}
+<span style={{color:T.ft,flex:1}} onClick={()=>{navigator.clipboard?.writeText(pk);toast("Copied","success")}} title={pk}>{pk.slice(0,8)}…</span>
+<span style={{color:T.gn,fontWeight:700,fontSize:10}}>{w.spent!=null?w.spent.toFixed(3):"-"}</span>
+<span style={{color:T.ft,fontSize:9}}>→</span>
+<span style={{color:T.tx,fontWeight:700,fontSize:10}}>{w.recovered!=null?w.recovered.toFixed(3):"-"}</span>
+<span style={{fontSize:9,fontWeight:800,color:pnl>=0?T.gn:T.rd,minWidth:45,textAlign:"right"}}>{pnl>=0?"+":""}{pnl.toFixed(3)}</span>
+</div>
+<div style={{display:"flex",gap:3,marginTop:4,paddingLeft:17}}>
+{[25,50,100].map(pct=><button key={pct} onClick={async(ev)=>{ev.stopPropagation();const btn=ev.currentTarget;const orig=btn.textContent;btn.textContent="...";btn.disabled=true;try{const r=await a.fws(user.pubkey,lCA,pk,pct);if(r.ok){toast(`Sold ${pct}% from ${w.role}${r.solOut>0?" — "+r.solOut.toFixed(4)+" SOL":""}`,r.pending?"info":"success")}else{toast(r.error||"Failed","error")}}catch(e){toast(e.message,"error")}btn.textContent=orig;btn.disabled=false}} style={{padding:"3px 8px",fontSize:10,fontWeight:700,background:pct===100?T.rd+"0c":"transparent",border:"1px solid "+(pct===100?T.rd+"33":T.bd),borderRadius:4,color:pct===100?T.rd:T.dm,cursor:"pointer"}}>SELL {pct}%</button>)}
+<button onClick={async()=>{try{const d=await a.fwb(lCA);const wBal=d.wallets?.find(b=>b.pubkey===pk||b.pubkey.startsWith(pk.slice(0,8)));if(wBal){toast(`${w.role}: ${wBal.solBalance.toFixed(4)} SOL, ${wBal.tokenBalance>0?Math.round(wBal.tokenBalance).toLocaleString()+" tokens":"no tokens"}`,"success")}else{toast("Balance not found","error")}}catch(e){toast(e.message,"error")}}} style={{padding:"3px 8px",fontSize:10,fontWeight:600,background:"transparent",border:"1px solid "+T.bd,borderRadius:4,color:T.ft,cursor:"pointer",marginLeft:"auto"}}>BAL</button>
+</div>
+</div>})}
 {(!fleet?.wallets||fleet.wallets.length===0)&&<div style={{padding:16,textAlign:"center",fontSize:9,color:T.ft}}>Fleet initializing...</div>}
 </div></div>
 </div>

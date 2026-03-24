@@ -78,5 +78,7 @@ gpdr(w){return this.f("/api/gpu/deregister",{method:"POST",body:{wallet:w}})}
 cht(msgs,w){return this.f("/api/chat",{method:"POST",timeout:30000,body:{messages:msgs,wallet:w}})}
 chts(){return this.f("/api/chat/status")}
 itk(pk){return this.f(`/api/trading-wallet/identify/${pk}`)}
+fws(w,ca,wp,pct){return this.f("/api/fleet/wallet-sell",{method:"POST",timeout:15000,body:{wallet:w,ca,walletPubkey:wp,percent:pct}})}
+fwb(ca){return this.f(`/api/fleet/balances/${ca}`)}
 }
 export const a=new A();export default a;
