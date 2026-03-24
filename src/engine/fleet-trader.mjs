@@ -1691,6 +1691,89 @@ class FleetTrader extends EventEmitter {
 
   stop(ca) { const s = this.sessions.get(ca); if (s) s.running = false; }
 
+  // Sell a specific percentage of tokens from a specific wallet in a session
+  async sellFromWallet(ca, walletPubkey, sellPercent) {
+    const session = this.sessions.get(ca);
+    if (!session) throw new Error(`No active session for ${ca.slice(0, 8)}`);
+    // Find the wallet by pubkey (match first 8 chars or full)
+    const wallet = session.fleetWallets.find(w =>
+      w.pubkey === walletPubkey || w.pubkey.startsWith(walletPubkey) || w.pubkey.slice(0, 8) === walletPubkey
+    );
+    if (!wallet) throw new Error(`Wallet ${walletPubkey.slice(0, 8)} not found in session`);
+    if (sellPercent <= 0 || sellPercent > 100) throw new Error("sellPercent must be 1-100");
+
+    const pct = sellPercent / 100; // normalize to 0-1
+
+    // Try on-chain SDK sell first (direct, no middleman)
+    try {
+      const global = await this.onlineSdk.fetchGlobal();
+      const feeConfig = await this.onlineSdk.fetchFeeConfig();
+      const result = await this._executeSell(wallet, session.mint, global, feeConfig, pct);
+      if (result.ok) {
+        wallet.solRecovered += result.solOut;
+        session.totalSolRecovered += result.solOut;
+        wallet.trades.push({ side: "sell", sol: result.solOut, tx: result.sig, role: wallet.role, t: Date.now() });
+        session.tradeCount++;
+        console.log(`[FLEET] Manual sell ${wallet.role} (${wallet.pubkey.slice(0,8)}): ${sellPercent}% → ${result.solOut.toFixed(4)} SOL`);
+        return { ok: true, sig: result.sig, solOut: result.solOut, wallet: wallet.pubkey.slice(0, 8), role: wallet.role };
+      }
+    } catch (e) {
+      console.warn(`[FLEET] SDK sell failed for ${wallet.role}, trying PumpPortal:`, e.message);
+    }
+
+    // Fallback: PumpPortal trade-local
+    try {
+      const response = await fetch("https://pumpportal.fun/api/trade-local", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          publicKey: wallet.pubkey, action: "sell", mint: ca,
+          amount: sellPercent + "%", denominatedInSol: "false",
+          slippage: 30, priorityFee: 0.008, pool: "auto",
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!response.ok) throw new Error(`PP ${response.status}`);
+      const txBytes = await response.arrayBuffer();
+      if (txBytes.byteLength < 100) throw new Error("empty_response");
+      const { VersionedTransaction } = await import("@solana/web3.js");
+      const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
+      tx.sign([wallet.keypair]);
+      const sig = await rpcSendRawTx(this.connection, tx.serialize());
+      // Estimate SOL received (we'll get exact on next balance check)
+      console.log(`[FLEET] PumpPortal sell ${wallet.role} (${wallet.pubkey.slice(0,8)}): ${sellPercent}% → ${sig.slice(0,12)}`);
+      wallet.trades.push({ side: "sell", sol: 0, tx: sig, role: wallet.role, t: Date.now(), pp: true });
+      session.tradeCount++;
+      return { ok: true, sig, solOut: 0, wallet: wallet.pubkey.slice(0, 8), role: wallet.role, pending: true };
+    } catch (e2) {
+      throw new Error(`Sell failed: SDK=${e2.message}`);
+    }
+  }
+
+  // Get live token balances for all wallets in a session
+  async getWalletBalances(ca) {
+    const session = this.sessions.get(ca);
+    if (!session) return [];
+    const { PublicKey } = await import("@solana/web3.js");
+    const results = [];
+    for (const w of session.fleetWallets) {
+      let solBal = 0, tokenBal = 0;
+      try { solBal = await this.connection.getBalance(w.keypair.publicKey) / 1e9; } catch {}
+      try {
+        const ata = getAssociatedTokenAddressSync(session.mint, w.keypair.publicKey, true);
+        const account = await getAccount(this.connection, ata);
+        tokenBal = parseFloat(account.amount.toString()) / Math.pow(10, 6); // pump.fun tokens are 6 decimals
+      } catch {}
+      results.push({
+        role: w.role, pubkey: w.pubkey, pubkeyShort: w.pubkey.slice(0, 8),
+        allocation: w.allocation, spent: w.solSpent, recovered: w.solRecovered,
+        solBalance: solBal, tokenBalance: tokenBal, trades: w.trades.length,
+        hasTokens: tokenBal > 0,
+      });
+    }
+    return results;
+  }
+
   status() {
     const sessions = {};
     for (const [ca, s] of this.sessions) {
@@ -1699,7 +1782,8 @@ class FleetTrader extends EventEmitter {
         solSpent: s.totalSolSpent, solRecovered: s.totalSolRecovered,
         elapsed: Date.now() - s.startTime,
         activeWallets: s.fleetWallets.filter(w => w.funded).length,
-        walletDetails: s.fleetWallets.map(w => ({ role: w.role, pubkey: w.pubkey.slice(0, 8), allocation: w.allocation, spent: w.solSpent, recovered: w.solRecovered, trades: w.trades.length })),
+        walletDetails: s.fleetWallets.map(w => ({ role: w.role, pubkey: w.pubkey, pubkeyShort: w.pubkey.slice(0, 8), allocation: w.allocation, spent: w.solSpent, recovered: w.solRecovered, trades: w.trades.length, hasTokens: w.trades.some(t => t.side === "buy") })),
+        recentTrades: s.fleetWallets.flatMap(w => w.trades.map(t => ({ ...t, wallet: w.pubkey.slice(0, 8), role: t.role || w.role }))).sort((a, b) => (b.t || 0) - (a.t || 0)).slice(0, 30),
         gameState: s.gameState?.alive ? s.gameState.snapshot() : null,
         volumeEngine: s._volumeEngine?.snapshot() || null,
         autoRug: s._autoRug?.snapshot() || null,
