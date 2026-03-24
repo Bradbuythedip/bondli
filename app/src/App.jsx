@@ -48,8 +48,7 @@ bolt:({s:z=20,c="#ffd600"})=><svg width={z} height={z} viewBox="0 0 24 24" fill=
 fleet:({s:z=20,c="#ff1744"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><circle cx="8" cy="8" r="3"/><circle cx="16" cy="8" r="3"/><circle cx="12" cy="16" r="3"/><path d="M10.5 9.5l1 4.5M13.5 9.5l-1 4.5M5.5 9.5l4.5 5M18.5 9.5l-4.5 5"/></svg>,
 eye:({s:z=20,c="#ff9800"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><path d="M12 5v-.5M12 19v.5" strokeDasharray="2 2"/></svg>,
 gpu:({s:z=20,c="#00e676"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="4" width="16" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/><path d="M7 8h2v4H7zM11 8h2v4h-2zM15 8h2v4h-2"/></svg>,
-nos:({s:z=20})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="11" fill="#141414"/><circle cx="12" cy="12" r="10" stroke="#10E80C" strokeWidth="1"/><text x="12" y="16.5" textAnchor="middle" fill="#10E80C" fontSize="11" fontWeight="900" fontFamily="sans-serif">N</text></svg>,
-nos:({s:z=14,c="#00e676"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-6"/></svg>,
+nos:({s:z=20,c="#10E80C"})=><svg width={z} height={z} viewBox="0 0 100 100" fill="none"><path d="M10 90 L30 10 C34 -2 40 -2 44 10 L56 90 C60 102 66 102 70 90 L90 10" stroke={c} strokeWidth="14" strokeLinecap="round" strokeLinejoin="round"/></svg>,
 };
 const Sp=({s:z=12,c})=><svg width={z} height={z} viewBox="0 0 24 24" style={{animation:"sp .7s linear infinite"}}><circle cx="12" cy="12" r="10" fill="none" stroke={c||"#00e676"} strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round"/></svg>;
 const Av=({pk,s:z=18})=>{const h=hW(pk||"x"),hu=h%360;return<svg width={z} height={z}><rect width={z} height={z} rx={z*.25} fill={`hsl(${hu},55%,42%)`}/></svg>};
@@ -814,7 +813,7 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 {ic:<IC.eye s={mb?22:28} c="#ff9800"/>,title:"Rug Detection",desc:"12+ signals: dev dumps, sybil wallets, wash trading, staircase charts, liquidity drains. 3+ red flags = auto-reject.",color:"#ff9800"},
 {ic:<IC.bolt s={mb?22:28} c={T.yl}/>,title:"Auto-Ape Engine",desc:"Configure your rules — min score, position size, take-profit levels. Bondli finds, buys, manages, and exits. Fully autonomous.",color:T.yl},
 {ic:<IC.scan s={mb?22:28} c={T.cy||"#00bcd4"}/>,title:"Smart Money Tracking",desc:"Follow profitable wallets. See what they buy before the chart moves. Copy-trade the best performers on Solana.",color:T.cy||"#00bcd4"},
-{ic:<IC.gpu s={mb?22:28} c={"#10E80C"}/>,title:"GPU Compute",desc:"Powered by Nosana. Plug in your GPU, earn $NOS, and fuel the Monte Carlo simulator that perfects every entry and exit.",color:"#10E80C"},
+{ic:<IC.nos s={mb?22:28} c={"#10E80C"}/>,title:"GPU Compute",desc:"Powered by Nosana. Plug in your GPU, earn $NOS, and fuel the Monte Carlo simulator that perfects every entry and exit.",color:"#10E80C"},
 {ic:<IC.chart s={mb?22:28} c={T.gn}/>,title:"Multi-Wallet Fleet",desc:"Spread buys across multiple wallets. Fresh keypairs auto-generated. Aged wallet import. Gas-optimized execution.",color:T.gn},
 ].map((f,i)=><div key={i} style={{background:T.sf,border:"1px solid "+f.color+"18",borderRadius:12,padding:mb?"14px 12px":"20px 16px",transition:"all .15s"}} onMouseEnter={e=>{e.currentTarget.style.borderColor=f.color+"44";e.currentTarget.style.transform="translateY(-2px)"}} onMouseLeave={e=>{e.currentTarget.style.borderColor=f.color+"18";e.currentTarget.style.transform="none"}}>
 <div style={{marginBottom:8}}>{f.ic}</div>
@@ -1007,16 +1006,16 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 {/* Nosana Partnership Hero */}
 <div style={{background:"linear-gradient(135deg,#141414,#0a0a0f)",border:"1px solid #10E80C22",borderRadius:12,padding:mb?14:24,marginBottom:8,position:"relative",overflow:"hidden"}}>
 <div style={{position:"absolute",top:0,left:0,right:0,bottom:0,background:"radial-gradient(ellipse at 30% 20%, #10E80C08 0%, transparent 60%)",pointerEvents:"none"}}/>
-<div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:12,position:"relative"}}>
-<IC.nos s={mb?32:40}/><span style={{fontSize:10,color:"#10E80C44",fontWeight:900}}>×</span><Logo s={mb?28:36}/>
+<div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10,marginBottom:14,position:"relative"}}>
+<IC.nos s={mb?36:48}/><span style={{fontSize:10,color:"#10E80C33",fontWeight:900}}>×</span><Logo s={mb?28:36}/>
 </div>
 <div style={{textAlign:"center",position:"relative"}}>
-<div style={{fontSize:mb?20:28,fontWeight:900}}>Bondli <span style={{color:"#10E80C"}}>GPU Compute</span></div>
-<div style={{fontSize:mb?11:13,fontWeight:700,color:"#10E80C",marginTop:4}}>Powered by Nosana — The Open Source GPU Cloud</div>
+<div style={{fontSize:mb?20:28,fontWeight:900,fontFamily:"'Space Grotesk',sans-serif"}}>Bondli <span style={{color:"#10E80C"}}>GPU Compute</span></div>
+<div style={{fontSize:mb?11:13,fontWeight:600,color:"#10E80C",marginTop:4,fontFamily:"'Space Grotesk',sans-serif",letterSpacing:"0.5px"}}>Powered by <span style={{fontWeight:700,letterSpacing:"2px"}}>NOSANA</span> — The Open Source GPU Cloud</div>
 <div style={{fontSize:mb?11:13,color:T.dm,marginTop:8,maxWidth:520,margin:"8px auto 0",lineHeight:1.6}}>Plug in your NVIDIA GPU. Earn $NOS processing AI inference on Nosana's decentralized compute marketplace. Your GPU trains the models that improve everyone's win rate.</div>
 <div style={{display:"flex",gap:6,justifyContent:"center",marginTop:14,flexWrap:"wrap"}}>
-<div style={{padding:"6px 14px",background:"#10E80C12",border:"1px solid #10E80C33",borderRadius:8,fontSize:12,fontWeight:700,color:"#10E80C"}}>1 User = 1 GPU = 1 Node</div>
-<a href="https://nosana.com" target="_blank" rel="noopener noreferrer" style={{padding:"6px 14px",background:"#10E80C08",border:"1px solid #10E80C22",borderRadius:8,fontSize:12,fontWeight:700,color:"#10E80C",textDecoration:"none",display:"flex",alignItems:"center",gap:4,cursor:"pointer"}}><IC.nos s={14}/> nosana.com</a>
+<div style={{padding:"6px 14px",background:"#10E80C12",border:"1px solid #10E80C33",borderRadius:8,fontSize:12,fontWeight:700,color:"#10E80C",fontFamily:"'Space Grotesk',sans-serif"}}>1 User = 1 GPU = 1 Node</div>
+<a href="https://nosana.com" target="_blank" rel="noopener noreferrer" style={{padding:"6px 14px",background:"#10E80C08",border:"1px solid #10E80C22",borderRadius:8,fontSize:12,fontWeight:700,color:"#10E80C",textDecoration:"none",display:"flex",alignItems:"center",gap:4,cursor:"pointer",fontFamily:"'Space Grotesk',sans-serif"}}><IC.nos s={14}/> nosana.com</a>
 <a href="https://app.nosana.io/nodes" target="_blank" rel="noopener noreferrer" style={{padding:"6px 14px",background:T.pu+"08",border:"1px solid "+T.pu+"22",borderRadius:8,fontSize:12,fontWeight:700,color:T.pu,textDecoration:"none",cursor:"pointer"}}>Rent Compute</a>
 </div>
 </div>
@@ -1024,7 +1023,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 
 {/* ── How Bondli Uses Nosana ── */}
 <div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:16,marginBottom:8}}>
-<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.nos s={16}/><span style={{fontSize:14,fontWeight:800}}>How Bondli Uses Nosana GPU</span></div>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.nos s={16}/><span style={{fontSize:14,fontWeight:700,fontFamily:"'Space Grotesk',sans-serif"}}>How Bondli Uses <span style={{letterSpacing:"1.5px"}}>NOSANA</span> GPU</span></div>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:6}}>
 {[
 {title:"ML Scorer (Live)",desc:"40+ features scored per token in real-time. Rug detection, chart forensics, buy pressure — all computed on GPU inference via Nosana nodes.",badge:"ACTIVE",badgeColor:"#10E80C"},
@@ -1040,7 +1039,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 </div>)}
 </div>
 <div style={{marginTop:10,padding:"10px 12px",background:"#10E80C06",border:"1px solid #10E80C11",borderRadius:8}}>
-<div style={{fontSize:12,fontWeight:800,color:"#10E80C",marginBottom:4}}>The NOS Burn Flywheel</div>
+<div style={{fontSize:12,fontWeight:700,color:"#10E80C",marginBottom:4,fontFamily:"'Space Grotesk',sans-serif"}}>The NOS Burn Flywheel</div>
 <div style={{fontSize:11,color:T.dm,lineHeight:1.6}}>Users burn $NOS to train models → better models improve win rates → more profitable traders need more GPU → more NOS burned. Self-sustaining demand from the pump.fun ecosystem that no other Nosana partner can offer. The Monte Carlo engine alone will simulate <span style={{color:"#10E80C",fontWeight:700}}>10,000 entry/exit paths per new pair</span> — perfecting position sizing and exit timing before a single SOL is risked.</div>
 </div>
 </div>
@@ -1205,7 +1204,7 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 {/* Fleet Stats */}
 <div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:14}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-<div style={{display:"flex",alignItems:"center",gap:6}}><IC.nos s={16}/><span style={{fontSize:15,fontWeight:800}}>Bondli × Nosana Fleet</span></div>
+<div style={{display:"flex",alignItems:"center",gap:6}}><IC.nos s={16}/><span style={{fontSize:15,fontWeight:700,fontFamily:"'Space Grotesk',sans-serif"}}>Bondli × <span style={{letterSpacing:"1.5px"}}>NOSANA</span> Fleet</span></div>
 <button onClick={()=>{fetch(API+"/api/gpu/fleet").then(r=>r.json()).then(d=>sGpuFleet(d)).catch(()=>{})}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:5,padding:"4px 9px",cursor:"pointer",fontSize:14,color:T.dm}}>↻</button>
 </div>
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:10}}>
@@ -1235,7 +1234,7 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 {/* Supported GPUs & Nosana Markets */}
 <div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:14,marginTop:8}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-<div style={{display:"flex",alignItems:"center",gap:6}}><IC.nos s={14}/><span style={{fontSize:13,fontWeight:800}}>Nosana GPU Markets</span></div>
+<div style={{display:"flex",alignItems:"center",gap:6}}><IC.nos s={14}/><span style={{fontSize:13,fontWeight:700,fontFamily:"'Space Grotesk',sans-serif"}}><span style={{letterSpacing:"1.5px"}}>NOSANA</span> GPU Markets</span></div>
 <a href="https://app.nosana.io/nodes" target="_blank" rel="noopener noreferrer" style={{fontSize:10,fontWeight:700,color:"#10E80C",textDecoration:"none",padding:"3px 8px",border:"1px solid #10E80C22",borderRadius:5}}>Rent Compute →</a>
 </div>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4}}>
