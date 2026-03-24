@@ -48,6 +48,7 @@ bolt:({s:z=20,c="#ffd600"})=><svg width={z} height={z} viewBox="0 0 24 24" fill=
 fleet:({s:z=20,c="#ff1744"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><circle cx="8" cy="8" r="3"/><circle cx="16" cy="8" r="3"/><circle cx="12" cy="16" r="3"/><path d="M10.5 9.5l1 4.5M13.5 9.5l-1 4.5M5.5 9.5l4.5 5M18.5 9.5l-4.5 5"/></svg>,
 eye:({s:z=20,c="#ff9800"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/><path d="M12 5v-.5M12 19v.5" strokeDasharray="2 2"/></svg>,
 gpu:({s:z=20,c="#00e676"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="4" width="16" height="12" rx="2"/><path d="M8 20h8"/><path d="M12 16v4"/><path d="M7 8h2v4H7zM11 8h2v4h-2zM15 8h2v4h-2"/></svg>,
+nos:({s:z=20})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="11" fill="#141414"/><circle cx="12" cy="12" r="10" stroke="#10E80C" strokeWidth="1"/><text x="12" y="16.5" textAnchor="middle" fill="#10E80C" fontSize="11" fontWeight="900" fontFamily="sans-serif">N</text></svg>,
 nos:({s:z=14,c="#00e676"})=><svg width={z} height={z} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="1.5" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-6"/></svg>,
 };
 const Sp=({s:z=12,c})=><svg width={z} height={z} viewBox="0 0 24 24" style={{animation:"sp .7s linear infinite"}}><circle cx="12" cy="12" r="10" fill="none" stroke={c||"#00e676"} strokeWidth="3" strokeDasharray="31.4" strokeLinecap="round"/></svg>;
@@ -813,7 +814,7 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 {ic:<IC.eye s={mb?22:28} c="#ff9800"/>,title:"Rug Detection",desc:"12+ signals: dev dumps, sybil wallets, wash trading, staircase charts, liquidity drains. 3+ red flags = auto-reject.",color:"#ff9800"},
 {ic:<IC.bolt s={mb?22:28} c={T.yl}/>,title:"Auto-Ape Engine",desc:"Configure your rules — min score, position size, take-profit levels. Bondli finds, buys, manages, and exits. Fully autonomous.",color:T.yl},
 {ic:<IC.scan s={mb?22:28} c={T.cy||"#00bcd4"}/>,title:"Smart Money Tracking",desc:"Follow profitable wallets. See what they buy before the chart moves. Copy-trade the best performers on Solana.",color:T.cy||"#00bcd4"},
-{ic:<IC.gpu s={mb?22:28} c={T.gn}/>,title:"GPU Earnings",desc:"Plug in your NVIDIA GPU. Run AI inference jobs on Nosana. Earn $NOS tokens while your machine works.",color:T.gn},
+{ic:<IC.gpu s={mb?22:28} c={"#10E80C"}/>,title:"GPU Compute",desc:"Powered by Nosana. Plug in your GPU, earn $NOS, and fuel the Monte Carlo simulator that perfects every entry and exit.",color:"#10E80C"},
 {ic:<IC.chart s={mb?22:28} c={T.gn}/>,title:"Multi-Wallet Fleet",desc:"Spread buys across multiple wallets. Fresh keypairs auto-generated. Aged wallet import. Gas-optimized execution.",color:T.gn},
 ].map((f,i)=><div key={i} style={{background:T.sf,border:"1px solid "+f.color+"18",borderRadius:12,padding:mb?"14px 12px":"20px 16px",transition:"all .15s"}} onMouseEnter={e=>{e.currentTarget.style.borderColor=f.color+"44";e.currentTarget.style.transform="translateY(-2px)"}} onMouseLeave={e=>{e.currentTarget.style.borderColor=f.color+"18";e.currentTarget.style.transform="none"}}>
 <div style={{marginBottom:8}}>{f.ic}</div>
@@ -998,18 +999,49 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 </div>
 </div></EB>
 :<>
-{!mb&&<div style={{display:"flex",margin:0,overflow:"hidden",background:T.bg,borderBottom:"1px solid "+T.bd,position:"sticky",top:0,zIndex:19,backdropFilter:"blur(10px)"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},{id:"gpu",l:"GPU",ic:IC.gpu},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);window.scrollTo({top:0,behavior:"smooth"})}} style={{flex:1,padding:"12px 0",background:ac?T.gn+"08":"transparent",borderBottom:ac?"2px solid "+T.gn:"2px solid transparent",border:"none",fontSize:16,fontWeight:ac?800:500,color:ac?T.gn:T.dm,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}><t.ic s={16} c={ac?T.gn:T.dm}/>{t.l}</button>})}</div>}
+{!mb&&<div style={{display:"flex",margin:0,overflow:"hidden",background:T.bg,borderBottom:"1px solid "+T.bd,position:"sticky",top:0,zIndex:19,backdropFilter:"blur(10px)"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},{id:"gpu",l:"GPU",ic:IC.nos},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);window.scrollTo({top:0,behavior:"smooth"})}} style={{flex:1,padding:"12px 0",background:ac?T.gn+"08":"transparent",borderBottom:ac?"2px solid "+T.gn:"2px solid transparent",border:"none",fontSize:16,fontWeight:ac?800:500,color:ac?T.gn:T.dm,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:4}}><t.ic s={16} c={ac?T.gn:T.dm}/>{t.l}</button>})}</div>}
 <div id="tc" style={{padding:mb?"0 6px 6px":"0 16px 16px",marginTop:mb?4:8,scrollMarginTop:50}}>
 
 {/* ═══ GPU EARN TAB ═══ */}
 {tab==="gpu"&&<EB l="GPU Earn"><div style={{animation:"si .2s ease"}}>
-{/* GPU Hero */}
-<div style={{background:"linear-gradient(135deg,"+T.sf+","+T.bg+")",border:"1px solid "+T.gn+"22",borderRadius:12,padding:mb?14:20,marginBottom:8,textAlign:"center"}}>
-<IC.gpu s={mb?36:48} c={T.gn}/>
-<div style={{fontSize:mb?20:28,fontWeight:900,marginTop:8}}>Earn <span style={{color:T.gn}}>$NOS</span> With Your GPU</div>
-<div style={{fontSize:mb?12:14,color:T.dm,marginTop:6,maxWidth:500,margin:"6px auto 0",lineHeight:1.5}}>Plug in your NVIDIA GPU. Run a Nosana node. Earn NOS tokens by processing AI inference jobs from the decentralized compute marketplace.</div>
-<div style={{display:"flex",gap:6,justifyContent:"center",marginTop:12,flexWrap:"wrap"}}>
-<div style={{padding:"6px 14px",background:T.gn+"12",border:"1px solid "+T.gn+"33",borderRadius:8,fontSize:12,fontWeight:700,color:T.gn}}>1 User = 1 GPU = 1 Node</div>
+{/* Nosana Partnership Hero */}
+<div style={{background:"linear-gradient(135deg,#141414,#0a0a0f)",border:"1px solid #10E80C22",borderRadius:12,padding:mb?14:24,marginBottom:8,position:"relative",overflow:"hidden"}}>
+<div style={{position:"absolute",top:0,left:0,right:0,bottom:0,background:"radial-gradient(ellipse at 30% 20%, #10E80C08 0%, transparent 60%)",pointerEvents:"none"}}/>
+<div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginBottom:12,position:"relative"}}>
+<IC.nos s={mb?32:40}/><span style={{fontSize:10,color:"#10E80C44",fontWeight:900}}>×</span><Logo s={mb?28:36}/>
+</div>
+<div style={{textAlign:"center",position:"relative"}}>
+<div style={{fontSize:mb?20:28,fontWeight:900}}>Bondli <span style={{color:"#10E80C"}}>GPU Compute</span></div>
+<div style={{fontSize:mb?11:13,fontWeight:700,color:"#10E80C",marginTop:4}}>Powered by Nosana — The Open Source GPU Cloud</div>
+<div style={{fontSize:mb?11:13,color:T.dm,marginTop:8,maxWidth:520,margin:"8px auto 0",lineHeight:1.6}}>Plug in your NVIDIA GPU. Earn $NOS processing AI inference on Nosana's decentralized compute marketplace. Your GPU trains the models that improve everyone's win rate.</div>
+<div style={{display:"flex",gap:6,justifyContent:"center",marginTop:14,flexWrap:"wrap"}}>
+<div style={{padding:"6px 14px",background:"#10E80C12",border:"1px solid #10E80C33",borderRadius:8,fontSize:12,fontWeight:700,color:"#10E80C"}}>1 User = 1 GPU = 1 Node</div>
+<a href="https://nosana.com" target="_blank" rel="noopener noreferrer" style={{padding:"6px 14px",background:"#10E80C08",border:"1px solid #10E80C22",borderRadius:8,fontSize:12,fontWeight:700,color:"#10E80C",textDecoration:"none",display:"flex",alignItems:"center",gap:4,cursor:"pointer"}}><IC.nos s={14}/> nosana.com</a>
+<a href="https://app.nosana.io/nodes" target="_blank" rel="noopener noreferrer" style={{padding:"6px 14px",background:T.pu+"08",border:"1px solid "+T.pu+"22",borderRadius:8,fontSize:12,fontWeight:700,color:T.pu,textDecoration:"none",cursor:"pointer"}}>Rent Compute</a>
+</div>
+</div>
+</div>
+
+{/* ── How Bondli Uses Nosana ── */}
+<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:16,marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.nos s={16}/><span style={{fontSize:14,fontWeight:800}}>How Bondli Uses Nosana GPU</span></div>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:6}}>
+{[
+{title:"ML Scorer (Live)",desc:"40+ features scored per token in real-time. Rug detection, chart forensics, buy pressure — all computed on GPU inference via Nosana nodes.",badge:"ACTIVE",badgeColor:"#10E80C"},
+{title:"Artwork Forensics (Live)",desc:"Every token image scanned for copy/paste rugs, template art, and AI-generated fakes. GPU-accelerated perceptual hashing and CLIP embeddings.",badge:"ACTIVE",badgeColor:"#10E80C"},
+{title:"Monte Carlo Simulator (Coming)",desc:"10,000 path simulations per new pair — modeling entry timing, position sizing, and exit triggers. Every possible trade scenario stress-tested before capital is deployed.",badge:"Q3 2026",badgeColor:T.yl},
+{title:"Live Model Retraining (Coming)",desc:"Weekly weight recalibration using real trade outcomes. Users burn NOS to retrain the scoring model on their own trading data — better entries, better exits, better win rates.",badge:"Q4 2026",badgeColor:T.yl},
+].map(f=><div key={f.title} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:8,padding:"10px 12px"}}>
+<div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+<span style={{fontSize:13,fontWeight:800,color:T.tx}}>{f.title}</span>
+<span style={{fontSize:8,fontWeight:800,color:f.badgeColor,background:f.badgeColor+"14",padding:"2px 6px",borderRadius:3}}>{f.badge}</span>
+</div>
+<div style={{fontSize:11,color:T.dm,lineHeight:1.5}}>{f.desc}</div>
+</div>)}
+</div>
+<div style={{marginTop:10,padding:"10px 12px",background:"#10E80C06",border:"1px solid #10E80C11",borderRadius:8}}>
+<div style={{fontSize:12,fontWeight:800,color:"#10E80C",marginBottom:4}}>The NOS Burn Flywheel</div>
+<div style={{fontSize:11,color:T.dm,lineHeight:1.6}}>Users burn $NOS to train models → better models improve win rates → more profitable traders need more GPU → more NOS burned. Self-sustaining demand from the pump.fun ecosystem that no other Nosana partner can offer. The Monte Carlo engine alone will simulate <span style={{color:"#10E80C",fontWeight:700}}>10,000 entry/exit paths per new pair</span> — perfecting position sizing and exit timing before a single SOL is risked.</div>
 </div>
 </div>
 
@@ -1173,7 +1205,7 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 {/* Fleet Stats */}
 <div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:14}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-<div style={{display:"flex",alignItems:"center",gap:6}}><IC.fleet s={16} c={T.pu}/><span style={{fontSize:15,fontWeight:800}}>Bondli GPU Fleet</span></div>
+<div style={{display:"flex",alignItems:"center",gap:6}}><IC.nos s={16}/><span style={{fontSize:15,fontWeight:800}}>Bondli × Nosana Fleet</span></div>
 <button onClick={()=>{fetch(API+"/api/gpu/fleet").then(r=>r.json()).then(d=>sGpuFleet(d)).catch(()=>{})}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:5,padding:"4px 9px",cursor:"pointer",fontSize:14,color:T.dm}}>↻</button>
 </div>
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:10}}>
@@ -1200,9 +1232,12 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 {(!gpuFleet?.nodes||gpuFleet.nodes.length===0)&&<div style={{padding:20,textAlign:"center",fontSize:12,color:T.ft}}>No nodes registered yet. Be the first to plug in your GPU!</div>}
 </div>
 
-{/* Supported GPUs */}
+{/* Supported GPUs & Nosana Markets */}
 <div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:14,marginTop:8}}>
-<div style={{fontSize:13,fontWeight:800,marginBottom:8}}>Supported GPUs & Nosana Markets</div>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}><IC.nos s={14}/><span style={{fontSize:13,fontWeight:800}}>Nosana GPU Markets</span></div>
+<a href="https://app.nosana.io/nodes" target="_blank" rel="noopener noreferrer" style={{fontSize:10,fontWeight:700,color:"#10E80C",textDecoration:"none",padding:"3px 8px",border:"1px solid #10E80C22",borderRadius:5}}>Rent Compute →</a>
+</div>
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4}}>
 {[
 {gpu:"RTX 3060",rate:"~0.000043 NOS/s",vram:"12 GB"},
@@ -1212,11 +1247,11 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 {gpu:"A100",rate:"~0.000115 NOS/s",vram:"80 GB"},
 ].map(g=><div key={g.gpu} style={{display:"flex",justifyContent:"space-between",padding:"6px 8px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,fontSize:11}}>
 <span style={{fontWeight:700,color:T.tx}}>{g.gpu}</span>
-<span style={{color:T.gn,fontWeight:600}}>{g.rate}</span>
+<span style={{color:"#10E80C",fontWeight:600}}>{g.rate}</span>
 <span style={{color:T.ft}}>{g.vram}</span>
 </div>)}
 </div>
-<div style={{fontSize:9,color:T.ft,marginTop:4,padding:"0 4px"}}>Laptop GPUs are matched to Nosana markets by VRAM tier, not GPU name. Your 5070 Ti Laptop (8-12GB) joins the 12GB tier.</div>
+<div style={{fontSize:9,color:T.ft,marginTop:4,padding:"0 4px"}}>Laptop GPUs are matched to <a href="https://nosana.com" target="_blank" rel="noopener noreferrer" style={{color:"#10E80C",textDecoration:"none"}}>Nosana</a> markets by VRAM tier. Your 5070 Ti Laptop (8-12GB) joins the 12GB tier.</div>
 </div>
 
 {/* ═══ AI SUPPORT CHAT (Grok 4) ═══ */}
@@ -2597,7 +2632,7 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"2px
 </div></div>}
 
 {mb&&!launched&&<div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:15,background:T.bg+"f6",backdropFilter:"blur(10px)",borderTop:"1px solid "+T.bd,paddingBottom:"max(2px,env(safe-area-inset-bottom,2px))"}}>
-<div style={{display:"flex"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},{id:"gpu",l:"GPU",ic:IC.gpu},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"8px 0 4px",background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"pointer"}}><t.ic s={20} c={ac?T.gn:T.ft}/><span style={{fontSize:11,fontWeight:ac?700:400,color:ac?T.gn:T.ft}}>{t.l}</span></button>})}</div>
+<div style={{display:"flex"}}>{[{id:"radar",l:"Radar",ic:IC.radar},{id:"wallet",l:"Wallet",ic:IC.wallet},{id:"deploy",l:"Deploy",ic:IC.deploy},{id:"intel",l:"Intel",ic:IC.sim},{id:"gpu",l:"GPU",ic:IC.nos},].map(t=>{const ac=tab===t.id;return<button key={t.id} onClick={()=>{sTab(t.id);sRExp(null);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),30)}} style={{flex:1,padding:"8px 0 4px",background:"none",border:"none",display:"flex",flexDirection:"column",alignItems:"center",gap:2,cursor:"pointer"}}><t.ic s={20} c={ac?T.gn:T.ft}/><span style={{fontSize:11,fontWeight:ac?700:400,color:ac?T.gn:T.ft}}>{t.l}</span></button>})}</div>
 <div style={{textAlign:"center",padding:"2px 0 4px",display:"flex",justifyContent:"center",gap:10}}><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:3,color:T.dm,textDecoration:"none",fontSize:10}}><IC.tw s={10} c={T.dm}/>@Bondlifun</a><a href="https://github.com/Bradbuythedip/BONDLIv4" target="_blank" rel="noopener" style={{display:"inline-flex",alignItems:"center",gap:3,color:T.dm,textDecoration:"none",fontSize:10}}><IC.gh s={10} c={T.dm}/>GitHub</a></div>
 </div>}
 {!mb&&<footer style={{padding:"8px 16px",borderTop:"1px solid "+T.bd,marginTop:12,display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:T.ft}}><span>BONDLI v4</span><div style={{display:"flex",gap:12,alignItems:"center"}}><a href="https://x.com/Bondlifun" target="_blank" rel="noopener" style={{display:"flex",alignItems:"center",gap:4,color:T.dm,textDecoration:"none",fontSize:13,fontWeight:700}}><IC.tw s={16} c={T.dm}/>@Bondlifun</a><a href="https://github.com/Bradbuythedip/BONDLIv4" target="_blank" rel="noopener" style={{display:"flex",alignItems:"center",gap:4,color:T.dm,textDecoration:"none",fontSize:13,fontWeight:700}}><IC.gh s={16} c={T.dm}/>GitHub</a></div><span>{launched?"ACTIVE":"IDLE"}</span></footer>}
