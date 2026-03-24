@@ -1467,32 +1467,35 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 {/* ═══ TOP SIGNALS + LIVE RADAR PULSE (above Oracle) ═══ */}
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginBottom:6}}>
 
-{/* Decision Feed — live ML scoring log */}
+{/* Raw Pipeline — live data streams before Cortex */}
 <div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,display:"flex",flexDirection:"column",maxHeight:320}}>
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
-<div style={{display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:13,fontWeight:800,color:T.tx}}>Decision Feed</span><span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/></div>
-<span style={{fontSize:9,color:T.ft}}>{(intelData?.recentEvents||[]).length} recent</span>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+<div style={{display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:13,fontWeight:800,color:T.tx}}>Raw Pipeline</span><span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/></div>
+<span style={{fontSize:8,color:T.ft,fontFamily:"monospace"}}>pre-cortex</span>
 </div>
-{(()=>{const events=intelData?.recentEvents||[];if(!events.length)return<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:T.ft}}>Waiting for scores...</div>;
-const rugs=events.filter(e=>(e.data?.rugScore||0)>50||(e.data?.rugFlags||[]).length>=2).length;
-const apes=events.filter(e=>(e.data?.score||0)>=50&&!((e.data?.rugScore||0)>50||(e.data?.rugFlags||[]).length>=2)).length;
-const watches=events.filter(e=>{const s=e.data?.score||0;return s>=25&&s<50&&!((e.data?.rugScore||0)>50)}).length;
-const skips=events.length-apes-watches-rugs;
-return<>
-<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:3,marginBottom:6}}>
-{[{l:"APE",v:apes,c:T.gn},{l:"WATCH",v:watches,c:T.yl},{l:"SKIP",v:skips,c:T.ft},{l:"RUG",v:rugs,c:"#ff1744"}].map(s=><div key={s.l} style={{textAlign:"center",padding:"4px 0",borderRadius:4,background:s.c+"08",border:"1px solid "+s.c+"22"}}><div style={{fontSize:14,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:7,fontWeight:700,color:s.c+"aa"}}>{s.l}</div></div>)}
+{(()=>{const es=engineState||{};const fl=es.flow||{};const pl=es.pool||{};const fh=es.featureHeat||{};const dec=es.decisions||{};const mods=es.modules||[];const modUp=id=>{const m=mods.find(x=>x.id===id);return m?.status==="active"};
+const streams=[
+{label:"PumpPortal",sub:"WS",c:T.cy,up:modUp("pumpportal"),rows:[{k:"pools 5m",v:pl.recent5m||0},{k:"total",v:pl.total||0},{k:"active",v:pl.active||0},{k:"graduated",v:pl.graduated||0}]},
+{label:"Flow",sub:"TXN",c:T.gn,up:true,rows:[{k:"buys",v:fl.totalBuys||0,c:T.gn},{k:"sells",v:fl.totalSells||0,c:T.rd},{k:"vol",v:(fl.totalVol||0).toFixed(1)+" SOL",c:T.yl},{k:"ext buyers",v:fl.externalBuyers||0}]},
+{label:"Scanner",sub:"FILTER",c:T.pu,up:modUp("scorer"),rows:[{k:"active",v:pl.active||0},{k:"scored",v:(dec.ape||0)+(dec.watch||0)+(dec.skip||0)+(dec.rug||0)},{k:"pass rate",v:pl.active>0?Math.round(((dec.ape||0)+(dec.watch||0))/Math.max(1,(dec.ape||0)+(dec.watch||0)+(dec.skip||0)+(dec.rug||0))*100)+"%":"—"}]},
+{label:"Scorer",sub:"ML",c:T.pu,up:modUp("scorer"),rows:[{k:"features",v:"40+",c:T.pu},{k:"accuracy",v:intelData?.scorer?.accuracy||"—",c:T.gn},{k:"trained",v:intelData?.scorer?.trainCount||0}]},
+{label:"Smart $",sub:"WALLETS",c:"#14F195",up:(intelData?.smartMoney?.signals?.length||0)>0,rows:[{k:"signals",v:intelData?.smartMoney?.signals?.length||0,c:"#14F195"}]},
+{label:"Social",sub:"SIGNALS",c:T.or,up:(fh.socialSignals||0)>.05,rows:[{k:"strength",v:fh.socialSignals?Math.round(fh.socialSignals*100)+"%":"0%",c:T.or}]},
+{label:"Artwork",sub:"FORENSIC",c:"#F472B6",up:modUp("artwork_scanner"),rows:[{k:"scanned",v:intelData?.artwork?.scanned||0,c:"#F472B6"}]},
+{label:"Rug Detect",sub:"SAFETY",c:T.rd,up:modUp("rug_detector"),rows:[{k:"flagged",v:dec.rug||0,c:T.rd},{k:"risk heat",v:fh.rugRisk?Math.round(fh.rugRisk*100)+"%":"0%",c:fh.rugRisk>.3?T.rd:T.ft}]},
+];
+return<div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:3}}>
+{streams.map((s,si)=><div key={si} style={{display:"flex",alignItems:"flex-start",gap:6,padding:"5px 4px",borderRadius:4,background:s.up?s.c+"06":"transparent",borderBottom:"1px solid "+T.bd+"33"}}>
+<div style={{minWidth:mb?60:72,flexShrink:0}}>
+<div style={{display:"flex",alignItems:"center",gap:3}}><span style={{width:4,height:4,borderRadius:"50%",background:s.up?T.gn:T.ft+"66",boxShadow:s.up?"0 0 4px "+T.gn:""}}/>
+<span style={{fontSize:10,fontWeight:800,color:s.up?s.c:T.ft}}>{s.label}</span></div>
+<span style={{fontSize:7,color:T.ft,fontFamily:"monospace",marginLeft:7}}>{s.sub}</span>
 </div>
-<div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:1}}>
-{events.slice(0,10).map((e,i)=>{const d=e.data||{};const score=d.score||0;const rugScore=d.rugScore||0;const rugFlags=d.rugFlags||[];const isRug=rugScore>50||rugFlags.length>=2;const name=d.name||d.ca?.slice(0,6)||"?";const mcap=d.mcap||0;const decision=isRug?"RUG":score>=50?"APE":score>=25?"WATCH":"SKIP";const dc=isRug?"#ff1744":score>=50?T.gn:score>=25?T.yl:T.ft;const fullCA=d.ca||"";
-return<div key={fullCA+i} onClick={()=>{if(fullCA.length>=20){sTab("radar");sRS(fullCA);sRExp(fullCA);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 4px",borderRadius:4,background:i===0?dc+"08":"transparent",cursor:"pointer",borderBottom:"1px solid "+T.bd+"33"}}>
-<span style={{fontSize:7,fontWeight:800,color:dc,background:dc+"18",padding:"2px 4px",borderRadius:3,minWidth:28,textAlign:"center"}}>{decision}</span>
-<span style={{fontSize:10,fontWeight:700,color:T.tx,flex:1,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{name.slice(0,16)}</span>
-<span style={{fontSize:11,fontWeight:900,color:dc}}>{score}</span>
-{mcap>0&&<span style={{fontSize:8,color:T.ft}}>${mcap>=1000?(mcap/1000).toFixed(1)+"K":mcap}</span>}
-{isRug&&<span style={{fontSize:7,color:"#ff1744"}} title={rugFlags.join(", ")}>{rugFlags.length}F</span>}
-</div>})}
+<div style={{flex:1,display:"flex",flexWrap:"wrap",gap:"2px 8px"}}>
+{s.rows.map((r,ri)=><span key={ri} style={{fontSize:9,fontFamily:"monospace",color:T.ft,whiteSpace:"nowrap"}}><span style={{color:T.dm}}>{r.k}</span> <span style={{fontWeight:800,color:r.c||T.tx}}>{r.v}</span></span>)}
 </div>
-</>})()}
+</div>)}
+</div>})()}
 </div>
 
 {/* Live Radar Pulse — enhanced activity visualization */}
