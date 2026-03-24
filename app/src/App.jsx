@@ -859,6 +859,30 @@ if(!user)return<TC.Provider value={T}><style>{css(T)}</style><div style={{minHei
 </div>
 </div>
 
+{/* ═══ SECURITY & TRUST ═══ */}
+<div style={{maxWidth:960,margin:"0 auto",padding:mb?"0 14px 32px":"0 20px 48px"}}>
+<div style={{background:T.sf,border:"1px solid "+T.gn+"22",borderRadius:14,padding:mb?"20px 14px":"28px 24px"}}>
+<div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}><IC.shield s={20} c={T.gn}/><span style={{fontSize:mb?15:18,fontWeight:900,color:T.tx}}>Your Keys. Your Wallet. Always.</span></div>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr 1fr",gap:mb?10:16}}>
+<div style={{padding:mb?"10px":"14px 12px",background:T.bg,borderRadius:10,border:"1px solid "+T.bd}}>
+<div style={{fontSize:mb?11:13,fontWeight:800,color:T.gn,marginBottom:6}}>Your private key never leaves Phantom</div>
+<div style={{fontSize:mb?10:12,color:T.dm,lineHeight:1.6}}>Bondli only reads your public address. Your main wallet private key is never requested, transmitted, or stored. Phantom handles all signing locally in your browser.</div>
+</div>
+<div style={{padding:mb?"10px":"14px 12px",background:T.bg,borderRadius:10,border:"1px solid "+T.bd}}>
+<div style={{fontSize:mb?11:13,fontWeight:800,color:T.yl,marginBottom:6}}>Separate trading wallet</div>
+<div style={{fontSize:mb?10:12,color:T.dm,lineHeight:1.6}}>Trades execute from a dedicated wallet you fund with only what you want to risk. Your main wallet is never exposed. Export your trading wallet keys anytime — you own them.</div>
+</div>
+<div style={{padding:mb?"10px":"14px 12px",background:T.bg,borderRadius:10,border:"1px solid "+T.bd}}>
+<div style={{fontSize:mb?11:13,fontWeight:800,color:T.pu,marginBottom:6}}>Open source + audit planned</div>
+<div style={{fontSize:mb?10:12,color:T.dm,lineHeight:1.6}}>Full codebase is public on GitHub. Smart contract audit scheduled. All GPU earnings settled on-chain with verifiable splits. Zero trust required — verify everything.</div>
+</div>
+</div>
+<div style={{display:"flex",flexWrap:"wrap",gap:mb?8:16,marginTop:14,justifyContent:"center"}}>
+{[{t:"No private key access",c:T.gn},{t:"Non-custodial architecture",c:T.gn},{t:"Export keys anytime",c:T.yl},{t:"On-chain settlements",c:T.yl},{t:"Open source",c:T.pu},{t:"Audit scheduled",c:T.pu}].map((b,i)=><span key={i} style={{fontSize:mb?8:10,fontWeight:700,color:b.c,background:b.c+"10",border:"1px solid "+b.c+"22",padding:"4px 10px",borderRadius:20,letterSpacing:".02em"}}>{b.t}</span>)}
+</div>
+</div>
+</div>
+
 {/* ═══ BOTTOM CTA ═══ */}
 <div style={{padding:mb?"24px 14px 40px":"40px 20px 56px",textAlign:"center"}}>
 <div style={{fontSize:mb?20:28,fontWeight:900,color:T.tx,marginBottom:6}}>Ready to trade smarter?</div>
