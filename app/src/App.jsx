@@ -1465,10 +1465,10 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 <div style={{fontSize:11,color:T.ft,textAlign:"center"}}>{intelData?`${intelData.scorer?.trainCount||0} tokens scored · SOL $${intelData.solPrice?.toFixed(0)||"?"} · uptime ${intelData.uptime||"—"}`:"Connecting to intel engine..."}</div>
 
 {/* ═══ TOP SIGNALS + LIVE RADAR PULSE (above Oracle) ═══ */}
-<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginBottom:6,alignItems:"stretch"}}>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gridTemplateRows:"1fr",gap:4,marginBottom:6}}>
 
 {/* Raw Logs — full backend stdout, every data source */}
-<div style={{background:"#0c0c0c",border:"1px solid #1a1a1a",borderRadius:6,display:"flex",flexDirection:"column",minHeight:mb?280:300,overflow:"hidden"}}>
+<div style={{background:"#0c0c0c",border:"1px solid #1a1a1a",borderRadius:6,display:"flex",flexDirection:"column",maxHeight:mb?360:460,overflow:"hidden"}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 10px",background:"#111",borderBottom:"1px solid #1a1a1a",flexShrink:0}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}><span style={{width:7,height:7,borderRadius:"50%",background:"#22c55e",boxShadow:"0 0 6px #22c55e88"}}/>
 <span style={{fontSize:10,color:"#888",fontFamily:"'SF Mono',Menlo,monospace"}}>bondli-production</span><span style={{fontSize:9,color:"#444",fontFamily:"'SF Mono',Menlo,monospace"}}>railway.app</span></div>
@@ -1581,7 +1581,7 @@ return L.map(l=><div key={l.k} onClick={()=>{const c=l.ca;if(c?.length>=20){sTab
 </div>
 
 {/* Live Radar Pulse — enhanced activity visualization */}
-<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,display:"flex",flexDirection:"column",minHeight:mb?280:300,overflow:"hidden"}}>
+<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,display:"flex",flexDirection:"column",maxHeight:mb?360:460,overflow:"hidden"}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
 <span style={{width:8,height:8,borderRadius:"50%",background:T.gn,boxShadow:`0 0 12px ${T.gn}88,0 0 24px ${T.gn}44`,animation:"gp 1.5s infinite"}}/>
