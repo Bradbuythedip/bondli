@@ -55,8 +55,8 @@ export class DevWalletTracker {
 
     // ── Balance poll state ──
     this.pollInterval = null;
-    this.POLL_INTERVAL_MS = 30000; // check balances every 30s
-    this.BALANCE_STALE_MS = 120000; // re-check if older than 2 min
+    this.POLL_INTERVAL_MS = 60000; // check balances every 60s (was 30s — halves RPC cost)
+    this.BALANCE_STALE_MS = 300000; // re-check if older than 5 min (was 2 min)
     this.MAX_BATCH_SIZE = 20; // RPC batch size for getMultipleAccountsInfo
 
     // ── Stats ──
