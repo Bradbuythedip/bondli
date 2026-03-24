@@ -1468,7 +1468,7 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginBottom:6}}>
 
 {/* Raw Logs — full backend stdout, every data source */}
-<div style={{gridColumn:"1 / -1",background:"#0c0c0c",border:"1px solid #1a1a1a",borderRadius:6,display:"flex",flexDirection:"column",height:mb?400:520,overflow:"hidden"}}>
+<div style={{background:"#0c0c0c",border:"1px solid #1a1a1a",borderRadius:6,display:"flex",flexDirection:"column",height:mb?280:300,overflow:"hidden"}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 10px",background:"#111",borderBottom:"1px solid #1a1a1a",flexShrink:0}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}><span style={{width:7,height:7,borderRadius:"50%",background:"#22c55e",boxShadow:"0 0 6px #22c55e88"}}/>
 <span style={{fontSize:10,color:"#888",fontFamily:"'SF Mono',Menlo,monospace"}}>bondli-production</span><span style={{fontSize:9,color:"#444",fontFamily:"'SF Mono',Menlo,monospace"}}>railway.app</span></div>
