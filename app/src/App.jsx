@@ -729,11 +729,11 @@ useEffect(()=>{if(!user?.pubkey||user.demo)return;a.gu(user.pubkey).then(d=>{if(
 useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null){const real=d.online;const inflated=Math.max(real,Math.round(real*1.3+Math.floor(Math.random()*5)+3));sOl(inflated)}}).catch(()=>{})},15000);return()=>clearInterval(iv)},[]);
 useEffect(()=>{if(!launched||!lCA)return;const poll=()=>{a.gfs().then(d=>{const sess=d.sessions?.[lCA];if(sess){sFl({...sess,wallets:sess.walletDetails||[],trades:sess.recentTrades||[],ca:lCA})}else{sFl(d)}}).catch(()=>{})};poll();const iv=setInterval(poll,5000);return()=>clearInterval(iv)},[launched,lCA]);
 // Intel tab polling
-useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>{if(!r.ok)throw new Error(r.status);return r.json()}).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,8000);return()=>clearInterval(iv)},[tab]);
+useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>{if(!r.ok)throw new Error(r.status);return r.json()}).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,2000);return()=>clearInterval(iv)},[tab]);
 // GPU Earn tab polling
 useEffect(()=>{if(tab!=="gpu"||demoProfits)return;const poll=()=>{if(user?.pubkey&&!user.demo){fetch(API+"/api/gpu/dashboard?wallet="+user.pubkey).then(r=>r.json()).then(d=>sGpuDash(d)).catch(()=>{})}fetch(API+"/api/gpu/fleet").then(r=>r.json()).then(d=>sGpuFleet(d)).catch(()=>{})};poll();const iv=setInterval(poll,15000);return()=>clearInterval(iv)},[tab,user?.pubkey,demoProfits]);
 // Engine state polling (for visualization)
-useEffect(()=>{if(tab!=="intel")return;const poll=()=>{a.ges().then(d=>sEngineState(d)).catch(()=>{})};poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab]);
+useEffect(()=>{if(tab!=="intel")return;const poll=()=>{a.ges().then(d=>sEngineState(d)).catch(()=>{})};poll();const iv=setInterval(poll,2000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?3000:10000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
 // Live sim polling — runs for all users when sim is active
 useEffect(()=>{if(tab!=="intel"||!liveSim?.active)return;const poll=()=>a.simst(user?.pubkey||"anon").then(d=>{if(d.active)sLiveSim(p=>({...p,...d}));else sLiveSim(null)}).catch(()=>{});poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab,liveSim?.active,user?.pubkey]);
@@ -1554,7 +1554,7 @@ P("mc:$"+mcS,"#888"),
 ...(isH?[SP,P("HELD","#22c55e")]:[])
 ]})});
 /* ── LINE COUNT ── */
-L.push({k:"end",parts:[P(now+" ","#555"),P("[SYS]   ","#555"),P(L.length+" lines | poll:8s | ws:live","#444")]});
+L.push({k:"end",parts:[P(now+" ","#555"),P("[SYS]   ","#555"),P(L.length+" lines | poll:2s | ws:live","#444")]});
 if(!L.length)return<div style={{padding:16,fontFamily:"'SF Mono',Menlo,monospace",fontSize:10,color:"#555"}}>connecting...</div>;
 return L.map(l=><div key={l.k} onClick={()=>{const c=l.ca;if(c?.length>=20){sTab("radar");sRS(c);sRExp(c);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{padding:"0 12px",cursor:l.ca?"pointer":"default",fontFamily:"'SF Mono',Menlo,monospace",fontSize:mb?8:10.5,lineHeight:mb?"15px":"19px",whiteSpace:"nowrap",borderLeft:"2px solid transparent"}} onMouseEnter={ev=>{ev.currentTarget.style.background="#ffffff06";if(l.ca)ev.currentTarget.style.borderLeftColor="#333"}} onMouseLeave={ev=>{ev.currentTarget.style.background="transparent";ev.currentTarget.style.borderLeftColor="transparent"}}>
 {l.parts.map((p,pi)=>p.t?<span key={pi} style={{color:p.c}}>{p.t}</span>:null)}
