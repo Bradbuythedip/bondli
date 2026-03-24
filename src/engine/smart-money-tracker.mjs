@@ -53,7 +53,7 @@ export class SmartMoneyTracker {
 
     // ── Polling state ──
     this.pollInterval = null;
-    this.POLL_INTERVAL_MS = 30000; // poll every 30s (was 15s — halves RPC cost)
+    this.POLL_INTERVAL_MS = 60000; // poll every 60s (was 30s — halves RPC cost again)
     this.lastPollSignatures = new Map(); // wallet → last seen signature
 
     // ── Manual watch (user-added wallets) ──
