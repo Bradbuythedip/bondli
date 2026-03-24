@@ -1467,31 +1467,52 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 {/* ═══ TOP SIGNALS + LIVE RADAR PULSE (above Oracle) ═══ */}
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginBottom:6}}>
 
-{/* Live Stream — Railway-style event log from all data centers */}
-<div style={{background:"#0a0a0f",border:"1px solid "+T.bd,borderRadius:6,padding:0,display:"flex",flexDirection:"column",maxHeight:320,overflow:"hidden"}}>
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px 6px",borderBottom:"1px solid "+T.bd,background:"#0d0d14"}}>
-<div style={{display:"flex",alignItems:"center",gap:5}}><span style={{width:6,height:6,borderRadius:"50%",background:T.gn,boxShadow:"0 0 8px "+T.gn+"88",animation:"gp 1.5s infinite"}}/><span style={{fontSize:11,fontWeight:800,color:T.tx,fontFamily:"monospace",letterSpacing:".5px"}}>event-stream</span></div>
-<div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:8,color:T.ft,fontFamily:"monospace"}}>{(intelData?.recentEvents||[]).length} events</span><span style={{fontSize:8,color:T.gn,fontFamily:"monospace"}}>ws:live</span></div>
+{/* Raw Logs — backend stdout like Railway */}
+<div style={{background:"#0c0c0c",border:"1px solid #1a1a1a",borderRadius:6,display:"flex",flexDirection:"column",maxHeight:320,overflow:"hidden"}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 10px",background:"#111",borderBottom:"1px solid #1a1a1a"}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}><span style={{width:7,height:7,borderRadius:"50%",background:"#22c55e",boxShadow:"0 0 6px #22c55e88"}}/>
+<span style={{fontSize:10,color:"#888",fontFamily:"'SF Mono',Menlo,monospace"}}>bondli-production</span></div>
+<span style={{fontSize:9,color:"#555",fontFamily:"'SF Mono',Menlo,monospace"}}>{(intelData?.recentEvents||[]).length} lines</span>
 </div>
-<div style={{flex:1,overflowY:"auto",padding:"4px 0",fontFamily:"monospace",fontSize:mb?8:10,lineHeight:mb?"16px":"18px"}}>
-{(()=>{const events=intelData?.recentEvents||[];if(!events.length)return<div style={{padding:20,textAlign:"center",fontSize:10,color:T.ft}}>awaiting events...</div>;
-return events.slice(0,20).map((e,i)=>{const d=e.data||{};const age=e.time?Math.round((Date.now()-e.time)/1000):0;const ts=age<60?age+"s":Math.round(age/60)+"m";const score=d.score||0;const bp=d.bondProb||0;const rugScore=d.rugScore||0;const rugFlags=d.rugFlags||[];const isRug=rugScore>50||rugFlags.length>=2;const name=(d.name||d.ca?.slice(0,8)||"???").slice(0,12);const ca=d.ca?.slice(0,6)||"";const mcap=d.mcap||0;const mcS=mcap>=1000?"$"+(mcap/1000).toFixed(1)+"K":mcap>0?"$"+mcap:"";const isLearn=e.type==="learn";const decision=isRug?"RUG":score>=50?"APE":score>=25?"WATCH":"SKIP";const dc=isRug?"#ff1744":score>=50?T.gn:score>=25?T.yl:T.ft;
-return<div key={(d.ca||"")+i} onClick={()=>{const fca=d.ca||"";if(fca.length>=20){sTab("radar");sRS(fca);sRExp(fca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",padding:"1px 10px",cursor:"pointer",background:i===0?"#ffffff04":"transparent",borderLeft:i===0?"2px solid "+dc:"2px solid transparent"}} onMouseEnter={ev=>ev.currentTarget.style.background="#ffffff08"} onMouseLeave={ev=>ev.currentTarget.style.background=i===0?"#ffffff04":"transparent"}>
-<span style={{color:T.ft+"88",minWidth:mb?24:28,flexShrink:0}}>{ts}</span>
-<span style={{color:isLearn?"#60A5FA":T.cy,minWidth:mb?36:44,flexShrink:0}}>{isLearn?"LEARN":"SCORE"}</span>
-<span style={{color:dc,minWidth:mb?30:38,flexShrink:0,fontWeight:700}}>{isLearn?(d.accuracy||"—"):decision}</span>
-<span style={{color:T.dm,minWidth:mb?50:70,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
-<span style={{color:T.ft+"88",minWidth:mb?36:44,flexShrink:0}}>{ca}…</span>
-{!isLearn&&<><span style={{color:dc,minWidth:28,flexShrink:0,textAlign:"right",fontWeight:700}}>{score}</span>
-<span style={{color:T.ft+"66",minWidth:6,flexShrink:0,textAlign:"center"}}>│</span>
-<span style={{color:bp>=100?T.gn:T.yl,minWidth:28,flexShrink:0}}>{bp}%</span>
-{mcS&&<span style={{color:T.dm,minWidth:40,flexShrink:0}}>{mcS}</span>}
-{isRug&&<span style={{color:"#ff1744"}}> ⚠{rugFlags.length}f</span>}
-{d.lora&&<span style={{color:T.pu}}> LoRA</span>}</>}
-{isLearn&&<><span style={{color:T.ft,flexShrink:0}}>err:{d.error?.toFixed(3)||"—"}</span>
-<span style={{color:T.ft+"66",minWidth:6,flexShrink:0,textAlign:"center"}}>│</span>
-<span style={{color:T.gn}}>acc:{d.accuracy||"—"}</span></>}
-</div>})})()}
+<div style={{flex:1,overflowY:"auto",padding:"2px 0",background:"#0c0c0c"}}>
+{(()=>{const events=intelData?.recentEvents||[];const es=engineState||{};const fl=es.flow||{};const pl=es.pool||{};const fh=es.featureHeat||{};
+if(!events.length)return<div style={{padding:16,fontFamily:"'SF Mono',Menlo,monospace",fontSize:10,color:"#555"}}>waiting for events...</div>;
+const lines=[];
+events.slice(0,20).forEach((e,i)=>{const d=e.data||{};const t=e.time?new Date(e.time):new Date();const hh=String(t.getHours()).padStart(2,"0");const mm=String(t.getMinutes()).padStart(2,"0");const ss=String(t.getSeconds()).padStart(2,"0");const ms=String(t.getMilliseconds()).padStart(3,"0");const ts=hh+":"+mm+":"+ss+"."+ms;const ca=d.ca||"";const caShort=ca.slice(0,8);const name=(d.name||"").slice(0,14);const score=d.score||0;const bp=d.bondProb||0;const mcap=d.mcap||0;const mcS=mcap>=1e6?(mcap/1e6).toFixed(1)+"M":mcap>=1e3?(mcap/1e3).toFixed(1)+"K":mcap>0?mcap:"0";const rugScore=d.rugScore||0;const rugFlags=d.rugFlags||[];const isRug=rugScore>50||rugFlags.length>=2;const isLearn=e.type==="learn";const fca=ca;
+if(isLearn){lines.push({i,fca,parts:[
+{t:ts+" ",c:"#555"},{t:"[LEARN] ",c:"#60a5fa"},{t:caShort+"… ",c:"#666"},
+{t:"err:"+((d.error!=null)?d.error.toFixed(4):"—"),c:"#888"},{t:" | ",c:"#333"},
+{t:"acc:"+((d.accuracy)||"—"),c:"#22c55e"},{t:" | ",c:"#333"},
+{t:"model v"+(d.trainCount||"?"),c:"#888"}
+]})}else{const dec=isRug?"REJECT":score>=50?"SIGNAL":score>=25?"WATCH":"SKIP";const tag=isRug?"[RUG]  ":score>=50?"[SCORE]":"[SCORE]";const tagC=isRug?"#ef4444":score>=50?"#22c55e":"#06b6d4";
+lines.push({i,fca,parts:[
+{t:ts+" ",c:"#555"},{t:tag+" ",c:tagC},
+{t:name||caShort,c:name?"#e5e5e5":"#666"},{t:name?" ":"",c:""},
+{t:name?caShort+"…":"",c:"#444"},{t:" → ",c:"#333"},
+{t:"score:"+score,c:score>=50?"#22c55e":score>=25?"#eab308":"#666"},{t:" | ",c:"#333"},
+{t:"bond:"+bp+"%",c:bp>=100?"#22c55e":"#eab308"},{t:" | ",c:"#333"},
+{t:"mc:$"+mcS,c:"#888"},
+...(d.meta?[{t:" | ",c:"#333"},{t:"meta:"+d.meta.slice(0,16),c:"#a78bfa"}]:[]),
+...(d.lora?[{t:" | ",c:"#333"},{t:"lora:blend",c:"#c084fc"}]:[]),
+...(isRug?[{t:" | ",c:"#333"},{t:"flags:["+rugFlags.join(",")+"]",c:"#ef4444"}]:[]),
+...(dec==="SIGNAL"?[{t:" → ",c:"#333"},{t:dec,c:"#22c55e"}]:dec==="REJECT"?[{t:" → ",c:"#333"},{t:dec,c:"#ef4444"}]:[])
+]})}});
+if(fl.totalBuys>0&&lines.length>0){const now=new Date();const nts=String(now.getHours()).padStart(2,"0")+":"+String(now.getMinutes()).padStart(2,"0")+":"+String(now.getSeconds()).padStart(2,"0")+".000";
+lines.unshift({i:-1,fca:"",parts:[
+{t:nts+" ",c:"#555"},{t:"[FLOW]  ",c:"#eab308"},
+{t:"buys:"+fl.totalBuys,c:"#22c55e"},{t:" | ",c:"#333"},
+{t:"sells:"+fl.totalSells,c:"#ef4444"},{t:" | ",c:"#333"},
+{t:"vol:"+(fl.totalVol||0).toFixed(1)+"SOL",c:"#eab308"},{t:" | ",c:"#333"},
+{t:"pool:"+pl.total+" active:"+pl.active+" grad:"+pl.graduated,c:"#888"}
+]});
+if(fh.socialSignals>0||fh.rugRisk>0)lines.splice(1,0,{i:-2,fca:"",parts:[
+{t:nts+" ",c:"#555"},{t:"[HEAT]  ",c:"#f97316"},
+{t:"social:"+Math.round((fh.socialSignals||0)*100)+"%",c:fh.socialSignals>.3?"#22c55e":"#888"},{t:" | ",c:"#333"},
+{t:"rug_risk:"+Math.round((fh.rugRisk||0)*100)+"%",c:fh.rugRisk>.3?"#ef4444":"#888"}
+]})}
+return lines.map(l=><div key={l.i} onClick={()=>{if(l.fca?.length>=20){sTab("radar");sRS(l.fca);sRExp(l.fca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{padding:"0 12px",cursor:l.fca?"pointer":"default",fontFamily:"'SF Mono',Menlo,monospace",fontSize:mb?8.5:11,lineHeight:mb?"17px":"20px",whiteSpace:"nowrap",borderLeft:"2px solid transparent"}} onMouseEnter={ev=>{if(l.fca)ev.currentTarget.style.background="#ffffff06";ev.currentTarget.style.borderLeftColor=l.fca?"#333":"transparent"}} onMouseLeave={ev=>{ev.currentTarget.style.background="transparent";ev.currentTarget.style.borderLeftColor="transparent"}}>
+{l.parts.map((p,pi)=>p.t?<span key={pi} style={{color:p.c}}>{p.t}</span>:null)}
+</div>)})()}
 </div>
 </div>
 
