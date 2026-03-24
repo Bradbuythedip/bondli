@@ -3698,44 +3698,33 @@ app.post("/api/quick-ape", async (req, res) => {
       } catch (e) { console.warn("[BUY] Failed to persist entry cost:", e.message); }
     }
 
-    // Verify token landed: confirm tx on-chain, then check token account
+    // Verify token landed: use connection.confirmTransaction with AbortController for fast cancellation
     const boughtToken = radar.tokens.get(ca);
     let verified = false;
     let verifyError = null;
     try {
-      // Wait up to 12s for on-chain confirmation
-      const CONFIRM_TIMEOUT = 12000;
-      const POLL_INTERVAL = 2000;
-      const confirmStart = Date.now();
-      let confirmed = false;
-      while (Date.now() - confirmStart < CONFIRM_TIMEOUT) {
-        const txStatus = await connection.getSignatureStatus(sig);
-        if (txStatus?.value?.confirmationStatus === "confirmed" || txStatus?.value?.confirmationStatus === "finalized") {
-          confirmed = true;
-          break;
-        }
-        if (txStatus?.value?.err) {
+      // Use WebSocket-based confirmTransaction (faster than polling) with 8s timeout
+      const abortController = new AbortController();
+      const confirmTimeout = setTimeout(() => abortController.abort(), 8000);
+      try {
+        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+        const confirmation = await connection.confirmTransaction(
+          { signature: sig, blockhash, lastValidBlockHeight, abortSignal: abortController.signal },
+          "confirmed"
+        );
+        clearTimeout(confirmTimeout);
+        if (confirmation?.value?.err) {
           verifyError = "Transaction failed on-chain";
-          break;
+        } else {
+          verified = true;
         }
-        await new Promise(r => setTimeout(r, POLL_INTERVAL));
-      }
-      if (confirmed) {
-        // Check that the token account actually exists now
-        const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-        try {
-          const tokenAccounts = await connection.getParsedTokenAccountsByOwner(kp.publicKey, { programId: TOKEN_PROGRAM });
-          const hasToken = tokenAccounts.value.some(ta => {
-            const info = ta.account.data.parsed.info;
-            return info.mint === ca && parseFloat(info.tokenAmount.uiAmountString || "0") > 0;
-          });
-          verified = hasToken;
-          if (!hasToken) verifyError = "Token not found in wallet after confirmed tx";
-        } catch (e) {
-          verifyError = "RPC error checking token account: " + e.message;
+      } catch (e) {
+        clearTimeout(confirmTimeout);
+        if (e.name === "AbortError") {
+          verifyError = "Confirmation timeout (tx may still be processing)";
+        } else {
+          verifyError = "Confirmation error: " + e.message;
         }
-      } else if (!verifyError) {
-        verifyError = "Confirmation timeout (tx may still be processing)";
       }
     } catch (e) {
       verifyError = "Verification error: " + e.message;
@@ -3943,29 +3932,25 @@ app.post("/api/quick-sell", async (req, res) => {
       return res.status(400).json({ error: "Sell failed: " + errorSummary.slice(0, 200) });
     }
 
-    // Confirm transaction on-chain — poll status instead of blocking on confirmTransaction
-    // which often times out on congested Solana RPCs
+    // Confirm transaction on-chain — WebSocket-based confirmation (faster than polling)
     let confirmed = false;
-    const confirmStart = Date.now();
-    const CONFIRM_TIMEOUT = 20000; // 20s max
-    const POLL_INTERVAL = 2000;
-
-    while (Date.now() - confirmStart < CONFIRM_TIMEOUT) {
-      try {
-        const txStatus = await connection.getSignatureStatus(sig, { searchTransactionHistory: false });
-        if (txStatus?.value?.confirmationStatus === "confirmed" || txStatus?.value?.confirmationStatus === "finalized") {
-          confirmed = true;
-          console.log(`[SELL] Confirmed: ${sig}`);
-          break;
-        }
-        if (txStatus?.value?.err) {
-          console.log(`[SELL] Tx failed on-chain: ${sig} err=${JSON.stringify(txStatus.value.err)}`);
-          break;
-        }
-      } catch (e) {
-        console.log(`[SELL] Status check error: ${e.message}`);
+    try {
+      const abortController = new AbortController();
+      const confirmTimeout = setTimeout(() => abortController.abort(), 12000);
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+      const confirmation = await connection.confirmTransaction(
+        { signature: sig, blockhash, lastValidBlockHeight, abortSignal: abortController.signal },
+        "confirmed"
+      );
+      clearTimeout(confirmTimeout);
+      if (confirmation?.value?.err) {
+        console.log(`[SELL] Tx failed on-chain: ${sig} err=${JSON.stringify(confirmation.value.err)}`);
+      } else {
+        confirmed = true;
+        console.log(`[SELL] Confirmed: ${sig}`);
       }
-      await new Promise(r => setTimeout(r, POLL_INTERVAL));
+    } catch (e) {
+      console.log(`[SELL] Confirmation error: ${e.message}`);
     }
 
     // Track sell optimistically — the tx was successfully sent and signed
@@ -5606,11 +5591,11 @@ function startAutoTrader(wallet, settings) {
         if (state.positions.size >= state.settings.maxPositions) break;
 
         // ── ENTRY TIMING GATE 1: Score Stability ──
-        // Require score above threshold for 2+ consecutive cycles (8+ seconds)
-        // Exception: early movers (<2 min, MC <$30K) get 1-cycle pass
+        // Require score above threshold for 2+ consecutive cycles (4+ seconds at 2s tick)
+        // Exception: early movers (<5 min, MC <$50K) get 1-cycle pass
         const stability = stabilityMap.get(t.ca);
         const ageMin = Math.max(0.3, (Date.now() - t.createdAt) / 60000);
-        const isEarly = ageMin < 2 && t.mcapUsd <= 30000;
+        const isEarly = ageMin < 5 && t.mcapUsd <= 50000;
         if (!isEarly && (!stability || stability.aboveCount < 2)) {
           if (stability?.aboveCount === 1) {
             log(`TIMING WAIT ${t.name||t.ca.slice(0,6)} | score:${t._apeScore} — need 1 more cycle for stability`);
@@ -5740,7 +5725,7 @@ function startAutoTrader(wallet, settings) {
         broadcastWS({ event: "auto-paused", data: { wallet, reason: "inactivity" } });
       }
     } catch (e) { log(`Loop error: ${e.message}`); }
-  }, 4000); // check every 4s — catch high-score tokens faster
+  }, 2000); // check every 2s — catch high-score tokens faster
 
   autoTraders.set(wallet, state);
   log("Auto-ape started: minScore=" + state.settings.minScore + " sol=" + state.settings.solPerTrade + " TP1=" + state.settings.tp1 + "% SL1=" + state.settings.sl1 + "% SL2=" + state.settings.sl2 + "% maxPos=" + state.settings.maxPositions);

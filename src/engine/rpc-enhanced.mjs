@@ -1,7 +1,19 @@
-// BONDLI v4.0 — RPC Enhanced (Priority Fees + Optimized Tx Sending)
-// Works with any standard Solana RPC provider (Alchemy, etc.)
+// BONDLI v4.1 — RPC Enhanced (Priority Fees + Jito Bundles + Multi-RPC Failover)
 import bs58 from "bs58";
 import CONFIG from "./config.mjs";
+
+// Jito tip accounts — one is chosen at random per bundle
+const JITO_TIP_ACCOUNTS = [
+  "96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5",
+  "HFqU5x63VTqvQss8hp11i4bPg4W6U6viQCi4LfbCR5iV",
+  "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
+  "ADaUMid9yfUytqMBgopwjb2DTLSouaMnkQ3JrqERm9Hx",
+  "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh",
+  "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+  "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
+  "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
+];
+const JITO_BLOCK_ENGINE = "https://mainnet.block-engine.jito.wtf/api/v1/bundles";
 
 // Get optimal priority fee using Solana's getRecentPrioritizationFees RPC
 export async function getOptimalPriorityFee(accountKeys = []) {
@@ -14,16 +26,14 @@ export async function getOptimalPriorityFee(accountKeys = []) {
         method: "getRecentPrioritizationFees",
         params: accountKeys.length > 0 ? [accountKeys] : [],
       }),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(3000), // reduced from 5s
     });
 
     if (response.ok) {
       const data = await response.json();
       if (data.result && data.result.length > 0) {
-        // Get 75th percentile of recent priority fees
         const fees = data.result.map(f => f.prioritizationFee).sort((a, b) => a - b);
         const p75 = fees[Math.floor(fees.length * 0.75)] || fees[fees.length - 1];
-        // Clamp between 10k and 500k microLamports
         return Math.max(10_000, Math.min(500_000, Math.ceil(p75)));
       }
     }
@@ -34,53 +44,96 @@ export async function getOptimalPriorityFee(accountKeys = []) {
   return CONFIG.PRIORITY_FEE;
 }
 
-// Send transaction via RPC with optimized params
-// Retries up to 2 times with short backoff for transient network failures
+// Send transaction via Jito bundle for MEV protection + faster inclusion
+export async function jitoSend(serializedTx) {
+  const base58Tx = bs58.encode(serializedTx);
+  try {
+    const res = await fetch(JITO_BLOCK_ENGINE, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1,
+        method: "sendBundle",
+        params: [[base58Tx]],
+      }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.result) {
+        console.log(`[JITO] Bundle accepted: ${data.result}`);
+        return data.result;
+      }
+      if (data.error) {
+        console.warn(`[JITO] Bundle rejected: ${JSON.stringify(data.error)}`);
+      }
+    }
+  } catch (e) {
+    console.warn(`[JITO] Send failed: ${e.message}`);
+  }
+  return null;
+}
+
+// Get a random Jito tip account
+export function getJitoTipAccount() {
+  return JITO_TIP_ACCOUNTS[Math.floor(Math.random() * JITO_TIP_ACCOUNTS.length)];
+}
+
+// Multi-RPC failover URLs (set BACKUP_RPC_URL env var for secondary)
+const RPC_URLS = [CONFIG.RPC_URL];
+if (process.env.BACKUP_RPC_URL) RPC_URLS.push(process.env.BACKUP_RPC_URL);
+if (process.env.BACKUP_RPC_URL_2) RPC_URLS.push(process.env.BACKUP_RPC_URL_2);
+
+// Send transaction via RPC with Jito-first strategy + multi-RPC failover
+// Strategy: race Jito bundle + primary RPC simultaneously for fastest inclusion
 export async function smartSend(connection, serializedTx, opts = {}) {
   const base58Tx = bs58.encode(serializedTx);
-  const MAX_RETRIES = 2;
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const res = await fetch(CONFIG.RPC_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0", id: 1,
-          method: "sendTransaction",
-          params: [base58Tx, {
-            skipPreflight: true,
-            encoding: "base58",
-            maxRetries: 5,
-          }],
-        }),
-        signal: AbortSignal.timeout(8000),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.result) return data.result;
-        if (data.error) {
-          // Non-retryable RPC errors (bad tx, insufficient funds, etc)
-          const errMsg = JSON.stringify(data.error);
-          if (errMsg.includes("insufficient") || errMsg.includes("Blockhash not found")) {
-            console.warn(`[RPC-TX] Non-retryable: ${errMsg}`);
-            break;
-          }
-          console.warn(`[RPC-TX] Error (attempt ${attempt + 1}): ${errMsg}`);
+  // Race strategy: send to Jito AND RPC simultaneously, first success wins
+  const rpcSend = async (rpcUrl) => {
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1,
+        method: "sendTransaction",
+        params: [base58Tx, {
+          skipPreflight: true,
+          encoding: "base58",
+          maxRetries: 5,
+        }],
+      }),
+      signal: AbortSignal.timeout(6000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.result) return data.result;
+      if (data.error) {
+        const errMsg = JSON.stringify(data.error);
+        if (errMsg.includes("insufficient") || errMsg.includes("Blockhash not found")) {
+          throw new Error(errMsg); // non-retryable
         }
+        throw new Error(errMsg);
       }
-    } catch (e) {
-      console.warn(`[RPC-TX] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${e.message}`);
     }
-    if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
-  }
+    throw new Error("RPC response not ok");
+  };
 
-  // Fallback: standard Connection.sendRawTransaction
-  return connection.sendRawTransaction(serializedTx, {
-    skipPreflight: true,
-    maxRetries: 3,
-    ...opts,
-  });
+  // Send to all RPCs + Jito simultaneously
+  const candidates = RPC_URLS.map(url => rpcSend(url));
+  candidates.push(jitoSend(serializedTx).then(r => { if (!r) throw new Error("Jito failed"); return r; }));
+
+  try {
+    return await Promise.any(candidates);
+  } catch {
+    // All failed — last resort fallback
+    console.warn("[RPC-TX] All send paths failed, using connection.sendRawTransaction fallback");
+    return connection.sendRawTransaction(serializedTx, {
+      skipPreflight: true,
+      maxRetries: 3,
+      ...opts,
+    });
+  }
 }
 
 // Get token metadata via standard RPC
@@ -104,4 +157,4 @@ export async function getTokenMetadata(mintAddress) {
   return null;
 }
 
-export default { getOptimalPriorityFee, smartSend, getTokenMetadata };
+export default { getOptimalPriorityFee, smartSend, jitoSend, getJitoTipAccount, getTokenMetadata };
