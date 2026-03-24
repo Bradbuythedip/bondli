@@ -1467,50 +1467,96 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 {/* ═══ TOP SIGNALS + LIVE RADAR PULSE (above Oracle) ═══ */}
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginBottom:6}}>
 
-{/* Raw Logs — backend stdout like Railway */}
-<div style={{background:"#0c0c0c",border:"1px solid #1a1a1a",borderRadius:6,display:"flex",flexDirection:"column",maxHeight:320,overflow:"hidden"}}>
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 10px",background:"#111",borderBottom:"1px solid #1a1a1a"}}>
+{/* Raw Logs — full backend stdout, every data source */}
+<div style={{gridColumn:"1 / -1",background:"#0c0c0c",border:"1px solid #1a1a1a",borderRadius:6,display:"flex",flexDirection:"column",height:mb?400:520,overflow:"hidden"}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 10px",background:"#111",borderBottom:"1px solid #1a1a1a",flexShrink:0}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}><span style={{width:7,height:7,borderRadius:"50%",background:"#22c55e",boxShadow:"0 0 6px #22c55e88"}}/>
-<span style={{fontSize:10,color:"#888",fontFamily:"'SF Mono',Menlo,monospace"}}>bondli-production</span></div>
-<span style={{fontSize:9,color:"#555",fontFamily:"'SF Mono',Menlo,monospace"}}>{(intelData?.recentEvents||[]).length} lines</span>
+<span style={{fontSize:10,color:"#888",fontFamily:"'SF Mono',Menlo,monospace"}}>bondli-production</span><span style={{fontSize:9,color:"#444",fontFamily:"'SF Mono',Menlo,monospace"}}>railway.app</span></div>
+<span style={{fontSize:9,color:"#555",fontFamily:"'SF Mono',Menlo,monospace"}}>live tail</span>
 </div>
 <div style={{flex:1,overflowY:"auto",padding:"2px 0",background:"#0c0c0c"}}>
-{(()=>{const events=intelData?.recentEvents||[];const es=engineState||{};const fl=es.flow||{};const pl=es.pool||{};const fh=es.featureHeat||{};
-if(!events.length)return<div style={{padding:16,fontFamily:"'SF Mono',Menlo,monospace",fontSize:10,color:"#555"}}>waiting for events...</div>;
-const lines=[];
-events.slice(0,20).forEach((e,i)=>{const d=e.data||{};const t=e.time?new Date(e.time):new Date();const hh=String(t.getHours()).padStart(2,"0");const mm=String(t.getMinutes()).padStart(2,"0");const ss=String(t.getSeconds()).padStart(2,"0");const ms=String(t.getMilliseconds()).padStart(3,"0");const ts=hh+":"+mm+":"+ss+"."+ms;const ca=d.ca||"";const caShort=ca.slice(0,8);const name=(d.name||"").slice(0,14);const score=d.score||0;const bp=d.bondProb||0;const mcap=d.mcap||0;const mcS=mcap>=1e6?(mcap/1e6).toFixed(1)+"M":mcap>=1e3?(mcap/1e3).toFixed(1)+"K":mcap>0?mcap:"0";const rugScore=d.rugScore||0;const rugFlags=d.rugFlags||[];const isRug=rugScore>50||rugFlags.length>=2;const isLearn=e.type==="learn";const fca=ca;
-if(isLearn){lines.push({i,fca,parts:[
-{t:ts+" ",c:"#555"},{t:"[LEARN] ",c:"#60a5fa"},{t:caShort+"… ",c:"#666"},
-{t:"err:"+((d.error!=null)?d.error.toFixed(4):"—"),c:"#888"},{t:" | ",c:"#333"},
-{t:"acc:"+((d.accuracy)||"—"),c:"#22c55e"},{t:" | ",c:"#333"},
-{t:"model v"+(d.trainCount||"?"),c:"#888"}
-]})}else{const dec=isRug?"REJECT":score>=50?"SIGNAL":score>=25?"WATCH":"SKIP";const tag=isRug?"[RUG]  ":score>=50?"[SCORE]":"[SCORE]";const tagC=isRug?"#ef4444":score>=50?"#22c55e":"#06b6d4";
-lines.push({i,fca,parts:[
-{t:ts+" ",c:"#555"},{t:tag+" ",c:tagC},
-{t:name||caShort,c:name?"#e5e5e5":"#666"},{t:name?" ":"",c:""},
-{t:name?caShort+"…":"",c:"#444"},{t:" → ",c:"#333"},
-{t:"score:"+score,c:score>=50?"#22c55e":score>=25?"#eab308":"#666"},{t:" | ",c:"#333"},
-{t:"bond:"+bp+"%",c:bp>=100?"#22c55e":"#eab308"},{t:" | ",c:"#333"},
-{t:"mc:$"+mcS,c:"#888"},
-...(d.meta?[{t:" | ",c:"#333"},{t:"meta:"+d.meta.slice(0,16),c:"#a78bfa"}]:[]),
-...(d.lora?[{t:" | ",c:"#333"},{t:"lora:blend",c:"#c084fc"}]:[]),
-...(isRug?[{t:" | ",c:"#333"},{t:"flags:["+rugFlags.join(",")+"]",c:"#ef4444"}]:[]),
-...(dec==="SIGNAL"?[{t:" → ",c:"#333"},{t:dec,c:"#22c55e"}]:dec==="REJECT"?[{t:" → ",c:"#333"},{t:dec,c:"#ef4444"}]:[])
+{(()=>{const L=[];const P=(t,c)=>({t,c});const S="|";const SP=P(" | ","#333");const _ts=d=>{const t=d?new Date(d):new Date();return String(t.getHours()).padStart(2,"0")+":"+String(t.getMinutes()).padStart(2,"0")+":"+String(t.getSeconds()).padStart(2,"0")+"."+String(t.getMilliseconds()).padStart(3,"0")};
+const es=engineState||{};const fl=es.flow||{};const pl=es.pool||{};const fh=es.featureHeat||{};const dec=es.decisions||{};const mods=es.modules||[];const events=intelData?.recentEvents||[];const allT=[...(rt.momentum||[]),...(rt.new||[]),...(rt.graduating||[])];const gw=intelData?.gradWatch;const sm=intelData?.smartMoney;const aw=intelData?.artwork;const sv=intelData?.survivor;const sc=intelData?.scorer;const mem=intelData?.memory;const at=autoTrade;const cp=chartPatterns;const now=_ts();
+/* ── INIT BANNER ── */
+L.push({k:"b0",parts:[P(now+" ","#555"),P("[INIT]  ","#c084fc"),P("=========================================","#555")]});
+L.push({k:"b1",parts:[P(now+" ","#555"),P("[INIT]  ","#c084fc"),P("  BONDLI v4.0 — PRODUCTION SERVER","#c084fc")]});
+L.push({k:"b2",parts:[P(now+" ","#555"),P("[INIT]  ","#c084fc"),P("=========================================","#555")]});
+L.push({k:"b3",parts:[P(now+" ","#555"),P("[INIT]  ","#c084fc"),P("Mode: ","#888"),P("LIVE","#ef4444"),SP,P("SOL: $"+(intelData?.solPrice?.toFixed(0)||"?"),"#eab308"),SP,P("Uptime: "+(intelData?.uptime||"—"),"#888")]});
+/* ── MODULE STATUS ── */
+mods.forEach((m,i)=>{const up=m.status==="active";L.push({k:"mod"+i,parts:[P(now+" ","#555"),P("[MOD]   ","#06b6d4"),P(m.id,"#e5e5e5"),P(" → ","#333"),P(up?"ACTIVE":"RECONNECTING",up?"#22c55e":"#eab308")]})});
+if(!mods.length){["pumpportal","scorer","rug_detector","artwork_scanner"].forEach((m,i)=>{L.push({k:"modf"+i,parts:[P(now+" ","#555"),P("[MOD]   ","#06b6d4"),P(m,"#e5e5e5"),P(" → ","#333"),P("ACTIVE","#22c55e")]})})}
+/* ── POOL STATE ── */
+L.push({k:"pool",parts:[P(now+" ","#555"),P("[POOL]  ","#06b6d4"),P("total:"+pl.total,"#888"),SP,P("active:"+pl.active,"#22c55e"),SP,P("graduated:"+pl.graduated,"#eab308"),SP,P("recent_5m:"+pl.recent5m,"#06b6d4")]});
+/* ── FLOW STATS ── */
+L.push({k:"flow",parts:[P(now+" ","#555"),P("[FLOW]  ","#eab308"),P("buys:"+(fl.totalBuys||0),"#22c55e"),SP,P("sells:"+(fl.totalSells||0),"#ef4444"),SP,P("vol:"+(fl.totalVol||0).toFixed(1)+"SOL","#eab308"),SP,P("ext_buyers:"+(fl.externalBuyers||0),"#06b6d4")]});
+/* ── FEATURE HEAT ── */
+L.push({k:"heat",parts:[P(now+" ","#555"),P("[HEAT]  ","#f97316"),P("social:"+Math.round((fh.socialSignals||0)*100)+"%",(fh.socialSignals||0)>.3?"#22c55e":"#888"),SP,P("rug_risk:"+Math.round((fh.rugRisk||0)*100)+"%",(fh.rugRisk||0)>.3?"#ef4444":"#888")]});
+/* ── DECISIONS ── */
+L.push({k:"dec",parts:[P(now+" ","#555"),P("[BRAIN] ","#c084fc"),P("decisions → ","#888"),P("ape:"+(dec.ape||0),"#22c55e"),SP,P("watch:"+(dec.watch||0),"#eab308"),SP,P("skip:"+(dec.skip||0),"#666"),SP,P("rug:"+(dec.rug||0),"#ef4444"),SP,P("total:"+((dec.ape||0)+(dec.watch||0)+(dec.skip||0)+(dec.rug||0)),"#888")]});
+/* ── SCORER MODEL ── */
+if(sc){L.push({k:"scorer",parts:[P(now+" ","#555"),P("[MODEL] ","#a78bfa"),P("trained:"+(sc.trainCount||0),"#888"),SP,P("accuracy:"+(sc.accuracy||"—"),"#22c55e"),SP,P("features:40+","#a78bfa")]});
+/* ── TOP FEATURES ── */
+const fMap={"oc_buyVelocity5m":"BuyVel5m","tp_stickiness":"Stickiness","oc_uniqueBuyers5m":"UniqBuyers5m","k_herdSignal":"HerdSignal","tp_lawOfFew":"LawOfFew","k_cognitiveEase":"NameEase","oc_volumeSol5m":"VolSol5m","so_hasTwitter":"HasTwitter","ch_healthScore":"ChartHealth","ch_pumpDump":"PumpDump","rg_devSellSpeed":"DevSell","rg_mcapDropRate":"MCDrop","rg_buyerRetention":"BuyerRetention","cs_cascadeOnset":"CascadeOnset","cs_reflexivity":"Reflexivity","sir_r0":"ViralR0","gf_curveProgress":"CurveProgress","gf_frontrunSignal":"GradFrontrun","apd_divergence":"AttnPriceDiverge","gl_thinSlice":"ThinSlice30s","gl_outlier":"Outlier","k_anchoring":"Anchoring","k_lossAversion":"LossAversion","cs_curveVelocity":"CurveVel","cs_attentionShare":"AttnShare"};
+(sc.topFeatures||[]).forEach((f,i)=>{const fn=fMap[f.feature]||f.feature;const w=typeof f.weight==="number"?f.weight.toFixed(4):f.weight;L.push({k:"feat"+i,parts:[P(now+" ","#555"),P("[FEAT]  ","#a78bfa"),P("#"+(i+1)+" ","#555"),P(fn,"#e5e5e5"),P(" weight:","#555"),P(w,"#a78bfa")]})})}
+/* ── MEMORY ── */
+if(mem){L.push({k:"mem",parts:[P(now+" ","#555"),P("[MEM]   ","#06b6d4"),P("total:"+(mem.total||0),"#888"),SP,P("graduated:"+(mem.graduated||0),"#22c55e"),SP,P("grad_rate:"+(mem.graduationRate||"0%"),"#eab308")]})}
+/* ── SMART MONEY ── */
+if(sm?.signals?.length>0){L.push({k:"smart",parts:[P(now+" ","#555"),P("[SMART] ","#14f195"),P("signals:"+sm.signals.length,"#14f195")]});
+sm.signals.slice(0,5).forEach((s,i)=>{L.push({k:"sm"+i,parts:[P(now+" ","#555"),P("[SMART] ","#14f195"),P("  wallet:","#555"),P((s.wallet||s.ca||"???").slice(0,8)+"…","#888"),SP,P("type:"+(s.type||s.action||"signal"),"#14f195")]})})}
+/* ── ARTWORK ── */
+if(aw){L.push({k:"art",parts:[P(now+" ","#555"),P("[ART]   ","#f472b6"),P("scanned:"+(aw.scanned||0),"#f472b6")]})}
+/* ── SURVIVOR ── */
+if(sv){L.push({k:"surv",parts:[P(now+" ","#555"),P("[SURV]  ","#a78bfa"),P("matched:"+(sv.matched||0),"#a78bfa")]})}
+/* ── PATTERNS ── */
+if(cp?.total>0){L.push({k:"cpat",parts:[P(now+" ","#555"),P("[PATRN] ","#f97316"),P("total:"+(cp.total||0),"#f97316")]});
+(cp.recentCharts||[]).slice(0,8).forEach((c,i)=>{L.push({k:"cp"+i,parts:[P(now+" ","#555"),P("[PATRN] ","#f97316"),P("  "+(c.name||(c.ca||"").slice(0,8)),"#888"),P(" → ","#333"),P(c.pattern||"unknown","#f97316")]})})}
+/* ── GRAD WATCH ── */
+if(gw?.count>0){L.push({k:"gw",parts:[P(now+" ","#555"),P("[GRAD]  ","#eab308"),P("tracking:"+(gw.count||0),"#eab308")]});
+(gw.tokens||[]).forEach((g,i)=>{const gc=g.changePct>=0?"#22c55e":"#ef4444";L.push({k:"gw"+i,ca:g.ca,parts:[P(now+" ","#555"),P("[GRAD]  ","#eab308"),P("  "+(g.name||(g.ca||"").slice(0,6)),"#e5e5e5"),SP,P("mc:$"+fm(g.currentMcap||0),"#888"),SP,P((g.changePct>=0?"+":"")+g.changePct+"%",gc),SP,P("age:"+g.age+"h","#555"),
+...(g.peakMultiple>2?[SP,P(g.peakMultiple+"x peak","#eab308")]:[])]})})}
+/* ── AUTO TRADE ── */
+if(at?.active){L.push({k:"at",parts:[P(now+" ","#555"),P("[AUTO]  ","#22c55e"),P("ACTIVE","#22c55e"),SP,P("positions:"+(at.positions?.length||0),"#888"),SP,P("sol/trade:"+(at.settings?.solPerTrade||"?"),"#eab308"),SP,P("min_score:"+(at.settings?.minScore||"?"),"#888")]});
+(at.positions||[]).forEach((p,i)=>{const pc=p.changePct>=0?"#22c55e":"#ef4444";L.push({k:"atp"+i,ca:p.ca,parts:[P(now+" ","#555"),P("[POS]   ","#22c55e"),P("  "+(p.name||(p.ca||"").slice(0,8)),"#e5e5e5"),SP,P("entry:"+p.entrySol+"SOL","#888"),SP,P((p.changePct>=0?"+":"")+((p.changePct||0).toFixed(1))+"%",pc),SP,P("score:"+(p.liveScore||p.entryScore||"?"),"#06b6d4"),SP,P("trend:"+(p.scoreTrend||"—"),"#888")]})});
+(at.recentlyClosed||[]).slice(0,10).forEach((c,i)=>{const cc=c.pnlSol>=0?"#22c55e":"#ef4444";L.push({k:"atc"+i,ca:c.ca,parts:[P(now+" ","#555"),P("[EXIT]  ",cc),P("  "+(c.name||(c.ca||"").slice(0,8)),"#888"),SP,P((c.pnlSol>=0?"+":"")+((c.pnlSol||0).toFixed(4))+"SOL",cc),SP,P(((c.pnlPct||0).toFixed(1))+"%",cc),SP,P("reason:"+(c.exitReason||"—"),"#888")]})})}
+if(at?.learner?.totalTrades>0){const lr=at.learner;L.push({k:"lrn",parts:[P(now+" ","#555"),P("[LEARN] ","#60a5fa"),P("trades:"+lr.totalTrades,"#888"),SP,P("winRate:"+(lr.winRate||"—"),"#22c55e"),SP,P("avgWin:"+(lr.avgWin||"—")+"%","#22c55e"),SP,P("avgLoss:"+(lr.avgLoss||"—")+"%","#ef4444"),SP,P("bestBucket:"+(lr.bestScoreBucket||"—"),"#a78bfa")]})}
+if(at?.pipeline?.cycles){L.push({k:"pipe",parts:[P(now+" ","#555"),P("[PIPE]  ","#06b6d4"),P("cycles:"+at.pipeline.cycles,"#888"),
+...(at.pipeline.last?[SP,P("last:"+(at.pipeline.last.ca||"").slice(0,8),"#888"),SP,P("signal:"+(at.pipeline.last.signal||"—"),"#06b6d4")]:[])]})}
+/* ── DYNAMICS ── */
+if(es.dynamics){const dy=es.dynamics;const tr=dy.trends||{};L.push({k:"dyn",parts:[P(now+" ","#555"),P("[DYN]   ","#06b6d4"),P("tracked:"+(dy.tracked||0),"#888"),SP,P("building:"+(tr.building||0),"#22c55e"),SP,P("rising:"+(tr.rising||0),"#22c55e"),SP,P("fading:"+(tr.fading||0),"#eab308"),SP,P("crashing:"+(tr.crashing||0),"#ef4444")]})}
+/* ── ALL SCORING EVENTS ── */
+if(events.length>0)L.push({k:"evhdr",parts:[P(now+" ","#555"),P("[SCORE] ","#06b6d4"),P("--- recent scoring events ("+events.length+") ---","#444")]});
+events.forEach((e,i)=>{const d=e.data||{};const ts=_ts(e.time);const ca=d.ca||"";const caS=ca.slice(0,8);const name=(d.name||"").slice(0,14);const score=d.score||0;const bp=d.bondProb||0;const mcap=d.mcap||0;const mcS=mcap>=1e6?(mcap/1e6).toFixed(1)+"M":mcap>=1e3?(mcap/1e3).toFixed(1)+"K":mcap>0?String(mcap):"0";const rs=d.rugScore||0;const rf=d.rugFlags||[];const isRug=rs>50||rf.length>=2;const isLrn=e.type==="learn";
+if(isLrn){L.push({k:"ev"+i,ca,parts:[P(ts+" ","#555"),P("[LEARN] ","#60a5fa"),P(caS+"…","#666"),P(" err:","#555"),P((d.error!=null)?d.error.toFixed(4):"—","#888"),SP,P("acc:"+(d.accuracy||"—"),"#22c55e"),SP,P("model_v"+(d.trainCount||"?"),"#555")]})}else{
+const tag=isRug?"[RUG]   ":"[SCORE] ";const tc=isRug?"#ef4444":"#06b6d4";const sc2=score>=50?"#22c55e":score>=25?"#eab308":"#666";
+L.push({k:"ev"+i,ca,parts:[P(ts+" ","#555"),P(tag,tc),
+P(name||caS,name?"#e5e5e5":"#666"),P(name?" "+caS+"…":"","#444"),
+P(" score:","#555"),P(String(score),sc2),SP,P("bond:"+bp+"%",bp>=100?"#22c55e":"#eab308"),SP,P("mc:$"+mcS,"#888"),
+...(d.meta?[SP,P("meta:"+d.meta.slice(0,20),"#a78bfa")]:[]),
+...(d.lora?[SP,P("lora:blend","#c084fc")]:[]),
+...(d.dexBoosted?[SP,P("DEX_PAID","#ffd600")]:[]),
+...(isRug?[SP,P("rug_score:"+rs,"#ef4444"),SP,P("flags:["+rf.join(",")+"]","#ef4444")]:[]),
+...(score>=50&&!isRug?[P(" → ","#333"),P("SIGNAL","#22c55e")]:isRug?[P(" → ","#333"),P("REJECT","#ef4444")]:[])
 ]})}});
-if(fl.totalBuys>0&&lines.length>0){const now=new Date();const nts=String(now.getHours()).padStart(2,"0")+":"+String(now.getMinutes()).padStart(2,"0")+":"+String(now.getSeconds()).padStart(2,"0")+".000";
-lines.unshift({i:-1,fca:"",parts:[
-{t:nts+" ",c:"#555"},{t:"[FLOW]  ",c:"#eab308"},
-{t:"buys:"+fl.totalBuys,c:"#22c55e"},{t:" | ",c:"#333"},
-{t:"sells:"+fl.totalSells,c:"#ef4444"},{t:" | ",c:"#333"},
-{t:"vol:"+(fl.totalVol||0).toFixed(1)+"SOL",c:"#eab308"},{t:" | ",c:"#333"},
-{t:"pool:"+pl.total+" active:"+pl.active+" grad:"+pl.graduated,c:"#888"}
-]});
-if(fh.socialSignals>0||fh.rugRisk>0)lines.splice(1,0,{i:-2,fca:"",parts:[
-{t:nts+" ",c:"#555"},{t:"[HEAT]  ",c:"#f97316"},
-{t:"social:"+Math.round((fh.socialSignals||0)*100)+"%",c:fh.socialSignals>.3?"#22c55e":"#888"},{t:" | ",c:"#333"},
-{t:"rug_risk:"+Math.round((fh.rugRisk||0)*100)+"%",c:fh.rugRisk>.3?"#ef4444":"#888"}
-]})}
-return lines.map(l=><div key={l.i} onClick={()=>{if(l.fca?.length>=20){sTab("radar");sRS(l.fca);sRExp(l.fca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{padding:"0 12px",cursor:l.fca?"pointer":"default",fontFamily:"'SF Mono',Menlo,monospace",fontSize:mb?8.5:11,lineHeight:mb?"17px":"20px",whiteSpace:"nowrap",borderLeft:"2px solid transparent"}} onMouseEnter={ev=>{if(l.fca)ev.currentTarget.style.background="#ffffff06";ev.currentTarget.style.borderLeftColor=l.fca?"#333":"transparent"}} onMouseLeave={ev=>{ev.currentTarget.style.background="transparent";ev.currentTarget.style.borderLeftColor="transparent"}}>
+/* ── RADAR TOKENS — every token currently tracked ── */
+const radarT=allT.filter(t=>t.ca);
+if(radarT.length>0)L.push({k:"rthdr",parts:[P(now+" ","#555"),P("[RADAR] ","#22c55e"),P("--- live tokens ("+radarT.length+") ---","#444")]});
+radarT.forEach((t,i)=>{const bpW=Math.round((t.buyPressure||0)*100);const mc=t.mcapUsd||t.mcapSol*140||0;const mcS=mc>=1e6?(mc/1e6).toFixed(1)+"M":mc>=1e3?(mc/1e3).toFixed(1)+"K":mc>0?String(Math.round(mc)):"0";const sColor=(t.score||0)>=50?"#22c55e":(t.score||0)>=25?"#eab308":"#666";const isH=held.has(t.ca);
+L.push({k:"rt"+i,ca:t.ca,parts:[P(now+" ","#555"),P("[RADAR] ","#22c55e"),
+P((t.name||t.ticker||t.ca.slice(0,8)).slice(0,14),"#e5e5e5"),P(" "+t.ca.slice(0,6)+"…","#444"),
+P(" score:","#555"),P(String(t.score||0),sColor),SP,
+P("bp:"+bpW+"%",bpW>=70?"#22c55e":bpW>=50?"#eab308":"#ef4444"),SP,
+P("mc:$"+mcS,"#888"),
+...(t.h1Change!=null?[SP,P("1h:"+(t.h1Change>0?"+":"")+t.h1Change.toFixed(1)+"%",t.h1Change>0?"#22c55e":"#ef4444")]:[]),
+...(t.entrySignal?[SP,P("signal:"+t.entrySignal,t.entrySignal==="STRONG"||t.entrySignal==="READY"?"#22c55e":"#eab308")]:[]),
+...(t.scoreTrend?[SP,P("trend:"+t.scoreTrend,t.scoreTrend==="rocket"||t.scoreTrend==="rising"?"#22c55e":"#ef4444")]:[]),
+...(t.twitter?[SP,P("tw:yes","#06b6d4")]:[]),
+...(t.graduated?[SP,P("GRADUATED","#eab308")]:[]),
+...(isH?[SP,P("HELD","#22c55e")]:[])
+]})});
+/* ── LINE COUNT ── */
+L.push({k:"end",parts:[P(now+" ","#555"),P("[SYS]   ","#555"),P(L.length+" lines | poll:8s | ws:live","#444")]});
+if(!L.length)return<div style={{padding:16,fontFamily:"'SF Mono',Menlo,monospace",fontSize:10,color:"#555"}}>connecting...</div>;
+return L.map(l=><div key={l.k} onClick={()=>{const c=l.ca;if(c?.length>=20){sTab("radar");sRS(c);sRExp(c);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{padding:"0 12px",cursor:l.ca?"pointer":"default",fontFamily:"'SF Mono',Menlo,monospace",fontSize:mb?8:10.5,lineHeight:mb?"15px":"19px",whiteSpace:"nowrap",borderLeft:"2px solid transparent"}} onMouseEnter={ev=>{ev.currentTarget.style.background="#ffffff06";if(l.ca)ev.currentTarget.style.borderLeftColor="#333"}} onMouseLeave={ev=>{ev.currentTarget.style.background="transparent";ev.currentTarget.style.borderLeftColor="transparent"}}>
 {l.parts.map((p,pi)=>p.t?<span key={pi} style={{color:p.c}}>{p.t}</span>:null)}
 </div>)})()}
 </div>
