@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 100" fill="none">
+  <!-- Nosana wave mark -->
+  <path d="M10 90 L30 10 C34 -2 40 -2 44 10 L56 90 C60 102 66 102 70 90 L90 10" stroke="#10E80C" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- NOSANA wordmark in Space Grotesk style -->
+  <text x="115" y="72" font-family="'Space Grotesk', sans-serif" font-weight="700" font-size="52" fill="#141414" letter-spacing="3">NOSANA</text>
+</svg>
