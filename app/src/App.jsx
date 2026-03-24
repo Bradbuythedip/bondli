@@ -1467,35 +1467,32 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 {/* ═══ TOP SIGNALS + LIVE RADAR PULSE (above Oracle) ═══ */}
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:4,marginBottom:6}}>
 
-{/* Raw Pipeline — live data streams before Cortex */}
-<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:10,display:"flex",flexDirection:"column",maxHeight:320}}>
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-<div style={{display:"flex",alignItems:"center",gap:5}}><span style={{fontSize:13,fontWeight:800,color:T.tx}}>Raw Pipeline</span><span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/></div>
-<span style={{fontSize:8,color:T.ft,fontFamily:"monospace"}}>pre-cortex</span>
+{/* Live Stream — Railway-style event log from all data centers */}
+<div style={{background:"#0a0a0f",border:"1px solid "+T.bd,borderRadius:6,padding:0,display:"flex",flexDirection:"column",maxHeight:320,overflow:"hidden"}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px 6px",borderBottom:"1px solid "+T.bd,background:"#0d0d14"}}>
+<div style={{display:"flex",alignItems:"center",gap:5}}><span style={{width:6,height:6,borderRadius:"50%",background:T.gn,boxShadow:"0 0 8px "+T.gn+"88",animation:"gp 1.5s infinite"}}/><span style={{fontSize:11,fontWeight:800,color:T.tx,fontFamily:"monospace",letterSpacing:".5px"}}>event-stream</span></div>
+<div style={{display:"flex",alignItems:"center",gap:6}}><span style={{fontSize:8,color:T.ft,fontFamily:"monospace"}}>{(intelData?.recentEvents||[]).length} events</span><span style={{fontSize:8,color:T.gn,fontFamily:"monospace"}}>ws:live</span></div>
 </div>
-{(()=>{const es=engineState||{};const fl=es.flow||{};const pl=es.pool||{};const fh=es.featureHeat||{};const dec=es.decisions||{};const mods=es.modules||[];const modUp=id=>{const m=mods.find(x=>x.id===id);return m?.status==="active"};
-const streams=[
-{label:"PumpPortal",sub:"WS",c:T.cy,up:modUp("pumpportal"),rows:[{k:"pools 5m",v:pl.recent5m||0},{k:"total",v:pl.total||0},{k:"active",v:pl.active||0},{k:"graduated",v:pl.graduated||0}]},
-{label:"Flow",sub:"TXN",c:T.gn,up:true,rows:[{k:"buys",v:fl.totalBuys||0,c:T.gn},{k:"sells",v:fl.totalSells||0,c:T.rd},{k:"vol",v:(fl.totalVol||0).toFixed(1)+" SOL",c:T.yl},{k:"ext buyers",v:fl.externalBuyers||0}]},
-{label:"Scanner",sub:"FILTER",c:T.pu,up:modUp("scorer"),rows:[{k:"active",v:pl.active||0},{k:"scored",v:(dec.ape||0)+(dec.watch||0)+(dec.skip||0)+(dec.rug||0)},{k:"pass rate",v:pl.active>0?Math.round(((dec.ape||0)+(dec.watch||0))/Math.max(1,(dec.ape||0)+(dec.watch||0)+(dec.skip||0)+(dec.rug||0))*100)+"%":"—"}]},
-{label:"Scorer",sub:"ML",c:T.pu,up:modUp("scorer"),rows:[{k:"features",v:"40+",c:T.pu},{k:"accuracy",v:intelData?.scorer?.accuracy||"—",c:T.gn},{k:"trained",v:intelData?.scorer?.trainCount||0}]},
-{label:"Smart $",sub:"WALLETS",c:"#14F195",up:(intelData?.smartMoney?.signals?.length||0)>0,rows:[{k:"signals",v:intelData?.smartMoney?.signals?.length||0,c:"#14F195"}]},
-{label:"Social",sub:"SIGNALS",c:T.or,up:(fh.socialSignals||0)>.05,rows:[{k:"strength",v:fh.socialSignals?Math.round(fh.socialSignals*100)+"%":"0%",c:T.or}]},
-{label:"Artwork",sub:"FORENSIC",c:"#F472B6",up:modUp("artwork_scanner"),rows:[{k:"scanned",v:intelData?.artwork?.scanned||0,c:"#F472B6"}]},
-{label:"Rug Detect",sub:"SAFETY",c:T.rd,up:modUp("rug_detector"),rows:[{k:"flagged",v:dec.rug||0,c:T.rd},{k:"risk heat",v:fh.rugRisk?Math.round(fh.rugRisk*100)+"%":"0%",c:fh.rugRisk>.3?T.rd:T.ft}]},
-];
-return<div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:3}}>
-{streams.map((s,si)=><div key={si} style={{display:"flex",alignItems:"flex-start",gap:6,padding:"5px 4px",borderRadius:4,background:s.up?s.c+"06":"transparent",borderBottom:"1px solid "+T.bd+"33"}}>
-<div style={{minWidth:mb?60:72,flexShrink:0}}>
-<div style={{display:"flex",alignItems:"center",gap:3}}><span style={{width:4,height:4,borderRadius:"50%",background:s.up?T.gn:T.ft+"66",boxShadow:s.up?"0 0 4px "+T.gn:""}}/>
-<span style={{fontSize:10,fontWeight:800,color:s.up?s.c:T.ft}}>{s.label}</span></div>
-<span style={{fontSize:7,color:T.ft,fontFamily:"monospace",marginLeft:7}}>{s.sub}</span>
+<div style={{flex:1,overflowY:"auto",padding:"4px 0",fontFamily:"monospace",fontSize:mb?8:10,lineHeight:mb?"16px":"18px"}}>
+{(()=>{const events=intelData?.recentEvents||[];if(!events.length)return<div style={{padding:20,textAlign:"center",fontSize:10,color:T.ft}}>awaiting events...</div>;
+return events.slice(0,20).map((e,i)=>{const d=e.data||{};const age=e.time?Math.round((Date.now()-e.time)/1000):0;const ts=age<60?age+"s":Math.round(age/60)+"m";const score=d.score||0;const bp=d.bondProb||0;const rugScore=d.rugScore||0;const rugFlags=d.rugFlags||[];const isRug=rugScore>50||rugFlags.length>=2;const name=(d.name||d.ca?.slice(0,8)||"???").slice(0,12);const ca=d.ca?.slice(0,6)||"";const mcap=d.mcap||0;const mcS=mcap>=1000?"$"+(mcap/1000).toFixed(1)+"K":mcap>0?"$"+mcap:"";const isLearn=e.type==="learn";const decision=isRug?"RUG":score>=50?"APE":score>=25?"WATCH":"SKIP";const dc=isRug?"#ff1744":score>=50?T.gn:score>=25?T.yl:T.ft;
+return<div key={(d.ca||"")+i} onClick={()=>{const fca=d.ca||"";if(fca.length>=20){sTab("radar");sRS(fca);sRExp(fca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",padding:"1px 10px",cursor:"pointer",background:i===0?"#ffffff04":"transparent",borderLeft:i===0?"2px solid "+dc:"2px solid transparent"}} onMouseEnter={ev=>ev.currentTarget.style.background="#ffffff08"} onMouseLeave={ev=>ev.currentTarget.style.background=i===0?"#ffffff04":"transparent"}>
+<span style={{color:T.ft+"88",minWidth:mb?24:28,flexShrink:0}}>{ts}</span>
+<span style={{color:isLearn?"#60A5FA":T.cy,minWidth:mb?36:44,flexShrink:0}}>{isLearn?"LEARN":"SCORE"}</span>
+<span style={{color:dc,minWidth:mb?30:38,flexShrink:0,fontWeight:700}}>{isLearn?(d.accuracy||"—"):decision}</span>
+<span style={{color:T.dm,minWidth:mb?50:70,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{name}</span>
+<span style={{color:T.ft+"88",minWidth:mb?36:44,flexShrink:0}}>{ca}…</span>
+{!isLearn&&<><span style={{color:dc,minWidth:28,flexShrink:0,textAlign:"right",fontWeight:700}}>{score}</span>
+<span style={{color:T.ft+"66",minWidth:6,flexShrink:0,textAlign:"center"}}>│</span>
+<span style={{color:bp>=100?T.gn:T.yl,minWidth:28,flexShrink:0}}>{bp}%</span>
+{mcS&&<span style={{color:T.dm,minWidth:40,flexShrink:0}}>{mcS}</span>}
+{isRug&&<span style={{color:"#ff1744"}}> ⚠{rugFlags.length}f</span>}
+{d.lora&&<span style={{color:T.pu}}> LoRA</span>}</>}
+{isLearn&&<><span style={{color:T.ft,flexShrink:0}}>err:{d.error?.toFixed(3)||"—"}</span>
+<span style={{color:T.ft+"66",minWidth:6,flexShrink:0,textAlign:"center"}}>│</span>
+<span style={{color:T.gn}}>acc:{d.accuracy||"—"}</span></>}
+</div>})})()}
 </div>
-<div style={{flex:1,display:"flex",flexWrap:"wrap",gap:"2px 8px"}}>
-{s.rows.map((r,ri)=><span key={ri} style={{fontSize:9,fontFamily:"monospace",color:T.ft,whiteSpace:"nowrap"}}><span style={{color:T.dm}}>{r.k}</span> <span style={{fontWeight:800,color:r.c||T.tx}}>{r.v}</span></span>)}
-</div>
-</div>)}
-</div>})()}
 </div>
 
 {/* Live Radar Pulse — enhanced activity visualization */}
