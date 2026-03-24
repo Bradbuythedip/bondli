@@ -684,7 +684,7 @@ const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");co
 const[vipDash,sVipDash]=useState(null);const[vipCustomCode,sVipCustomCode]=useState("");const[vipClaiming,sVipClaiming]=useState(false);const[demoProfits,sDemoProfits]=useState(null);const[demoLoading,sDemoLoading]=useState(false);
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);const[showModel,sShowModel]=useState(false);const[launchTarget,sLTarget]=useState("pump"); // "pump" | "bags"
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
-const[intelData,sIntel]=useState(null);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);
+const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);
 // GPU Earn tab state
 const[gpuDash,sGpuDash]=useState(null);const[gpuFleet,sGpuFleet]=useState(null);const[gpuLoading,sGpuLoading]=useState(false);const[gpuRegWallet,sGpuRegWallet]=useState("");
 const[gpuCmdLoading,sGpuCmdLoading]=useState(false);const[gpuLogs,sGpuLogs]=useState(null);const[gpuShowLogs,sGpuShowLogs]=useState(false);const[gpuShowDetails,sGpuShowDetails]=useState(false);
@@ -719,7 +719,7 @@ const connect=async()=>{try{const p=window?.phantom?.solana?.isPhantom?window.ph
 useEffect(()=>{if(user?.pubkey)a.sw(user.pubkey)},[user?.pubkey]);
 useEffect(()=>{if(user?.pubkey&&!user?.demo)a.afr(user.pubkey).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{const p=window?.phantom?.solana||window?.solana;if(p?.isPhantom&&p?.isConnected&&!user){p.connect({onlyIfTrusted:true}).then(r=>{const pk=r.publicKey.toString();resolveWallet(pk)}).catch(()=>{})}},[]);
-useEffect(()=>{if(!hasAccess)return;let ws,dead=false;const conn=()=>{if(dead)return;try{ws=new WebSocket(WS_URL);ws.onopen=()=>sWs(true);ws.onmessage=(e)=>{try{const msg=JSON.parse(e.data);if(msg.event==="mcap-update"&&msg.data){const{ca,mcap,mcapSol}=msg.data;sRT(prev=>{const update=tab=>[...tab].map(t=>t.ca===ca?{...t,mcapUsd:mcap,mcapSol:mcapSol||t.mcapSol}:t);return{new:update(prev.new||[]),momentum:update(prev.momentum||[])}})}}catch{}};ws.onclose=()=>{sWs(false);if(!dead)setTimeout(conn,3000)};ws.onerror=()=>{}}catch{}};conn();return()=>{dead=true;if(ws)ws.close()}},[hasAccess]);
+useEffect(()=>{if(!hasAccess)return;let ws,dead=false;const conn=()=>{if(dead)return;try{ws=new WebSocket(WS_URL);ws.onopen=()=>{sWs(true);sWsLog(p=>[{ev:"connected",ts:Date.now()},...p].slice(0,500))};ws.onmessage=(e)=>{try{const msg=JSON.parse(e.data);if(msg.event==="mcap-update"&&msg.data){const{ca,mcap,mcapSol}=msg.data;sRT(prev=>{const update=tab=>[...tab].map(t=>t.ca===ca?{...t,mcapUsd:mcap,mcapSol:mcapSol||t.mcapSol}:t);return{new:update(prev.new||[]),momentum:update(prev.momentum||[])}})}if(msg.event){sWsLog(p=>[{ev:msg.event,d:msg.data||{},ts:msg.ts||Date.now()},...p].slice(0,500))}}catch{}};ws.onclose=()=>{sWs(false);sWsLog(p=>[{ev:"disconnected",ts:Date.now()},...p].slice(0,500));if(!dead)setTimeout(conn,3000)};ws.onerror=()=>{}}catch{}};conn();return()=>{dead=true;if(ws)ws.close()}},[hasAccess]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.ls(user.pubkey).then(d=>{if(d.sessions)sPS(d.sessions.filter(s=>s.tokenCA&&s.status!=="closed"&&s.status!=="swept"&&s.status!=="recovered").slice(0,8))}).catch(()=>{})},[user?.pubkey]);
 const refreshWallet=useCallback(()=>{if(!user?.pubkey||user.demo)return;a.gtw(user.pubkey).then(d=>{if(d.tradingWallet){sTrW(d.tradingWallet);sTrB(d.balance||0);sTrSol(d.solBalance||0);sTrTok(d.tokenValueSol||0)}}).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;refreshWallet();const iv=setInterval(refreshWallet,15000);a.etw(user.pubkey).then(d=>{if(d.ok&&d.privateKey)sTrK(d)}).catch(()=>{});return()=>clearInterval(iv)},[user?.pubkey,refreshWallet]);
@@ -1553,8 +1553,26 @@ P("mc:$"+mcS,"#888"),
 ...(t.graduated?[SP,P("GRADUATED","#eab308")]:[]),
 ...(isH?[SP,P("HELD","#22c55e")]:[])
 ]})});
+/* ── WS LIVE STREAM — real-time events, no polling ── */
+if(wsLog.length>0)L.push({k:"wshdr",parts:[P(now+" ","#555"),P("[WS]    ","#22c55e"),P("--- live socket stream ("+wsLog.length+") ---","#444")]});
+wsLog.slice(0,200).forEach((w,i)=>{const ts=_ts(w.ts);const d=w.d||{};const ca=d.ca||"";const evC={"newToken":"#c084fc","trade":"#06b6d4","mcap-update":"#888","graduation":"#eab308","auto-ape":"#22c55e","auto-sell":"#ef4444","auto-exit-sell":"#ef4444","smart_money_signal":"#14f195","high_value_dev":"#f97316","sim-decision":"#a78bfa","auto-paused":"#eab308","settings-updated":"#888","connected":"#22c55e","disconnected":"#ef4444"}[w.ev]||"#666";
+const tag="["+w.ev+"]";const pad=" ".repeat(Math.max(0,16-tag.length));
+const parts=[P(ts+" ","#555"),P(tag+pad,evC)];
+if(w.ev==="newToken"){parts.push(P((d.name||ca.slice(0,8)),"#e5e5e5"),SP,P("mc:$"+fm(d.mcap||0),"#888"));if(d.source)parts.push(SP,P("src:"+d.source,"#06b6d4"))}
+else if(w.ev==="trade"){parts.push(P(d.side||"?",d.side==="buy"?"#22c55e":"#ef4444"),P(" "+(ca.slice(0,8)||""),"#666"),SP,P((d.sol||0)+"SOL","#eab308"),SP,P("mc:$"+fm(d.mcap||0),"#888"));if(d.wallet)parts.push(SP,P("w:"+d.wallet,"#555"))}
+else if(w.ev==="mcap-update"){parts.push(P(ca.slice(0,8),"#666"),SP,P("mc:$"+fm(d.mcap||0),"#888"))}
+else if(w.ev==="graduation"){parts.push(P(ca.slice(0,8),"#eab308"),P(" GRADUATED","#eab308"))}
+else if(w.ev==="auto-ape"){parts.push(P((d.name||ca.slice(0,8)),"#e5e5e5"),SP,P(d.sol+"SOL","#22c55e"),SP,P("score:"+(d.score||"?"),"#22c55e"),SP,P("mc:$"+fm(d.mcap||0),"#888"));if(d.dca)parts.push(SP,P("DCA#"+d.dcaNum,"#06b6d4"));if(d.reentry)parts.push(SP,P("REENTRY","#a78bfa"))}
+else if(w.ev==="auto-sell"||w.ev==="auto-exit-sell"){parts.push(P(ca.slice(0,8),"#666"),SP,P((d.pnl||"?")+"%",parseFloat(d.pnl)>=0?"#22c55e":"#ef4444"),SP,P("tier:"+(d.tier||d.reason||"?"),"#ef4444"));if(d.reason&&d.reason!==d.tier)parts.push(SP,P(d.reason,"#888"))}
+else if(w.ev==="smart_money_signal"){parts.push(P("whale detected","#14f195"));if(ca)parts.push(SP,P(ca.slice(0,8),"#666"))}
+else if(w.ev==="high_value_dev"){parts.push(P("high value dev","#f97316"))}
+else if(w.ev==="sim-decision"){parts.push(P("sim:"+(d.simId||"").slice(0,8),"#a78bfa"))}
+else if(w.ev==="connected"){parts.push(P("websocket connected","#22c55e"))}
+else if(w.ev==="disconnected"){parts.push(P("websocket disconnected","#ef4444"))}
+else{parts.push(P(JSON.stringify(d).slice(0,80),"#555"))}
+L.push({k:"ws"+i,ca,parts})});
 /* ── LINE COUNT ── */
-L.push({k:"end",parts:[P(now+" ","#555"),P("[SYS]   ","#555"),P(L.length+" lines | poll:2s | ws:live","#444")]});
+L.push({k:"end",parts:[P(now+" ","#555"),P("[SYS]   ","#555"),P(L.length+" lines | ws:real-time","#444")]});
 if(!L.length)return<div style={{padding:16,fontFamily:"'SF Mono',Menlo,monospace",fontSize:10,color:"#555"}}>connecting...</div>;
 return L.map(l=><div key={l.k} onClick={()=>{const c=l.ca;if(c?.length>=20){sTab("radar");sRS(c);sRExp(c);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{padding:"0 12px",cursor:l.ca?"pointer":"default",fontFamily:"'SF Mono',Menlo,monospace",fontSize:mb?8:10.5,lineHeight:mb?"15px":"19px",whiteSpace:"nowrap",borderLeft:"2px solid transparent"}} onMouseEnter={ev=>{ev.currentTarget.style.background="#ffffff06";if(l.ca)ev.currentTarget.style.borderLeftColor="#333"}} onMouseLeave={ev=>{ev.currentTarget.style.background="transparent";ev.currentTarget.style.borderLeftColor="transparent"}}>
 {l.parts.map((p,pi)=>p.t?<span key={pi} style={{color:p.c}}>{p.t}</span>:null)}
