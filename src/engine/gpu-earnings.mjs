@@ -357,7 +357,7 @@ export function mountGpuRoutes(app, deps) {
         }
       }
 
-      const isOnline = nodeData.lastHeartbeat && Date.now() - parseInt(nodeData.lastHeartbeat) < 300_000;
+      const isOnline = nodeData.lastHeartbeat && Date.now() - parseInt(nodeData.lastHeartbeat) < 90_000;
       const displayStatus = nodeData.status === "disconnected" ? "disconnected"
         : isOnline ? (nodeData.status || "idle") : "offline";
 
@@ -604,7 +604,7 @@ export function mountGpuRoutes(app, deps) {
           const data = await redis.hGetAll(`bondli:gpu:node:${addr}`);
           const isOnline =
             data.lastHeartbeat &&
-            Date.now() - parseInt(data.lastHeartbeat) < 300_000; // 5 min timeout
+            Date.now() - parseInt(data.lastHeartbeat) < 90_000; // 90s timeout (1.5 heartbeats)
           return {
             nodeId: addr.slice(0, 4) + "..." + addr.slice(-4),
             gpuModel: data.gpuModel,
