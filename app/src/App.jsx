@@ -218,19 +218,13 @@ return<div key={p.ca} style={{marginBottom:posWithScore.length>1?8:0}}>
 // ═══ EXTERNAL CHART — gmgn / dexscreener toggle ═══
 
 function ExternalChart({ca,T,mb}){
-const[src,setSrc]=useState(()=>{try{return localStorage.getItem("bondli_chart_src")||"gmgn"}catch{return"gmgn"}});
-const toggle=(v)=>{setSrc(v);try{localStorage.setItem("bondli_chart_src",v)}catch{}};
 const h=mb?300:420;
-
-const url=src==="gmgn"
-  ?`https://gmgn.ai/sol/token/${ca}`
-  :`https://dexscreener.com/solana/${ca}?embed=1&theme=dark&trades=0&info=0`;
-
+const url=`https://dexscreener.com/solana/${ca}?embed=1&theme=dark&trades=0&info=0`;
 return<div style={{width:"100%",borderRadius:8,overflow:"hidden",background:T.bg,border:"1px solid "+T.bd}}>
 <div style={{display:"flex",alignItems:"center",gap:3,padding:"5px 8px",borderBottom:"1px solid "+T.bd}}>
-  {["gmgn","dexscreener"].map(s=><button key={s} onClick={()=>toggle(s)} style={{fontSize:11,fontWeight:src===s?800:500,color:src===s?T.gn:T.dm,background:src===s?T.gn+"12":"transparent",border:"1px solid "+(src===s?T.gn+"33":T.bd),borderRadius:5,padding:"4px 10px",cursor:"pointer",transition:"all .1s"}}>{s==="gmgn"?"GMGN":"DexScreener"}</button>)}
+  <span style={{fontSize:11,fontWeight:800,color:T.dm,opacity:.5}}>TradingView</span>
   <div style={{flex:1}}/>
-  <a href={src==="gmgn"?`https://gmgn.ai/sol/token/${ca}`:`https://dexscreener.com/solana/${ca}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:10,color:T.dm,textDecoration:"none",opacity:.6}}>open ↗</a>
+  <a href={`https://dexscreener.com/solana/${ca}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:10,color:T.dm,textDecoration:"none",opacity:.6}}>open ↗</a>
 </div>
 <iframe src={url} style={{width:"100%",height:h,border:"none",background:T.bg}} allow="clipboard-write" loading="lazy" title="chart"/>
 </div>}
