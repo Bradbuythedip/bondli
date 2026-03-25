@@ -27,6 +27,9 @@ import SessionStore from "../db/session-store.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
 import { scoreToken } from "../engine/velocity-scorer.mjs";
 
+// Resurgence scanner — older coins having a revival
+import { ResurgenceScanner } from "../engine/resurgence-scanner.mjs";
+
 // Memetic scoring (Alchemy-free — uses PumpPortal data)
 import { MemeticPipeline, scoreMemeticQuick, scoreTokenMemetic, loadBlacklists as loadMemeticBlacklists, startMemeticWorkers } from "../engine/memetic-pipeline.mjs";
 import { scheduleRetraining } from "../scoring/memetic/learning-pipeline.js";
@@ -136,6 +139,7 @@ app.use((req, res, next) => {
 let sessionStore, paymentVerifier, sessionManager, movers;
 let intel, scoreDynamics, artworkScanner, metaTracker;
 let memeticPipeline = null;
+let resurgenceScanner = null;
 const orch = new Orchestrator();
 
 async function initServices() {
@@ -194,7 +198,10 @@ async function initServices() {
     }
   }, 5 * 60 * 1000);
 
-  console.log("[INIT] All services ready (intel + artwork scanner active)");
+  // Resurgence scanner — older coins with renewed momentum
+  resurgenceScanner = new ResurgenceScanner({ redis, smartMoneyTracker: orch.smartMoneyTracker || null });
+
+  console.log("[INIT] All services ready (intel + artwork scanner + resurgence scanner active)");
 }
 
 // Simple wallet auth — checks X-Wallet header + tier access
@@ -1782,6 +1789,31 @@ app.post("/api/memetic/retrain", async (req, res) => {
     const { runRetraining } = await import("../scoring/memetic/learning-pipeline.js");
     const result = await runRetraining();
     res.json(result || { message: "Not enough data" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════
+// ROUTES: RESURGENCE — Older Coins Having a Revival (12h to 2y)
+// ═══════════════════════════════════════
+app.get("/api/resurgence", apiLimiter, async (req, res) => {
+  try {
+    if (!resurgenceScanner) return res.json({ tokens: [], error: "Scanner not initialized" });
+    const result = await resurgenceScanner.scan();
+    res.json(result);
+  } catch (e) {
+    console.error("[RESURGENCE] Scan error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/resurgence/score/:ca", apiLimiter, async (req, res) => {
+  try {
+    if (!resurgenceScanner) return res.status(503).json({ error: "Scanner not initialized" });
+    const result = await resurgenceScanner.scoreToken(req.params.ca);
+    if (!result) return res.status(404).json({ error: "Token not found or out of age range" });
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

@@ -549,6 +549,153 @@ function GradPanel({ grads, onSelect, onBuy, user, tradingBalance, buying }) {
   );
 }
 
+// ═══ RESURGENCE SIGNAL COLORS ═══
+const RESURG_SIGNAL_COLORS = {
+  STRONG_RESURGENCE: "#00e676",
+  RESURGENCE: "#ffd600",
+  WATCH: "#ff9100",
+  WEAK: "#5c5c7a",
+};
+
+const RESURG_TYPE_LABELS = {
+  smart_money_accumulation: "Smart Money",
+  community_revival: "Community Revival",
+  volume_breakout: "Volume Breakout",
+  social_resurgence: "Social Resurgence",
+  general: "General",
+};
+
+const RESURG_TYPE_COLORS = {
+  smart_money_accumulation: "#b388ff",
+  community_revival: "#18ffff",
+  volume_breakout: "#ff9100",
+  social_resurgence: "#ffd600",
+  general: "#5c5c7a",
+};
+
+// ═══ RESURGENCE PANEL — Older coins having a revival ═══
+function ResurgencePanel({ tokens, onSelect, onBuy, user, tradingBalance, buying, apiBase }) {
+  if (!tokens || tokens.length === 0) return (
+    <div style={{ padding: 30, textAlign: "center", color: C.dm, fontSize: 11 }}>
+      <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 6, color: C.tx }}>RESURGENCE SCANNER</div>
+      <div>Scanning for older coins (12h–2y) with renewed momentum...</div>
+      <div style={{ marginTop: 8, fontSize: 10, color: C.ft }}>Looking for: smart money inflow, community growth, social revival</div>
+    </div>
+  );
+
+  const API = apiBase;
+
+  const fmtMcap = (v) => {
+    if (!v) return "—";
+    if (v >= 1e6) return "$" + (v / 1e6).toFixed(2) + "M";
+    if (v >= 1e3) return "$" + (v / 1e3).toFixed(1) + "K";
+    return "$" + v.toFixed(0);
+  };
+
+  const fmtAgeLabel = (ageMs) => {
+    if (!ageMs) return "?";
+    const h = ageMs / 3600000;
+    if (h < 24) return Math.round(h) + "h";
+    const d = h / 24;
+    if (d < 30) return Math.round(d) + "d";
+    const mo = d / 30;
+    if (mo < 12) return mo.toFixed(1) + "mo";
+    return (d / 365).toFixed(1) + "y";
+  };
+
+  return (
+    <div style={{ overflowY: "auto", maxHeight: "100%", scrollbarWidth: "thin" }}>
+      <div style={{ padding: "6px 10px", fontSize: 9, color: C.ft, borderBottom: `1px solid ${C.bd}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span>OLDER COINS RESURGENCE — smart money · community · social signals</span>
+        <span>{tokens.filter(t => t.signal === "STRONG_RESURGENCE" || t.signal === "RESURGENCE").length} active</span>
+      </div>
+
+      {tokens.map(t => {
+        const signalColor = RESURG_SIGNAL_COLORS[t.signal] || C.dm;
+        const typeColor = RESURG_TYPE_COLORS[t.resurgenceType] || C.dm;
+        const typeLabel = RESURG_TYPE_LABELS[t.resurgenceType] || t.resurgenceType;
+        const isUp1h = (t.change1h || 0) > 0;
+        const isUp24h = (t.change24h || 0) > 0;
+        const f = t.features || {};
+
+        return (
+          <div key={t.ca} style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "8px 10px",
+            borderBottom: `1px solid ${C.bd}`, cursor: "pointer",
+            transition: "background 0.15s",
+          }} onClick={() => onSelect(t)}
+            onMouseEnter={e => e.currentTarget.style.background = C.sf}
+            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+          >
+            {/* Image */}
+            <div style={{ width: 36, height: 36, borderRadius: 6, overflow: "hidden", flexShrink: 0, background: C.bg, border: `1px solid ${C.bd}` }}>
+              {t.image ? <img src={radarImgProxy(t.image, API)} alt="" style={{ width: 36, height: 36, objectFit: "cover", filter: "blur(12px)", opacity: 0.6, transform: "scale(1.1)", transition: "filter .4s ease, opacity .4s ease, transform .4s ease" }} onLoad={e => { e.target.style.filter = "blur(0)"; e.target.style.opacity = "1"; e.target.style.transform = "scale(1)"; }} onError={e => e.target.style.display = "none"} /> : <div style={{ width: 36, height: 36, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, fontWeight: 900, color: C.ft + "44" }}>{(t.ticker || t.name || "?")[0]}</div>}
+            </div>
+
+            {/* Name + Tags */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 12, fontWeight: 800, color: C.tx, fontFamily: M }}>{t.ticker || t.name}</span>
+                <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: signalColor + "15", color: signalColor, fontWeight: 700 }}>{t.signal?.replace(/_/g, " ")}</span>
+                <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: typeColor + "12", color: typeColor, fontWeight: 700 }}>{typeLabel}</span>
+              </div>
+              <div style={{ fontSize: 9, color: C.ft, marginTop: 2, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <span>{fmtAgeLabel(t.ageMs)} old</span>
+                <span style={{ color: C.dm }}>·</span>
+                <span>{fmtMcap(t.mcapUsd)}</span>
+                {f.smartMoneyWallets > 0 && <><span style={{ color: C.dm }}>·</span><span style={{ color: C.pu, fontWeight: 700 }}>{f.smartMoneyWallets} smart wallet{f.smartMoneyWallets > 1 ? "s" : ""}</span></>}
+                {f.smartMoneyConvergence && <span style={{ color: C.pu, fontWeight: 800 }}>CONVERGE</span>}
+              </div>
+
+              {/* Feature mini-bars */}
+              <div style={{ display: "flex", gap: 3, marginTop: 3 }}>
+                {[
+                  { label: "SM", value: f.smartMoney || 0, color: "#b388ff" },
+                  { label: "COM", value: f.communityGrowth || 0, color: "#18ffff" },
+                  { label: "SOC", value: f.socialRevival || 0, color: "#ffd600" },
+                  { label: "VOL", value: f.volumeSpike || 0, color: "#ff9100" },
+                  { label: "REV", value: f.priceReversal || 0, color: "#00e676" },
+                ].map(bar => (
+                  <div key={bar.label} style={{ flex: 1 }} title={`${bar.label}: ${(bar.value * 100).toFixed(0)}%`}>
+                    <div style={{ fontSize: 7, color: C.ft, textAlign: "center", marginBottom: 1 }}>{bar.label}</div>
+                    <div style={{ height: 2, borderRadius: 1, background: C.bd }}>
+                      <div style={{ height: 2, borderRadius: 1, background: bar.color, width: (bar.value * 100) + "%", transition: "width 0.5s" }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Price + Score */}
+            <div style={{ textAlign: "right", flexShrink: 0, minWidth: 60 }}>
+              <div style={{ fontSize: 16, fontWeight: 900, color: signalColor, fontFamily: M }}>{((t.resurgenceScore || 0) * 100).toFixed(0)}</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: isUp1h ? C.gn : C.rd, fontFamily: M }}>
+                {isUp1h ? "+" : ""}{(t.change1h || 0).toFixed(1)}% <span style={{ fontSize: 8, color: C.ft }}>1h</span>
+              </div>
+              <div style={{ fontSize: 9, color: isUp24h ? C.gn : C.rd, fontFamily: M }}>
+                {isUp24h ? "+" : ""}{(t.change24h || 0).toFixed(1)}% <span style={{ fontSize: 8, color: C.ft }}>24h</span>
+              </div>
+            </div>
+
+            {/* Quick buy button */}
+            <button
+              onClick={(e) => { e.stopPropagation(); if (onBuy && user && !user.demo) onBuy(t.ca, 0.1); }}
+              disabled={!user || user.demo || buying}
+              style={{
+                padding: "5px 8px", borderRadius: 5, border: "none", fontSize: 10, fontWeight: 800,
+                background: user && !user.demo ? `linear-gradient(135deg, ${C.gn}cc, ${C.gn}66)` : C.ft + "22",
+                color: user && !user.demo ? "#000" : C.ft,
+                cursor: user && !user.demo && !buying ? "pointer" : "not-allowed",
+                fontFamily: M, flexShrink: 0, whiteSpace: "nowrap",
+              }}
+            >BUY</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ═══ MAIN COMPONENT ═══
 export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBalance, solPrice, held }) {
   const API = apiBase || "https://bondli-production.up.railway.app";
@@ -557,9 +704,11 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
   const [trends, setTrends] = useState([]);
   const [fleet, setFleet] = useState({});
   const [heatLevel, setHeatLevel] = useState(0.3);
-  const [view, setView] = useState("radar"); // "radar", "list", or "grads"
+  const [view, setView] = useState("radar"); // "radar", "list", "grads", or "resurgence"
   const [grads, setGrads] = useState([]);
   const [gradBuying, setGradBuying] = useState(false);
+  const [resurgenceTokens, setResurgenceTokens] = useState([]);
+  const [resurgenceBuying, setResurgenceBuying] = useState(false);
   const [platformStats, setPlatformStats] = useState(null);
   const [now, setNow] = useState(Date.now());
   const wsRef = useRef(null);
@@ -638,6 +787,20 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
     return () => clearInterval(iv);
   }, [fetchGrads]);
 
+  // Fetch resurgence tokens (older coins with renewed momentum)
+  const fetchResurgence = useCallback(async () => {
+    try {
+      const r = await fetch(API + "/api/resurgence");
+      if (r.ok) { const d = await r.json(); setResurgenceTokens(d.tokens || []); }
+    } catch {}
+  }, [API]);
+
+  useEffect(() => {
+    fetchResurgence();
+    const iv = setInterval(fetchResurgence, 30000); // refresh every 30s
+    return () => clearInterval(iv);
+  }, [fetchResurgence]);
+
   // Fetch platform stats (fees vs mcap)
   useEffect(() => {
     const fetchPlatform = async () => {
@@ -658,6 +821,27 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
     try { await onBuy(ca, amt); } catch {}
     setGradBuying(false);
   }, [onBuy, gradBuying]);
+
+  // Handle buy from resurgence panel
+  const handleResurgenceBuy = useCallback(async (ca, amt) => {
+    if (!onBuy || resurgenceBuying) return;
+    setResurgenceBuying(true);
+    try { await onBuy(ca, amt); } catch {}
+    setResurgenceBuying(false);
+  }, [onBuy, resurgenceBuying]);
+
+  // When a resurgence token is clicked, select it
+  const handleResurgenceSelect = useCallback((t) => {
+    setSelected({
+      tokenAddress: t.ca, ca: t.ca, name: t.name, symbol: t.ticker, ticker: t.ticker,
+      image: t.image, mcapUsd: t.mcapUsd, mcap: t.mcapUsd,
+      score: t.resurgenceScore || 0, archetype: "organic_runner",
+      moduleScores: {},
+      twitter: t.twitter, telegram: t.telegram, website: t.website,
+      resurgence: true, resurgenceType: t.resurgenceType,
+      features: t.features,
+    });
+  }, []);
 
   // When a grad token is clicked, select it (opens score panel if on radar, or navigate)
   const handleGradSelect = useCallback((g) => {
@@ -734,18 +918,26 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
         </div>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
           {/* View toggle */}
-          {["radar", "list", "grads"].map(v => (
-            <button key={v} onClick={() => setView(v)} style={{
-              padding: "3px 8px", borderRadius: 4,
-              border: `1px solid ${view === v ? C.gn + "44" : C.bd}`,
-              background: view === v ? C.gn + "0a" : "none",
-              fontSize: 10, fontWeight: 700,
-              color: view === v ? C.gn : C.dm,
-              cursor: "pointer", fontFamily: M,
-            }}>
-              {v === "grads" ? `GRADS${grads.length ? ` (${grads.length})` : ""}` : v.toUpperCase()}
-            </button>
-          ))}
+          {["radar", "list", "grads", "resurgence"].map(v => {
+            const isResurg = v === "resurgence";
+            const activeColor = isResurg ? C.pu : C.gn;
+            const resurgActive = resurgenceTokens.filter(t => t.signal === "STRONG_RESURGENCE" || t.signal === "RESURGENCE").length;
+            let label = v.toUpperCase();
+            if (v === "grads") label = `GRADS${grads.length ? ` (${grads.length})` : ""}`;
+            if (v === "resurgence") label = `RESURG${resurgActive ? ` (${resurgActive})` : ""}`;
+            return (
+              <button key={v} onClick={() => setView(v)} style={{
+                padding: "3px 8px", borderRadius: 4,
+                border: `1px solid ${view === v ? activeColor + "44" : C.bd}`,
+                background: view === v ? activeColor + "0a" : "none",
+                fontSize: 10, fontWeight: 700,
+                color: view === v ? activeColor : C.dm,
+                cursor: "pointer", fontFamily: M,
+              }}>
+                {label}
+              </button>
+            );
+          })}
           {/* Legend */}
           {Object.entries(ARCH_COLORS).slice(0, 4).map(([k, color]) => (
             <div key={k} style={{ display: "flex", alignItems: "center", gap: 3 }}>
@@ -782,6 +974,11 @@ export default function MemeticRadar({ apiBase, onBuy, onSell, user, tradingBala
           /* GRADUATED VIEW */
           <div style={{ flex: 1 }} className="memetic-scroll">
             <GradPanel grads={grads} onSelect={handleGradSelect} onBuy={handleGradBuy} user={user} tradingBalance={tradingBalance} buying={gradBuying} />
+          </div>
+        ) : view === "resurgence" ? (
+          /* RESURGENCE VIEW — older coins with renewed momentum */
+          <div style={{ flex: 1 }} className="memetic-scroll">
+            <ResurgencePanel tokens={resurgenceTokens} onSelect={handleResurgenceSelect} onBuy={handleResurgenceBuy} user={user} tradingBalance={tradingBalance} buying={resurgenceBuying} apiBase={API} />
           </div>
         ) : (
           /* LIST VIEW */
