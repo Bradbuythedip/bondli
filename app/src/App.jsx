@@ -256,7 +256,7 @@ const[aeMode,setAeMode]=useState("balanced");const[aeLoading,setAeLoading]=useSt
 // Check if this token has auto-exit active
 const aeActive=autoExitStatus?.positions?.find(p=>p.ca===t.ca);
 useEffect(()=>{if(aeActive)setAePlan(aeActive)},[aeActive?.ca,aeActive?.totalSoldPct]);
-useEffect(()=>{if(!t.ca)return;setMemeData(null);setMemeLoading(true);fetch(API+"/api/memetic-score/"+t.ca).then(r=>r.ok?r.json():null).then(d=>{setMemeData(d);setMemeLoading(false)}).catch(()=>setMemeLoading(false))},[t.ca]);
+useEffect(()=>{if(!t.ca)return;setMemeData(null);setMemeLoading(true);fetch(API+"/api/memetic-score/"+t.ca).then(r=>r.ok?r.json():null).then(d=>{setMemeData(d||false);setMemeLoading(false)}).catch(()=>{setMemeData(false);setMemeLoading(false)})},[t.ca]);
 useEffect(()=>{const h=e=>{if(e.key==="Escape")onClose()};window.addEventListener("keydown",h);return()=>window.removeEventListener("keydown",h)},[onClose]);
 const SL=({href,icon:Ic,label})=>href?<a href={href} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{display:"inline-flex",alignItems:"center",gap:5,padding:"7px 12px",background:T.bg,border:"1px solid "+T.bd,borderRadius:8,fontSize:12,color:T.dm,textDecoration:"none",fontWeight:700,cursor:"pointer",transition:"all .18s ease"}} onMouseEnter={e=>{e.currentTarget.style.background=T.tx+"0c";e.currentTarget.style.borderColor=T.tx+"28";e.currentTarget.style.transform="translateY(-1px)";e.currentTarget.style.boxShadow="0 3px 8px rgba(0,0,0,.2)"}} onMouseLeave={e=>{e.currentTarget.style.background=T.bg;e.currentTarget.style.borderColor=T.bd;e.currentTarget.style.transform="";e.currentTarget.style.boxShadow=""}}><Ic s={12} c={T.dm}/>{label}</a>:null;
 return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,overflow:"hidden",animation:"su .25s ease",margin:mb?"0 0 6px":"0 0 8px"}}>
@@ -308,14 +308,16 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 <div style={{borderTop:"1px solid "+T.bd,borderBottom:memeOpen?"none":"1px solid "+T.bd}}>
 <button onClick={()=>setMemeOpen(o=>!o)} style={{width:"100%",padding:"7px 14px",background:"none",border:"none",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
 <span style={{fontSize:11,fontWeight:800,color:T.pu||"#b388ff",letterSpacing:".5px"}}>MEMETIC</span>
-{memeData&&<span style={{fontSize:12,fontWeight:900,color:ARCH_COLORS[memeData.archetype]||T.dm}}>{Math.round((memeData.score||0)*100)}</span>}
-{memeData&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:3,background:(ARCH_COLORS[memeData.archetype]||T.dm)+"18",color:ARCH_COLORS[memeData.archetype]||T.dm,fontWeight:700}}>{ARCH_LABELS[memeData.archetype]||"?"}</span>}
+{memeData&&memeData!==false&&<span style={{fontSize:12,fontWeight:900,color:ARCH_COLORS[memeData.archetype]||T.dm}}>{Math.round((memeData.score||0)*100)}</span>}
+{memeData&&memeData!==false&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:3,background:(ARCH_COLORS[memeData.archetype]||T.dm)+"18",color:ARCH_COLORS[memeData.archetype]||T.dm,fontWeight:700}}>{ARCH_LABELS[memeData.archetype]||"?"}</span>}
+{memeData===false&&!memeLoading&&<span style={{fontSize:10,color:T.ft,fontWeight:600}}>not scored yet</span>}
 {memeLoading&&<Sp s={10}/>}
 <span style={{marginLeft:"auto",fontSize:10,color:T.dm,transition:"transform .2s",transform:memeOpen?"rotate(180deg)":"rotate(0)"}}>{"\u25BC"}</span>
 </button>
 </div>
 {/* ═══ MEMETIC SPIDER CHART — collapsible ═══ */}
-{memeOpen&&memeData&&memeData.moduleScores&&<div style={{borderBottom:"1px solid "+T.bd}}>
+{memeOpen&&memeData===false&&<div style={{borderBottom:"1px solid "+T.bd,padding:"16px 14px",textAlign:"center"}}><div style={{fontSize:12,color:T.ft}}>Memetic scoring not available for this token yet.</div><div style={{fontSize:10,color:T.ft,marginTop:4,opacity:.6}}>Older tokens may not have memetic data in radar.</div></div>}
+{memeOpen&&memeData&&memeData!==false&&memeData.moduleScores&&<div style={{borderBottom:"1px solid "+T.bd}}>
 {/* Archetype + composite score */}
 <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 14px"}}>
 <div style={{fontSize:28,fontWeight:900,color:ARCH_COLORS[memeData.archetype]||T.dm,fontFamily:M,lineHeight:1}}>{Math.round((memeData.score||0)*100)}</div>
