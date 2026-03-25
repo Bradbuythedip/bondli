@@ -45,6 +45,7 @@ import { MetaTracker } from "../engine/meta-engine.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
 import SurvivorshipBias from "../engine/survivorship-bias.mjs";
 import { SmartMoneyTracker } from "../engine/smart-money-tracker.mjs";
+import { ResurgenceScanner } from "../engine/resurgence-scanner.mjs";
 import { DevWalletTracker } from "../engine/dev-wallet-tracker.mjs";
 import { scoreMemeticQuick, scoreTokenMemetic, loadBlacklists as loadMemeticBlacklists, startMemeticWorkers } from "../engine/memetic-pipeline.mjs";
 import { runPipeline, runExitChecks, classifyConfidence, calculatePositionSize, createExitPlan, checkPostExitReentry, checkDipDCA } from "../autoape/pipeline.js";
@@ -169,6 +170,9 @@ const smartMoneyTracker = new SmartMoneyTracker({
     broadcastWS({ event: "smart_money_signal", data: signal });
   },
 });
+
+// Resurgence Scanner — finds older coins (12h-2y) with renewed momentum
+const resurgenceScanner = new ResurgenceScanner({ redis, smartMoneyTracker });
 
 // ═══ SECOND WAVE TRACKER — remember tokens that scored well for re-entry detection ═══
 // Tokens that previously had high scores, dipped, and show renewed buying = potential outliers.
@@ -7190,6 +7194,29 @@ app.get("/api/graduated", (req, res) => {
     total: tokens.length,
     updatedAt: now,
   });
+});
+
+// ═══════════════════════════════════════
+// ROUTES: RESURGENCE — Older Coins Having a Revival (12h to 2y)
+// ═══════════════════════════════════════
+app.get("/api/resurgence", async (req, res) => {
+  try {
+    const result = await resurgenceScanner.scan();
+    res.json(result);
+  } catch (e) {
+    console.error("[RESURGENCE] Scan error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/resurgence/score/:ca", async (req, res) => {
+  try {
+    const result = await resurgenceScanner.scoreToken(req.params.ca);
+    if (!result) return res.status(404).json({ error: "Token not found or out of age range" });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ═══════════════════════════════════════
