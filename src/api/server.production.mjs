@@ -5610,6 +5610,30 @@ function startAutoTrader(wallet, settings) {
           } catch { t._bradEval = null; }
         });
         await Promise.allSettled(bradPromises);
+
+        // ═══ BRAD RE-SORT — boost BRAD-approved tokens to the top ═══
+        // BRAD APE with high confidence → sort above same-score tokens
+        // BRAD SKIP → demote below same-score tokens
+        // This makes the radar show BRAD's best picks first.
+        hot.sort((a, b) => {
+          const aScore = a._apeScore || 0;
+          const bScore = b._apeScore || 0;
+          const aBrad = a._bradEval;
+          const bBrad = b._bradEval;
+
+          // BRAD confidence boost: APE tokens get +20 to sort score, SKIP gets -20
+          let aEffective = aScore;
+          let bEffective = bScore;
+          if (aBrad) {
+            if (aBrad.action === "APE") aEffective += (aBrad.confidence || 0.5) * 20;
+            else if (aBrad.action === "SKIP") aEffective -= 20;
+          }
+          if (bBrad) {
+            if (bBrad.action === "APE") bEffective += (bBrad.confidence || 0.5) * 20;
+            else if (bBrad.action === "SKIP") bEffective -= 20;
+          }
+          return bEffective - aEffective;
+        });
       }
 
       for (const t of hot) {
@@ -5638,6 +5662,23 @@ function startAutoTrader(wallet, settings) {
       const _tierDist = { 1: 0, 2: 0, 3: 0, 4: 0, 0: 0 };
       for (const t of hot) _tierDist[t._pipelineTier || 0]++;
       state._pipelineStats.tierDistribution = _tierDist;
+      // Track BRAD decisions for display
+      if (bradOn) {
+        const bradApes = hot.filter(t => t._bradEval?.action === "APE").length;
+        const bradSkips = hot.filter(t => t._bradEval?.action === "SKIP").length;
+        const bradVetos = hot.filter(t => t._pipelineRejectGate === 0).length;
+        state._pipelineStats.brad = {
+          evaluated: hot.filter(t => t._bradEval).length,
+          apes: bradApes,
+          skips: bradSkips,
+          vetos: bradVetos,
+          topPick: hot.find(t => t._bradEval?.action === "APE")
+            ? { ca: hot.find(t => t._bradEval?.action === "APE").ca?.slice(0, 8), name: hot.find(t => t._bradEval?.action === "APE").name, confidence: hot.find(t => t._bradEval?.action === "APE")._bradEval.confidence }
+            : null,
+        };
+      } else {
+        state._pipelineStats.brad = null;
+      }
 
       // ── PIPELINE DECISION LOG — shows what's happening every cycle ──
       if (!state._pipelineStats) state._pipelineStats = { lastLog: 0, nearMisses: [], rugRejects: [], skippedGreen: [], cycles: 0, lastPipeline: null };
@@ -5673,7 +5714,8 @@ function startAutoTrader(wallet, settings) {
         const tierDist = { 1: 0, 2: 0, 3: 0, 4: 0 };
         for (const t of hot) { if (t._pipelineTier) tierDist[t._pipelineTier]++; }
         const tierStr = hot.length > 0 ? ` | TIERS: T1:${tierDist[1]} T2:${tierDist[2]} T3:${tierDist[3]} WL:${tierDist[4]}` : "";
-        log(`SCAN: ${p.total} tokens → ${p.total-p.baseFilter} pass base → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown} new → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate} pass rug → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate-p.trendReject} pass trend → ${p.passed} READY (need ${state.settings.minScore}+)${sbStats}${tierStr}${nmStr}${survStr}`);
+        const bradStr = state._pipelineStats.brad ? ` [BRAD:${state._pipelineStats.brad.apes}APE/${state._pipelineStats.brad.skips}SKIP/${state._pipelineStats.brad.vetos}VETO${state._pipelineStats.brad.topPick ? " top:"+state._pipelineStats.brad.topPick.name+"("+state._pipelineStats.brad.topPick.confidence?.toFixed(2)+")" : ""}]` : "";
+        log(`SCAN: ${p.total} tokens → ${p.total-p.baseFilter} pass base → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown} new → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate} pass rug → ${p.total-p.baseFilter-p.alreadyOwned-p.cooldown-p.rugGate-p.trendReject} pass trend → ${p.passed} READY (need ${state.settings.minScore}+)${sbStats}${tierStr}${bradStr}${nmStr}${survStr}`);
       }
 
       // ═══ SCORE-BASED POSITION SIZING (Kelly Criterion + Kahneman Loss Aversion) ═══
@@ -5826,7 +5868,8 @@ function startAutoTrader(wallet, settings) {
         const survivorStr = t._survivorMatch != null ? ` surv:${t._survivorMatch}%` : "";
         const megaStr = t._isMegaCandidate ? ` MEGA:${t._megaMatch}%` : "";
         const tierTag = t._pipelineTier ? ` T${t._pipelineTier}:${t._pipelineLabel}` : "";
-        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${tierTag}${trendTag}${earlyTag}${phaseTag}${velTag}${survivorStr}${megaStr} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
+        const bradTag = t._bradEval ? ` BRAD:${t._bradEval.action}(${(t._bradEval.confidence||0).toFixed(2)})` : "";
+        log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${tierTag}${trendTag}${earlyTag}${phaseTag}${velTag}${survivorStr}${megaStr}${bradTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -6158,6 +6201,7 @@ app.get("/api/auto-trade/status", (req, res) => {
       nearMisses: state._pipelineStats.nearMisses,
       rugRejects: state._pipelineStats.rugRejects || [],
       tierDistribution: state._pipelineStats.tierDistribution || {},
+      brad: state._pipelineStats.brad || null,
     } : null,
     brad: {
       enabled: state.settings.bradEnabled !== false, // default on
