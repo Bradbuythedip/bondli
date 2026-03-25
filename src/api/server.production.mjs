@@ -4405,7 +4405,7 @@ function startAutoTrader(wallet, settings) {
       // ═══ BRAD: Regime sync (every 60s) ═══
       // Derive a simple regime from market signals and send to BRAD.
       // This feeds BRAD's L0 world model and enables regime-aware strategy selection.
-      if (bradClient.isHealthy()) {
+      if (state.settings.bradEnabled !== false && bradClient.isHealthy()) {
         if (!state._bradRegimeLastSync || Date.now() - state._bradRegimeLastSync > 60_000) {
           state._bradRegimeLastSync = Date.now();
           // Derive regime from available signals
@@ -4494,12 +4494,12 @@ function startAutoTrader(wallet, settings) {
           // After every closed trade, BRAD's L2 checks for blind spots
           // (overconfidence, revenge trading, regime blindness, loss aversion)
           // and may restructure L1's strategy or confidence.
-          if (exitPct >= 100 && bradClient.isHealthy()) {
+          if (exitPct >= 100 && state.settings.bradEnabled !== false && bradClient.isHealthy()) {
             bradClient.recordExit({
               ca, exitPriceSol: (currentMcap || 0) / (solUsdPrice || 150),
               reason: exitReason || "unknown",
             }).catch(() => {}); // fire-and-forget
-          } else if (exitPct < 100 && bradClient.isHealthy()) {
+          } else if (exitPct < 100 && state.settings.bradEnabled !== false && bradClient.isHealthy()) {
             bradClient.recordPartialExit({
               ca, sizeSol: (pos.entrySol || 0) * (exitPct / 100),
               priceSol: (currentMcap || 0) / (solUsdPrice || 150),
@@ -4596,7 +4596,7 @@ function startAutoTrader(wallet, settings) {
       // ═══ BRAD: Evaluate open positions for meta-cognitive exits ═══
       // Run BRAD position evaluation in parallel for all open positions.
       // BRAD's L2 detects systematic patterns: loss aversion, regime blindness, etc.
-      if (bradClient.isHealthy() && state.positions.size > 0) {
+      if (bradOn && state.positions.size > 0) {
         const bradPosPromises = [...state.positions.entries()].map(async ([ca, pos]) => {
           try {
             const token = radar.tokens.get(ca);
@@ -5588,7 +5588,8 @@ function startAutoTrader(wallet, settings) {
       // ═══ BRAD PRE-EVALUATION — run cognitive engine on top candidates ═══
       // BRAD evaluations run in parallel (non-blocking) for the top candidates.
       // Results are attached to tokens as _bradEval for the pipeline to consume.
-      if (bradClient.isHealthy()) {
+      const bradOn = state.settings.bradEnabled !== false && bradClient.isHealthy();
+      if (bradOn) {
         const bradPromises = hot.slice(0, 5).map(async (t) => {
           try {
             const dyn = scoreDynamics.get(t.ca);
@@ -5847,7 +5848,7 @@ function startAutoTrader(wallet, settings) {
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
               broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: tradeSol, mcap: t.mcapUsd, wallet, score: t._apeScore, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, buyVelTrend, tier: t._pipelineTier || 2, tierLabel: t._pipelineLabel || "STRONG" } });
               // ═══ BRAD: Record confirmed entry for cognitive self-model ═══
-              if (bradClient.isHealthy()) {
+              if (state.settings.bradEnabled !== false && bradClient.isHealthy()) {
                 bradClient.recordEntry({
                   ca: t.ca, name: t.name, priceSol: (t.mcapUsd || 0) / (solUsdPrice || 150),
                   sizeSol: tradeSol, score: t._apeScore || 0,
@@ -6098,6 +6099,23 @@ app.post("/api/auto-trade/update", async (req, res) => {
   res.json({ ok: true, settings: state.settings });
 });
 
+// ═══ BRAD TOGGLE — enable/disable cognitive engine from the UI ═══
+app.post("/api/brad/toggle", express.json(), async (req, res) => {
+  const { wallet, enabled } = req.body;
+  const state = autoTraders.get(wallet);
+  if (state) {
+    state.settings.bradEnabled = !!enabled;
+    state.log.push({ msg: `BRAD cognitive engine ${enabled ? "enabled" : "disabled"}`, time: Date.now() });
+    console.log(`[BRAD] ${enabled ? "Enabled" : "Disabled"} by ${wallet?.slice(0, 6)}`);
+  }
+  res.json({
+    ok: true,
+    bradEnabled: !!enabled,
+    healthy: bradClient.isHealthy(),
+    client: bradClient.getClientStatus(),
+  });
+});
+
 app.get("/api/auto-trade/status", (req, res) => {
   const wallet = req.query.wallet;
   const state = autoTraders.get(wallet);
@@ -6141,6 +6159,11 @@ app.get("/api/auto-trade/status", (req, res) => {
       rugRejects: state._pipelineStats.rugRejects || [],
       tierDistribution: state._pipelineStats.tierDistribution || {},
     } : null,
+    brad: {
+      enabled: state.settings.bradEnabled !== false, // default on
+      healthy: bradClient.isHealthy(),
+      ...bradClient.getClientStatus(),
+    },
   });
 });
 

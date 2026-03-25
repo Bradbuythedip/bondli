@@ -74,6 +74,11 @@ xapi(w){return this.f(`/api/vip/export-api/${w}`,{timeout:30000})}
 // GPU dashboard
 gpd(w){return this.f(`/api/gpu/dashboard?wallet=${w}`)}
 gpdr(w){return this.f("/api/gpu/deregister",{method:"POST",body:{wallet:w}})}
+// BRAD cognitive engine
+brt(w,e){return this.f("/api/brad/toggle",{method:"POST",body:{wallet:w,enabled:e}})}
+brm(){return this.f("/api/brad/metrics")}
+brs(){return this.f("/api/brad/status")}
+brh(){return this.f("/api/brad/health")}
 // Chat support (Grok AI)
 cht(msgs,w){return this.f("/api/chat",{method:"POST",timeout:30000,body:{messages:msgs,wallet:w}})}
 chts(){return this.f("/api/chat/status")}
