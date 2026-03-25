@@ -217,123 +217,202 @@ return<div key={p.ca} style={{marginBottom:posWithScore.length>1?8:0}}>
 </div>}
 
 // ═══ CANDLESTICK CHART — lightweight-charts OHLC + volume ═══
-function CandleChart({ca,T,mb}){
+// ═══ EMA calculator ═══
+function calcEMA(data,period){const k=2/(period+1);const ema=[];if(!data.length)return ema;ema[0]=data[0];for(let i=1;i<data.length;i++)ema[i]=data[i]*k+ema[i-1]*(1-k);return ema}
+// ═══ VWAP calculator ═══
+function calcVWAP(candles){let cumVP=0,cumV=0;return candles.map(c=>{const tp=(c.high+c.low+c.close)/3;cumVP+=tp*(c.volume||1);cumV+=(c.volume||1);return cumV>0?cumVP/cumV:tp})}
+
+function TokenChart({ca,T,mb,wsRef,height:_h}){
 const containerRef=useRef(null);
 const chartRef=useRef(null);
+const seriesRef=useRef({});
+const candleAgg=useRef({}); // current candle being built from trades
 const [err,setErr]=useState(null);
-const [interval,setInterval_]=useState(15);
+const [tf,setTf]=useState("1m");
+const [trades,setTrades]=useState([]); // recent trade tape
+const [stats,setStats]=useState({buys:0,sells:0,buyVol:0,sellVol:0});
+const h=_h||(mb?260:360);
+const tfMap={"5s":5000,"15s":15000,"1m":60000,"5m":300000,"15m":900000,"1h":3600000};
+const tfMs=tfMap[tf]||60000;
+const tfLabel={"5s":"5s","15s":"15s","1m":"1m","5m":"5m","15m":"15m","1h":"1h"};
 
 useEffect(()=>{
   if(!containerRef.current||!ca)return;
-  setErr(null);
-  const isDark=T.mo==="dark";
+  setErr(null);setTrades([]);setStats({buys:0,sells:0,buyVol:0,sellVol:0});
+  candleAgg.current={};
 
   // Create chart
   const chart=createChart(containerRef.current,{
-    width:containerRef.current.clientWidth,
-    height:mb?220:300,
-    layout:{
-      background:{type:ColorType.Solid,color:"transparent"},
-      textColor:T.dm,
-      fontSize:10,
-      fontFamily:"inherit",
-    },
-    grid:{
-      vertLines:{color:T.bd},
-      horzLines:{color:T.bd},
-    },
-    crosshair:{
-      mode:CrosshairMode.Normal,
+    width:containerRef.current.clientWidth,height:h,
+    layout:{background:{type:ColorType.Solid,color:"transparent"},textColor:T.dm,fontSize:10,fontFamily:M},
+    grid:{vertLines:{color:T.bd+"66"},horzLines:{color:T.bd+"66"}},
+    crosshair:{mode:CrosshairMode.Normal,
       vertLine:{color:T.gn+"44",width:1,style:3,labelBackgroundColor:T.sf},
-      horzLine:{color:T.gn+"44",width:1,style:3,labelBackgroundColor:T.sf},
-    },
-    rightPriceScale:{
-      borderColor:T.bd,
-      scaleMargins:{top:0.1,bottom:0.25},
-    },
-    timeScale:{
-      borderColor:T.bd,
-      timeVisible:true,
-      secondsVisible:true,
-      rightOffset:2,
-      barSpacing:mb?6:8,
-    },
-    handleScroll:true,
-    handleScale:true,
+      horzLine:{color:T.gn+"44",width:1,style:3,labelBackgroundColor:T.sf}},
+    rightPriceScale:{borderColor:T.bd,scaleMargins:{top:0.05,bottom:0.2},autoScale:true},
+    timeScale:{borderColor:T.bd,timeVisible:true,secondsVisible:tf==="5s"||tf==="15s",rightOffset:3,barSpacing:mb?5:7,fixLeftEdge:false,fixRightEdge:false},
+    handleScroll:true,handleScale:true,
   });
   chartRef.current=chart;
 
   // Candlestick series
-  const candleSeries=chart.addCandlestickSeries({
-    upColor:T.gn,
-    downColor:T.rd,
-    borderUpColor:T.gn,
-    borderDownColor:T.rd,
-    wickUpColor:T.gn+"aa",
-    wickDownColor:T.rd+"aa",
+  const candle=chart.addCandlestickSeries({
+    upColor:T.gn,downColor:"#ff4444",borderUpColor:T.gn,borderDownColor:"#ff4444",
+    wickUpColor:T.gn+"aa",wickDownColor:"#ff4444aa",
+    priceFormat:{type:"custom",formatter:v=>v<0.001?v.toExponential(2):v<1?v.toFixed(6):v<100?"$"+v.toFixed(4):"$"+Math.round(v).toLocaleString()},
   });
 
-  // Volume series (bottom overlay)
-  const volumeSeries=chart.addHistogramSeries({
-    priceFormat:{type:"volume"},
-    priceScaleId:"vol",
-  });
-  chart.priceScale("vol").applyOptions({
-    scaleMargins:{top:0.8,bottom:0},
-  });
+  // Volume histogram (bottom)
+  const vol=chart.addHistogramSeries({priceFormat:{type:"volume"},priceScaleId:"vol"});
+  chart.priceScale("vol").applyOptions({scaleMargins:{top:0.82,bottom:0}});
 
-  // Fetch data
-  fetch(`${API}/api/chart/${ca}?interval=${interval}`).then(r=>r.json()).then(d=>{
-    if(!d.candles?.length){setErr("No chart data yet");return}
+  // EMA lines
+  const ema9=chart.addLineSeries({color:"#ffd60088",lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
+  const ema21=chart.addLineSeries({color:"#b388ff88",lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
 
-    candleSeries.setData(d.candles.map(c=>({
-      time:c.time,
-      open:c.open,
-      high:c.high,
-      low:c.low,
-      close:c.close,
-    })));
+  // VWAP line
+  const vwap=chart.addLineSeries({color:"#18ffff66",lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
 
-    volumeSeries.setData(d.candles.map(c=>({
-      time:c.time,
-      value:c.volume||0,
-      color:c.close>=c.open?T.gn+"33":T.rd+"33",
-    })));
+  seriesRef.current={candle,vol,ema9,ema21,vwap};
 
-    chart.timeScale().fitContent();
+  // ── Apply candle data ──
+  const applyData=(candles)=>{
+    if(!candles?.length)return;
+    const closes=candles.map(c=>c.close);
+    const e9=calcEMA(closes,9);
+    const e21=calcEMA(closes,21);
+    const vwapVals=calcVWAP(candles);
+    candle.setData(candles.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
+    vol.setData(candles.map(c=>({time:c.time,value:c.volume||0,color:c.close>=c.open?T.gn+"44":"#ff444444"})));
+    ema9.setData(candles.map((c,i)=>({time:c.time,value:e9[i]})));
+    ema21.setData(candles.map((c,i)=>({time:c.time,value:e21[i]})));
+    vwap.setData(candles.map((c,i)=>({time:c.time,value:vwapVals[i]})));
+    chart.timeScale().scrollToRealTime();
+  };
+
+  // ── Fetch historical candles ──
+  const geckoTf=tf==="5s"||tf==="15s"?"1m":tf;
+  fetch(`${API}/api/chart/${ca}?tf=${geckoTf}&limit=300`).then(r=>r.json()).then(d=>{
+    if(d.candles?.length){applyData(d.candles)}
+    else{
+      // Fallback: try spark-based chart from trades
+      fetch(`${API}/api/chart/${ca}?interval=${tf==="5s"?5:tf==="15s"?15:60}`).then(r=>r.json()).then(d2=>{
+        if(d2.candles?.length)applyData(d2.candles);
+        else setErr("Waiting for chart data...");
+      }).catch(()=>setErr("No chart data yet"));
+    }
   }).catch(()=>setErr("Chart load failed"));
 
-  // Auto-refresh every 10s
-  const iv=setInterval(()=>{
-    fetch(`${API}/api/chart/${ca}?interval=${interval}`).then(r=>r.json()).then(d=>{
-      if(!d.candles?.length)return;
-      candleSeries.setData(d.candles.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
-      volumeSeries.setData(d.candles.map(c=>({time:c.time,value:c.volume||0,color:c.close>=c.open?T.gn+"33":T.rd+"33"})));
+  // ── Auto-refresh candles (backup) ──
+  const refreshIv=setInterval(()=>{
+    fetch(`${API}/api/chart/${ca}?tf=${geckoTf}&limit=300`).then(r=>r.json()).then(d=>{
+      if(d.candles?.length)applyData(d.candles);
     }).catch(()=>{});
-  },10000);
+  },tf==="5s"?5000:tf==="15s"?10000:15000);
 
-  // Resize observer
-  const ro=new ResizeObserver(entries=>{
-    const{width}=entries[0].contentRect;
-    chart.applyOptions({width});
-  });
+  // ── WebSocket: subscribe for real-time trades ──
+  const ws=wsRef?.current;
+  let wsHandler=null;
+  if(ws&&ws.readyState===1){
+    ws.send(JSON.stringify({type:"subscribe-chart",ca}));
+    wsHandler=(e)=>{
+      try{
+        const msg=JSON.parse(e.data);
+        if(msg.event==="chart-trade"&&msg.data?.ca===ca){
+          const d=msg.data;
+          const now=d.time||Date.now();
+          const price=d.price||d.mcap||0;
+          const sol=d.sol||0;
+          const side=d.side||"buy";
+
+          // Update trade tape
+          setTrades(prev=>[{side,sol,price,time:now,wallet:d.wallet},...prev].slice(0,50));
+          setStats(prev=>({
+            buys:prev.buys+(side==="buy"?1:0),
+            sells:prev.sells+(side==="sell"?1:0),
+            buyVol:prev.buyVol+(side==="buy"?sol:0),
+            sellVol:prev.sellVol+(side==="sell"?sol:0),
+          }));
+
+          // Update current candle in real-time
+          if(price>0&&seriesRef.current.candle){
+            const bucketTime=Math.floor(now/tfMs)*Math.floor(tfMs/1000);
+            const agg=candleAgg.current;
+            if(!agg.time||agg.time!==bucketTime){
+              // New candle bucket
+              candleAgg.current={time:bucketTime,open:price,high:price,low:price,close:price,volume:sol};
+            }else{
+              agg.high=Math.max(agg.high,price);
+              agg.low=Math.min(agg.low,price);
+              agg.close=price;
+              agg.volume=(agg.volume||0)+sol;
+            }
+            try{
+              seriesRef.current.candle.update({time:candleAgg.current.time,open:candleAgg.current.open,high:candleAgg.current.high,low:candleAgg.current.low,close:candleAgg.current.close});
+              seriesRef.current.vol.update({time:candleAgg.current.time,value:candleAgg.current.volume||0,color:candleAgg.current.close>=candleAgg.current.open?T.gn+"44":"#ff444444"});
+            }catch{}
+          }
+        }
+      }catch{}
+    };
+    ws.addEventListener("message",wsHandler);
+  }
+
+  // ── Resize ──
+  const ro=new ResizeObserver(entries=>{const{width}=entries[0].contentRect;chart.applyOptions({width})});
   ro.observe(containerRef.current);
 
-  return()=>{clearInterval(iv);ro.disconnect();chart.remove();chartRef.current=null};
-},[ca,T,mb,interval]);
+  return()=>{
+    clearInterval(refreshIv);ro.disconnect();chart.remove();chartRef.current=null;seriesRef.current={};
+    if(ws&&wsHandler)ws.removeEventListener("message",wsHandler);
+    if(ws&&ws.readyState===1)try{ws.send(JSON.stringify({type:"unsubscribe-chart"}))}catch{}
+  };
+},[ca,T,mb,tf]);
 
-return<div style={{width:"100%",borderRadius:6,overflow:"hidden",background:T.bg}}>
-<div ref={containerRef} style={{width:"100%",minHeight:mb?220:300}}>
-  {err&&<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:mb?220:300,color:T.dm,fontSize:12}}>{err}</div>}
-</div>
-<div style={{display:"flex",gap:4,padding:"4px 8px",borderTop:"1px solid "+T.bd,alignItems:"center",flexWrap:"wrap"}}>
+const bpPct=stats.buys+stats.sells>0?Math.round(stats.buys/(stats.buys+stats.sells)*100):50;
+
+return<div style={{width:"100%",borderRadius:8,overflow:"hidden",background:T.bg,border:"1px solid "+T.bd}}>
+{/* Timeframe selector + stats bar */}
+<div style={{display:"flex",alignItems:"center",gap:4,padding:"5px 8px",borderBottom:"1px solid "+T.bd,flexWrap:"wrap"}}>
   <div style={{display:"flex",gap:2}}>
-    {[5,15,30,60].map(s=><button key={s} onClick={()=>setInterval_(s)} style={{fontSize:10,fontWeight:interval===s?800:500,color:interval===s?T.gn:T.dm,background:interval===s?T.gn+"12":"transparent",border:"1px solid "+(interval===s?T.gn+"33":T.bd),borderRadius:4,padding:"2px 6px",cursor:"pointer"}}>{s}s</button>)}
+    {Object.keys(tfLabel).map(t=><button key={t} onClick={()=>setTf(t)} style={{fontSize:10,fontWeight:tf===t?800:500,color:tf===t?T.gn:T.dm,background:tf===t?T.gn+"12":"transparent",border:"1px solid "+(tf===t?T.gn+"33":T.bd),borderRadius:4,padding:"3px 7px",cursor:"pointer",transition:"all .1s"}}>{tfLabel[t]}</button>)}
   </div>
   <div style={{flex:1}}/>
+  {stats.buys+stats.sells>0&&<div style={{display:"flex",alignItems:"center",gap:4,fontSize:10}}>
+    <span style={{color:T.gn,fontWeight:700}}>{stats.buys}B</span>
+    <div style={{width:40,height:4,borderRadius:2,background:"#ff4444",overflow:"hidden"}}><div style={{width:bpPct+"%",height:"100%",background:T.gn,transition:"width .3s"}}/></div>
+    <span style={{color:"#ff4444",fontWeight:700}}>{stats.sells}S</span>
+  </div>}
+  <div style={{display:"flex",gap:3,fontSize:10}}>
+    <span style={{color:"#ffd600",opacity:.6}} title="EMA 9">E9</span>
+    <span style={{color:"#b388ff",opacity:.6}} title="EMA 21">E21</span>
+    <span style={{color:"#18ffff",opacity:.6}} title="VWAP">VW</span>
+  </div>
+</div>
+{/* Chart container */}
+<div ref={containerRef} style={{width:"100%",minHeight:h}}>
+  {err&&<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:h,color:T.dm,fontSize:12}}>{err}</div>}
+</div>
+{/* Trade tape */}
+{trades.length>0&&<div style={{borderTop:"1px solid "+T.bd,maxHeight:mb?60:80,overflowY:"auto",padding:"2px 8px"}}>
+  {trades.slice(0,8).map((t,i)=><div key={i} style={{display:"flex",gap:6,fontSize:10,padding:"1px 0",color:t.side==="buy"?T.gn:"#ff4444",opacity:1-i*.08}}>
+    <span style={{fontWeight:700,width:28}}>{t.side==="buy"?"BUY":"SELL"}</span>
+    <span>{t.sol?.toFixed(3)} SOL</span>
+    <span style={{color:T.dm}}>{t.wallet}</span>
+    <span style={{marginLeft:"auto",color:T.ft}}>{new Date(t.time).toLocaleTimeString()}</span>
+  </div>)}
+</div>}
+{/* Links bar */}
+<div style={{display:"flex",gap:4,padding:"4px 8px",borderTop:"1px solid "+T.bd,alignItems:"center"}}>
   <a href={`https://pump.fun/coin/${ca}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:11,color:T.gn,textDecoration:"none",fontWeight:700}}>pump.fun</a>
   <a href={`https://dexscreener.com/solana/${ca}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:11,color:T.dm,textDecoration:"none"}}>dexscreener</a>
-</div></div>}
+  <div style={{flex:1}}/>
+  {stats.buyVol+stats.sellVol>0&&<span style={{fontSize:10,color:T.ft}}>Vol: {(stats.buyVol+stats.sellVol).toFixed(2)} SOL</span>}
+</div>
+</div>}
+
+// Keep old name as alias for backward compat in wallet positions
+function CandleChart(props){return<TokenChart {...props}/>}
 
 // ═══ MEMETIC SPIDER CHART ═══
 const MEME_MODS={linguistic:{label:"Linguistic",color:"#00e676"},visual:{label:"Visual",color:"#ff9100"},cultural:{label:"Cultural",color:"#ffd600"},community:{label:"Community",color:"#18ffff"},influencer:{label:"Influencer",color:"#b388ff"},absurdity:{label:"Absurdity",color:"#ff1744"},temporal:{label:"Temporal",color:"#e040fb"}};
@@ -352,7 +431,7 @@ return<svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
 </svg>}
 
 // ═══ TOKEN DETAIL — full inspection panel ═══
-function TokenDetail({t,T,mb,trB,buying,selling,sBuy,sSell,quickBuy,quickSell,toast,held,onClose,solP,rCustomBuy,sRCB,user,autoExitStatus,refreshAutoExit}){
+function TokenDetail({t,T,mb,trB,buying,selling,sBuy,sSell,quickBuy,quickSell,toast,held,onClose,solP,rCustomBuy,sRCB,user,autoExitStatus,refreshAutoExit,wsRef}){
 const isH=held.has(t.ca);
 const[memeData,setMemeData]=useState(null);const[memeLoading,setMemeLoading]=useState(false);const[memeOpen,setMemeOpen]=useState(false);
 const[aeMode,setAeMode]=useState("balanced");const[aeLoading,setAeLoading]=useState(false);const[aePlan,setAePlan]=useState(null);const[aeOpen,setAeOpen]=useState(false);
@@ -382,6 +461,8 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 </div>
 {/* Description */}
 {t.description&&<div style={{padding:"8px 14px",fontSize:16,color:T.dm,borderBottom:"1px solid "+T.bd,lineHeight:1.5}}>{t.description.length>200?t.description.slice(0,200)+"…":t.description}</div>}
+{/* ═══ CHART — default view, real-time candlestick ═══ */}
+<div style={{borderBottom:"1px solid "+T.bd}}><TokenChart ca={t.ca} T={T} mb={mb} wsRef={wsRef}/></div>
 {/* ═══ ENTRY TIMING PANEL — shows when to buy ═══ */}
 {(t.entrySignal||t.buyPressure!=null)&&<div style={{padding:"8px 14px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",gap:mb?6:10,flexWrap:"wrap"}}>
 {/* Entry Signal */}
@@ -701,7 +782,7 @@ const autoSettings=(solPerTrade)=>{const sol=solPerTrade||0.1;const aggr=sol<=0.
 const[simExpanded,sSimExpanded]=useState(true);const[simDetailOpen,sSimDetailOpen]=useState(true);const[simGuideOpen,sSimGuideOpen]=useState(false);const[simRunning,sSimRunning]=useState(false);
 const[liveSim,sLiveSim]=useState(null);const[simStarting,sSimStarting]=useState(false);
 // CA lookup state — must be declared before any early returns to satisfy Rules of Hooks
-const[caLookup,sCaLookup]=useState(null);const[caLoading,sCaLoading]=useState(false);const caLookupRef=useRef(null);const didDisconnectRef=useRef(false);
+const[caLookup,sCaLookup]=useState(null);const[caLoading,sCaLoading]=useState(false);const caLookupRef=useRef(null);const didDisconnectRef=useRef(false);const wsRef=useRef(null);
 
 const toast=useCallback((m,t="info")=>{const id=Date.now()+Math.random();sToasts(x=>[...x,{id,msg:m,type:t}]);setTimeout(()=>sToasts(x=>x.filter(y=>y.id!==id)),5000)},[]);
 const hasAccess=user&&(user.demo||user.tier==="free"||user.tier==="pro"||user.tier==="vip"); // pro kept for legacy
@@ -719,7 +800,7 @@ const connect=async()=>{didDisconnectRef.current=false;try{const p=window?.phant
 useEffect(()=>{if(user?.pubkey)a.sw(user.pubkey)},[user?.pubkey]);
 useEffect(()=>{if(user?.pubkey&&!user?.demo)a.afr(user.pubkey).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{if(didDisconnectRef.current)return;const p=window?.phantom?.solana||window?.solana;if(p?.isPhantom&&p?.isConnected&&!user){p.connect({onlyIfTrusted:true}).then(r=>{if(didDisconnectRef.current)return;const pk=r.publicKey.toString();resolveWallet(pk)}).catch(()=>{})}},[]);
-useEffect(()=>{if(!hasAccess)return;let ws,dead=false;const conn=()=>{if(dead)return;try{ws=new WebSocket(WS_URL);ws.onopen=()=>{sWs(true);sWsLog(p=>[{ev:"connected",ts:Date.now()},...p].slice(0,500))};ws.onmessage=(e)=>{try{const msg=JSON.parse(e.data);if(msg.event==="mcap-update"&&msg.data){const{ca,mcap,mcapSol}=msg.data;sRT(prev=>{const update=tab=>(tab||[]).map(t=>t.ca===ca?{...t,mcapUsd:mcap,mcapSol:mcapSol||t.mcapSol}:t);return{...prev,new:update(prev.new),momentum:update(prev.momentum),resurgence:update(prev.resurgence)}})}if(msg.event){sWsLog(p=>[{ev:msg.event,d:msg.data||{},ts:msg.ts||Date.now()},...p].slice(0,500))}}catch{}};ws.onclose=()=>{sWs(false);sWsLog(p=>[{ev:"disconnected",ts:Date.now()},...p].slice(0,500));if(!dead)setTimeout(conn,3000)};ws.onerror=()=>{}}catch{}};conn();return()=>{dead=true;if(ws)ws.close()}},[hasAccess]);
+useEffect(()=>{if(!hasAccess)return;let ws,dead=false;const conn=()=>{if(dead)return;try{ws=new WebSocket(WS_URL);wsRef.current=ws;ws.onopen=()=>{sWs(true);sWsLog(p=>[{ev:"connected",ts:Date.now()},...p].slice(0,500))};ws.onmessage=(e)=>{try{const msg=JSON.parse(e.data);if(msg.event==="mcap-update"&&msg.data){const{ca,mcap,mcapSol}=msg.data;sRT(prev=>{const update=tab=>(tab||[]).map(t=>t.ca===ca?{...t,mcapUsd:mcap,mcapSol:mcapSol||t.mcapSol}:t);return{...prev,new:update(prev.new),momentum:update(prev.momentum),resurgence:update(prev.resurgence)}})}if(msg.event){sWsLog(p=>[{ev:msg.event,d:msg.data||{},ts:msg.ts||Date.now()},...p].slice(0,500))}}catch{}};ws.onclose=()=>{sWs(false);wsRef.current=null;sWsLog(p=>[{ev:"disconnected",ts:Date.now()},...p].slice(0,500));if(!dead)setTimeout(conn,3000)};ws.onerror=()=>{}}catch{}};conn();return()=>{dead=true;wsRef.current=null;if(ws)ws.close()}},[hasAccess]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.ls(user.pubkey).then(d=>{if(d.sessions)sPS(d.sessions.filter(s=>s.tokenCA&&s.status!=="closed"&&s.status!=="swept"&&s.status!=="recovered").slice(0,8))}).catch(()=>{})},[user?.pubkey]);
 const refreshWallet=useCallback(()=>{if(!user?.pubkey||user.demo)return;a.gtw(user.pubkey).then(d=>{if(d.tradingWallet){sTrW(d.tradingWallet);sTrB(d.balance||0);sTrSol(d.solBalance||0);sTrTok(d.tokenValueSol||0)}}).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;refreshWallet();const iv=setInterval(refreshWallet,15000);a.etw(user.pubkey).then(d=>{if(d.ok&&d.privateKey)sTrK(d)}).catch(()=>{});return()=>clearInterval(iv)},[user?.pubkey,refreshWallet]);
@@ -1342,7 +1423,7 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 </div>}
 </div>
 {/* Expanded token detail panel */}
-{expToken&&<TokenDetail t={expToken} T={T} mb={mb} trB={trB} buying={buying} selling={selling} sBuy={sBuy} sSell={sSell} quickBuy={quickBuy} quickSell={quickSell} toast={toast} held={held} onClose={()=>sRExp(null)} solP={solP} rCustomBuy={rCustomBuy} sRCB={sRCB} user={user} autoExitStatus={autoExitSt} refreshAutoExit={refreshAutoExit}/>}
+{expToken&&<TokenDetail t={expToken} T={T} mb={mb} trB={trB} buying={buying} selling={selling} sBuy={sBuy} sSell={sSell} quickBuy={quickBuy} quickSell={quickSell} toast={toast} held={held} onClose={()=>sRExp(null)} solP={solP} rCustomBuy={rCustomBuy} sRCB={sRCB} user={user} autoExitStatus={autoExitSt} refreshAutoExit={refreshAutoExit} wsRef={wsRef}/>}
 {/* Token list */}
 {rLoad?<div style={{padding:40,textAlign:"center"}}><Sp s={16}/></div>:!rEnabled?<div style={{padding:40,textAlign:"center",fontSize:14,color:T.ft}}>Paused</div>:rFiltered.length===0?<div style={{padding:40,textAlign:"center",fontSize:14,color:T.ft}}>{caLoading?<><Sp s={14}/> Looking up CA...</>:rSearch?"No results for \""+rSearch+"\"":rTab==="momentum"?"Waiting for tokens with sustained buy pressure...":rTab==="hot"?"Waiting for tokens with multiple buyers...":rTab==="bags"?"Waiting for hot Bags.fm tokens...":rTab==="resurgence"?"Scanning for older coins (12h–2y) with renewed momentum...":"Waiting for new launches..."}</div>:<div>{rFiltered.filter(t=>t.ca!==rExp).map(t=>{const isH=held.has(t.ca);const eSignal=(t.entrySignal==="STRONG"||t.entrySignal==="READY"||t.entrySignal==="EARLY")?t.entrySignal:"";const eColor=eSignal==="STRONG"?T.gn:eSignal==="READY"?T.gn:eSignal==="EARLY"?T.yl:T.dm;const bpW=Math.round((t.buyPressure||0)*100);const mArrow=t.scoreTrend==="rocket"?"\u2191\u2191":t.scoreTrend==="rising"?"\u2191":t.scoreTrend==="fading"?"\u2193":t.scoreTrend==="crashing"?"\u2193\u2193":t.scoreTrend==="declining"?"\u2193":"";const mColor=t.scoreTrend==="rocket"||t.scoreTrend==="rising"?T.gn:t.scoreTrend==="fading"||t.scoreTrend==="declining"?"#ff8800":t.scoreTrend==="crashing"?"#ff4444":T.dm;const isBags=t._source==="bags"||t.source==="bags"||t._meteoraDBC;const isBonk=t._source==="bonk"||t.source==="bonk"||t._bonk;const isResurg=t._source==="resurgence";const resurgTypeLabel=isResurg?({smart_money_accumulation:"Smart $",community_revival:"Community",volume_breakout:"Vol Breakout",social_resurgence:"Social"}[t.resurgenceType]||"Revival"):"";const resurgAge=isResurg&&t.ageMs?(t.ageMs<86400000?Math.round(t.ageMs/3600000)+"h":t.ageMs<2592000000?Math.round(t.ageMs/86400000)+"d":t.ageMs<15552000000?(t.ageMs/2592000000).toFixed(1)+"mo":(t.ageMs/31536000000).toFixed(1)+"y"):"";return<div key={t.ca} onClick={()=>{sRExp(t.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),50)}} style={{display:"flex",alignItems:"center",gap:mb?6:10,padding:mb?"8px 10px":"9px 12px",cursor:"pointer",borderBottom:"1px solid "+T.bd,background:isH?T.gn+"03":"transparent"}}><div style={{width:mb?56:68,height:mb?56:68,borderRadius:10,overflow:"hidden",flexShrink:0,position:"relative",border:isBags?"1px solid "+T.gn+"88":isBonk?"1px solid #ff980088":isResurg?"1px solid #b388ff88":"none",boxShadow:isBags?"0 0 4px "+T.gn+"22":isBonk?"0 0 4px #ff980022":isResurg?"0 0 4px #b388ff22":"none"}}><TImg src={t.image} ticker={t.ticker} size={mb?56:68}/>{isH&&<div style={{position:"absolute",top:0,right:0,background:T.gn,color:"#000",fontSize:7,fontWeight:900,padding:"0 2px",borderRadius:"0 0 0 2px",zIndex:1}}>H</div>}</div><div style={{minWidth:0,width:mb?100:160,flexShrink:0}}><div style={{fontSize:mb?15:16,fontWeight:800,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t.name||tk(t.ticker)}</div><div style={{display:"flex",alignItems:"center",gap:3,marginTop:1}}><span style={{fontSize:mb?13:14,color:T.gn,fontWeight:700}}>{tk(t.ticker)}</span>{t.twitter&&<IC.tw s={9} c={T.dm}/>}{t.website&&<IC.globe s={9} c={T.dm}/>}{t.telegram&&<IC.tg s={9} c={T.dm}/>}{t.dexBoosted&&<span style={{fontSize:8,fontWeight:800,color:"#ffd600",background:"#ffd60012",padding:"0 3px",borderRadius:2,lineHeight:"14px"}} title={"DexScreener boost: $"+(t.boostAmount||0)}>DEX PAID</span>}{isResurg&&<span style={{fontSize:8,fontWeight:800,color:"#b388ff",background:"#b388ff12",padding:"0 3px",borderRadius:2,lineHeight:"14px"}}>{resurgTypeLabel}</span>}{isResurg&&resurgAge&&<span style={{fontSize:8,fontWeight:700,color:T.dm,background:T.bd,padding:"0 3px",borderRadius:2,lineHeight:"14px"}}>{resurgAge} old</span>}</div>{t.description&&<div style={{fontSize:11,color:T.dm,marginTop:2,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis",maxWidth:mb?100:160}}>{t.description.slice(0,80)}</div>}{isResurg&&t.features&&<div style={{display:"flex",gap:2,marginTop:2}}>{[{l:"SM",v:t.features.smartMoney||0,c:"#b388ff"},{l:"COM",v:t.features.communityGrowth||0,c:"#18ffff"},{l:"SOC",v:t.features.socialRevival||0,c:"#ffd600"},{l:"VOL",v:t.features.volumeSpike||0,c:"#ff9100"},{l:"REV",v:t.features.priceReversal||0,c:"#00e676"}].map(b=><div key={b.l} style={{flex:1}} title={b.l+": "+(b.v*100).toFixed(0)+"%"}><div style={{height:2,borderRadius:1,background:T.bd}}><div style={{height:2,borderRadius:1,background:b.c,width:(b.v*100)+"%"}}/></div></div>)}</div>}</div><div style={{flex:1,minWidth:0}}><div style={{height:mb?38:48}}><SpkC data={t.spark||[]} color={t.spark&&t.spark.length>1&&t.spark[t.spark.length-1]>=t.spark[0]?T.gn:"#ff4444"} h={mb?38:48}/></div>{/* Buy Pressure Bar / Resurgence Score */}{isResurg?<div style={{display:"flex",alignItems:"center",gap:3,marginTop:2}}><div style={{flex:1,height:3,borderRadius:2,background:T.bd,overflow:"hidden"}}><div style={{width:Math.round((t.resurgenceScore||0)*100)+"%",height:"100%",borderRadius:2,background:(t.resurgenceScore||0)>=.65?"#b388ff":(t.resurgenceScore||0)>=.45?"#ffd600":"#ff9100",transition:"width .5s"}}/></div><span style={{fontSize:8,color:"#b388ff",fontWeight:700,flexShrink:0}}>{Math.round((t.resurgenceScore||0)*100)}</span></div>:<div style={{display:"flex",alignItems:"center",gap:3,marginTop:2}}><div style={{flex:1,height:3,borderRadius:2,background:T.bd,overflow:"hidden"}}><div style={{width:bpW+"%",height:"100%",borderRadius:2,background:bpW>=70?T.gn:bpW>=50?T.yl:"#ff4444",transition:"width .5s"}}/></div><span style={{fontSize:8,color:bpW>=70?T.gn:bpW>=50?T.dm:"#ff4444",fontWeight:700,flexShrink:0}}>{bpW}%</span></div>}</div><div style={{textAlign:"right",flexShrink:0,minWidth:mb?55:72}}><div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:2}}>{mArrow&&<span style={{fontSize:mb?11:13,fontWeight:900,color:mColor}}>{mArrow}</span>}<span style={{fontSize:mb?15:17,fontWeight:800,color:fixMc(t,solP)>=gradMc?"#ffaa00":fixMc(t,solP)>=1e5?T.gn:fixMc(t,solP)>=1e4?T.yl:T.tx}}>${fm(fixMc(t,solP))}</span></div>{t.h1Change!=null&&<div style={{fontSize:12,color:t.h1Change>0?T.gn:"#ff4444"}}>{t.h1Change>0?"+":""}{typeof t.h1Change==="number"?t.h1Change.toFixed(1):t.h1Change}%</div>}{t.volSpike>=3&&<div style={{fontSize:8,fontWeight:900,color:"#ff8800",background:"#ff880012",padding:"0 3px",borderRadius:2,marginTop:1,textAlign:"center"}} title={t.volSpike+"x avg volume"}>VOL {t.volSpike.toFixed(0)}x</div>}{t.pctToGrad!=null&&<div style={{width:"100%",height:3,borderRadius:2,background:T.bd,marginTop:2}}><div style={{width:Math.min(100,t.pctToGrad)+"%",height:"100%",borderRadius:2,background:t.pctToGrad>=100?T.yl:T.gn}}/></div>}{t.graduated&&<div style={{fontSize:11,fontWeight:800,color:T.gn,marginTop:1}}>GRADUATED</div>}{t.dexBoosted&&<div style={{fontSize:10,fontWeight:800,color:"#ffd600",marginTop:1}}>DEX PAID</div>}</div></div>})}</div>}</div></EB>}
 
@@ -1363,7 +1444,7 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 </div></div>
 {/* Expanded view with chart + controls */}
 {expanded&&<div style={{padding:"0 12px 10px",background:T.bg+"44"}}>
-<CandleChart ca={p.mint} T={T} mb={mb}/>
+<CandleChart ca={p.mint} T={T} mb={mb} wsRef={wsRef}/>
 {/* Buy more */}
 <div style={{display:"flex",gap:3,marginTop:8}}>{[0.05,0.1,0.25,0.5].map(amt=><button key={amt} onClick={async()=>{try{await quickBuy(p.mint,amt);toast(`Buying ${amt} SOL...`,"success")}catch(e){toast(e.message,"error")}}} style={{flex:1,padding:"8px 0",background:T.gn+"06",border:"1px solid "+T.gn+"18",borderRadius:5,fontSize:12,fontWeight:800,color:T.gn,cursor:"pointer"}}>{amt}</button>)}</div>
 {/* Sell */}

@@ -2427,11 +2427,37 @@ function broadcastWS(msg) {
       try { client.send(str); } catch {}
     }
   }
+  // Forward trade events to chart-subscribed clients with enriched price data
+  if (msg.event === "trade" && msg.data?.ca) {
+    const token = radar.tokens.get(msg.data.ca);
+    const chartMsg = JSON.stringify({ event: "chart-trade", data: { ...msg.data, mcapSol: token?.mcapSol || 0, price: token?.mcapUsd || 0, time: Date.now() } });
+    for (const client of wss.clients) {
+      if (client.readyState === WebSocket.OPEN && client._chartSub === msg.data.ca) {
+        try { client.send(chartMsg); } catch {}
+      }
+    }
+  }
 }
 
 wss.on("connection", (ws) => {
   radar.online++;
-  ws.on("close", () => { radar.online--; });
+  ws._chartSub = null; // per-client chart subscription (one token at a time)
+  ws.on("close", () => { radar.online--; ws._chartSub = null; });
+  ws.on("message", (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === "subscribe-chart" && msg.ca) {
+        ws._chartSub = msg.ca;
+        // Ensure token is subscribed on PumpPortal for trade data
+        subscribeToToken(msg.ca);
+        ws.send(JSON.stringify({ event: "chart-subscribed", data: { ca: msg.ca } }));
+      } else if (msg.type === "unsubscribe-chart") {
+        ws._chartSub = null;
+      } else if (msg.type === "ping") {
+        ws.send(JSON.stringify({ type: "pong" }));
+      }
+    } catch {}
+  });
   // Send initial state
   ws.send(JSON.stringify({ event: "connected", data: { poolSize: radar.poolSize } }));
 });
