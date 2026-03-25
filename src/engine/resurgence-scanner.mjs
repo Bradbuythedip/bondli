@@ -436,7 +436,7 @@ export class ResurgenceScanner {
     this.redis = redis;
     this.smartMoneyTracker = smartMoneyTracker;
     this._cache = {};
-    this.CACHE_TTL = 120; // 2 min cache
+    this.CACHE_TTL = 60; // 1 min cache — fresher data for resurgence detection
     this.lastResults = [];
     this.lastScanTime = 0;
   }
@@ -526,6 +526,22 @@ export class ResurgenceScanner {
 
     // Take top 30
     const tokens = scored.slice(0, 30);
+
+    // If scan yielded nothing but we have previous good results, return those
+    // (API rate limits / transient failures shouldn't blank out the tab)
+    if (tokens.length === 0 && this.lastResults.length > 0) {
+      const staleSec = Math.round((now - this.lastScanTime) / 1000);
+      return {
+        tokens: this.lastResults,
+        totalCandidates: 0,
+        ageFiltered: 0,
+        strongResurgence: this.lastResults.filter(t => t.signal === "STRONG_RESURGENCE").length,
+        resurgence: this.lastResults.filter(t => t.signal === "RESURGENCE").length,
+        scannedAt: this.lastScanTime,
+        stale: true,
+        staleSec,
+      };
+    }
 
     const result = {
       tokens,
