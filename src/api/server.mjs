@@ -30,6 +30,10 @@ import { scoreToken } from "../engine/velocity-scorer.mjs";
 // Resurgence scanner — older coins having a revival
 import { ResurgenceScanner } from "../engine/resurgence-scanner.mjs";
 
+// Price feeds — Jupiter spot + GeckoTerminal OHLCV candles (free, no keys)
+import priceFeeds from "../engine/price-feeds.mjs";
+const { getSpotPrice, getMultiSpotPrices, getCandlesByMint, analyzeCandles, findPool } = priceFeeds;
+
 // Memetic scoring (Alchemy-free — uses PumpPortal data)
 import { MemeticPipeline, scoreMemeticQuick, scoreTokenMemetic, loadBlacklists as loadMemeticBlacklists, startMemeticWorkers } from "../engine/memetic-pipeline.mjs";
 import { scheduleRetraining } from "../scoring/memetic/learning-pipeline.js";
@@ -1087,6 +1091,15 @@ function createLiveSim(id, settings) {
     wss.clients.forEach(ws => {
       if (ws.readyState === 1) { try { ws.send(str); } catch {} }
     });
+    // Forward trade events to chart-subscribed clients with price data
+    if (msg.event === "trade" && msg.data?.ca) {
+      const chartMsg = JSON.stringify({ event: "chart-trade", data: msg.data });
+      wss.clients.forEach(ws => {
+        if (ws.readyState === 1 && ws._chartSub === msg.data.ca) {
+          try { ws.send(chartMsg); } catch {}
+        }
+      });
+    }
   }
 
   // Fee-aware position sizing — ensures trades are large enough to profit after costs
@@ -1795,6 +1808,78 @@ app.post("/api/memetic/retrain", async (req, res) => {
 });
 
 // ═══════════════════════════════════════
+// ROUTES: CHART DATA — OHLCV candles from trades + GeckoTerminal fallback
+// ═══════════════════════════════════════
+app.get("/api/chart/:ca", async (req, res) => {
+  try {
+    const ca = req.params.ca;
+    const tf = req.query.tf || "1m";
+    const limit = Math.min(parseInt(req.query.limit) || 300, 500);
+
+    // Try GeckoTerminal candles first (most accurate for graduated tokens)
+    const candles = await getCandlesByMint(ca, tf, limit).catch(() => null);
+    if (candles && candles.length > 0) {
+      return res.json({ candles, source: "gecko", tf });
+    }
+
+    // Fallback: no data available
+    res.json({ candles: [], source: "none", tf });
+  } catch (e) {
+    res.status(500).json({ error: e.message, candles: [] });
+  }
+});
+
+// Jupiter spot price
+app.get("/api/spot/:mint", async (req, res) => {
+  try {
+    const result = await getSpotPrice(req.params.mint);
+    if (!result) return res.status(404).json({ error: "price not found" });
+    res.json(result);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Jupiter batch spot prices
+app.post("/api/spot/batch", async (req, res) => {
+  try {
+    const { mints } = req.body || {};
+    if (!Array.isArray(mints) || mints.length === 0) return res.json({ prices: {} });
+    const results = await getMultiSpotPrices(mints.slice(0, 100));
+    res.json({ prices: results });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GeckoTerminal OHLCV candles for any mint
+app.get("/api/candles/:mint", async (req, res) => {
+  try {
+    const tf = req.query.tf || "5m";
+    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+    const candles = await getCandlesByMint(req.params.mint, tf, limit);
+    if (!candles || candles.length === 0) return res.json({ candles: [], analysis: null });
+    const analysis = analyzeCandles(candles);
+    res.json({ candles, analysis });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Chart analysis only (lightweight)
+app.get("/api/chart-analysis/:mint", async (req, res) => {
+  try {
+    const tf = req.query.tf || "5m";
+    const candles = await getCandlesByMint(req.params.mint, tf, 50);
+    if (!candles?.length) return res.json({ error: "no data" });
+    res.json(analyzeCandles(candles));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Pool address lookup
+app.get("/api/pool/:mint", async (req, res) => {
+  try {
+    const pool = await findPool(req.params.mint);
+    if (!pool) return res.status(404).json({ error: "pool not found" });
+    res.json({ pool });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════
 // IMAGE PROXY — fixes OpaqueResponseBlocking for IPFS/pump.fun images
 // ═══════════════════════════════════════
 const _imgCache = new Map();
@@ -1912,13 +1997,14 @@ wss.on("connection", (ws, req) => {
   wss.clients.forEach(c => { if (c._bondliIP === ip) connFromIP++; });
   if (connFromIP >= 3) { ws.close(4029, "Too many connections"); return; }
   ws._bondliIP = ip;
+  ws._chartSub = null; // per-client chart subscription (one token at a time)
   ws.send(JSON.stringify({ event: "connected", data: { dryRun: CONFIG.DRY_RUN } }));
   const handler = (msg) => { if (ws.readyState === 1) { try { ws.send(msg); } catch {} } };
   orch.onEvent(handler);
   ws.isAlive = true;
   ws.on("pong", () => { ws.isAlive = true; });
-  ws.on("close", () => { const idx = orch.listeners.indexOf(handler); if (idx >= 0) orch.listeners.splice(idx, 1); });
-  ws.on("message", (data) => { const now = Date.now(); if (!ws._lastMsg) ws._lastMsg = 0; if (now - ws._lastMsg < 100) return; ws._lastMsg = now; try { const msg = JSON.parse(data.toString()); if (msg.type === "ping") ws.send(JSON.stringify({ type: "pong" })); } catch {} });
+  ws.on("close", () => { ws._chartSub = null; const idx = orch.listeners.indexOf(handler); if (idx >= 0) orch.listeners.splice(idx, 1); });
+  ws.on("message", (data) => { const now = Date.now(); if (!ws._lastMsg) ws._lastMsg = 0; if (now - ws._lastMsg < 50) return; ws._lastMsg = now; try { const msg = JSON.parse(data.toString()); if (msg.type === "ping") ws.send(JSON.stringify({ type: "pong" })); else if (msg.type === "subscribe-chart" && msg.ca) { ws._chartSub = msg.ca; ws.send(JSON.stringify({ event: "chart-subscribed", data: { ca: msg.ca } })); } else if (msg.type === "unsubscribe-chart") { ws._chartSub = null; } } catch {} });
 });
 const heartbeat = setInterval(() => { wss.clients.forEach(ws => { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; ws.ping(); }); }, 30000);
 wss.on("close", () => clearInterval(heartbeat));
