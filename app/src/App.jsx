@@ -3,7 +3,6 @@ import{TC,D,L,css,uT}from"./lib/t.js";
 import{M,S,API,WS_URL}from"./lib/c.js";
 import{hW,wN,fm,fs,tp,dbp,wc,hp}from"./lib/u.js";
 import{useSolPrice}from"./hooks/useSolPrice.js";
-import{createChart,ColorType,CrosshairMode}from"lightweight-charts";
 import a from"./lib/a.js";
 const uM=()=>{const[m,s]=useState(()=>typeof window!=="undefined"&&window.innerWidth<700);useEffect(()=>{const q=window.matchMedia("(max-width:700px)");const h=e=>s(e.matches);q.addEventListener("change",h);s(q.matches);return()=>q.removeEventListener("change",h)},[]);return m};
 class EB extends Component{constructor(p){super(p);this.state={e:null}}static getDerivedStateFromError(e){return{e}}render(){if(this.state.e)return<div style={{padding:12,margin:6,borderRadius:8,background:"#ff174406",textAlign:"center"}}><span style={{fontFamily:M,fontSize:15,color:"#ff1744"}}>{this.props.l} error </span><button onClick={()=>this.setState({e:null})} style={{marginLeft:6,padding:"4px 12px",borderRadius:5,background:"none",border:"1px solid #ff174422",color:"#ff1744",fontFamily:M,fontSize:13,cursor:"pointer"}}>retry</button></div>;return this.props.children}}
@@ -216,203 +215,28 @@ return<div key={p.ca} style={{marginBottom:posWithScore.length>1?8:0}}>
 </div>})}
 </div>}
 
-// ═══ CANDLESTICK CHART — lightweight-charts OHLC + volume ═══
-// ═══ EMA calculator ═══
-function calcEMA(data,period){const k=2/(period+1);const ema=[];if(!data.length)return ema;ema[0]=data[0];for(let i=1;i<data.length;i++)ema[i]=data[i]*k+ema[i-1]*(1-k);return ema}
-// ═══ VWAP calculator ═══
-function calcVWAP(candles){let cumVP=0,cumV=0;return candles.map(c=>{const tp=(c.high+c.low+c.close)/3;cumVP+=tp*(c.volume||1);cumV+=(c.volume||1);return cumV>0?cumVP/cumV:tp})}
+// ═══ EXTERNAL CHART — gmgn / dexscreener toggle ═══
 
-function TokenChart({ca,T,mb,wsRef,height:_h}){
-const containerRef=useRef(null);
-const chartRef=useRef(null);
-const seriesRef=useRef({});
-const candleAgg=useRef({}); // current candle being built from trades
-const [err,setErr]=useState(null);
-const [tf,setTf]=useState("1m");
-const [trades,setTrades]=useState([]); // recent trade tape
-const [stats,setStats]=useState({buys:0,sells:0,buyVol:0,sellVol:0});
-const h=_h||(mb?260:360);
-const tfMap={"5s":5000,"15s":15000,"1m":60000,"5m":300000,"15m":900000,"1h":3600000};
-const tfMs=tfMap[tf]||60000;
-const tfLabel={"5s":"5s","15s":"15s","1m":"1m","5m":"5m","15m":"15m","1h":"1h"};
+function ExternalChart({ca,T,mb}){
+const[src,setSrc]=useState(()=>{try{return localStorage.getItem("bondli_chart_src")||"gmgn"}catch{return"gmgn"}});
+const toggle=(v)=>{setSrc(v);try{localStorage.setItem("bondli_chart_src",v)}catch{}};
+const h=mb?300:420;
 
-useEffect(()=>{
-  if(!containerRef.current||!ca)return;
-  setErr(null);setTrades([]);setStats({buys:0,sells:0,buyVol:0,sellVol:0});
-  candleAgg.current={};
-
-  // Create chart
-  const chart=createChart(containerRef.current,{
-    width:containerRef.current.clientWidth,height:h,
-    layout:{background:{type:ColorType.Solid,color:"transparent"},textColor:T.dm,fontSize:10,fontFamily:M},
-    grid:{vertLines:{color:T.bd+"66"},horzLines:{color:T.bd+"66"}},
-    crosshair:{mode:CrosshairMode.Normal,
-      vertLine:{color:T.gn+"44",width:1,style:3,labelBackgroundColor:T.sf},
-      horzLine:{color:T.gn+"44",width:1,style:3,labelBackgroundColor:T.sf}},
-    rightPriceScale:{borderColor:T.bd,scaleMargins:{top:0.05,bottom:0.2},autoScale:true},
-    timeScale:{borderColor:T.bd,timeVisible:true,secondsVisible:tf==="5s"||tf==="15s",rightOffset:3,barSpacing:mb?5:7,fixLeftEdge:false,fixRightEdge:false},
-    handleScroll:true,handleScale:true,
-  });
-  chartRef.current=chart;
-
-  // Candlestick series
-  const candle=chart.addCandlestickSeries({
-    upColor:T.gn,downColor:"#ff4444",borderUpColor:T.gn,borderDownColor:"#ff4444",
-    wickUpColor:T.gn+"aa",wickDownColor:"#ff4444aa",
-    priceFormat:{type:"custom",formatter:v=>v<0.001?v.toExponential(2):v<1?v.toFixed(6):v<100?"$"+v.toFixed(4):"$"+Math.round(v).toLocaleString()},
-  });
-
-  // Volume histogram (bottom)
-  const vol=chart.addHistogramSeries({priceFormat:{type:"volume"},priceScaleId:"vol"});
-  chart.priceScale("vol").applyOptions({scaleMargins:{top:0.82,bottom:0}});
-
-  // EMA lines
-  const ema9=chart.addLineSeries({color:"#ffd60088",lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-  const ema21=chart.addLineSeries({color:"#b388ff88",lineWidth:1,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-
-  // VWAP line
-  const vwap=chart.addLineSeries({color:"#18ffff66",lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false});
-
-  seriesRef.current={candle,vol,ema9,ema21,vwap};
-
-  // ── Apply candle data ──
-  const applyData=(candles)=>{
-    if(!candles?.length)return;
-    const closes=candles.map(c=>c.close);
-    const e9=calcEMA(closes,9);
-    const e21=calcEMA(closes,21);
-    const vwapVals=calcVWAP(candles);
-    candle.setData(candles.map(c=>({time:c.time,open:c.open,high:c.high,low:c.low,close:c.close})));
-    vol.setData(candles.map(c=>({time:c.time,value:c.volume||0,color:c.close>=c.open?T.gn+"44":"#ff444444"})));
-    ema9.setData(candles.map((c,i)=>({time:c.time,value:e9[i]})));
-    ema21.setData(candles.map((c,i)=>({time:c.time,value:e21[i]})));
-    vwap.setData(candles.map((c,i)=>({time:c.time,value:vwapVals[i]})));
-    chart.timeScale().scrollToRealTime();
-  };
-
-  // ── Fetch historical candles ──
-  const geckoTf=tf==="5s"||tf==="15s"?"1m":tf;
-  fetch(`${API}/api/chart/${ca}?tf=${geckoTf}&limit=300`).then(r=>r.json()).then(d=>{
-    if(d.candles?.length){applyData(d.candles)}
-    else{
-      // Fallback: try spark-based chart from trades
-      fetch(`${API}/api/chart/${ca}?interval=${tf==="5s"?5:tf==="15s"?15:60}`).then(r=>r.json()).then(d2=>{
-        if(d2.candles?.length)applyData(d2.candles);
-        else setErr("Waiting for chart data...");
-      }).catch(()=>setErr("No chart data yet"));
-    }
-  }).catch(()=>setErr("Chart load failed"));
-
-  // ── Auto-refresh candles (backup) ──
-  const refreshIv=setInterval(()=>{
-    fetch(`${API}/api/chart/${ca}?tf=${geckoTf}&limit=300`).then(r=>r.json()).then(d=>{
-      if(d.candles?.length)applyData(d.candles);
-    }).catch(()=>{});
-  },tf==="5s"?5000:tf==="15s"?10000:15000);
-
-  // ── WebSocket: subscribe for real-time trades ──
-  const ws=wsRef?.current;
-  let wsHandler=null;
-  if(ws&&ws.readyState===1){
-    ws.send(JSON.stringify({type:"subscribe-chart",ca}));
-    wsHandler=(e)=>{
-      try{
-        const msg=JSON.parse(e.data);
-        if(msg.event==="chart-trade"&&msg.data?.ca===ca){
-          const d=msg.data;
-          const now=d.time||Date.now();
-          const price=d.price||d.mcap||0;
-          const sol=d.sol||0;
-          const side=d.side||"buy";
-
-          // Update trade tape
-          setTrades(prev=>[{side,sol,price,time:now,wallet:d.wallet},...prev].slice(0,50));
-          setStats(prev=>({
-            buys:prev.buys+(side==="buy"?1:0),
-            sells:prev.sells+(side==="sell"?1:0),
-            buyVol:prev.buyVol+(side==="buy"?sol:0),
-            sellVol:prev.sellVol+(side==="sell"?sol:0),
-          }));
-
-          // Update current candle in real-time
-          if(price>0&&seriesRef.current.candle){
-            const bucketTime=Math.floor(now/tfMs)*Math.floor(tfMs/1000);
-            const agg=candleAgg.current;
-            if(!agg.time||agg.time!==bucketTime){
-              // New candle bucket
-              candleAgg.current={time:bucketTime,open:price,high:price,low:price,close:price,volume:sol};
-            }else{
-              agg.high=Math.max(agg.high,price);
-              agg.low=Math.min(agg.low,price);
-              agg.close=price;
-              agg.volume=(agg.volume||0)+sol;
-            }
-            try{
-              seriesRef.current.candle.update({time:candleAgg.current.time,open:candleAgg.current.open,high:candleAgg.current.high,low:candleAgg.current.low,close:candleAgg.current.close});
-              seriesRef.current.vol.update({time:candleAgg.current.time,value:candleAgg.current.volume||0,color:candleAgg.current.close>=candleAgg.current.open?T.gn+"44":"#ff444444"});
-            }catch{}
-          }
-        }
-      }catch{}
-    };
-    ws.addEventListener("message",wsHandler);
-  }
-
-  // ── Resize ──
-  const ro=new ResizeObserver(entries=>{const{width}=entries[0].contentRect;chart.applyOptions({width})});
-  ro.observe(containerRef.current);
-
-  return()=>{
-    clearInterval(refreshIv);ro.disconnect();chart.remove();chartRef.current=null;seriesRef.current={};
-    if(ws&&wsHandler)ws.removeEventListener("message",wsHandler);
-    if(ws&&ws.readyState===1)try{ws.send(JSON.stringify({type:"unsubscribe-chart"}))}catch{}
-  };
-},[ca,T,mb,tf]);
-
-const bpPct=stats.buys+stats.sells>0?Math.round(stats.buys/(stats.buys+stats.sells)*100):50;
+const url=src==="gmgn"
+  ?`https://gmgn.ai/sol/token/${ca}`
+  :`https://dexscreener.com/solana/${ca}?embed=1&theme=dark&trades=0&info=0`;
 
 return<div style={{width:"100%",borderRadius:8,overflow:"hidden",background:T.bg,border:"1px solid "+T.bd}}>
-{/* Timeframe selector + stats bar */}
-<div style={{display:"flex",alignItems:"center",gap:4,padding:"5px 8px",borderBottom:"1px solid "+T.bd,flexWrap:"wrap"}}>
-  <div style={{display:"flex",gap:2}}>
-    {Object.keys(tfLabel).map(t=><button key={t} onClick={()=>setTf(t)} style={{fontSize:10,fontWeight:tf===t?800:500,color:tf===t?T.gn:T.dm,background:tf===t?T.gn+"12":"transparent",border:"1px solid "+(tf===t?T.gn+"33":T.bd),borderRadius:4,padding:"3px 7px",cursor:"pointer",transition:"all .1s"}}>{tfLabel[t]}</button>)}
-  </div>
+<div style={{display:"flex",alignItems:"center",gap:3,padding:"5px 8px",borderBottom:"1px solid "+T.bd}}>
+  {["gmgn","dexscreener"].map(s=><button key={s} onClick={()=>toggle(s)} style={{fontSize:11,fontWeight:src===s?800:500,color:src===s?T.gn:T.dm,background:src===s?T.gn+"12":"transparent",border:"1px solid "+(src===s?T.gn+"33":T.bd),borderRadius:5,padding:"4px 10px",cursor:"pointer",transition:"all .1s"}}>{s==="gmgn"?"GMGN":"DexScreener"}</button>)}
   <div style={{flex:1}}/>
-  {stats.buys+stats.sells>0&&<div style={{display:"flex",alignItems:"center",gap:4,fontSize:10}}>
-    <span style={{color:T.gn,fontWeight:700}}>{stats.buys}B</span>
-    <div style={{width:40,height:4,borderRadius:2,background:"#ff4444",overflow:"hidden"}}><div style={{width:bpPct+"%",height:"100%",background:T.gn,transition:"width .3s"}}/></div>
-    <span style={{color:"#ff4444",fontWeight:700}}>{stats.sells}S</span>
-  </div>}
-  <div style={{display:"flex",gap:3,fontSize:10}}>
-    <span style={{color:"#ffd600",opacity:.6}} title="EMA 9">E9</span>
-    <span style={{color:"#b388ff",opacity:.6}} title="EMA 21">E21</span>
-    <span style={{color:"#18ffff",opacity:.6}} title="VWAP">VW</span>
-  </div>
+  <a href={src==="gmgn"?`https://gmgn.ai/sol/token/${ca}`:`https://dexscreener.com/solana/${ca}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:10,color:T.dm,textDecoration:"none",opacity:.6}}>open ↗</a>
 </div>
-{/* Chart container */}
-<div ref={containerRef} style={{width:"100%",minHeight:h}}>
-  {err&&<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:h,color:T.dm,fontSize:12}}>{err}</div>}
-</div>
-{/* Trade tape */}
-{trades.length>0&&<div style={{borderTop:"1px solid "+T.bd,maxHeight:mb?60:80,overflowY:"auto",padding:"2px 8px"}}>
-  {trades.slice(0,8).map((t,i)=><div key={i} style={{display:"flex",gap:6,fontSize:10,padding:"1px 0",color:t.side==="buy"?T.gn:"#ff4444",opacity:1-i*.08}}>
-    <span style={{fontWeight:700,width:28}}>{t.side==="buy"?"BUY":"SELL"}</span>
-    <span>{t.sol?.toFixed(3)} SOL</span>
-    <span style={{color:T.dm}}>{t.wallet}</span>
-    <span style={{marginLeft:"auto",color:T.ft}}>{new Date(t.time).toLocaleTimeString()}</span>
-  </div>)}
-</div>}
-{/* Links bar */}
-<div style={{display:"flex",gap:4,padding:"4px 8px",borderTop:"1px solid "+T.bd,alignItems:"center"}}>
-  <a href={`https://pump.fun/coin/${ca}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:11,color:T.gn,textDecoration:"none",fontWeight:700}}>pump.fun</a>
-  <a href={`https://dexscreener.com/solana/${ca}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:11,color:T.dm,textDecoration:"none"}}>dexscreener</a>
-  <div style={{flex:1}}/>
-  {stats.buyVol+stats.sellVol>0&&<span style={{fontSize:10,color:T.ft}}>Vol: {(stats.buyVol+stats.sellVol).toFixed(2)} SOL</span>}
-</div>
+<iframe src={url} style={{width:"100%",height:h,border:"none",background:T.bg}} allow="clipboard-write" loading="lazy" title="chart"/>
 </div>}
 
-// Keep old name as alias for backward compat in wallet positions
-function CandleChart(props){return<TokenChart {...props}/>}
+// Alias for wallet positions
+function CandleChart({ca,T,mb}){return<ExternalChart ca={ca} T={T} mb={mb}/>}
 
 // ═══ MEMETIC SPIDER CHART ═══
 const MEME_MODS={linguistic:{label:"Linguistic",color:"#00e676"},visual:{label:"Visual",color:"#ff9100"},cultural:{label:"Cultural",color:"#ffd600"},community:{label:"Community",color:"#18ffff"},influencer:{label:"Influencer",color:"#b388ff"},absurdity:{label:"Absurdity",color:"#ff1744"},temporal:{label:"Temporal",color:"#e040fb"}};
@@ -462,7 +286,7 @@ return<div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,over
 {/* Description */}
 {t.description&&<div style={{padding:"8px 14px",fontSize:16,color:T.dm,borderBottom:"1px solid "+T.bd,lineHeight:1.5}}>{t.description.length>200?t.description.slice(0,200)+"…":t.description}</div>}
 {/* ═══ CHART — default view, real-time candlestick ═══ */}
-<div style={{borderBottom:"1px solid "+T.bd}}><TokenChart ca={t.ca} T={T} mb={mb} wsRef={wsRef}/></div>
+<div style={{borderBottom:"1px solid "+T.bd}}><ExternalChart ca={t.ca} T={T} mb={mb}/></div>
 {/* ═══ ENTRY TIMING PANEL — shows when to buy ═══ */}
 {(t.entrySignal||t.buyPressure!=null)&&<div style={{padding:"8px 14px",borderBottom:"1px solid "+T.bd,display:"flex",alignItems:"center",gap:mb?6:10,flexWrap:"wrap"}}>
 {/* Entry Signal */}
@@ -1444,7 +1268,7 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 </div></div>
 {/* Expanded view with chart + controls */}
 {expanded&&<div style={{padding:"0 12px 10px",background:T.bg+"44"}}>
-<CandleChart ca={p.mint} T={T} mb={mb} wsRef={wsRef}/>
+<CandleChart ca={p.mint} T={T} mb={mb}/>
 {/* Buy more */}
 <div style={{display:"flex",gap:3,marginTop:8}}>{[0.05,0.1,0.25,0.5].map(amt=><button key={amt} onClick={async()=>{try{await quickBuy(p.mint,amt);toast(`Buying ${amt} SOL...`,"success")}catch(e){toast(e.message,"error")}}} style={{flex:1,padding:"8px 0",background:T.gn+"06",border:"1px solid "+T.gn+"18",borderRadius:5,fontSize:12,fontWeight:800,color:T.gn,cursor:"pointer"}}>{amt}</button>)}</div>
 {/* Sell */}
