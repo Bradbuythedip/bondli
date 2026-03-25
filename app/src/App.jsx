@@ -1974,6 +1974,7 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 <span style={{fontSize:15,fontWeight:800}}>Auto-Ape</span>
 {aaActive&&<span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}
 {aaActive&&<span style={{fontSize:9,color:T.gn,fontWeight:700}}>{autoTrade?.positions?.length||0} open</span>}
+{aaActive&&S.bradEnabled!==false&&autoTrade?.brad?.healthy&&<span style={{fontSize:7,fontWeight:800,color:T.cy,background:T.cy+"18",padding:"1px 5px",borderRadius:3,letterSpacing:0.5}}>BRAD</span>}
 </div>
 <div style={{display:"flex",gap:4}}>
 {/* Primary action: START or PAUSE — one button, clear state */}
@@ -2049,6 +2050,14 @@ return<div style={{background:T.sf,border:"1px solid "+(aaActive?T.gn:T.bd),bord
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
 <span style={{fontSize:9,fontWeight:700,color:T.pu}}>Momentum Exit</span>
 <button onClick={()=>sAutoTrade(p=>({...p,customized:true,settings:{...p.settings,momentumExit:!S.momentumExit}}))} style={{padding:"4px 10px",borderRadius:5,border:"1px solid "+(S.momentumExit?T.pu:T.bd),background:S.momentumExit?T.pu+"22":"none",color:S.momentumExit?T.pu:T.ft,fontWeight:800,fontSize:10,cursor:"pointer"}}>{S.momentumExit?"ON":"OFF"}</button>
+</div>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:4}}>
+<div style={{display:"flex",alignItems:"center",gap:4}}>
+<span style={{fontSize:9,fontWeight:700,color:T.cy}}>BRAD Engine</span>
+{autoTrade?.brad?.healthy&&<span style={{width:5,height:5,borderRadius:"50%",background:T.gn}}/>}
+{autoTrade?.brad&&!autoTrade.brad.healthy&&<span style={{fontSize:7,color:T.ft}}>(offline)</span>}
+</div>
+<button onClick={async()=>{const next=S.bradEnabled===false;try{await a.brt(user.pubkey,next);sAutoTrade(p=>({...p,customized:true,settings:{...p.settings,bradEnabled:next}}));toast(next?"BRAD enabled — cognitive reasoning active":"BRAD disabled","success")}catch(e){toast(e.message,"error")}}} style={{padding:"4px 10px",borderRadius:5,border:"1px solid "+(S.bradEnabled!==false?T.cy:T.bd),background:S.bradEnabled!==false?T.cy+"22":"none",color:S.bradEnabled!==false?T.cy:T.ft,fontWeight:800,fontSize:10,cursor:"pointer"}}>{S.bradEnabled!==false?"ON":"OFF"}</button>
 </div>
 </div>}
 
