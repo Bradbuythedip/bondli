@@ -16,8 +16,10 @@ import { checkExecutionWindow } from "./gates/execution-window.js";
 import { calculatePositionSize } from "./sizing.js";
 import { createExitPlan, checkDerivativeExit, checkThresholdExit, checkTrailingExit, checkGraduationExit, checkVolumeExit } from "./exit-plan.js";
 import { checkWatchlistPromotion, checkMissedReentry, checkPostExitReentry, checkDipDCA } from "./recovery.js";
+import { evaluateToken as bradEvaluateToken, evaluatePosition as bradEvaluatePosition, isHealthy as bradIsHealthy } from "../engine/brad-client.mjs";
 
 // Run the full 5-gate pipeline for a single token
+// Now enhanced with BRAD cognitive engine pre-evaluation
 export function runPipeline(token, qf, scores, dynamics, portfolio) {
   const result = {
     ca: token.ca,
@@ -31,9 +33,28 @@ export function runPipeline(token, qf, scores, dynamics, portfolio) {
     rejectGate: null,
     rejectReason: null,
     timing: {},
+    brad: null, // BRAD cognitive evaluation (attached if available)
   };
 
   const t0 = Date.now();
+
+  // ═══ BRAD PRE-EVALUATION (async result attached by caller) ═══
+  // If the caller ran bradEvaluateToken() and attached result to token._bradEval,
+  // use it as a pre-filter. BRAD's meta-cognitive layer can veto entries
+  // when it detects systematic errors (overconfidence, revenge trading, regime blindness).
+  if (token._bradEval) {
+    result.brad = token._bradEval;
+    const bradAction = token._bradEval.action;
+    const bradConfidence = token._bradEval.confidence || 0;
+
+    // BRAD SKIP with high confidence = hard reject (meta-cognitive veto)
+    if (bradAction === "SKIP" && bradConfidence >= 0.8) {
+      result.rejectGate = 0; // Gate 0 = BRAD cognitive layer
+      result.rejectReason = `BRAD veto: ${(token._bradEval.reasoning || []).join("; ")}`;
+      result.timing.brad = Date.now() - t0;
+      return result;
+    }
+  }
 
   // ═══ GATE 1: HARD DISQUALIFIERS ═══
   const g1 = checkDisqualifiers(token, qf);
@@ -100,6 +121,25 @@ export function runPipeline(token, qf, scores, dynamics, portfolio) {
   result.decision = "ENTER";
   result.positionSize = prelimSize;
 
+  // ═══ BRAD SIZING CAP ═══
+  // If BRAD is active and recommends a smaller position, cap bondli's size.
+  // BRAD's meta-cognitive layer may reduce sizing when it detects overconfidence
+  // or regime mismatch. BRAD's size acts as a ceiling, not a floor.
+  if (token._bradEval && token._bradEval.action === "APE" && token._bradEval.position_size_sol > 0) {
+    const bradMaxSol = token._bradEval.position_size_sol;
+    if (prelimSize.solAmount > bradMaxSol) {
+      result.positionSize = {
+        ...prelimSize,
+        solAmount: bradMaxSol,
+        bradCapped: true,
+        bradOriginal: prelimSize.solAmount,
+      };
+    }
+    // Attach BRAD's confidence as additional signal for downstream use
+    result.bradConfidence = token._bradEval.confidence || 0;
+    result.bradStrategy = token._bradEval.strategy || "";
+  }
+
   // Attach exit plan
   result.exitPlan = createExitPlan(g3.tier, scores.apeScore || 0, portfolio.settings || {});
 
@@ -108,6 +148,7 @@ export function runPipeline(token, qf, scores, dynamics, portfolio) {
 }
 
 // Run exit checks on an existing position (called every tick)
+// Enhanced with BRAD cognitive exit layer (Layer 0 — highest priority)
 export function runExitChecks(pos, token, dynamics, settings) {
   if (!token || !pos) return null;
 
@@ -117,6 +158,31 @@ export function runExitChecks(pos, token, dynamics, settings) {
   const changePct = ((currentMcap - pos.entryMcap) / pos.entryMcap) * 100;
   pos.peakMcap = Math.max(pos.peakMcap || pos.entryMcap, currentMcap);
   const fromPeak = pos.peakMcap > 0 ? ((pos.peakMcap - currentMcap) / pos.peakMcap) * 100 : 0;
+
+  // ═══ LAYER 0: BRAD COGNITIVE EXIT (meta-cognitive intervention) ═══
+  // If BRAD's meta-cognitive layer (L2) detected a blind spot and recommends exit,
+  // this takes highest priority. BRAD catches systematic patterns that per-position
+  // checks miss: loss aversion (holding losers too long), regime blindness, etc.
+  if (pos._bradExitEval) {
+    const bradExit = pos._bradExitEval;
+    if (bradExit.action === "EXIT" && bradExit.confidence >= 0.7) {
+      return {
+        action: "SELL", pct: 100, reason: "brad-exit", layer: 0,
+        detail: `BRAD L2: ${(bradExit.reasoning || []).slice(0, 2).join("; ")}`,
+        changePct, fromPeak, currentMcap,
+      };
+    }
+    if (bradExit.action === "PARTIAL_EXIT" && bradExit.confidence >= 0.7) {
+      const exitPct = Math.round((bradExit.exit_pct || 0.33) * 100);
+      return {
+        action: "PARTIAL_SELL", pct: exitPct || 33, reason: "brad-partial", layer: 0,
+        detail: `BRAD L2: ${(bradExit.reasoning || []).slice(0, 2).join("; ")}`,
+        changePct, fromPeak, currentMcap,
+      };
+    }
+    // Clean up after processing
+    delete pos._bradExitEval;
+  }
 
   // Layer 1: Derivative exits (highest priority, leading indicators)
   const hasRadarData = token.buys != null && token.trades != null;
@@ -163,4 +229,7 @@ export {
   checkMissedReentry,
   checkPostExitReentry,
   checkDipDCA,
+  bradEvaluateToken,
+  bradEvaluatePosition,
+  bradIsHealthy,
 };

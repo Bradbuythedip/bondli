@@ -54,6 +54,7 @@ import { BagsClient } from "../engine/bags-client.mjs";
 import { mountGpuRoutes } from "../engine/gpu-earnings.mjs";
 import { NosanaJobRouter } from "../engine/nosana-job-router.mjs";
 import { mountChatRoutes } from "../engine/grok-client.mjs";
+import bradClient from "../engine/brad-client.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -4401,6 +4402,39 @@ function startAutoTrader(wallet, settings) {
         }
       }
 
+      // ═══ BRAD: Regime sync (every 60s) ═══
+      // Derive a simple regime from market signals and send to BRAD.
+      // This feeds BRAD's L0 world model and enables regime-aware strategy selection.
+      if (bradClient.isHealthy()) {
+        if (!state._bradRegimeLastSync || Date.now() - state._bradRegimeLastSync > 60_000) {
+          state._bradRegimeLastSync = Date.now();
+          // Derive regime from available signals
+          const allTokens = [...radar.tokens.values()];
+          const hotCount = allTokens.filter(t => (t._apeScore || 0) >= 50).length;
+          const rugCount = allTokens.filter(t => (t._rugFlags?.length || 0) >= 3).length;
+          const gradCount = allTokens.filter(t => t.graduated).length;
+          const total = allTokens.length || 1;
+          const gradRate = (gradCount / total) * 100;
+
+          let regime = "RISK_ON";
+          if (state.drawdownMult <= 0) regime = "DEAD";
+          else if (state.drawdownMult < 0.5) regime = "PVP";
+          else if (gradRate > 3 && hotCount > 10) regime = "EUPHORIA";
+          else if (gradRate > 1 && hotCount > 5) regime = "RISK_ON";
+          else if (hotCount > 2) regime = "GRINDING";
+          else regime = "PVP";
+
+          bradClient.updateRegime({
+            regime,
+            confidence: Math.min(1, hotCount / 20),
+            signals: {
+              rugRate: rugCount / total,
+              avgLifespan: 0, // TODO: derive from token ages
+            },
+          }).catch(() => {});
+        }
+      }
+
       // ── HELPER: execute a partial sell ──
       async function execSell(ca, sellPct, kp, reason) {
         try {
@@ -4456,6 +4490,22 @@ function startAutoTrader(wallet, settings) {
           // Keep only last 20 closed positions, remove entries older than 5 min
           state.recentlyClosed = state.recentlyClosed.filter(p => Date.now() - p.exitTime < 300000).slice(-20);
 
+          // ═══ BRAD: Record exit for meta-cognitive evaluation ═══
+          // After every closed trade, BRAD's L2 checks for blind spots
+          // (overconfidence, revenge trading, regime blindness, loss aversion)
+          // and may restructure L1's strategy or confidence.
+          if (exitPct >= 100 && bradClient.isHealthy()) {
+            bradClient.recordExit({
+              ca, exitPriceSol: (currentMcap || 0) / (solUsdPrice || 150),
+              reason: exitReason || "unknown",
+            }).catch(() => {}); // fire-and-forget
+          } else if (exitPct < 100 && bradClient.isHealthy()) {
+            bradClient.recordPartialExit({
+              ca, sizeSol: (pos.entrySol || 0) * (exitPct / 100),
+              priceSol: (currentMcap || 0) / (solUsdPrice || 150),
+              reason: exitReason || "take_profit",
+            }).catch(() => {});
+          }
           // ── TRADE LEARNER: record this trade's outcome for future optimization ──
           if (exitPct >= 100) { // full exit = complete trade record
             tradeLearner.record({
@@ -4543,6 +4593,28 @@ function startAutoTrader(wallet, settings) {
         soldCooldowns.set(wallet, cd);
       }
 
+      // ═══ BRAD: Evaluate open positions for meta-cognitive exits ═══
+      // Run BRAD position evaluation in parallel for all open positions.
+      // BRAD's L2 detects systematic patterns: loss aversion, regime blindness, etc.
+      if (bradClient.isHealthy() && state.positions.size > 0) {
+        const bradPosPromises = [...state.positions.entries()].map(async ([ca, pos]) => {
+          try {
+            const token = radar.tokens.get(ca);
+            const dyn = scoreDynamics.get(ca);
+            if (!token) return;
+            pos._bradExitEval = await bradClient.evaluatePosition(ca, {
+              _apeScore: pos.liveScore || pos.entryScore || 0,
+              _scoreVelocity: dyn?.velocity || 0,
+              _scoreAcceleration: dyn?.acceleration || 0,
+              _rugFlags: token._rugFlags || [],
+              priceSol: (token.mcapUsd || 0) / (solUsdPrice || 150),
+              vSolInBondingCurve: token.vSolInBondingCurve || 0,
+            });
+          } catch { pos._bradExitEval = null; }
+        });
+        await Promise.allSettled(bradPosPromises);
+      }
+
       // ── Check existing positions for tiered TP/SL ──
       for (const [ca, pos] of state.positions) {
         let token = radar.tokens.get(ca);
@@ -4576,6 +4648,33 @@ function startAutoTrader(wallet, settings) {
         if (!pos.slHit) pos.slHit = 0;
 
         const s = { ...state.settings };
+
+        // ═══ LAYER 0: BRAD COGNITIVE EXIT (meta-cognitive intervention) ═══
+        // BRAD's L2 detects systematic patterns: loss aversion, regime blindness,
+        // overconfidence. When it recommends EXIT with high confidence, execute.
+        if (pos._bradExitEval && pos._bradExitEval.action === "EXIT" && pos._bradExitEval.confidence >= 0.7) {
+          const bradReason = (pos._bradExitEval.reasoning || []).slice(0, 2).join("; ") || "meta-cognitive";
+          log(`BRAD EXIT ${ca.slice(0,6)}: L2 intervention — ${bradReason} (conf:${pos._bradExitEval.confidence.toFixed(2)}) +${changePct.toFixed(0)}%`);
+          const sig = await execSell(ca, 100, kp, "brad-exit");
+          if (sig) {
+            broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "BRAD", reason: bradReason } });
+            exitPosition(ca, 100, "brad-exit");
+            trackSell(wallet, ca);
+          }
+          delete pos._bradExitEval;
+          continue;
+        }
+        if (pos._bradExitEval && pos._bradExitEval.action === "PARTIAL_EXIT" && pos._bradExitEval.confidence >= 0.7 && pos.tpHit === 0) {
+          const bradReason = (pos._bradExitEval.reasoning || []).slice(0, 2).join("; ") || "meta-cognitive";
+          const sellPct = Math.round((pos._bradExitEval.exit_pct || 0.33) * 100) || 33;
+          log(`BRAD TRIM ${ca.slice(0,6)}: L2 partial exit ${sellPct}% — ${bradReason} +${changePct.toFixed(0)}%`);
+          const sig = await execSell(ca, sellPct, kp, "brad-partial");
+          if (sig) {
+            broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "BRAD_TRIM", sellPct, reason: bradReason } });
+            pos.tpHit = 1;
+          }
+        }
+        delete pos._bradExitEval; // clean up after check
 
         // ═══ TIER-AWARE TP/SL ADJUSTMENT ═══
         // Tier 1 (GOD_CANDLE): wider stops, higher TPs — let runners run
@@ -5486,6 +5585,32 @@ function startAutoTrader(wallet, settings) {
       state._positionsLast10m = state._entryTimestamps.length;
       _portfolioSnapshot.positionsLast10m = state._positionsLast10m;
 
+      // ═══ BRAD PRE-EVALUATION — run cognitive engine on top candidates ═══
+      // BRAD evaluations run in parallel (non-blocking) for the top candidates.
+      // Results are attached to tokens as _bradEval for the pipeline to consume.
+      if (bradClient.isHealthy()) {
+        const bradPromises = hot.slice(0, 5).map(async (t) => {
+          try {
+            const dyn = scoreDynamics.get(t.ca);
+            t._bradEval = await bradClient.evaluateToken({
+              ca: t.ca, name: t.name, symbol: t.symbol, source: "pump",
+              _apeScore: t._apeScore || 0,
+              _scoreVelocity: dyn?.velocity || 0,
+              _scoreAcceleration: dyn?.acceleration || 0,
+              _rugFlags: t._rugFlags || [],
+              uniqueBuyers: t.uniqueBuyers,
+              vSolInBondingCurve: t.vSolInBondingCurve,
+              mcapUsd: t.mcapUsd, volumeSol: t.volumeSol,
+              buys: t.buys, sells: t.sells, trades: t.trades,
+              smartMoneyIn: t._smartMoneyIn || false,
+              devWallet: t.devWallet, graduated: t.graduated,
+              solPrice: solUsdPrice,
+            });
+          } catch { t._bradEval = null; }
+        });
+        await Promise.allSettled(bradPromises);
+      }
+
       for (const t of hot) {
         const qf = extractQuickFeatures(t);
         const dyn = scoreDynamics.get(t.ca);
@@ -5495,6 +5620,7 @@ function startAutoTrader(wallet, settings) {
           pricePhase: t._pricePhase,
           buyVelTrend: t._buyVelTrend,
           rugFlagCount: t._rugFlags?.length || 0,
+          bradConfidence: t._bradEval?.confidence, // pass through for sizing
         };
         const pipeResult = runPipeline(t, qf, scores, dyn, _portfolioSnapshot);
         t._pipelineTier = pipeResult.tier;
@@ -5720,6 +5846,14 @@ function startAutoTrader(wallet, settings) {
               trackBuy(wallet, t.ca, tradeSol); // instant wallet visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
               broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: tradeSol, mcap: t.mcapUsd, wallet, score: t._apeScore, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, buyVelTrend, tier: t._pipelineTier || 2, tierLabel: t._pipelineLabel || "STRONG" } });
+              // ═══ BRAD: Record confirmed entry for cognitive self-model ═══
+              if (bradClient.isHealthy()) {
+                bradClient.recordEntry({
+                  ca: t.ca, name: t.name, priceSol: (t.mcapUsd || 0) / (solUsdPrice || 150),
+                  sizeSol: tradeSol, score: t._apeScore || 0,
+                  reasoning: [`tier:${t._pipelineTier}`, `phase:${pricePhase}`, `buyVel:${buyVelTrend}`],
+                }).catch(() => {}); // fire-and-forget
+              }
               // ═══ RAPID POST-ENTRY DUMP CHECK — catches instant rugs ═══
               // The 4s main loop interval lets dumps grow from -12% to -40%+.
               // This 2s rapid check catches tokens that dump immediately after our buy.
@@ -8289,6 +8423,56 @@ app.post("/api/intel/smart-money/watch", express.json(), (req, res) => {
   res.json({ ok: added, action: "added", watching: smartMoneyTracker.watchlist.size });
 });
 
+// ═══ BRAD COGNITIVE ENGINE — API endpoints ═══
+// Expose BRAD's cognitive state, metrics, and decisions for the dashboard.
+
+app.get("/api/brad/status", async (req, res) => {
+  res.json({
+    client: bradClient.getClientStatus(),
+  });
+});
+
+app.get("/api/brad/metrics", async (req, res) => {
+  if (!bradClient.isHealthy()) return res.json({ error: "BRAD offline", client: bradClient.getClientStatus() });
+  const metrics = await bradClient.getMetrics();
+  if (!metrics) return res.json({ error: "BRAD not responding" });
+  res.json(metrics);
+});
+
+app.get("/api/brad/state", async (req, res) => {
+  if (!bradClient.isHealthy()) return res.json({ error: "BRAD offline" });
+  const state = await bradClient.getState();
+  if (!state) return res.json({ error: "BRAD not responding" });
+  res.json(state);
+});
+
+app.get("/api/brad/decisions", async (req, res) => {
+  if (!bradClient.isHealthy()) return res.json({ error: "BRAD offline" });
+  const n = parseInt(req.query.n) || 20;
+  const decisions = await bradClient.getDecisions(n);
+  if (!decisions) return res.json({ error: "BRAD not responding" });
+  res.json(decisions);
+});
+
+app.get("/api/brad/config", async (req, res) => {
+  if (!bradClient.isHealthy()) return res.json({ error: "BRAD offline" });
+  const config = await bradClient.getConfig();
+  if (!config) return res.json({ error: "BRAD not responding" });
+  res.json(config);
+});
+
+app.post("/api/brad/config", express.json(), async (req, res) => {
+  if (!bradClient.isHealthy()) return res.status(503).json({ error: "BRAD offline" });
+  const result = await bradClient.updateConfig(req.body);
+  if (!result) return res.status(500).json({ error: "BRAD not responding" });
+  res.json(result);
+});
+
+app.get("/api/brad/health", async (req, res) => {
+  const healthy = await bradClient.healthCheck();
+  res.json({ healthy, client: bradClient.getClientStatus() });
+});
+
 // ═══ INTEL TOKENS — full scored token list for Intel tab ═══
 app.get("/api/intel/tokens", (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 100, 200);
@@ -9148,6 +9332,11 @@ server.listen(PORT, async () => {
   loraClient.checkHealth().then(ok => {
     if (ok) console.log(`  LoRA: ACTIVE — ${loraClient.stats.gpuName || "CPU"}`);
     else console.log(`  LoRA: offline (start with: python src/ml/serve.py)`);
+  });
+  // BRAD cognitive engine: check if sidecar is running
+  bradClient.initBrad().then(ok => {
+    if (ok) console.log(`  BRAD: ACTIVE — cognitive reasoning layer online`);
+    else console.log(`  BRAD: offline (start with: cd brad && python -m bondli_bridge)`);
   });
   // Nosana GPU fleet status
   const nosanaSummary = nosanaRouter.getStats();

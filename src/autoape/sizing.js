@@ -1,5 +1,6 @@
 // ═══ POSITION SIZING — Modified Kelly Criterion ═══
 // Quarter-Kelly with tier multipliers, dynamic adjustments, and hard limits.
+// Now enhanced with BRAD cognitive confidence adjustment.
 
 export function calculatePositionSize(tier, scores, portfolio, dynamics) {
   // Drawdown governor: if trading halted, return 0
@@ -59,6 +60,20 @@ export function calculatePositionSize(tier, scores, portfolio, dynamics) {
 
   // Learner-driven adjustments
   if (portfolio.learnerMult) mult *= portfolio.learnerMult;
+
+  // === BRAD COGNITIVE CONFIDENCE ADJUSTMENT ===
+  // When BRAD's meta-cognitive layer (L2) detects overconfidence or regime mismatch,
+  // it reduces its confidence score. This flows through to position sizing.
+  // BRAD confidence < 0.5 = reduce size, > 0.7 = no penalty, between = linear scale.
+  if (scores.bradConfidence != null && scores.bradConfidence > 0) {
+    const bradConf = scores.bradConfidence;
+    if (bradConf < 0.5) {
+      // BRAD is concerned — scale down proportionally
+      const bradMult = 0.5 + bradConf; // 0.5 at conf=0, 1.0 at conf=0.5
+      mult *= bradMult;
+    }
+    // If BRAD says paused (confidence = 0), hard block handled in pipeline gate 0
+  }
 
   // === HARD LIMITS ===
   mult = Math.max(0.25, Math.min(2.0, mult));
