@@ -1795,6 +1795,86 @@ app.post("/api/memetic/retrain", async (req, res) => {
 });
 
 // ═══════════════════════════════════════
+// IMAGE PROXY — fixes OpaqueResponseBlocking for IPFS/pump.fun images
+// ═══════════════════════════════════════
+const _imgCache = new Map();
+const _imgFailing = new Map();
+app.get("/api/img", async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).end();
+  const cached = _imgCache.get(url);
+  if (cached && Date.now() - cached.ts < 7200000) {
+    res.set("Content-Type", cached.ct);
+    res.set("Cache-Control", "public, max-age=86400");
+    res.set("Access-Control-Allow-Origin", "*");
+    return res.send(cached.buf);
+  }
+  const failTs = _imgFailing.get(url);
+  if (failTs && Date.now() - failTs < 30000) {
+    res.set("Access-Control-Allow-Origin", "*");
+    return res.status(404).end();
+  }
+  try {
+    let fetchUrl = url;
+    if (fetchUrl.startsWith("ipfs://")) fetchUrl = fetchUrl.slice(7);
+    const ipfsMatch = fetchUrl.match(/(Qm[a-zA-Z0-9]{44,}|bafk[a-zA-Z0-9]{50,}|bafy[a-zA-Z0-9]{50,})/);
+    const ipfsHash = ipfsMatch ? ipfsMatch[1] : null;
+    const urls = [];
+    if (ipfsHash) {
+      urls.push(`https://pump.mypinata.cloud/ipfs/${ipfsHash}?img-width=256&img-dpr=2`);
+      urls.push(`https://img.fotofolio.xyz/?url=https%3A%2F%2Fcf-ipfs.com%2Fipfs%2F${ipfsHash}`);
+      urls.push(`https://gateway.pinata.cloud/ipfs/${ipfsHash}`);
+      urls.push(`https://cf-ipfs.com/ipfs/${ipfsHash}`);
+      urls.push(`https://ipfs.io/ipfs/${ipfsHash}`);
+    }
+    if (fetchUrl.includes("pump.fun") || fetchUrl.includes("cf-ipfs")) {
+      const m = fetchUrl.match(/\/ipfs\/([a-zA-Z0-9]+)/);
+      if (m) urls.unshift(`https://pump.mypinata.cloud/ipfs/${m[1]}?img-width=256&img-dpr=2`);
+    }
+    if (!fetchUrl.startsWith("http")) fetchUrl = "https://" + fetchUrl;
+    if (!ipfsHash && fetchUrl.startsWith("https://")) {
+      urls.push(fetchUrl);
+      urls.push(`https://img.fotofolio.xyz/?url=${encodeURIComponent(fetchUrl)}`);
+    } else {
+      if (!urls.includes(fetchUrl)) urls.push(fetchUrl);
+    }
+    const isImg = (buf) => {
+      if (buf.length < 4) return false;
+      if (buf[0]===0x89&&buf[1]===0x50&&buf[2]===0x4E&&buf[3]===0x47) return true;
+      if (buf[0]===0xFF&&buf[1]===0xD8&&buf[2]===0xFF) return true;
+      if (buf[0]===0x47&&buf[1]===0x49&&buf[2]===0x46&&buf[3]===0x38) return true;
+      if (buf[0]===0x52&&buf[1]===0x49&&buf[2]===0x46&&buf[3]===0x46&&buf.length>11&&buf[8]===0x57&&buf[9]===0x45&&buf[10]===0x42&&buf[11]===0x50) return true;
+      if (buf[0]===0x42&&buf[1]===0x4D) return true;
+      if (buf[0]===0x3C) { const h=buf.slice(0,200).toString("utf8").toLowerCase(); if (h.includes("<svg")||h.includes("<?xml")) return true; }
+      return false;
+    };
+    const tryFetch = async (u, timeout) => {
+      const r = await fetch(u, { signal: AbortSignal.timeout(timeout), headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", Accept: "image/*,*/*" }, redirect: "follow" });
+      if (!r.ok) throw new Error(r.status);
+      const ct = r.headers.get("content-type") || "image/png";
+      if (!ct.includes("image") && !ct.includes("octet")) throw new Error("not image");
+      const buf = Buffer.from(await r.arrayBuffer());
+      if (buf.length < 10) throw new Error("too small");
+      if (!isImg(buf) && ct.includes("octet")) throw new Error("not real image");
+      const head = buf.slice(0,50).toString("utf8").toLowerCase();
+      if (head.includes("<!doctype") || head.includes("<html")) throw new Error("html error page");
+      return { buf, ct: isImg(buf) && ct.includes("octet") ? "image/png" : ct };
+    };
+    let result = null;
+    try { result = await Promise.any(urls.slice(0,3).map(u => tryFetch(u, 8000))); } catch {
+      for (const u of urls.slice(3)) { try { result = await tryFetch(u, 8000); break; } catch { continue; } }
+    }
+    if (!result) { _imgFailing.set(url, Date.now()); res.set("Access-Control-Allow-Origin", "*"); return res.status(404).end(); }
+    if (_imgCache.size >= 2000) { const entries = [..._imgCache.entries()].sort((a,b)=>a[1].ts-b[1].ts); for (let i=0;i<200;i++) _imgCache.delete(entries[i][0]); }
+    _imgCache.set(url, { buf: result.buf, ct: result.ct, ts: Date.now() });
+    res.set("Content-Type", result.ct);
+    res.set("Cache-Control", "public, max-age=86400");
+    res.set("Access-Control-Allow-Origin", "*");
+    return res.send(result.buf);
+  } catch { res.set("Access-Control-Allow-Origin", "*"); res.status(502).end(); }
+});
+
+// ═══════════════════════════════════════
 // ROUTES: RESURGENCE — Older Coins Having a Revival (12h to 2y)
 // ═══════════════════════════════════════
 app.get("/api/resurgence", apiLimiter, async (req, res) => {
