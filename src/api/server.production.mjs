@@ -55,6 +55,7 @@ import { mountGpuRoutes } from "../engine/gpu-earnings.mjs";
 import { NosanaJobRouter } from "../engine/nosana-job-router.mjs";
 import { mountChatRoutes } from "../engine/grok-client.mjs";
 import bradClient from "../engine/brad-client.mjs";
+import { getBradMind, getThoughtLog } from "../engine/brad-mind.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -8538,6 +8539,48 @@ app.post("/api/brad/config", express.json(), async (req, res) => {
 app.get("/api/brad/health", async (req, res) => {
   const healthy = await bradClient.healthCheck();
   res.json({ healthy, client: bradClient.getClientStatus() });
+});
+
+// ═══ BRAD MIND — Live cognitive reasoning stream ═══
+// Combines BRAD's 3-level cognitive state with Grok to produce
+// human-readable trading thoughts. Replaces "All Tokens" in Intel.
+app.get("/api/brad/mind", async (req, res) => {
+  const wallet = req.query.wallet;
+  // Get auto-trade status for context
+  let atStatus = null;
+  if (wallet) {
+    const state = autoTraders.get(wallet);
+    if (state) {
+      atStatus = {
+        active: state.settings.enabled,
+        positions: [...state.positions.entries()].map(([ca, p]) => {
+          const token = radar.tokens.get(ca);
+          const currentMcap = token?.mcapUsd || 0;
+          const changePct = p.entryMcap > 0 ? ((currentMcap - p.entryMcap) / p.entryMcap) * 100 : 0;
+          return { ca, name: token?.name || ca.slice(0, 8), changePct: +changePct.toFixed(1), liveScore: p.liveScore || p.entryScore || 0, scoreTrend: p.scoreTrend || "stable", tier: p.tier || 2 };
+        }),
+        recentlyClosed: (state.recentlyClosed || []).filter(p => Date.now() - p.exitTime < 300000),
+        pipeline: state._pipelineStats ? {
+          brad: state._pipelineStats.brad || null,
+          tierDistribution: state._pipelineStats.tierDistribution || {},
+          cycles: state._pipelineStats.cycles || 0,
+        } : null,
+      };
+    }
+  }
+
+  try {
+    const mind = await getBradMind(atStatus);
+    res.json(mind);
+  } catch (e) {
+    console.error("[BRAD-MIND] Error:", e.message);
+    res.json({ thoughts: [{ type: "meta", text: "Error fetching cognitive state", urgency: "low" }], mood: "paused", oneLiner: "Thinking...", timestamp: Date.now(), bradOnline: false, grokPowered: false });
+  }
+});
+
+app.get("/api/brad/thought-log", (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 20, 50);
+  res.json({ thoughts: getThoughtLog(limit) });
 });
 
 // ═══ INTEL TOKENS — full scored token list for Intel tab ═══

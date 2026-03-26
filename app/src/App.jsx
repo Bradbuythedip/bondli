@@ -583,7 +583,7 @@ const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");co
 const[vipDash,sVipDash]=useState(null);const[vipCustomCode,sVipCustomCode]=useState("");const[vipClaiming,sVipClaiming]=useState(false);const[demoProfits,sDemoProfits]=useState(null);const[demoLoading,sDemoLoading]=useState(false);
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);const[showModel,sShowModel]=useState(false);const[launchTarget,sLTarget]=useState("pump"); // "pump" | "bags"
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
-const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);
+const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);const[bradMind,sBradMind]=useState(null);const[bradMindOpen,sBradMindOpen]=useState(true);
 // GPU Earn tab state
 const[gpuDash,sGpuDash]=useState(null);const[gpuFleet,sGpuFleet]=useState(null);const[gpuLoading,sGpuLoading]=useState(false);const[gpuRegWallet,sGpuRegWallet]=useState("");
 const[gpuCmdLoading,sGpuCmdLoading]=useState(false);const[gpuLogs,sGpuLogs]=useState(null);const[gpuShowLogs,sGpuShowLogs]=useState(false);const[gpuShowDetails,sGpuShowDetails]=useState(false);
@@ -638,6 +638,7 @@ useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>
 useEffect(()=>{if(tab!=="intel"||!liveSim?.active)return;const poll=()=>a.simst(user?.pubkey||"anon").then(d=>{if(d.active)sLiveSim(p=>({...p,...d}));else sLiveSim(null)}).catch(()=>{});poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab,liveSim?.active,user?.pubkey]);
 useEffect(()=>{if(tab!=="intel")return;a.gcp().then(d=>sChartPatterns(d)).catch(()=>{});const iv=setInterval(()=>a.gcp().then(d=>sChartPatterns(d)).catch(()=>{}),30000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>fetch(API+"/api/intel/tokens?limit=100&sort="+intelTSort+"&source="+intelTSrc).then(r=>r.ok?r.json():null).then(d=>{if(d)sIntelTokens(d)}).catch(()=>{});poll();const iv=setInterval(poll,10000);return()=>clearInterval(iv)},[tab,intelTSort,intelTSrc]);
+useEffect(()=>{if(tab!=="intel")return;const poll=()=>a.brmd(user?.pubkey).then(d=>{if(d)sBradMind(d)}).catch(()=>{});poll();const iv=setInterval(poll,10000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs){const tabs={...d.tabs};delete tabs.graduating;// Bags tab now served from radar (hot Bags tokens, heat-ranked server-side)
 if(!tabs.bags)tabs.bags=[];// Preload all token images before rendering
 const allTokens=[...(tabs.new||[]),...(tabs.momentum||[]),...(tabs.bags||[])];preloadTokenImages(allTokens);sRT(prev=>({...prev,...tabs,resurgence:prev.resurgence||[]}))}if(d.poolSize!=null)sRP(d.poolSize);if(d.gradMc)sGradMc(d.gradMc);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,2000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
@@ -1578,38 +1579,42 @@ return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16p
 </div>
 </div>{/* end top signals grid */}
 
-{/* ═══ ALL TOKENS — Full scored token list ═══ */}
-<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:8,marginBottom:6,overflow:"hidden"}}>
-<div onClick={()=>sITOpen(!intelTOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",cursor:"pointer",borderBottom:intelTOpen?"1px solid "+T.bd:"none"}}>
+{/* ═══ BRAD MIND — Live Cognitive Thought Stream ═══ */}
+{(()=>{const bm=bradMind;const moodColors={hunting:T.gn,cautious:T.yl,paused:T.ft,confident:T.cy,adapting:T.pu};const moodC=moodColors[bm?.mood]||T.cy;const typeIcons={market:"~",pick:"$",risk:"!",meta:"@",strategy:">"};const typeColors={market:T.cy,pick:T.gn,risk:T.rd,meta:T.pu,strategy:T.yl};const urgColors={high:T.rd,medium:T.yl,low:T.ft};
+return<div style={{background:`linear-gradient(135deg,${T.bg},${moodC}06)`,border:"1px solid "+moodC+"33",borderRadius:8,marginBottom:6,overflow:"hidden"}}>
+<div onClick={()=>sBradMindOpen(!bradMindOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",cursor:"pointer",borderBottom:bradMindOpen?"1px solid "+T.bd:"none"}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
-<span style={{fontSize:13,fontWeight:800}}>All Tokens</span>
-<span style={{fontSize:11,color:T.ft}}>{intelTokens?.total||0} tracked</span>
+<span style={{fontSize:13,fontWeight:800,color:moodC}}>BRAD Mind</span>
+{bm?.bradOnline&&<span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}
+{bm?.grokPowered&&<span style={{fontSize:7,fontWeight:700,color:T.dm,background:T.dm+"12",padding:"1px 4px",borderRadius:2}}>GROK</span>}
+{bm?.metrics&&<span style={{fontSize:8,fontWeight:700,color:T.pu,background:T.pu+"12",padding:"1px 4px",borderRadius:2}}>HI:{bm.metrics.hofstadterIndex?.toFixed(2)}</span>}
+<span style={{fontSize:10,color:T.dm,fontStyle:"italic"}}>{bm?.oneLiner||"Connecting..."}</span>
 </div>
 <div style={{display:"flex",alignItems:"center",gap:4}}>
-{intelTOpen&&<>{["all","pump","bags"].map(s=><button key={s} onClick={e=>{e.stopPropagation();sITSrc(s)}} style={{padding:"2px 6px",fontSize:9,fontWeight:intelTSrc===s?800:500,color:intelTSrc===s?(s==="bags"?T.gn:s==="pump"?"#b388ff":T.tx):T.ft,background:intelTSrc===s?(s==="bags"?T.gn:s==="pump"?"#b388ff":T.dm)+"12":"transparent",border:"1px solid "+(intelTSrc===s?T.bd:"transparent"),borderRadius:4,cursor:"pointer"}}>{s.toUpperCase()}</button>)}
-{["score","mcap","buys","recent"].map(s=><button key={s} onClick={e=>{e.stopPropagation();sITSort(s)}} style={{padding:"2px 6px",fontSize:9,fontWeight:intelTSort===s?800:500,color:intelTSort===s?T.gn:T.ft,background:intelTSort===s?T.gn+"0a":"transparent",border:"1px solid "+(intelTSort===s?T.gn+"22":"transparent"),borderRadius:4,cursor:"pointer"}}>{s.toUpperCase()}</button>)}</>}
-<span style={{fontSize:11,color:T.ft}}>{intelTOpen?"▾":"▸"}</span>
+{bm?.mood&&<span style={{fontSize:8,fontWeight:800,color:moodC,background:moodC+"15",padding:"2px 6px",borderRadius:3,textTransform:"uppercase"}}>{bm.mood}</span>}
+<span style={{fontSize:11,color:T.ft}}>{bradMindOpen?"▾":"▸"}</span>
 </div>
 </div>
-{intelTOpen&&<div style={{maxHeight:400,overflowY:"auto"}}>
-{!intelTokens?<div style={{padding:20,textAlign:"center",fontSize:11,color:T.ft}}>Loading tokens...</div>
-:intelTokens.tokens.length===0?<div style={{padding:20,textAlign:"center",fontSize:11,color:T.ft}}>No tokens yet</div>
-:<>{/* Header */}
-<div style={{display:"grid",gridTemplateColumns:mb?"36px 1fr 40px 50px":"36px 1fr 40px 40px 60px 50px 50px",gap:4,padding:"4px 10px",fontSize:9,fontWeight:700,color:T.ft,borderBottom:"1px solid "+T.bd,position:"sticky",top:0,background:T.bg,zIndex:1}}>
-<span>#</span><span>TOKEN</span><span style={{textAlign:"right"}}>SCORE</span>{!mb&&<span style={{textAlign:"right"}}>BP%</span>}<span style={{textAlign:"right"}}>MC</span>{!mb&&<span style={{textAlign:"right"}}>BUYS</span>}<span style={{textAlign:"right"}}>SIGNAL</span>
-</div>
-{intelTokens.tokens.map((t,i)=>{const sc=t.score>=50?T.gn:t.score>=25?T.yl:t.rugRisk>50?T.rd:T.pu;const isBags=t.source==="bags";const bpW=Math.round((t.buyPressure||0)*100);return<div key={t.ca} onClick={()=>{sTab("radar");sRS(t.ca);sRExp(t.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}} style={{display:"grid",gridTemplateColumns:mb?"36px 1fr 40px 50px":"36px 1fr 40px 40px 60px 50px 50px",gap:4,padding:"5px 10px",borderBottom:"1px solid "+T.bd+"66",cursor:"pointer",alignItems:"center",background:t.graduated?T.gn+"04":t.rugRisk>50?"#ff174404":"transparent"}}>
-<div style={{width:28,height:28,borderRadius:5,overflow:"hidden",flexShrink:0,border:isBags?"1px solid "+T.gn+"66":"none"}}><TImg src={t.image} ticker={t.ticker} size={28}/></div>
-<div style={{minWidth:0}}><div style={{display:"flex",alignItems:"center",gap:3}}><span style={{fontSize:11,fontWeight:800,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{t.name||t.ticker||t.ca?.slice(0,8)}</span>{isBags&&<span style={{fontSize:7,fontWeight:800,color:T.gn,background:T.gn+"12",padding:"0 3px",borderRadius:2}}>BAGS</span>}{t.graduated&&<span style={{fontSize:7,fontWeight:800,color:T.yl,background:T.yl+"12",padding:"0 3px",borderRadius:2}}>GRAD</span>}{t.twitter&&<IC.tw s={8} c={T.dm}/>}</div><div style={{fontSize:9,color:T.dm}}>{t.ticker}{t.h1Change?<span style={{color:t.h1Change>0?T.gn:"#ff4444",marginLeft:4}}>{t.h1Change>0?"+":""}{t.h1Change.toFixed(1)}%</span>:null}</div></div>
-<span style={{fontSize:13,fontWeight:900,color:sc,textAlign:"right"}}>{t.score}</span>
-{!mb&&<div style={{display:"flex",alignItems:"center",gap:2,justifyContent:"flex-end"}}><div style={{width:20,height:3,borderRadius:2,background:T.bd,overflow:"hidden"}}><div style={{width:bpW+"%",height:"100%",borderRadius:2,background:bpW>=70?T.gn:bpW>=50?T.yl:"#ff4444"}}/></div><span style={{fontSize:9,color:T.ft}}>{bpW}%</span></div>}
-<span style={{fontSize:11,fontWeight:700,textAlign:"right",color:t.mcapUsd>=1e5?T.gn:t.mcapUsd>=1e4?T.yl:T.tx}}>${fm(t.mcapUsd)}</span>
-{!mb&&<span style={{fontSize:11,textAlign:"right",color:T.dm}}>{t.buys}/{t.sells}</span>}
-<div style={{textAlign:"right"}}>{t.entrySignal?<span style={{fontSize:8,fontWeight:800,padding:"1px 4px",borderRadius:3,color:t.entrySignal==="STRONG"||t.entrySignal==="READY"?T.gn:t.entrySignal==="EARLY"?T.yl:"#ff8800",background:(t.entrySignal==="STRONG"||t.entrySignal==="READY"?T.gn:t.entrySignal==="EARLY"?T.yl:"#ff8800")+"15"}}>{t.entrySignal}</span>:t.rugRisk>50?<span style={{fontSize:8,fontWeight:800,padding:"1px 4px",borderRadius:3,color:T.rd,background:T.rd+"15"}}>RUG</span>:null}</div>
-</div>})}
-</>}
+{bradMindOpen&&<div style={{padding:"6px 10px"}}>
+{/* Metrics bar */}
+{bm?.metrics&&<div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8,padding:"4px 0",borderBottom:"1px solid "+T.bd+"44"}}>
+{[{l:"Strategy",v:bm.metrics.strategy,c:T.cy},{l:"Win Rate",v:((bm.metrics.winRate||0)*100).toFixed(0)+"%",c:bm.metrics.winRate>=0.5?T.gn:T.rd},{l:"Trades",v:bm.metrics.totalTrades,c:T.tx},{l:"PnL",v:(bm.metrics.pnlSol||0).toFixed(3)+" SOL",c:bm.metrics.pnlSol>=0?T.gn:T.rd},{l:"Loops",v:bm.metrics.strangeLoops,c:T.pu},{l:"Blind Spots",v:bm.metrics.blindSpots,c:bm.metrics.blindSpots>0?T.rd:T.ft}].map(m=><div key={m.l} style={{textAlign:"center"}}><div style={{fontSize:7,color:T.ft,fontWeight:700}}>{m.l}</div><div style={{fontSize:11,fontWeight:800,color:m.c}}>{m.v}</div></div>)}
 </div>}
+{/* Thought stream */}
+{!bm?<div style={{padding:16,textAlign:"center",fontSize:11,color:T.ft}}>Connecting to BRAD cognitive engine...</div>
+:!bm.thoughts||bm.thoughts.length===0?<div style={{padding:16,textAlign:"center",fontSize:11,color:T.ft}}>Waiting for market data...</div>
+:bm.thoughts.map((t,i)=><div key={i} style={{display:"flex",gap:6,padding:"4px 0",borderBottom:i<bm.thoughts.length-1?"1px solid "+T.bd+"22":"none",alignItems:"flex-start"}}>
+<span style={{fontSize:12,fontWeight:900,color:typeColors[t.type]||T.cy,minWidth:14,textAlign:"center",marginTop:1}}>{typeIcons[t.type]||">"}</span>
+<div style={{flex:1,minWidth:0}}>
+<span style={{fontSize:11,fontWeight:600,color:T.tx,lineHeight:"1.3"}}>{t.text}</span>
+{t.token&&<span style={{fontSize:8,fontWeight:800,color:T.gn,background:T.gn+"12",padding:"0 4px",borderRadius:2,marginLeft:4}}>{t.token}</span>}
 </div>
+<span style={{width:4,height:4,borderRadius:"50%",background:urgColors[t.urgency]||T.ft,marginTop:5,flexShrink:0}}/>
+</div>)}
+{/* Timestamp */}
+{bm?.timestamp&&<div style={{fontSize:8,color:T.ft,textAlign:"right",marginTop:4}}>{new Date(bm.timestamp).toLocaleTimeString()}{bm.grokPowered?" · Grok 4":" · raw BRAD"}</div>}
+</div>}
+</div>})()}
 
 {/* ═══ ORACLE ENGINE — BONDLI BRAIN ═══ */}
 {engineState&&(()=>{
