@@ -8810,14 +8810,31 @@ app.post("/api/brad/chat", express.json(), async (req, res) => {
   // Smart money signals
   let smartContext = "";
   try {
-    const signals = smartMoneyTracker?.getRecentSignals?.(5) || [];
-    if (signals.length > 0) {
-      smartContext = "\nRecent smart money:\n" + signals.map(s => `${s.wallet?.slice(0,6)}... bought ${s.symbol||s.mint?.slice(0,8)} ${s.solAmount?s.solAmount.toFixed(2)+"SOL":""}`).join("\n");
+    const smSummary = smartMoneyTracker?.summary?.() || {};
+    const smSignals = smartMoneyTracker?.getRecentSignals?.(10) || [];
+    const smLeaderboard = smartMoneyTracker?.getLeaderboard?.(5) || [];
+
+    if (smSummary.totalWallets > 0 || smSignals.length > 0) {
+      smartContext = `\nSmart Money Tracker: ${smSummary.totalWallets||0} wallets tracked, ${smSummary.watching||0} actively watching, ${smSummary.signalCount||smSignals.length||0} recent signals`;
+    }
+    if (smSignals.length > 0) {
+      smartContext += "\nRecent smart money buys:\n" + smSignals.map(s => {
+        const tok = radar.tokens.get(s.mint);
+        const tokName = tok?.name || s.symbol || s.mint?.slice(0, 8);
+        const mc = tok?.mcapUsd ? `MC:$${Math.round(tok.mcapUsd)}` : "";
+        const sc = tok?._apeScore ? `score:${tok._apeScore}` : "";
+        return `${s.wallet?.slice(0,6)}... bought ${tokName} ${s.solAmount?s.solAmount.toFixed(2)+"SOL ":""}${mc} ${sc}`;
+      }).join("\n");
+    }
+    if (smLeaderboard.length > 0) {
+      smartContext += "\nTop smart wallets:\n" + smLeaderboard.slice(0, 3).map(w =>
+        `${w.address?.slice(0,6)}...: ${Math.round((w.winRate||0)*100)}% win, ${w.totalTrades||0} trades, avg ${(w.avgReturn||0).toFixed(1)}x`
+      ).join("\n");
     }
     if (smartMoneyTokens.length > 0) {
-      smartContext += `\n${smartMoneyTokens.length} tokens have smart money in them right now`;
+      smartContext += `\n${smartMoneyTokens.length} tokens currently have smart money positions`;
     }
-  } catch {}
+  } catch (e) { console.error("[BRAD-CHAT] smart money context error:", e.message); }
 
   let bradContext = "";
   try {
@@ -8862,8 +8879,7 @@ app.post("/api/brad/chat", express.json(), async (req, res) => {
 - You ARE the engine. First person. "I see", "I'm tracking", "my L2 detected"
 
 ## YOUR LIVE DATA RIGHT NOW
-Radar: ${allTokens.length} tokens, ${scored.length} scored, avg score ${avgScore}, ${rugCount} rugged, ${gradCount} graduated
-${smartMoneyTokens.length > 0 ? `Smart money active in ${smartMoneyTokens.length} tokens` : "No smart money signals"}
+Radar: ${allTokens.length} tokens, ${scored.length} scored, avg score ${avgScore}, ${rugCount} rugged, ${gradCount} graduated, smart money in ${smartMoneyTokens.length} tokens
 
 Top tokens (sorted by score):
 ${topTokens || "Nothing scoring above 20 — market is dead quiet"}
