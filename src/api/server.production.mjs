@@ -8546,7 +8546,38 @@ app.get("/api/brad/health", async (req, res) => {
 // human-readable trading thoughts. Replaces "All Tokens" in Intel.
 app.get("/api/brad/mind", async (req, res) => {
   const wallet = req.query.wallet;
-  // Get auto-trade status for context
+
+  // Always build live radar context — even without auto-ape running
+  const allTokens = [...radar.tokens.values()];
+  const hotTokens = allTokens
+    .filter(t => (t._apeScore || 0) >= 30)
+    .sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0))
+    .slice(0, 10);
+
+  const rugCount = allTokens.filter(t => (t._rugFlags?.length || 0) >= 3).length;
+  const gradCount = allTokens.filter(t => t.graduated).length;
+  const avgScore = allTokens.length > 0 ? allTokens.reduce((s, t) => s + (t._apeScore || 0), 0) / allTokens.length : 0;
+
+  const radarSnapshot = {
+    totalTokens: allTokens.length,
+    hotCount: hotTokens.length,
+    rugCount,
+    gradCount,
+    avgScore: +avgScore.toFixed(1),
+    topTokens: hotTokens.slice(0, 5).map(t => ({
+      name: t.name || t.ca?.slice(0, 8),
+      ca: t.ca?.slice(0, 8),
+      score: t._apeScore || 0,
+      mcap: Math.round(t.mcapUsd || 0),
+      buys: t.buys || 0,
+      sells: t.sells || 0,
+      rugFlags: t._rugFlags?.length || 0,
+      trend: t._scoreTrend || "new",
+      age: t.createdAt ? Math.round((Date.now() - t.createdAt) / 60000) : 0,
+    })),
+  };
+
+  // Auto-trade context (if running)
   let atStatus = null;
   if (wallet) {
     const state = autoTraders.get(wallet);
@@ -8570,7 +8601,7 @@ app.get("/api/brad/mind", async (req, res) => {
   }
 
   try {
-    const mind = await getBradMind(atStatus);
+    const mind = await getBradMind(atStatus, radarSnapshot);
     res.json(mind);
   } catch (e) {
     console.error("[BRAD-MIND] Error:", e.message);
