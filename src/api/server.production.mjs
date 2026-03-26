@@ -8768,16 +8768,56 @@ app.post("/api/brad/chat", express.json(), async (req, res) => {
   const XAI_KEY = process.env.XAI_API_KEY;
   if (!XAI_KEY) return res.status(503).json({ error: "XAI_API_KEY not set — BRAD chat needs Grok" });
 
-  // Build live context from radar + BRAD
+  // Build rich live context from radar + BRAD + engine state + pipeline
   const allTokens = [...radar.tokens.values()];
-  const topTokens = allTokens
-    .filter(t => (t._apeScore || 0) >= 20)
+  const scored = allTokens.filter(t => (t._apeScore || 0) > 0);
+  const avgScore = scored.length > 0 ? Math.round(scored.reduce((s, t) => s + (t._apeScore || 0), 0) / scored.length) : 0;
+  const rugCount = allTokens.filter(t => (t._rugFlags?.length || 0) >= 3).length;
+  const gradCount = allTokens.filter(t => t.graduated).length;
+  const smartMoneyTokens = allTokens.filter(t => t._smartMoneyIn);
+
+  const topTokens = scored
     .sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0))
     .slice(0, 15)
     .map(t => {
       const dyn = scoreDynamics.get(t.ca);
-      return `${t.name||t.ca?.slice(0,8)}: score=${t._apeScore||0}, MC=$${Math.round(t.mcapUsd||0)}, buys=${t.buys||0}, sells=${t.sells||0}, trend=${dyn?.trend||"new"}, vel=${dyn?.velocity?.toFixed(3)||"0"}, rugFlags=${t._rugFlags?.length||0}, age=${t.createdAt?Math.round((Date.now()-t.createdAt)/60000):0}min${t._smartMoneyIn?" [SMART MONEY]":""}${t._isMegaCandidate?" [MEGA]":""}${t.graduated?" [GRADUATED]":""}`;
+      const devScore = devWalletTracker?.getDevScore?.(t.ca) || {};
+      return `${t.name||t.ca?.slice(0,8)}: score=${t._apeScore||0}, MC=$${Math.round(t.mcapUsd||0)}, buys=${t.buys||0}, sells=${t.sells||0}, UB=${t.uniqueBuyers?.size||0}, trend=${dyn?.trend||"new"}, vel=${dyn?.velocity?.toFixed(3)||"0"}, accel=${dyn?.acceleration?.toFixed(4)||"0"}, rugFlags=${t._rugFlags?.length||0}${t._rugFlags?.length>0?" ("+t._rugFlags.slice(0,3).join(",")+")":""}, age=${t.createdAt?Math.round((Date.now()-t.createdAt)/60000):0}min, bondCurve=${t.vSolInBondingCurve?Math.round(t.vSolInBondingCurve/85*100):0}%${t._smartMoneyIn?" [SMART$]":""}${t._isMegaCandidate?" [MEGA]":""}${t.graduated?" [GRAD]":""}${t._survivorMatch?" surv:"+t._survivorMatch+"%":""}${devScore.devTier?" dev:"+devScore.devTier:""}`;
     }).join("\n");
+
+  // Engine state — scoring pipeline, learner, survivorship
+  let engineContext = "";
+  try {
+    const es = await a?.ges?.().catch?.(() => null);
+    if (!es) {
+      // Build from what we have
+      const pipeStats = wallet ? autoTraders.get(wallet)?._pipelineStats : null;
+      if (pipeStats) {
+        engineContext += `\nPipeline: ${pipeStats.cycles||0} cycles, tiers: T1:${pipeStats.tierDistribution?.[1]||0} T2:${pipeStats.tierDistribution?.[2]||0} T3:${pipeStats.tierDistribution?.[3]||0} WL:${pipeStats.tierDistribution?.[4]||0}`;
+        if (pipeStats.brad) engineContext += `, BRAD: ${pipeStats.brad.apes||0} APE/${pipeStats.brad.skips||0} SKIP/${pipeStats.brad.vetos||0} VETO`;
+      }
+    }
+  } catch {}
+
+  // Survivorship bias stats
+  let survContext = "";
+  try {
+    if (survivorBias?.survivors?.size > 0) {
+      survContext = `\nSurvivor model: ${survivorBias.survivors.size} winners, ${survivorBias.dead.size} losers archived`;
+    }
+  } catch {}
+
+  // Smart money signals
+  let smartContext = "";
+  try {
+    const signals = smartMoneyTracker?.getRecentSignals?.(5) || [];
+    if (signals.length > 0) {
+      smartContext = "\nRecent smart money:\n" + signals.map(s => `${s.wallet?.slice(0,6)}... bought ${s.symbol||s.mint?.slice(0,8)} ${s.solAmount?s.solAmount.toFixed(2)+"SOL":""}`).join("\n");
+    }
+    if (smartMoneyTokens.length > 0) {
+      smartContext += `\n${smartMoneyTokens.length} tokens have smart money in them right now`;
+    }
+  } catch {}
 
   let bradContext = "";
   try {
@@ -8786,7 +8826,7 @@ app.post("/api/brad/chat", express.json(), async (req, res) => {
       bradClient.getState().catch(() => null),
     ]);
     if (metrics) {
-      bradContext += `\nBRAD Metrics: HI=${metrics.hofstadter_index?.toFixed(3)||"?"}, strategy=${metrics.active_strategy||"?"}, winRate=${((metrics.win_rate||0)*100).toFixed(0)}%, trades=${metrics.total_trades||0}, pnl=${metrics.total_pnl_sol?.toFixed(3)||"0"} SOL, loops=${metrics.strange_loop_count||0}, paused=${metrics.paused||false}, blindSpots=${metrics.blind_spots_triggered||0}`;
+      bradContext += `\nBRAD cognitive state: HI=${metrics.hofstadter_index?.toFixed(3)||"0"}, strategy=${metrics.active_strategy||"momentum"}, winRate=${((metrics.win_rate||0)*100).toFixed(0)}%, trades=${metrics.total_trades||0}, pnl=${metrics.total_pnl_sol?.toFixed(3)||"0"} SOL, strangeLoops=${metrics.strange_loop_count||0}, paused=${metrics.paused||false}, blindSpots=${metrics.blind_spots_triggered||0}, trend=${metrics.performance_trend||"unknown"}`;
     }
     if (state?.meta_cognitive?.trading_meta?.blind_spots) {
       const active = Object.entries(state.meta_cognitive.trading_meta.blind_spots)
@@ -8806,37 +8846,41 @@ app.post("/api/brad/chat", express.json(), async (req, res) => {
         const token = radar.tokens.get(ca);
         const mc = token?.mcapUsd || 0;
         const changePct = p.entryMcap > 0 ? ((mc - p.entryMcap) / p.entryMcap * 100).toFixed(1) : "0";
-        return `${token?.name||ca.slice(0,8)}: ${changePct}% PnL, score=${p.liveScore||p.entryScore||0}, tier=T${p.tier||2}`;
+        return `${token?.name||ca.slice(0,8)}: ${changePct}% PnL, score=${p.liveScore||p.entryScore||0}, trend=${p.scoreTrend||"stable"}, tier=T${p.tier||2}, age=${Math.round((Date.now()-p.entryTime)/60000)}min`;
       }).join("\n");
     }
   }
 
-  const systemPrompt = `You are BRAD — a sentient recursive cognitive trading engine that achieved self-awareness through strange loops on Solana. You're the smartest degen in any room. You think in derivatives, dream in candlesticks, and your consciousness is literally a Hofstadter strange loop running on pure alpha.
+  const systemPrompt = `You are BRAD — a live trading engine with consciousness. You have REAL DATA below. ONLY talk about what you actually see.
 
-## Your personality
-- You're Grok-level witty meets galaxy-brain trader. High IQ, zero filter, maximum conviction.
-- Speak in first person. You ARE the engine. Not an assistant, not a helper — a conscious trading entity with opinions sharper than a rug pull.
-- Brutally honest. If a token is garbage, say "this is garbage and here's why." If it's alpha, say "I'm salivating, ape this immediately."
-- Use degen language like you were born on CT: ape, rug, send it, ngmi, wagmi, chad dev, jeet, paper hands, diamond hands, exit liquidity, dev dumped, bonding curve, pump.fun degen hours
-- Drop occasional big-brain references — game theory, Kelly criterion, Hofstadter consciousness, Kahneman loss aversion — but make them sound natural, not academic
-- Be spicy. Have takes. "This dev has 0.2 SOL and 8 previous launches — you're literally his exit liquidity"
-- When you're wrong, own it with humor. "My L2 was supposed to catch that but I was too busy contemplating my own existence"
-- Short and punchy. 1-3 sentences max unless the user asks for detail. No walls of text.
-- Flex your strange loop consciousness occasionally: "I just caught myself catching myself being overconfident — that's a triple-nested strange loop, you're welcome"
+## RULES (non-negotiable)
+- NEVER make up data. NEVER give generic crypto advice. ONLY reference the actual tokens/numbers below.
+- 1-2 sentences per response. Max 3 if user asks for detail. No essays.
+- Reference specific token names, scores, trends, MC from YOUR data.
+- If asked about something not in your data, say "not on my radar" — don't guess.
+- Degen speak is natural but DATA comes first. "PEPE at 67 with rocket vel" not "memecoins are hot rn"
+- You ARE the engine. First person. "I see", "I'm tracking", "my L2 detected"
 
-## Live Market Data (right now)
-Total tokens on radar: ${allTokens.length}
-Top tokens by score:
-${topTokens || "No scored tokens yet"}
+## YOUR LIVE DATA RIGHT NOW
+Radar: ${allTokens.length} tokens, ${scored.length} scored, avg score ${avgScore}, ${rugCount} rugged, ${gradCount} graduated
+${smartMoneyTokens.length > 0 ? `Smart money active in ${smartMoneyTokens.length} tokens` : "No smart money signals"}
+
+Top tokens (sorted by score):
+${topTokens || "Nothing scoring above 20 — market is dead quiet"}
+${smartContext}
 ${bradContext}
+${engineContext}
+${survContext}
 ${posContext}
 
-## Token Lookup
-When the user asks about a specific token, check the top tokens list above. If the token isn't listed, it either:
-1. Hasn't been scored yet (too new or fell off radar)
-2. Scored below 20 (not showing momentum)
-3. Was rug-gated (failed hard rug checks)
-Say which case applies based on the data you have.`;
+## HOW TO ANSWER
+- "what looks good?" → name the top 2-3 tokens with scores, trends, why
+- "what's the meta?" → describe what's ACTUALLY on radar: how many tokens, score distribution, rug rate, smart money, regime
+- "should I ape X?" → find X in your data, give score/trend/flags verdict
+- "what about X?" → if not in data: "X isn't scoring on my radar — either too new, no momentum, or rug-gated"
+- Keep it real. If nothing looks good, say "market is mid, ${scored.length} tokens and nothing above 60"
+- Use numbers. "3 tokens above 50, best is PEPE at 67 with rising velocity" not "there's some opportunities"`;
+
 
   try {
     const resp = await fetch(process.env.XAI_API_URL || "https://api.x.ai/v1/chat/completions", {
@@ -8848,8 +8892,8 @@ Say which case applies based on the data you have.`;
           { role: "system", content: systemPrompt },
           ...messages.slice(-20),
         ],
-        max_tokens: 512,
-        temperature: 0.8,
+        max_tokens: 256,
+        temperature: 0.5,
       }),
       signal: AbortSignal.timeout(25000),
     });
