@@ -1,4 +1,4 @@
-// BONDLI v4.3 — RPC Enhanced (Priority Fees + Jito Bundles + Multi-RPC Failover + Retry)
+// BONDLI v4.4 — RPC Enhanced (Priority Fees + Jito Bundles + Multi-RPC + Dedup)
 import bs58 from "bs58";
 import CONFIG from "./config.mjs";
 
@@ -11,7 +11,7 @@ const PRIORITY_FEE_TTL = 10_000;
 let _cachedBlockhash = null;
 let _cachedBlockHeight = 0;
 let _blockhashTs = 0;
-const BLOCKHASH_TTL = 4_000; // 4s — shorter to avoid stale blockhash errors
+const BLOCKHASH_TTL = 4_000;
 
 export async function getCachedBlockhash(connection) {
   if (_cachedBlockhash && Date.now() - _blockhashTs < BLOCKHASH_TTL) {
@@ -36,13 +36,10 @@ const JITO_TIP_ACCOUNTS = [
   "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
 ];
 
-// Multiple Jito block engines for redundancy
+// Two Jito endpoints — mainnet (US) + closest regional
 const JITO_ENDPOINTS = [
   "https://mainnet.block-engine.jito.wtf/api/v1/bundles",
-  "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles",
-  "https://frankfurt.mainnet.block-engine.jito.wtf/api/v1/bundles",
   "https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles",
-  "https://tokyo.mainnet.block-engine.jito.wtf/api/v1/bundles",
 ];
 
 export async function getOptimalPriorityFee(accountKeys = []) {
@@ -62,9 +59,8 @@ export async function getOptimalPriorityFee(accountKeys = []) {
       const data = await response.json();
       if (data.result && data.result.length > 0) {
         const fees = data.result.map(f => f.prioritizationFee).sort((a, b) => a - b);
-        // Use p90 instead of p75 for better inclusion during congestion
-        const p90 = fees[Math.floor(fees.length * 0.9)] || fees[fees.length - 1];
-        _cachedPriorityFee = Math.max(50_000, Math.min(1_000_000, Math.ceil(p90)));
+        const p75 = fees[Math.floor(fees.length * 0.75)] || fees[fees.length - 1];
+        _cachedPriorityFee = Math.max(50_000, Math.min(500_000, Math.ceil(p75)));
         _priorityFeeTs = Date.now();
         return _cachedPriorityFee;
       }
@@ -81,7 +77,7 @@ async function jitoSendSingle(base58Tx, endpoint) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "sendBundle", params: [[base58Tx]] }),
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(6000),
   });
   if (res.ok) {
     const data = await res.json();
@@ -91,18 +87,15 @@ async function jitoSendSingle(base58Tx, endpoint) {
   throw new Error("Jito not ok");
 }
 
-// Send via Jito — race all endpoints simultaneously
+// Send via Jito — race 2 endpoints
 export async function jitoSend(serializedTx) {
   const base58Tx = bs58.encode(serializedTx);
   try {
-    // Race ALL Jito endpoints — first to accept wins
     const result = await Promise.any(
       JITO_ENDPOINTS.map(ep => jitoSendSingle(base58Tx, ep))
     );
-    console.log(`[JITO] Bundle accepted: ${result}`);
     return result;
-  } catch (e) {
-    console.warn(`[JITO] All endpoints failed: ${e.message}`);
+  } catch {
     return null;
   }
 }
@@ -116,18 +109,39 @@ const RPC_URLS = [CONFIG.RPC_URL];
 if (process.env.BACKUP_RPC_URL) RPC_URLS.push(process.env.BACKUP_RPC_URL);
 if (process.env.BACKUP_RPC_URL_2) RPC_URLS.push(process.env.BACKUP_RPC_URL_2);
 
-// Stats for monitoring
+// Stats
 const _sendStats = { total: 0, rpcOk: 0, jitoOk: 0, fallbackOk: 0, failed: 0 };
 
+// Dedup: track recently sent tx signatures to prevent double-send
+const _recentSends = new Map(); // sig → timestamp
+const DEDUP_WINDOW_MS = 30_000; // 30s dedup window
+
+function cleanDedup() {
+  const cutoff = Date.now() - DEDUP_WINDOW_MS;
+  for (const [sig, ts] of _recentSends) {
+    if (ts < cutoff) _recentSends.delete(sig);
+  }
+}
+
 /**
- * Send transaction via RPC + Jito racing + retry.
+ * Send transaction via primary RPC + Jito, no excessive retries.
+ *
  * Strategy:
- *   1. Send to all RPCs + all Jito endpoints simultaneously (Promise.any)
- *   2. If all fail, retry once after 500ms with fresh connection
- *   3. If retry fails, use connection.sendRawTransaction as last resort
+ *   1. Send to primary RPC + Jito simultaneously (Promise.any)
+ *   2. RPC maxRetries: 3 (NOT 8 — Solana validators handle retry internally)
+ *   3. No application-level retry — if both fail, throw immediately
+ *   4. Dedup guard: same serialized tx won't be sent twice within 30s
  */
 export async function smartSend(connection, serializedTx, opts = {}) {
   _sendStats.total++;
+
+  // Dedup check
+  const sigPreview = bs58.encode(serializedTx).slice(0, 32);
+  if (_recentSends.has(sigPreview)) {
+    console.warn(`[RPC-TX] Dedup: tx already sent within ${DEDUP_WINDOW_MS / 1000}s, skipping`);
+    return _recentSends.get(sigPreview); // return the previous sig
+  }
+
   const base58Tx = bs58.encode(serializedTx);
 
   const rpcSend = async (rpcUrl) => {
@@ -137,73 +151,57 @@ export async function smartSend(connection, serializedTx, opts = {}) {
       body: JSON.stringify({
         jsonrpc: "2.0", id: 1,
         method: "sendTransaction",
-        params: [base58Tx, { skipPreflight: true, encoding: "base58", maxRetries: 8 }],
+        params: [base58Tx, { skipPreflight: true, encoding: "base58", maxRetries: 3 }],
       }),
-      signal: AbortSignal.timeout(10000), // 10s — was 6s, too short for congestion
+      signal: AbortSignal.timeout(8000),
     });
     if (res.ok) {
       const data = await res.json();
       if (data.result) { _sendStats.rpcOk++; return data.result; }
       if (data.error) {
         const errMsg = JSON.stringify(data.error);
-        // Non-retryable errors
-        if (errMsg.includes("insufficient") || errMsg.includes("Blockhash not found") || errMsg.includes("already processed")) {
-          throw new Error(errMsg);
-        }
         throw new Error(errMsg);
       }
     }
     throw new Error("RPC response not ok");
   };
 
-  // Attempt 1: race all paths
-  const attempt = () => {
-    const candidates = [
-      ...RPC_URLS.map(url => rpcSend(url)),
-      jitoSend(serializedTx).then(r => { if (!r) throw new Error("Jito failed"); _sendStats.jitoOk++; return r; }),
-    ];
-    return Promise.any(candidates);
-  };
+  // Send to primary RPC + Jito simultaneously — first success wins
+  const candidates = [
+    rpcSend(RPC_URLS[0]),
+    jitoSend(serializedTx).then(r => { if (!r) throw new Error("Jito failed"); _sendStats.jitoOk++; return r; }),
+  ];
+  // Add backup RPC if configured (but don't spam 5 endpoints)
+  if (RPC_URLS.length > 1) candidates.push(rpcSend(RPC_URLS[1]));
 
   try {
-    return await attempt();
-  } catch (firstErr) {
-    // Check if it's a non-retryable error
-    const msg = firstErr?.errors?.map(e => e.message).join("; ") || firstErr.message || "";
-    if (msg.includes("insufficient") || msg.includes("Blockhash not found")) {
-      console.error(`[RPC-TX] Non-retryable: ${msg}`);
-      throw firstErr;
-    }
-
-    // Retry once after 500ms
-    console.warn(`[RPC-TX] First attempt failed, retrying in 500ms...`);
-    await new Promise(r => setTimeout(r, 500));
-
+    const sig = await Promise.any(candidates);
+    // Record for dedup
+    _recentSends.set(sigPreview, sig);
+    cleanDedup();
+    return sig;
+  } catch (err) {
+    // All failed — one last try via connection object
+    console.warn("[RPC-TX] Primary paths failed, using connection fallback");
     try {
-      return await attempt();
-    } catch {
-      // Last resort: direct connection.sendRawTransaction
-      console.warn("[RPC-TX] All send paths failed x2, using connection.sendRawTransaction");
-      try {
-        const sig = await connection.sendRawTransaction(serializedTx, {
-          skipPreflight: true,
-          maxRetries: 5,
-          ...opts,
-        });
-        _sendStats.fallbackOk++;
-        return sig;
-      } catch (e) {
-        _sendStats.failed++;
-        console.error(`[RPC-TX] All paths exhausted: ${e.message}`);
-        throw e;
-      }
+      const sig = await connection.sendRawTransaction(serializedTx, {
+        skipPreflight: true,
+        maxRetries: 3,
+        ...opts,
+      });
+      _sendStats.fallbackOk++;
+      _recentSends.set(sigPreview, sig);
+      cleanDedup();
+      return sig;
+    } catch (e) {
+      _sendStats.failed++;
+      throw e;
     }
   }
 }
 
-// Get send stats for diagnostics
 export function getSendStats() {
-  return { ..._sendStats };
+  return { ..._sendStats, dedupSize: _recentSends.size };
 }
 
 export async function getTokenMetadata(mintAddress) {
