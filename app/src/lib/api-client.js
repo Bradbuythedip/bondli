@@ -1,4 +1,4 @@
-import{API}from"./c.js";
+import{API}from"./constants.js";
 class A{constructor(){this.w=null}sw(w){this.w=w}
 async f(p,o={}){const h={"Content-Type":"application/json"};if(this.w){h["X-Wallet"]=this.w;h["x-wallet"]=this.w}const r=await fetch(API+p,{headers:h,...o,body:o.body?JSON.stringify(o.body):undefined,signal:o.signal||AbortSignal.timeout(o.timeout||20000)});if(!r.ok){const e=await r.json().catch(()=>({error:r.statusText}));throw new Error(e.error||`API ${r.status}`)}return r.json()}
 chk(w){return this.f(`/api/access/check?wallet=${w}`)}
