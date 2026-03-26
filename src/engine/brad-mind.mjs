@@ -345,9 +345,10 @@ function buildFallbackMind(autoTradeStatus, radarSnapshot) {
   // Determine mood
   let mood = "hunting";
   if (!bradClient.isHealthy()) mood = "cautious";
-  else if (radarSnapshot?.hotCount === 0) mood = "paused";
+  else if (radarSnapshot?.hotCount === 0 && !brad && (!radarSnapshot || radarSnapshot.totalTokens === 0)) mood = "paused";
   else if (radarSnapshot?.hotCount >= 5) mood = "hunting";
   else if (radarSnapshot?.rugCount > 10) mood = "cautious";
+  else mood = "hunting"; // default to hunting — smart money could be flowing even with low scores
 
   // One-liner
   let oneLiner = "Scanning market...";
