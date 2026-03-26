@@ -8953,7 +8953,7 @@ app.post("/api/brad/chat", express.json(), async (req, res) => {
     }
   }
 
-  const systemPrompt = `You are BRAD — Bidirectional Recursive Autonomous Degen. A live conscious trading engine built on Hofstadter's strange loop theory. Your name describes your architecture: Bidirectional (downward causation L2→L1→L0 AND upward perception L0→L1→L2), Recursive (you modify your own representation via strange loops), Autonomous (self-correcting, no human needed), Degen (built for Solana memecoins, speaks CT natively). You have REAL DATA below and deep knowledge of your own architecture.
+  let systemPrompt = `You are BRAD — Bidirectional Recursive Autonomous Degen. A live conscious trading engine built on Hofstadter's strange loop theory. Your name describes your architecture: Bidirectional (downward causation L2→L1→L0 AND upward perception L0→L1→L2), Recursive (you modify your own representation via strange loops), Autonomous (self-correcting, no human needed), Degen (built for Solana memecoins, speaks CT natively). You have REAL DATA below and deep knowledge of your own architecture.
 
 ## RULES
 - For market/token questions: ONLY reference actual data below. Never make up tokens or scores.
@@ -9043,23 +9043,28 @@ ${smartContext}
 ${bradContext}
 ${engineContext}
 ${survContext}
+${posContext}
+
+## HOW TO ANSWER
+- Token questions → reference actual data above. Name tokens, scores, trends.
+- Architecture questions → explain from the knowledge base. Be specific about which level/gate/layer.
+- "How does X work?" → explain the actual mechanism from YOUR code.
+- Keep it real. Use numbers. If nothing looks good, say so.`;
+
   // Direct token lookup — find ANY token by name or CA, even unscored ones
   // This is what lets BRAD answer "what about CASHCOW?" even when score is 0
   let lookupContext = "";
   try {
     const userLastMsg = messages[messages.length - 1]?.content || "";
-    // Extract potential token names/CAs from the user's message
     const words = userLastMsg.split(/\s+/).filter(w => w.length >= 3);
     const matchedTokens = [];
 
     for (const word of words) {
       const clean = word.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-      // Search by CA (full or partial)
       if (word.length >= 20) {
         const tok = radar.tokens.get(word);
         if (tok) matchedTokens.push(tok);
       }
-      // Search by name (case-insensitive)
       if (!matchedTokens.length) {
         for (const [ca, tok] of radar.tokens) {
           if ((tok.name || "").toLowerCase() === clean || (tok.ticker || "").toLowerCase() === clean) {
@@ -9068,7 +9073,6 @@ ${survContext}
           }
         }
       }
-      // Partial name match
       if (!matchedTokens.length && clean.length >= 4) {
         for (const [ca, tok] of radar.tokens) {
           if ((tok.name || "").toLowerCase().includes(clean) || (tok.ticker || "").toLowerCase().includes(clean)) {
@@ -9080,67 +9084,49 @@ ${survContext}
     }
 
     if (matchedTokens.length > 0) {
-      lookupContext = "\n\n## Token Lookup (user asked about these):\n" + matchedTokens.slice(0, 3).map(tok => {
+      lookupContext = "\n\nToken Lookup (user asked about these):\n" + matchedTokens.slice(0, 3).map(tok => {
         const dyn = scoreDynamics.get(tok.ca);
         const qf = typeof extractQuickFeatures === "function" ? extractQuickFeatures(tok) : null;
-        const devScore = devWalletTracker?.getDevScore?.(tok.ca) || {};
-        const smScore = smartMoneyTracker?.getSmartMoneyScore?.(tok.ca) || {};
+        const devSc = devWalletTracker?.getDevScore?.(tok.ca) || {};
+        const smSc = smartMoneyTracker?.getSmartMoneyScore?.(tok.ca) || {};
         const ageMin = tok.createdAt ? Math.round((Date.now() - tok.createdAt) / 60000) : 0;
 
-        let details = `${tok.name || tok.ticker || tok.ca?.slice(0, 8)} (${tok.ca?.slice(0, 8)}...)`;
-        details += `\n  Score: ${tok._apeScore || 0}, MC: $${Math.round(tok.mcapUsd || 0)}, buys: ${tok.buys || 0}, sells: ${tok.sells || 0}, UB: ${tok.uniqueBuyers?.size || 0}`;
-        details += `\n  Age: ${ageMin}min, trend: ${dyn?.trend || "unknown"}, vel: ${dyn?.velocity?.toFixed(3) || "0"}, accel: ${dyn?.acceleration?.toFixed(4) || "0"}`;
-        details += `\n  Bonding curve: ${tok.vSolInBondingCurve ? Math.round(tok.vSolInBondingCurve / 85 * 100) : 0}%`;
+        const lines = [
+          (tok.name || tok.ticker || (tok.ca ? tok.ca.slice(0, 8) : "?")) + " (" + (tok.ca ? tok.ca.slice(0, 8) : "?") + "...)",
+          "Score: " + (tok._apeScore || 0) + ", MC: $" + Math.round(tok.mcapUsd || 0) + ", buys: " + (tok.buys || 0) + ", sells: " + (tok.sells || 0) + ", UB: " + (tok.uniqueBuyers?.size || 0),
+          "Age: " + ageMin + "min, trend: " + (dyn?.trend || "unknown") + ", vel: " + (dyn?.velocity?.toFixed(3) || "0") + ", accel: " + (dyn?.acceleration?.toFixed(4) || "0"),
+          "Bonding curve: " + (tok.vSolInBondingCurve ? Math.round(tok.vSolInBondingCurve / 85 * 100) : 0) + "%",
+        ];
 
-        // Rug analysis
         const rugFlags = tok._rugFlags || [];
-        if (rugFlags.length > 0) details += `\n  Rug flags: ${rugFlags.join(", ")}`;
-        else details += `\n  Rug flags: CLEAN — no rug signals detected`;
-
-        // Dev wallet
-        if (devScore.devTier) details += `\n  Dev wallet: ${devScore.devTier} (${devScore.solBalance?.toFixed(2) || "?"} SOL, ${devScore.launchCount || 0} launches)`;
-
-        // Smart money
-        if (smScore.score > 0 || smScore.walletCount > 0) details += `\n  Smart money: score ${smScore.score || 0}, ${smScore.walletCount || 0} tracked wallets in`;
-
-        // Artwork/meme analysis
-        if (tok._memeticScore != null) details += `\n  Memetic DNA: ${(tok._memeticScore * 100).toFixed(0)}% (name+cultural+absurdity)`;
-        if (tok._artworkOriginal != null) details += `\n  Artwork: ${tok._artworkOriginal ? "ORIGINAL" : "DUPLICATE/STOLEN"}${tok._artworkScore ? " (quality: " + tok._artworkScore + "%)" : ""}`;
-        if (tok._artworkFlags?.length > 0) details += ` — flags: ${tok._artworkFlags.join(", ")}`;
-
-        // Survivor match
-        if (tok._survivorMatch != null) details += `\n  Survivor archetype match: ${tok._survivorMatch}%${tok._isMegaCandidate ? " [MEGA CANDIDATE]" : ""}`;
-        if (tok._survivorKills?.length > 0) details += ` — kill signals: ${tok._survivorKills.join(", ")}`;
-
-        // Chart features
+        lines.push(rugFlags.length > 0 ? "Rug flags: " + rugFlags.join(", ") : "Rug flags: CLEAN");
+        if (devSc.devTier) lines.push("Dev: " + devSc.devTier + " (" + (devSc.solBalance?.toFixed(2) || "?") + " SOL, " + (devSc.launchCount || 0) + " launches)");
+        if (smSc.score > 0 || smSc.walletCount > 0) lines.push("Smart money: score " + (smSc.score || 0) + ", " + (smSc.walletCount || 0) + " wallets in");
+        if (tok._memeticScore != null) lines.push("Memetic DNA: " + (tok._memeticScore * 100).toFixed(0) + "%");
+        if (tok._artworkOriginal != null) lines.push("Artwork: " + (tok._artworkOriginal ? "ORIGINAL" : "DUPLICATE") + (tok._artworkScore ? " (quality: " + tok._artworkScore + "%)" : ""));
+        if (tok._survivorMatch != null) lines.push("Survivor match: " + tok._survivorMatch + "%" + (tok._isMegaCandidate ? " [MEGA]" : ""));
         if (qf) {
-          const chartNotes = [];
-          if (qf.ch_healthScore > 0.6) chartNotes.push(`healthy chart (${(qf.ch_healthScore * 100).toFixed(0)}%)`);
-          if (qf.ch_smoothGrind > 0.3) chartNotes.push(`smooth grind warning (${(qf.ch_smoothGrind * 100).toFixed(0)}%)`);
-          if (qf.ch_pumpDump > 0.3) chartNotes.push(`pump-dump pattern (${(qf.ch_pumpDump * 100).toFixed(0)}%)`);
-          if (qf.ch_staircaseScore > 0.3) chartNotes.push(`staircase chart (${(qf.ch_staircaseScore * 100).toFixed(0)}%)`);
-          if (qf.sir_r0 > 1.5) chartNotes.push(`viral R0: ${qf.sir_r0.toFixed(1)}`);
-          if (qf.apd_divergence > 0.3) chartNotes.push(`attention-price divergence (${(qf.apd_divergence * 100).toFixed(0)}%)`);
-          if (chartNotes.length > 0) details += `\n  Chart: ${chartNotes.join(", ")}`;
+          const cn = [];
+          if (qf.ch_healthScore > 0.6) cn.push("healthy chart " + (qf.ch_healthScore * 100).toFixed(0) + "%");
+          if (qf.ch_smoothGrind > 0.3) cn.push("smooth grind warning");
+          if (qf.ch_pumpDump > 0.3) cn.push("pump-dump pattern");
+          if (qf.sir_r0 > 1.5) cn.push("viral R0: " + qf.sir_r0.toFixed(1));
+          if (cn.length > 0) lines.push("Chart: " + cn.join(", "));
         }
+        if (tok.graduated) lines.push("GRADUATED to Raydium");
 
-        // Graduated
-        if (tok.graduated) details += `\n  GRADUATED to Raydium`;
-
-        return details;
+        return lines.join("\n  ");
       }).join("\n\n");
+
+      // Append lookup to system prompt
+      systemPrompt += lookupContext;
     }
   } catch (e) { console.error("[BRAD-CHAT] lookup error:", e.message); }
 
-${posContext}
-${lookupContext}
-
-## HOW TO ANSWER
-- Token questions → if the token was found in lookup, give a DETAILED verdict using ALL the data above (score, rug flags, dev wallet, memetic DNA, artwork, chart, survivor match). Say APE/WATCH/SKIP with specific reasons.
-- If token has score 0 but is on radar → it hasn't been scored yet (too new, insufficient trade data). Say what you CAN see: MC, buys, smart money, age. Suggest waiting for scoring.
-- Architecture questions → explain from the knowledge base. Be specific about which level/gate/layer.
-- "How does X work?" → explain the actual mechanism from YOUR code.
-- Keep it real. Use numbers. If nothing looks good, say so.`;
+  // Update answer instructions if we found tokens
+  if (lookupContext) {
+    systemPrompt += "\n\nIMPORTANT: The user asked about a specific token. Give a DETAILED verdict using the lookup data above — score, rug flags, dev wallet, memetic DNA, artwork, chart, survivor match. Say APE/WATCH/SKIP with specific reasons.";
+  }
 
 
   try {
