@@ -289,7 +289,7 @@ function buildFallbackMind(autoTradeStatus, radarSnapshot) {
 
   // BRAD-specific thoughts (when auto-ape is running)
   if (brad?.topPick) {
-    thoughts.push({ type: "pick", text: `Top pick: ${brad.topPick.name} — confidence ${(brad.topPick.confidence || 0).toFixed(2)}`, urgency: "high", token: brad.topPick.name });
+    thoughts.push({ type: "pick", text: `Top pick: ${brad.topPick.name} — confidence ${(brad.topPick.confidence || 0).toFixed(2)}`, urgency: "high", token: brad.topPick.name, ca: brad.topPick.ca });
   }
   if (brad?.apes > 0) {
     thoughts.push({ type: "strategy", text: `Evaluated ${brad.evaluated || 0} tokens this cycle — ${brad.apes} APE, ${brad.skips} SKIP, ${brad.vetos} vetoed`, urgency: "low" });
@@ -315,13 +315,13 @@ function buildFallbackMind(autoTradeStatus, radarSnapshot) {
     // Top token callouts
     if (r.topTokens && r.topTokens.length > 0) {
       const best = r.topTokens[0];
-      thoughts.push({ type: "pick", text: `Highest scoring: ${best.name} at ${best.score} — MC:$${best.mcap}, ${best.buys} buys, ${best.rugFlags > 0 ? best.rugFlags + " rug flags" : "clean"}`, urgency: best.score >= 60 ? "high" : "medium", token: best.name });
+      thoughts.push({ type: "pick", text: `Highest scoring: ${best.name} at ${best.score} — MC:$${best.mcap}, ${best.buys} buys, ${best.rugFlags > 0 ? best.rugFlags + " rug flags" : "clean"}`, urgency: best.score >= 60 ? "high" : "medium", token: best.name, ca: best.ca });
 
       // Second pick if very different
       if (r.topTokens.length > 1) {
         const second = r.topTokens[1];
         if (second.score >= 40) {
-          thoughts.push({ type: "pick", text: `Also watching: ${second.name} at ${second.score} — ${second.trend} trend, ${second.age}min old`, urgency: "low", token: second.name });
+          thoughts.push({ type: "pick", text: `Also watching: ${second.name} at ${second.score} — ${second.trend} trend, ${second.age}min old`, urgency: "low", token: second.name, ca: second.ca });
         }
       }
     }

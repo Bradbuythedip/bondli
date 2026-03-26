@@ -1608,11 +1608,11 @@ return<div style={{background:`linear-gradient(135deg,${T.bg},${moodC}06)`,borde
 <div style={{flex:1,overflowY:"auto",minHeight:80}}>
 {!bm?<div style={{padding:16,textAlign:"center",fontSize:11,color:T.ft}}>Connecting to BRAD cognitive engine...</div>
 :!bm.thoughts||bm.thoughts.length===0?<div style={{padding:16,textAlign:"center",fontSize:11,color:T.ft}}>Waiting for market data...</div>
-:bm.thoughts.map((t,i)=><div key={i} style={{display:"flex",gap:6,padding:"4px 0",borderBottom:i<bm.thoughts.length-1?"1px solid "+T.bd+"22":"none",alignItems:"flex-start",animation:"si .3s ease"}}>
+:bm.thoughts.map((t,i)=><div key={i} onClick={()=>{if(t.ca&&t.ca.length>=20){sTab("radar");sRS(t.ca);sRExp(t.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",gap:6,padding:"4px 2px",borderBottom:i<bm.thoughts.length-1?"1px solid "+T.bd+"22":"none",alignItems:"flex-start",animation:"si .3s ease",cursor:t.ca?"pointer":"default",borderRadius:3}} onMouseEnter={e=>{if(t.ca)e.currentTarget.style.background=moodC+"0a"}} onMouseLeave={e=>{e.currentTarget.style.background="transparent"}}>
 <span style={{fontSize:12,fontWeight:900,color:typeColors[t.type]||T.cy,minWidth:14,textAlign:"center",marginTop:1}}>{typeIcons[t.type]||">"}</span>
 <div style={{flex:1,minWidth:0}}>
 <span style={{fontSize:11,fontWeight:600,color:T.tx,lineHeight:"1.3"}}>{t.text}</span>
-{t.token&&<span style={{fontSize:8,fontWeight:800,color:T.gn,background:T.gn+"12",padding:"0 4px",borderRadius:2,marginLeft:4}}>{t.token}</span>}
+{t.token&&<span onClick={e=>{e.stopPropagation();if(t.ca&&t.ca.length>=20){sTab("radar");sRS(t.ca);sRExp(t.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{fontSize:8,fontWeight:800,color:T.gn,background:T.gn+"12",padding:"1px 5px",borderRadius:3,marginLeft:4,cursor:t.ca?"pointer":"default",border:t.ca?"1px solid "+T.gn+"33":"none"}}>{t.token}{t.ca?" →":""}</span>}
 </div>
 <span style={{width:4,height:4,borderRadius:"50%",background:urgColors[t.urgency]||T.ft,marginTop:5,flexShrink:0}}/>
 </div>)}
