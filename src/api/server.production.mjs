@@ -77,26 +77,10 @@ const TRADE_CONFIG = {
   JITO_TIP_SOL: parseFloat(process.env.JITO_TIP_SOL || "0.001"),  // 0.001 SOL Jito tip per trade
 };
 
-// Fast send: races Jito bundle + RPC simultaneously, adds Jito tip instruction
+// Fast send: single call to smartSend — no additional fallbacks to avoid double-send
 async function fastSend(connection, tx, signers) {
-  // Add Jito tip instruction if not already present
-  const tipAccount = getJitoTipAccount();
-  const tipLamports = Math.round(TRADE_CONFIG.JITO_TIP_SOL * LAMPORTS_PER_SOL);
-  if (tipLamports > 0 && signers.length > 0) {
-    try {
-      // For VersionedTransaction, we can't easily add instructions
-      // Instead, rely on smartSend's Jito bundle path which handles this
-    } catch {}
-  }
-
   const serialized = tx.serialize();
-  try {
-    // Race Jito + all RPCs simultaneously for fastest inclusion
-    return await rpcSendRawTx(connection, serialized);
-  } catch (e) {
-    // Fallback to direct send
-    return connection.sendRawTransaction(serialized, { skipPreflight: true, maxRetries: 5 });
-  }
+  return rpcSendRawTx(connection, serialized);
 }
 const REDIS_URL = process.env.REDIS_URL || null;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
@@ -4506,26 +4490,24 @@ function startAutoTrader(wallet, settings) {
               tx.sign([kp]);
               // Send via all paths simultaneously
               const sig = await fastSend(connection, tx, [kp]);
-              // Quick confirm — 10s max, then check status
-              // Don't block on slow confirmations; check if it landed
+              // Quick confirm — 8s max, then check status. NEVER re-send the tx.
               try {
                 const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
                 await Promise.race([
                   connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed"),
-                  new Promise((_, rej) => setTimeout(() => rej(new Error("confirm_timeout")), 10000)),
+                  new Promise((_, rej) => setTimeout(() => rej(new Error("confirm_timeout")), 8000)),
                 ]);
                 return sig;
               } catch {
-                // Tx may have landed despite confirmation timeout — check status
+                // Tx sent but confirmation timed out — check status (don't re-send!)
                 try {
+                  await new Promise(r => setTimeout(r, 2000)); // brief wait
                   const st = await connection.getSignatureStatus(sig);
                   if (st?.value?.confirmationStatus === "confirmed" || st?.value?.confirmationStatus === "finalized") {
                     log(`Sell confirmed via status check ${ca.slice(0,6)} (${reason}): ${sig}`);
                     return sig;
                   }
-                  // Not confirmed yet but tx was sent — retry send to increase chance
-                  try { await fastSend(connection, tx, [kp]); } catch {}
-                  // Wait 3 more seconds and check again
+                  // Still not confirmed — one more check after 3s
                   await new Promise(r => setTimeout(r, 3000));
                   const st2 = await connection.getSignatureStatus(sig);
                   if (st2?.value?.confirmationStatus === "confirmed" || st2?.value?.confirmationStatus === "finalized") return sig;
@@ -5978,8 +5960,11 @@ function startAutoTrader(wallet, settings) {
       for (const [ca, s] of stabilityMap) { if (Date.now() - s.lastSeen > 30000) stabilityMap.delete(ca); }
 
       // Ape into top 2 candidates per cycle — with entry timing gates
+      // Buy dedup: track CAs we're currently buying to prevent double-buy across cycles
+      if (!state._buyingNow) state._buyingNow = new Set();
       for (const t of hot.slice(0, 2)) {
         if (state.positions.size >= state.settings.maxPositions) break;
+        if (state._buyingNow.has(t.ca)) continue; // already buying this token
 
         // ── ENTRY TIMING GATE 1: Score Stability ──
         // Require score above threshold for 2+ consecutive cycles (4+ seconds at 2s tick)
@@ -6062,6 +6047,7 @@ function startAutoTrader(wallet, settings) {
         const tierTag = t._pipelineTier ? ` T${t._pipelineTier}:${t._pipelineLabel}` : "";
         const bradTag = t._bradEval ? ` BRAD:${t._bradEval.action}(${(t._bradEval.confidence||0).toFixed(2)})` : "";
         log(`APE ${t.name||t.ca.slice(0,6)} | score:${t._apeScore}${tierTag}${trendTag}${earlyTag}${phaseTag}${velTag}${survivorStr}${megaStr}${bradTag} | MC:$${Math.round(t.mcapUsd)} | buys:${t.buys} sells:${t.sells} | ${tradeSol} SOL (${sizeMult}x)${rugFlags}${bullishStr}${walletAgeStr}`);
+        state._buyingNow.add(t.ca); // prevent double-buy
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
@@ -6118,7 +6104,7 @@ function startAutoTrader(wallet, settings) {
               }, 2000);
             }
           }
-        } catch (e) { log(`Buy error: ${e.message}`); }
+        } catch (e) { log(`Buy error: ${e.message}`); } finally { state._buyingNow.delete(t.ca); }
       }
 
       // ═══ AUTO-STOP: if no user interaction for 2 hours, pause auto-trader ═══
