@@ -4497,22 +4497,38 @@ function startAutoTrader(wallet, settings) {
           const resp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ publicKey: kp.publicKey.toBase58(), action: "sell", mint: ca, amount: sellPct + "%", denominatedInSol: "false", slippage: TRADE_CONFIG.SELL_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto" }),
+            signal: AbortSignal.timeout(8000), // 8s timeout on PumpPortal
           });
           if (resp.ok) {
             const txBytes = await resp.arrayBuffer();
             if (txBytes.byteLength > 100) {
               const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
               tx.sign([kp]);
+              // Send via all paths simultaneously
               const sig = await fastSend(connection, tx, [kp]);
-              // Confirm before returning — if not confirmed, don't close position
+              // Quick confirm — 10s max, then check status
+              // Don't block on slow confirmations; check if it landed
               try {
-                await connection.confirmTransaction(sig, "confirmed");
+                const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+                await Promise.race([
+                  connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed"),
+                  new Promise((_, rej) => setTimeout(() => rej(new Error("confirm_timeout")), 10000)),
+                ]);
                 return sig;
               } catch {
-                // Check if tx actually landed despite timeout
+                // Tx may have landed despite confirmation timeout — check status
                 try {
                   const st = await connection.getSignatureStatus(sig);
-                  if (st?.value?.confirmationStatus === "confirmed" || st?.value?.confirmationStatus === "finalized") return sig;
+                  if (st?.value?.confirmationStatus === "confirmed" || st?.value?.confirmationStatus === "finalized") {
+                    log(`Sell confirmed via status check ${ca.slice(0,6)} (${reason}): ${sig}`);
+                    return sig;
+                  }
+                  // Not confirmed yet but tx was sent — retry send to increase chance
+                  try { await fastSend(connection, tx, [kp]); } catch {}
+                  // Wait 3 more seconds and check again
+                  await new Promise(r => setTimeout(r, 3000));
+                  const st2 = await connection.getSignatureStatus(sig);
+                  if (st2?.value?.confirmationStatus === "confirmed" || st2?.value?.confirmationStatus === "finalized") return sig;
                 } catch {}
                 log(`Sell tx not confirmed ${ca.slice(0,6)} (${reason}): ${sig} — keeping position`);
                 return null;
@@ -6050,6 +6066,7 @@ function startAutoTrader(wallet, settings) {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: t.ca, amount: tradeSol, denominatedInSol: "true", slippage: TRADE_CONFIG.BUY_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto" }),
+            signal: AbortSignal.timeout(8000), // 8s timeout on PumpPortal
           });
           if (buyResp.ok) {
             const txBytes = await buyResp.arrayBuffer();
