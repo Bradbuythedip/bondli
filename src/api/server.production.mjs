@@ -170,6 +170,21 @@ const smartMoneyTracker = new SmartMoneyTracker({
     }
     // Broadcast to connected dashboards
     broadcastWS({ event: "smart_money_signal", data: signal });
+    // ═══ BRAD: Comment on smart money moves in real-time ═══
+    const token = radar.tokens.get(mint);
+    const tokenName = token?.name || signal.symbol || mint.slice(0, 8);
+    const score = token?._apeScore || 0;
+    const walletShort = signal.wallet?.slice(0, 6) || "???";
+    const solAmount = signal.solAmount ? `${signal.solAmount.toFixed(2)} SOL` : "";
+    const thought = {
+      type: "pick",
+      text: `Smart money wallet ${walletShort}... just bought ${tokenName}${solAmount ? " for " + solAmount : ""} — score ${score}${score >= 50 ? ", this looks interesting" : score >= 30 ? ", watching closely" : ", score is low though"}`,
+      urgency: score >= 50 ? "high" : "medium",
+      token: tokenName,
+      time: Date.now(),
+    };
+    broadcastWS({ event: "brad_thought", data: thought });
+    console.log(`[BRAD] Smart money: ${walletShort} bought ${tokenName} (score:${score})`);
   },
 });
 
@@ -4659,6 +4674,7 @@ function startAutoTrader(wallet, settings) {
           const sig = await execSell(ca, 100, kp, "brad-exit");
           if (sig) {
             broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "BRAD", reason: bradReason } });
+            broadcastWS({ event: "brad_thought", data: { type: "meta", text: `L2 forced exit on ${(radar.tokens.get(ca)?.name)||ca.slice(0,6)} at ${changePct>0?"+":""}${changePct.toFixed(0)}% — ${bradReason}`, urgency: "high", token: (radar.tokens.get(ca)?.name)||ca.slice(0,6), time: Date.now() } });
             exitPosition(ca, 100, "brad-exit");
             trackSell(wallet, ca);
           }
@@ -4759,6 +4775,7 @@ function startAutoTrader(wallet, settings) {
                 const sig = await execSell(ca, 100, kp, "crash-exit");
                 if (sig) {
                   broadcastWS({ event: "auto-sell", data: { ca, pnl: changePct.toFixed(1), wallet, tier: "CRASH", reason: "score-crashing", velocity: dyn.velocity } });
+                  broadcastWS({ event: "brad_thought", data: { type: "risk", text: `Crash exit on ${(radar.tokens.get(ca)?.name)||ca.slice(0,6)} — score velocity ${dyn.velocity?.toFixed(3)}/s, dumping before price catches up`, urgency: "high", token: (radar.tokens.get(ca)?.name)||ca.slice(0,6), time: Date.now() } });
                   exitPosition(ca, 100, "crash-exit");
                   trackSell(wallet, ca);
                 }
@@ -5891,6 +5908,8 @@ function startAutoTrader(wallet, settings) {
               trackBuy(wallet, t.ca, tradeSol); // instant wallet visibility
               log(`BOUGHT ${t.name||t.ca.slice(0,6)} sig:${sig.slice(0,12)}...`);
               broadcastWS({ event: "auto-ape", data: { ca: t.ca, name: t.name, sol: tradeSol, mcap: t.mcapUsd, wallet, score: t._apeScore, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, buyVelTrend, tier: t._pipelineTier || 2, tierLabel: t._pipelineLabel || "STRONG" } });
+              // ═══ BRAD: Live thought on entry ═══
+              broadcastWS({ event: "brad_thought", data: { type: "strategy", text: `Entered ${t.name||t.ca.slice(0,6)} — ${tradeSol} SOL at score ${t._apeScore}, T${t._pipelineTier||2} ${t._pipelineLabel||""}${t._bradEval?.action==="APE"?" (BRAD approved, conf "+t._bradEval.confidence?.toFixed(2)+")":""}`, urgency: "high", token: t.name||t.ca.slice(0,6), time: Date.now() } });
               // ═══ BRAD: Record confirmed entry for cognitive self-model ═══
               if (state.settings.bradEnabled !== false && bradClient.isHealthy()) {
                 bradClient.recordEntry({
