@@ -5579,6 +5579,88 @@ function startAutoTrader(wallet, settings) {
         return true;
       }).sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0));
 
+      // ═══ BRAD WIDE-NET SCAN — evaluate ALL tokens with momentum, no min score ═══
+      // BRAD should see everything that's moving, not just what passes minScore.
+      // This catches tokens the score threshold would miss but BRAD's cognitive
+      // layer (regime awareness, smart money, strange loop reasoning) might like.
+      if (bradOn) {
+        // Collect ALL scored tokens with momentum signals — no score threshold
+        const allScored = tokens.filter(t => {
+          if (!t._apeScore && t._apeScore !== 0) return false;
+          if (state.positions.has(t.ca)) return false;
+          const dyn = scoreDynamics.get(t.ca);
+          if (!dyn) return false;
+          // Any sign of life: positive velocity, rising/rocket trend, or smart money
+          return dyn.velocity > 0 || dyn.trend === "rising" || dyn.trend === "rocket" || t._smartMoneyIn;
+        }).sort((a, b) => {
+          // Sort by momentum strength, not score
+          const aDyn = scoreDynamics.get(a.ca);
+          const bDyn = scoreDynamics.get(b.ca);
+          const aMom = (aDyn?.velocity || 0) + (aDyn?.acceleration || 0) * 10;
+          const bMom = (bDyn?.velocity || 0) + (bDyn?.acceleration || 0) * 10;
+          return bMom - aMom;
+        });
+
+        // Take top 10 by momentum that AREN'T already in hot (avoid double-eval)
+        const hotCAs = new Set(hot.map(t => t.ca));
+        const bradWideNet = allScored.filter(t => !hotCAs.has(t.ca)).slice(0, 10);
+
+        if (bradWideNet.length > 0) {
+          const widePromises = bradWideNet.map(async (t) => {
+            try {
+              const dyn = scoreDynamics.get(t.ca);
+              const eval_ = await bradClient.evaluateToken({
+                ca: t.ca, name: t.name, symbol: t.symbol, source: "pump",
+                _apeScore: t._apeScore || 0,
+                _scoreVelocity: dyn?.velocity || 0,
+                _scoreAcceleration: dyn?.acceleration || 0,
+                _rugFlags: t._rugFlags || [],
+                uniqueBuyers: t.uniqueBuyers,
+                vSolInBondingCurve: t.vSolInBondingCurve,
+                mcapUsd: t.mcapUsd, volumeSol: t.volumeSol,
+                buys: t.buys, sells: t.sells, trades: t.trades,
+                smartMoneyIn: t._smartMoneyIn || false,
+                devWallet: t.devWallet, graduated: t.graduated,
+                solPrice: solUsdPrice,
+              });
+              // If BRAD says APE on a token that failed minScore — broadcast thought
+              if (eval_?.action === "APE" && eval_.confidence >= 0.6) {
+                const dyn2 = scoreDynamics.get(t.ca);
+                broadcastWS({ event: "brad_thought", data: {
+                  type: "pick",
+                  text: `Below-threshold find: ${t.name||t.ca.slice(0,6)} scored ${t._apeScore} (below ${threshold}) but momentum is ${dyn2?.trend||"building"} (v=${dyn2?.velocity?.toFixed(3)||"?"}) — BRAD says APE at ${(eval_.confidence*100).toFixed(0)}% confidence`,
+                  urgency: "high",
+                  token: t.name || t.ca.slice(0, 6),
+                  time: Date.now(),
+                }});
+                // Promote to hot list so pipeline can evaluate it
+                t._bradEval = eval_;
+                t._bradPromoted = true;
+                hot.push(t);
+                console.log(`[BRAD] PROMOTED ${t.name||t.ca.slice(0,6)} from score ${t._apeScore} — BRAD APE conf ${eval_.confidence.toFixed(2)}, momentum ${dyn2?.trend}`);
+              } else if (eval_?.action === "WATCH") {
+                broadcastWS({ event: "brad_thought", data: {
+                  type: "market",
+                  text: `Watching ${t.name||t.ca.slice(0,6)} — score ${t._apeScore} is low but momentum ${dyn?.trend||"building"}, keeping on radar`,
+                  urgency: "low",
+                  token: t.name || t.ca.slice(0, 6),
+                  time: Date.now(),
+                }});
+              }
+            } catch {}
+          });
+          await Promise.allSettled(widePromises);
+          // Re-sort hot if we promoted any tokens
+          if (hot.some(t => t._bradPromoted)) {
+            hot.sort((a, b) => {
+              const aEff = (a._apeScore || 0) + (a._bradEval?.action === "APE" ? (a._bradEval.confidence || 0.5) * 20 : 0);
+              const bEff = (b._apeScore || 0) + (b._bradEval?.action === "APE" ? (b._bradEval.confidence || 0.5) * 20 : 0);
+              return bEff - aEff;
+            });
+          }
+        }
+      }
+
       // ═══ 5-GATE PIPELINE ENRICHMENT — classify confidence tier for each candidate ═══
       // Runs the full gate pipeline on scored candidates to assign tiers and exit plans.
       // Portfolio constraints are built from current state.
