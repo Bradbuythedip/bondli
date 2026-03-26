@@ -9037,35 +9037,101 @@ ${posContext}
 
 
   try {
-    const resp = await fetch(process.env.XAI_API_URL || "https://api.x.ai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_KEY}` },
-      body: JSON.stringify({
-        model: process.env.GROK_MODEL || "grok-4",
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...messages.slice(-20),
-        ],
-        max_tokens: 400,
-        temperature: 0.5,
-      }),
-      signal: AbortSignal.timeout(25000),
-    });
+    // Stream mode: SSE for token-by-token display
+    const wantStream = req.body.stream !== false;
 
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      console.error(`[BRAD-CHAT] Grok ${resp.status}: ${body.slice(0, 200)}`);
-      return res.status(500).json({ error: `Grok error (${resp.status})` });
+    if (wantStream) {
+      // SSE streaming — tokens appear as they arrive from Grok
+      res.setHeader("Content-Type", "text/event-stream");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.flushHeaders();
+
+      const resp = await fetch(process.env.XAI_API_URL || "https://api.x.ai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_KEY}` },
+        body: JSON.stringify({
+          model: process.env.GROK_MODEL || "grok-4",
+          messages: [{ role: "system", content: systemPrompt }, ...messages.slice(-20)],
+          max_tokens: 400, temperature: 0.5, stream: true,
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        console.error(`[BRAD-CHAT] Grok stream ${resp.status}: ${body.slice(0, 200)}`);
+        res.write(`data: ${JSON.stringify({ error: `Grok error (${resp.status})` })}\n\n`);
+        res.end();
+        return;
+      }
+
+      // Parse SSE stream from Grok and forward to client
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullReply = "";
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || ""; // keep incomplete line in buffer
+
+          for (const line of lines) {
+            if (!line.startsWith("data: ")) continue;
+            const data = line.slice(6).trim();
+            if (data === "[DONE]") {
+              res.write(`data: ${JSON.stringify({ done: true, reply: fullReply })}\n\n`);
+              continue;
+            }
+            try {
+              const chunk = JSON.parse(data);
+              const token = chunk.choices?.[0]?.delta?.content || "";
+              if (token) {
+                fullReply += token;
+                res.write(`data: ${JSON.stringify({ token })}\n\n`);
+              }
+            } catch {}
+          }
+        }
+      } catch (e) {
+        res.write(`data: ${JSON.stringify({ error: e.message })}\n\n`);
+      }
+
+      if (!fullReply) res.write(`data: ${JSON.stringify({ error: "No response" })}\n\n`);
+      res.end();
+
+    } else {
+      // Non-streaming fallback
+      const resp = await fetch(process.env.XAI_API_URL || "https://api.x.ai/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_KEY}` },
+        body: JSON.stringify({
+          model: process.env.GROK_MODEL || "grok-4",
+          messages: [{ role: "system", content: systemPrompt }, ...messages.slice(-20)],
+          max_tokens: 400, temperature: 0.5,
+        }),
+        signal: AbortSignal.timeout(25000),
+      });
+
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => "");
+        return res.status(500).json({ error: `Grok error (${resp.status})` });
+      }
+
+      const data = await resp.json();
+      const reply = data.choices?.[0]?.message?.content;
+      if (!reply) return res.status(500).json({ error: "No response from Grok" });
+      res.json({ reply });
     }
-
-    const data = await resp.json();
-    const reply = data.choices?.[0]?.message?.content;
-    if (!reply) return res.status(500).json({ error: "No response from Grok" });
-
-    res.json({ reply, usage: data.usage || null });
   } catch (e) {
     console.error(`[BRAD-CHAT] Error: ${e.message}`);
-    res.status(500).json({ error: e.name === "TimeoutError" ? "Grok timed out" : "Chat error" });
+    if (!res.headersSent) res.status(500).json({ error: e.name === "TimeoutError" ? "Grok timed out" : "Chat error" });
+    else res.end();
   }
 });
 
