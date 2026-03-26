@@ -583,7 +583,7 @@ const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");co
 const[vipDash,sVipDash]=useState(null);const[vipCustomCode,sVipCustomCode]=useState("");const[vipClaiming,sVipClaiming]=useState(false);const[demoProfits,sDemoProfits]=useState(null);const[demoLoading,sDemoLoading]=useState(false);
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);const[showModel,sShowModel]=useState(false);const[launchTarget,sLTarget]=useState("pump"); // "pump" | "bags"
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
-const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);const[bradMind,sBradMind]=useState(null);const[bradMindOpen,sBradMindOpen]=useState(true);const[brainOpen,sBrainOpen]=useState(false);const[bradChat,sBradChat]=useState([]);const[bradChatIn,sBradChatIn]=useState("");const[bradChatLoading,sBradChatLoading]=useState(false);const bradChatInitRef=useRef(false);
+const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);const[bradMind,sBradMind]=useState(null);const[bradMindOpen,sBradMindOpen]=useState(true);const[brainOpen,sBrainOpen]=useState(false);const[bradChat,sBradChat]=useState([]);const[bradChatIn,sBradChatIn]=useState("");const[bradChatLoading,sBradChatLoading]=useState(false);const bradChatInitRef=useRef(false);const[bradSettings,sBradSettings]=useState(null);const[bradSettingsOpen,sBradSettingsOpen]=useState(false);
 // GPU Earn tab state
 const[gpuDash,sGpuDash]=useState(null);const[gpuFleet,sGpuFleet]=useState(null);const[gpuLoading,sGpuLoading]=useState(false);const[gpuRegWallet,sGpuRegWallet]=useState("");
 const[gpuCmdLoading,sGpuCmdLoading]=useState(false);const[gpuLogs,sGpuLogs]=useState(null);const[gpuShowLogs,sGpuShowLogs]=useState(false);const[gpuShowDetails,sGpuShowDetails]=useState(false);
@@ -640,6 +640,8 @@ useEffect(()=>{if(tab!=="intel"||!liveSim?.active)return;const poll=()=>a.simst(
 useEffect(()=>{if(tab!=="intel")return;a.gcp().then(d=>sChartPatterns(d)).catch(()=>{});const iv=setInterval(()=>a.gcp().then(d=>sChartPatterns(d)).catch(()=>{}),30000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>fetch(API+"/api/intel/tokens?limit=100&sort="+intelTSort+"&source="+intelTSrc).then(r=>r.ok?r.json():null).then(d=>{if(d)sIntelTokens(d)}).catch(()=>{});poll();const iv=setInterval(poll,10000);return()=>clearInterval(iv)},[tab,intelTSort,intelTSrc]);
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>a.brmd(user?.pubkey).then(d=>{if(d)sBradMind(d)}).catch(()=>{});poll();const iv=setInterval(poll,6000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
+// BRAD config fetch
+useEffect(()=>{if(tab!=="intel")return;a.brcfg().then(d=>{if(d&&!d.error)sBradSettings(d)}).catch(()=>{});const iv=setInterval(()=>a.brcfg().then(d=>{if(d&&!d.error)sBradSettings(d)}).catch(()=>{}),30000);return()=>clearInterval(iv)},[tab]);
 // BRAD initiates conversation when mind data first loads
 useEffect(()=>{if(!bradMind||bradChatInitRef.current||bradChat.length>0)return;bradChatInitRef.current=true;sBradChatLoading(true);sBradChat([{role:"assistant",content:"",streaming:true}]);const initMsg=[{role:"user",content:"[SYSTEM: BRAD is initiating. Introduce yourself in 1-2 sentences. Comment on what you see on radar right now. If there's a hot token, call it out. If market is dead, roast it. Be yourself — high IQ degen. End with a question to engage the user like 'see anything I'm missing?' or 'want me to dig into any of these?']"}];a.brchStream(initMsg,user?.pubkey,(partial)=>{sBradChat([{role:"assistant",content:partial,streaming:true}])}).then(final=>{sBradChat([{role:"assistant",content:final}])}).catch(()=>{sBradChat([{role:"assistant",content:"yo. I'm BRAD — Bidirectional Recursive Autonomous Degen. scanning "+((bradMind?.metrics?.totalTokens)||"the")+" tokens on radar. ask me about anything."}])}).finally(()=>sBradChatLoading(false))},[bradMind,user?.pubkey]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs){const tabs={...d.tabs};delete tabs.graduating;// Bags tab now served from radar (hot Bags tokens, heat-ranked server-side)
@@ -1610,6 +1612,59 @@ return<div style={{background:`linear-gradient(135deg,${T.bg},${moodC}04)`,borde
 <span style={{color:T.pu}}>{bm.metrics.strangeLoops}loops</span>
 {bm.metrics.blindSpots>0&&<span style={{color:T.rd}}>{bm.metrics.blindSpots}blind</span>}
 </div>}
+{/* ── BRAD Settings — collapsible tune panel ── */}
+<div style={{flexShrink:0,borderBottom:"1px solid "+T.bd+"33"}}>
+<div onClick={()=>sBradSettingsOpen(!bradSettingsOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"3px 10px",cursor:"pointer",fontSize:8,color:T.ft}}>
+<span style={{fontWeight:700}}>Settings</span>
+<span>{bradSettingsOpen?"▾":"▸"}</span>
+</div>
+{bradSettingsOpen&&bradSettings&&(()=>{
+const bs=bradSettings;const r=bs.risk||{};const sc=bs.scoring||{};const st=bs.strategy||{};const cg=bs.cognitive||{};
+const upd=async(section,key,val)=>{try{await a.brcfgu({[section]:{[key]:val}});const d=await a.brcfg();if(d&&!d.error)sBradSettings(d)}catch{}};
+return<div style={{padding:"4px 10px 8px",display:"flex",flexDirection:"column",gap:6}}>
+{/* Strategy selector */}
+<div style={{display:"flex",alignItems:"center",gap:4,flexWrap:"wrap"}}>
+<span style={{fontSize:8,fontWeight:700,color:T.cy,minWidth:50}}>Strategy</span>
+{(st.strategies||["momentum","snipe","smart_follow","fade","survivor"]).map(s=><button key={s} onClick={()=>upd("strategy","default_strategy",s)} style={{padding:"2px 6px",fontSize:8,fontWeight:st.default_strategy===s?800:500,color:st.default_strategy===s?T.cy:T.ft,background:st.default_strategy===s?T.cy+"15":"none",border:"1px solid "+(st.default_strategy===s?T.cy+"44":T.bd),borderRadius:4,cursor:"pointer"}}>{s}</button>)}
+</div>
+{/* Risk settings */}
+<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4}}>
+{[
+{l:"Max Size",k:"max_position_size_sol",s:"risk",v:r.max_position_size_sol,st:0.1,mn:0.01,mx:5,fmt:v=>v+"SOL"},
+{l:"Max Pos",k:"max_concurrent_positions",s:"risk",v:r.max_concurrent_positions,st:1,mn:1,mx:20,fmt:v=>v},
+{l:"Max Exposure",k:"max_portfolio_exposure_sol",s:"risk",v:r.max_portfolio_exposure_sol,st:0.5,mn:0.5,mx:50,fmt:v=>v+"SOL"},
+].map(p=><div key={p.k} style={{textAlign:"center"}}>
+<div style={{fontSize:7,color:T.ft,fontWeight:700}}>{p.l}</div>
+<div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:2}}>
+<button onClick={()=>upd(p.s,p.k,Math.max(p.mn,+(p.v-p.st).toFixed(2)))} style={{width:16,height:16,borderRadius:3,border:"1px solid "+T.bd,background:"none",color:T.ft,fontSize:9,cursor:"pointer",padding:0,lineHeight:"14px"}}>-</button>
+<span style={{fontSize:10,fontWeight:800,color:T.tx,minWidth:30}}>{p.fmt(p.v)}</span>
+<button onClick={()=>upd(p.s,p.k,Math.min(p.mx,+(p.v+p.st).toFixed(2)))} style={{width:16,height:16,borderRadius:3,border:"1px solid "+T.bd,background:"none",color:T.ft,fontSize:9,cursor:"pointer",padding:0,lineHeight:"14px"}}>+</button>
+</div>
+</div>)}
+</div>
+{/* Scoring + cognitive */}
+<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:4}}>
+{[
+{l:"Min Score",k:"min_score_to_ape",s:"scoring",v:sc.min_score_to_ape,st:0.05,mn:0.3,mx:0.9,fmt:v=>(v*100).toFixed(0)+"%"},
+{l:"Rug Max",k:"rug_signal_max",s:"scoring",v:sc.rug_signal_max,st:1,mn:1,mx:5,fmt:v=>v},
+{l:"Meta Freq",k:"meta_eval_frequency",s:"cognitive",v:cg.meta_eval_frequency,st:1,mn:1,mx:20,fmt:v=>"every "+v},
+].map(p=><div key={p.k} style={{textAlign:"center"}}>
+<div style={{fontSize:7,color:T.ft,fontWeight:700}}>{p.l}</div>
+<div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:2}}>
+<button onClick={()=>upd(p.s,p.k,Math.max(p.mn,+(p.v-p.st).toFixed(2)))} style={{width:16,height:16,borderRadius:3,border:"1px solid "+T.bd,background:"none",color:T.ft,fontSize:9,cursor:"pointer",padding:0,lineHeight:"14px"}}>-</button>
+<span style={{fontSize:10,fontWeight:800,color:T.tx,minWidth:30}}>{p.fmt(p.v)}</span>
+<button onClick={()=>upd(p.s,p.k,Math.min(p.mx,+(p.v+p.st).toFixed(2)))} style={{width:16,height:16,borderRadius:3,border:"1px solid "+T.bd,background:"none",color:T.ft,fontSize:9,cursor:"pointer",padding:0,lineHeight:"14px"}}>+</button>
+</div>
+</div>)}
+</div>
+{/* BRAD decision mode */}
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+<span style={{fontSize:8,fontWeight:700,color:T.yl}}>BRAD Controls Auto-Ape</span>
+<button onClick={()=>{const next=!autoTrade?.settings?.bradAutoControl;sAutoTrade(p=>({...p,settings:{...p?.settings,bradAutoControl:next}}));if(autoTrade?.active)a.atu(user?.pubkey,{bradAutoControl:next}).catch(()=>{})}} style={{padding:"2px 8px",borderRadius:4,border:"1px solid "+(autoTrade?.settings?.bradAutoControl?T.yl:T.bd),background:autoTrade?.settings?.bradAutoControl?T.yl+"15":"none",color:autoTrade?.settings?.bradAutoControl?T.yl:T.ft,fontWeight:800,fontSize:8,cursor:"pointer"}}>{autoTrade?.settings?.bradAutoControl?"ACTIVE":"OFF"}</button>
+</div>
+<div style={{fontSize:7,color:T.dm}}>When active: BRAD's APE/SKIP decisions directly control entry. BRAD can pause trading via L2.</div>
+</div>})()}
+</div>
 {/* ── Thought feed — compact, scrollable, capped height ── */}
 <div style={{maxHeight:mb?120:140,overflowY:"auto",flexShrink:0,borderBottom:"1px solid "+T.bd+"33"}}>
 {!bm?<div style={{padding:10,textAlign:"center",fontSize:10,color:T.ft}}>Connecting...</div>

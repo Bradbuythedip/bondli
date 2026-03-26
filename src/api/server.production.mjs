@@ -5992,6 +5992,15 @@ function startAutoTrader(wallet, settings) {
         if (state.positions.size >= state.settings.maxPositions) break;
         if (state._buyingNow.has(t.ca)) continue; // already buying this token
 
+        // ── BRAD AUTO-CONTROL GATE ──
+        // When bradAutoControl is active, BRAD's decision is FINAL — not advisory.
+        // Token must have BRAD APE approval to enter. SKIP/WATCH = no entry.
+        if (state.settings.bradAutoControl && bradOn) {
+          if (!t._bradEval || t._bradEval.action !== "APE") {
+            continue; // BRAD didn't approve — skip
+          }
+        }
+
         // ── ENTRY TIMING GATE 1: Score Stability ──
         // Require score above threshold for 2+ consecutive cycles (4+ seconds at 2s tick)
         // Exception: early movers (<5 min, MC <$50K) get 1-cycle pass

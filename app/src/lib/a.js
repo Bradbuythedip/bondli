@@ -86,6 +86,8 @@ async brchStream(msgs,w,onToken){const r=await fetch(API+"/api/brad/chat",{metho
 brps(){return this.f("/api/brad/paper/status")}
 brpstart(b){return this.f("/api/brad/paper/start",{method:"POST",body:{bankroll:b||10}})}
 brpstop(){return this.f("/api/brad/paper/stop",{method:"POST"})}
+brcfg(){return this.f("/api/brad/config")}
+brcfgu(u){return this.f("/api/brad/config",{method:"POST",body:u})}
 // Chat support (Grok AI)
 cht(msgs,w){return this.f("/api/chat",{method:"POST",timeout:30000,body:{messages:msgs,wallet:w}})}
 chts(){return this.f("/api/chat/status")}
