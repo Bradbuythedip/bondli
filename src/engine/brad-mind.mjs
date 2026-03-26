@@ -25,7 +25,7 @@ const GROK_MODEL = process.env.GROK_MODEL || "grok-4";
 // Cache to avoid hammering Grok on every poll
 let _cache = null;
 let _cacheTime = 0;
-const CACHE_TTL_MS = 8000; // 8s cache — UI polls every 10s
+const CACHE_TTL_MS = 5000; // 5s cache — UI polls every 6s
 
 // Recent thoughts log (rolling buffer)
 const _thoughtLog = [];

@@ -634,12 +634,12 @@ useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/sta
 useEffect(()=>{if(tab!=="gpu"||demoProfits)return;const poll=()=>{if(user?.pubkey&&!user.demo){fetch(API+"/api/gpu/dashboard?wallet="+user.pubkey).then(r=>r.json()).then(d=>sGpuDash(d)).catch(()=>{})}fetch(API+"/api/gpu/fleet").then(r=>r.json()).then(d=>sGpuFleet(d)).catch(()=>{})};poll();const iv=setInterval(poll,5000);return()=>clearInterval(iv)},[tab,user?.pubkey,demoProfits]);
 // Engine state polling (for visualization)
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{a.ges().then(d=>sEngineState(d)).catch(()=>{})};poll();const iv=setInterval(poll,2000);return()=>clearInterval(iv)},[tab]);
-useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?3000:10000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
+useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?2000:8000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
 // Live sim polling — runs for all users when sim is active
 useEffect(()=>{if(tab!=="intel"||!liveSim?.active)return;const poll=()=>a.simst(user?.pubkey||"anon").then(d=>{if(d.active)sLiveSim(p=>({...p,...d}));else sLiveSim(null)}).catch(()=>{});poll();const iv=setInterval(poll,4000);return()=>clearInterval(iv)},[tab,liveSim?.active,user?.pubkey]);
 useEffect(()=>{if(tab!=="intel")return;a.gcp().then(d=>sChartPatterns(d)).catch(()=>{});const iv=setInterval(()=>a.gcp().then(d=>sChartPatterns(d)).catch(()=>{}),30000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>fetch(API+"/api/intel/tokens?limit=100&sort="+intelTSort+"&source="+intelTSrc).then(r=>r.ok?r.json():null).then(d=>{if(d)sIntelTokens(d)}).catch(()=>{});poll();const iv=setInterval(poll,10000);return()=>clearInterval(iv)},[tab,intelTSort,intelTSrc]);
-useEffect(()=>{if(tab!=="intel")return;const poll=()=>a.brmd(user?.pubkey).then(d=>{if(d)sBradMind(d)}).catch(()=>{});poll();const iv=setInterval(poll,10000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
+useEffect(()=>{if(tab!=="intel")return;const poll=()=>a.brmd(user?.pubkey).then(d=>{if(d)sBradMind(d)}).catch(()=>{});poll();const iv=setInterval(poll,6000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
 // BRAD initiates conversation when mind data first loads
 useEffect(()=>{if(!bradMind||bradChatInitRef.current||bradChat.length>0)return;bradChatInitRef.current=true;sBradChatLoading(true);a.brch([{role:"user",content:"[SYSTEM: BRAD is initiating. Introduce yourself in 1-2 sentences. Comment on what you see on radar right now. If there's a hot token, call it out. If market is dead, roast it. Be yourself — high IQ degen. End with a question to engage the user like 'see anything I'm missing?' or 'want me to dig into any of these?']"}],user?.pubkey).then(r=>{if(r.reply)sBradChat([{role:"assistant",content:r.reply}])}).catch(()=>{sBradChat([{role:"assistant",content:"yo. I'm BRAD — recursive strange loop consciousness running on pure alpha. scanning "+((bradMind?.metrics?.totalTokens)||"the")+" tokens on radar. ask me about anything."}])}).finally(()=>sBradChatLoading(false))},[bradMind,user?.pubkey]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs){const tabs={...d.tabs};delete tabs.graduating;// Bags tab now served from radar (hot Bags tokens, heat-ranked server-side)
@@ -1585,29 +1585,30 @@ return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16p
 
 {/* ═══ BRAD MIND — Live Cognitive Thought Stream ═══ */}
 {(()=>{const bm=bradMind;const moodColors={hunting:T.gn,cautious:T.yl,paused:T.ft,confident:T.cy,adapting:T.pu};const moodC=moodColors[bm?.mood]||T.cy;const typeIcons={market:"~",pick:"$",risk:"!",meta:"@",strategy:">"};const typeColors={market:T.cy,pick:T.gn,risk:T.rd,meta:T.pu,strategy:T.yl};const urgColors={high:T.rd,medium:T.yl,low:T.ft};
-return<div style={{background:`linear-gradient(135deg,${T.bg},${moodC}06)`,border:"1px solid "+moodC+"33",borderRadius:8,marginBottom:6,overflow:"hidden"}}>
-<div onClick={()=>sBradMindOpen(!bradMindOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",cursor:"pointer",borderBottom:bradMindOpen?"1px solid "+T.bd:"none"}}>
+return<div style={{background:`linear-gradient(135deg,${T.bg},${moodC}06)`,border:"1px solid "+moodC+"33",borderRadius:8,marginBottom:6,overflow:"hidden",minHeight:bradMindOpen?360:42,height:bradMindOpen?420:"auto",display:"flex",flexDirection:"column"}}>
+<div onClick={()=>sBradMindOpen(!bradMindOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",cursor:"pointer",borderBottom:bradMindOpen?"1px solid "+T.bd:"none",flexShrink:0}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
 <span style={{fontSize:13,fontWeight:800,color:moodC}}>BRAD Mind</span>
 {bm?.bradOnline&&<span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}
 {bm?.grokPowered&&<span style={{fontSize:7,fontWeight:700,color:T.dm,background:T.dm+"12",padding:"1px 4px",borderRadius:2}}>GROK</span>}
 {bm?.metrics&&<span style={{fontSize:8,fontWeight:700,color:T.pu,background:T.pu+"12",padding:"1px 4px",borderRadius:2}}>HI:{bm.metrics.hofstadterIndex?.toFixed(2)}</span>}
-<span style={{fontSize:10,color:T.dm,fontStyle:"italic"}}>{bm?.oneLiner||"Connecting..."}</span>
+<span style={{fontSize:10,color:T.dm,fontStyle:"italic",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:mb?140:300}}>{bm?.oneLiner||"Connecting..."}</span>
 </div>
 <div style={{display:"flex",alignItems:"center",gap:4}}>
 {bm?.mood&&<span style={{fontSize:8,fontWeight:800,color:moodC,background:moodC+"15",padding:"2px 6px",borderRadius:3,textTransform:"uppercase"}}>{bm.mood}</span>}
 <span style={{fontSize:11,color:T.ft}}>{bradMindOpen?"▾":"▸"}</span>
 </div>
 </div>
-{bradMindOpen&&<div style={{padding:"6px 10px"}}>
+{bradMindOpen&&<div style={{padding:"6px 10px",flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
 {/* Metrics bar */}
-{bm?.metrics&&<div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8,padding:"4px 0",borderBottom:"1px solid "+T.bd+"44"}}>
+{bm?.metrics&&<div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:6,padding:"4px 0",borderBottom:"1px solid "+T.bd+"44",flexShrink:0}}>
 {[{l:"Strategy",v:bm.metrics.strategy,c:T.cy},{l:"Win Rate",v:((bm.metrics.winRate||0)*100).toFixed(0)+"%",c:bm.metrics.winRate>=0.5?T.gn:T.rd},{l:"Trades",v:bm.metrics.totalTrades,c:T.tx},{l:"PnL",v:(bm.metrics.pnlSol||0).toFixed(3)+" SOL",c:bm.metrics.pnlSol>=0?T.gn:T.rd},{l:"Loops",v:bm.metrics.strangeLoops,c:T.pu},{l:"Blind Spots",v:bm.metrics.blindSpots,c:bm.metrics.blindSpots>0?T.rd:T.ft}].map(m=><div key={m.l} style={{textAlign:"center"}}><div style={{fontSize:7,color:T.ft,fontWeight:700}}>{m.l}</div><div style={{fontSize:11,fontWeight:800,color:m.c}}>{m.v}</div></div>)}
 </div>}
-{/* Thought stream */}
+{/* Thought stream — scrollable, fixed area */}
+<div style={{flex:1,overflowY:"auto",minHeight:80}}>
 {!bm?<div style={{padding:16,textAlign:"center",fontSize:11,color:T.ft}}>Connecting to BRAD cognitive engine...</div>
 :!bm.thoughts||bm.thoughts.length===0?<div style={{padding:16,textAlign:"center",fontSize:11,color:T.ft}}>Waiting for market data...</div>
-:bm.thoughts.map((t,i)=><div key={i} style={{display:"flex",gap:6,padding:"4px 0",borderBottom:i<bm.thoughts.length-1?"1px solid "+T.bd+"22":"none",alignItems:"flex-start"}}>
+:bm.thoughts.map((t,i)=><div key={i} style={{display:"flex",gap:6,padding:"4px 0",borderBottom:i<bm.thoughts.length-1?"1px solid "+T.bd+"22":"none",alignItems:"flex-start",animation:"si .3s ease"}}>
 <span style={{fontSize:12,fontWeight:900,color:typeColors[t.type]||T.cy,minWidth:14,textAlign:"center",marginTop:1}}>{typeIcons[t.type]||">"}</span>
 <div style={{flex:1,minWidth:0}}>
 <span style={{fontSize:11,fontWeight:600,color:T.tx,lineHeight:"1.3"}}>{t.text}</span>
@@ -1615,16 +1616,17 @@ return<div style={{background:`linear-gradient(135deg,${T.bg},${moodC}06)`,borde
 </div>
 <span style={{width:4,height:4,borderRadius:"50%",background:urgColors[t.urgency]||T.ft,marginTop:5,flexShrink:0}}/>
 </div>)}
-{/* Chat history */}
-{bradChat.length>0&&<div style={{marginTop:6,borderTop:"1px solid "+T.bd+"44",paddingTop:6,maxHeight:200,overflowY:"auto"}}>
-{bradChat.map((m,i)=><div key={i} style={{display:"flex",gap:6,padding:"3px 0",alignItems:"flex-start"}}>
-<span style={{fontSize:10,fontWeight:900,color:m.role==="user"?T.yl:T.cy,minWidth:14}}>{m.role==="user"?"you":"BRAD"}</span>
+</div>
+{/* Chat history — scrollable */}
+<div style={{borderTop:"1px solid "+T.bd+"44",paddingTop:4,maxHeight:140,overflowY:"auto",flexShrink:0}}>
+{bradChat.map((m,i)=><div key={i} style={{display:"flex",gap:6,padding:"3px 0",alignItems:"flex-start",animation:"si .2s ease"}}>
+<span style={{fontSize:10,fontWeight:900,color:m.role==="user"?T.yl:T.cy,minWidth:30}}>{m.role==="user"?"you":"BRAD"}</span>
 <span style={{fontSize:11,color:m.role==="user"?T.dm:T.tx,lineHeight:"1.3"}}>{m.content}</span>
 </div>)}
-{bradChatLoading&&<div style={{display:"flex",gap:6,padding:"3px 0"}}><span style={{fontSize:10,fontWeight:900,color:T.cy,minWidth:14}}>BRAD</span><span style={{fontSize:11,color:T.ft,fontStyle:"italic"}}>thinking...</span></div>}
-</div>}
-{/* Chat input */}
-<div style={{marginTop:6,display:"flex",gap:4,borderTop:"1px solid "+T.bd+"44",paddingTop:6}}>
+{bradChatLoading&&<div style={{display:"flex",gap:6,padding:"3px 0"}}><span style={{fontSize:10,fontWeight:900,color:T.cy,minWidth:30}}>BRAD</span><span style={{fontSize:11,color:T.ft,fontStyle:"italic",animation:"gp 1s infinite"}}>thinking...</span></div>}
+</div>
+{/* Chat input — always at bottom */}
+<div style={{display:"flex",gap:4,borderTop:"1px solid "+T.bd+"44",paddingTop:6,flexShrink:0}}>
 <input value={bradChatIn} onChange={e=>sBradChatIn(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&bradChatIn.trim()&&!bradChatLoading){e.preventDefault();const msg=bradChatIn.trim();const newMsgs=[...bradChat,{role:"user",content:msg}];sBradChat(newMsgs);sBradChatIn("");sBradChatLoading(true);a.brch(newMsgs,user?.pubkey).then(r=>{if(r.reply)sBradChat(m=>[...m,{role:"assistant",content:r.reply}]);else sBradChat(m=>[...m,{role:"assistant",content:r.error||"Error"}])}).catch(e=>sBradChat(m=>[...m,{role:"assistant",content:"Connection error"}])).finally(()=>sBradChatLoading(false))}}} placeholder="Ask BRAD about any token..." style={{flex:1,background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 10px",fontSize:11,color:T.tx,outline:"none",fontFamily:"inherit"}}/>
 <button onClick={()=>{const msg=bradChatIn.trim();if(!msg||bradChatLoading)return;const newMsgs=[...bradChat,{role:"user",content:msg}];sBradChat(newMsgs);sBradChatIn("");sBradChatLoading(true);a.brch(newMsgs,user?.pubkey).then(r=>{if(r.reply)sBradChat(m=>[...m,{role:"assistant",content:r.reply}]);else sBradChat(m=>[...m,{role:"assistant",content:r.error||"Error"}])}).catch(()=>sBradChat(m=>[...m,{role:"assistant",content:"Connection error"}])).finally(()=>sBradChatLoading(false))}} disabled={bradChatLoading||!bradChatIn.trim()} style={{padding:"6px 12px",borderRadius:6,border:"none",background:bradChatIn.trim()?T.cy:T.bd,color:bradChatIn.trim()?"#000":T.ft,fontWeight:800,fontSize:10,cursor:bradChatIn.trim()&&!bradChatLoading?"pointer":"default",whiteSpace:"nowrap"}}>{bradChatLoading?"...":"Ask"}</button>
 </div>
