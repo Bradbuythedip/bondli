@@ -583,7 +583,7 @@ const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");co
 const[vipDash,sVipDash]=useState(null);const[vipCustomCode,sVipCustomCode]=useState("");const[vipClaiming,sVipClaiming]=useState(false);const[demoProfits,sDemoProfits]=useState(null);const[demoLoading,sDemoLoading]=useState(false);
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);const[showModel,sShowModel]=useState(false);const[launchTarget,sLTarget]=useState("pump"); // "pump" | "bags"
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
-const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);const[bradMind,sBradMind]=useState(null);const[bradMindOpen,sBradMindOpen]=useState(true);
+const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);const[bradMind,sBradMind]=useState(null);const[bradMindOpen,sBradMindOpen]=useState(true);const[brainOpen,sBrainOpen]=useState(false);
 // GPU Earn tab state
 const[gpuDash,sGpuDash]=useState(null);const[gpuFleet,sGpuFleet]=useState(null);const[gpuLoading,sGpuLoading]=useState(false);const[gpuRegWallet,sGpuRegWallet]=useState("");
 const[gpuCmdLoading,sGpuCmdLoading]=useState(false);const[gpuLogs,sGpuLogs]=useState(null);const[gpuShowLogs,sGpuShowLogs]=useState(false);const[gpuShowDetails,sGpuShowDetails]=useState(false);
@@ -1684,8 +1684,8 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 <div style={{position:"absolute",top:-30,left:"30%",width:120,height:120,borderRadius:"50%",background:`radial-gradient(circle,${domC}10,transparent 70%)`,filter:"blur(25px)",transition:"background 2s"}}/>
 <div style={{position:"absolute",bottom:-20,right:"30%",width:100,height:100,borderRadius:"50%",background:`radial-gradient(circle,${T.pu}08,transparent 70%)`,filter:"blur(20px)"}}/>
 
-{/* Header */}
-<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4,position:"relative",zIndex:2}}>
+{/* Header — clickable to collapse */}
+<div onClick={()=>sBrainOpen(!brainOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:brainOpen?4:0,position:"relative",zIndex:2,cursor:"pointer"}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}>
 <div style={{width:8,height:8,borderRadius:"50%",background:`linear-gradient(135deg,#9945FF,#14F195)`,boxShadow:"0 0 10px #9945FF66,0 0 20px #14F19533",animation:"gp 1.5s infinite"}}/>
 <span style={{fontSize:11,fontWeight:900,letterSpacing:2,textTransform:"uppercase",background:"linear-gradient(90deg,#9945FF,#14F195)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>Bondli Brain</span>
@@ -1698,9 +1698,11 @@ return<div style={{margin:"8px 0",background:`linear-gradient(135deg,${T.bg},${T
 <span style={{color:T.dm}}>{engineState.pool?.total||0} pool</span>
 <span style={{color:T.dm}}>{engineState.pool?.active||0} active</span>
 <span style={{color:T.dm}}>{engineState.pool?.graduated||0} grad</span>
+<span style={{fontSize:11,color:T.ft,marginLeft:4}}>{brainOpen?"▾":"▸"}</span>
 </div>
 </div>
 
+{brainOpen&&<>
 {/* ═══ WIRE DIAGRAM ═══ */}
 <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{position:"relative",zIndex:1,display:"block"}}>
 <defs>
@@ -1897,6 +1899,7 @@ return<div style={{display:"flex",alignItems:"center",gap:mb?4:8,padding:"4px 8p
 <span style={{color:T.ft,opacity:.4,marginLeft:2}}>{dy.tracked}tok</span>
 </div>
 </div>})()}
+</>}
 </div>})()}
 </div>
 
