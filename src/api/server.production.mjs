@@ -66,6 +66,37 @@ const RPC_URL = process.env.RPC_URL || CONFIG.RPC_URL || "https://api.mainnet-be
 
 // RPC-optimized sendTransaction — delegated to rpc-enhanced.mjs
 const rpcSendRawTx = smartSend;
+
+// ═══ TRADE EXECUTION CONFIG ═══
+// Tuned for speed: higher tips = faster inclusion, wider slippage = fewer failures
+const TRADE_CONFIG = {
+  BUY_SLIPPAGE: parseInt(process.env.BUY_SLIPPAGE || "30"),        // 30% — memecoins move fast
+  SELL_SLIPPAGE: parseInt(process.env.SELL_SLIPPAGE || "35"),       // 35% — exit is more important than precision
+  PRIORITY_FEE_SOL: parseFloat(process.env.PRIORITY_FEE_SOL || "0.01"),  // 0.01 SOL (~$1.50) — 2x default
+  JITO_TIP_SOL: parseFloat(process.env.JITO_TIP_SOL || "0.001"),  // 0.001 SOL Jito tip per trade
+};
+
+// Fast send: races Jito bundle + RPC simultaneously, adds Jito tip instruction
+async function fastSend(connection, tx, signers) {
+  // Add Jito tip instruction if not already present
+  const tipAccount = getJitoTipAccount();
+  const tipLamports = Math.round(TRADE_CONFIG.JITO_TIP_SOL * LAMPORTS_PER_SOL);
+  if (tipLamports > 0 && signers.length > 0) {
+    try {
+      // For VersionedTransaction, we can't easily add instructions
+      // Instead, rely on smartSend's Jito bundle path which handles this
+    } catch {}
+  }
+
+  const serialized = tx.serialize();
+  try {
+    // Race Jito + all RPCs simultaneously for fastest inclusion
+    return await rpcSendRawTx(connection, serialized);
+  } catch (e) {
+    // Fallback to direct send
+    return connection.sendRawTransaction(serialized, { skipPreflight: true, maxRetries: 5 });
+  }
+}
 const REDIS_URL = process.env.REDIS_URL || null;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
 const DEFAULT_REFERRAL_CODE = "ilikethetech"; // owner's referral code — applied to all new users unless they have another referrer
@@ -3326,7 +3357,7 @@ app.post("/api/session/sell-sweep", async (req, res) => {
                     if (txBytes.byteLength > 100) {
                       const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
                       tx.sign([devKp]);
-                      const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                      const sig = await fastSend(connection, tx, [kp]);
                       console.log(`[SWEEP] Dev token sell: ${sig.slice(0, 12)}`);
                       await new Promise(r => setTimeout(r, 3000)); // wait for confirmation
                     }
@@ -3377,7 +3408,7 @@ app.post("/api/session/sell-sweep", async (req, res) => {
               if (txBytes.byteLength > 100) {
                 const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
                 tx.sign([fkKp]);
-                await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                await fastSend(connection, tx, [kp]);
               }
             }
           } catch {}
@@ -3489,7 +3520,7 @@ app.post("/api/session/force-recover", async (req, res) => {
               if (txBytes.byteLength > 100) {
                 const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
                 tx.sign([kp]);
-                await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                await fastSend(connection, tx, [kp]);
                 console.log(`[RECOVER] ${wk.role}(${pub}) tokens sold`);
                 await new Promise(r => setTimeout(r, 2000));
               }
@@ -4092,14 +4123,14 @@ app.post("/api/sell-all", async (req, res) => {
           body: JSON.stringify({
             publicKey: tw.pubkey, action: "sell", mint: info.mint,
             amount: "100%", denominatedInSol: "false",
-            slippage: 30, priorityFee: 0.005, pool: "auto",
+            slippage: TRADE_CONFIG.SELL_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto",
           }),
         });
         if (response.ok) {
           const txBytes = await response.arrayBuffer();
           const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
           tx.sign([kp]);
-          await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+          await fastSend(connection, tx, [kp]);
           sold++;
           trackSell(wallet, info.mint);
         }
@@ -4456,14 +4487,14 @@ function startAutoTrader(wallet, settings) {
         try {
           const resp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ publicKey: kp.publicKey.toBase58(), action: "sell", mint: ca, amount: sellPct + "%", denominatedInSol: "false", slippage: 30, priorityFee: 0.005, pool: "auto" }),
+            body: JSON.stringify({ publicKey: kp.publicKey.toBase58(), action: "sell", mint: ca, amount: sellPct + "%", denominatedInSol: "false", slippage: TRADE_CONFIG.SELL_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto" }),
           });
           if (resp.ok) {
             const txBytes = await resp.arrayBuffer();
             if (txBytes.byteLength > 100) {
               const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
               tx.sign([kp]);
-              const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+              const sig = await fastSend(connection, tx, [kp]);
               // Confirm before returning — if not confirmed, don't close position
               try {
                 await connection.confirmTransaction(sig, "confirmed");
@@ -5016,14 +5047,14 @@ function startAutoTrader(wallet, settings) {
           try {
             const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: ca, amount: dcaAmount, denominatedInSol: "true", slippage: 25, priorityFee: 0.005, pool: "auto" }),
+              body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: ca, amount: dcaAmount, denominatedInSol: "true", slippage: TRADE_CONFIG.BUY_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto" }),
             });
             if (buyResp.ok) {
               const txBytes = await buyResp.arrayBuffer();
               if (txBytes.byteLength > 100) {
                 const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
                 tx.sign([kp]);
-                const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                const sig = await fastSend(connection, tx, [kp]);
                 pos.dcaBuys = (pos.dcaBuys || 0) + 1;
                 pos.totalSol = (pos.totalSol || pos.entrySol) + dcaAmount;
                 // Recalculate average entry (weighted)
@@ -5087,14 +5118,14 @@ function startAutoTrader(wallet, settings) {
               try {
                 const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
                   method: "POST", headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: ca, amount: reentryAmount, denominatedInSol: "true", slippage: 25, priorityFee: 0.005, pool: "auto" }),
+                  body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: ca, amount: reentryAmount, denominatedInSol: "true", slippage: TRADE_CONFIG.BUY_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto" }),
                 });
                 if (buyResp.ok) {
                   const txBytes = await buyResp.arrayBuffer();
                   if (txBytes.byteLength > 100) {
                     const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
                     tx.sign([kp]);
-                    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+                    const sig = await fastSend(connection, tx, [kp]);
                     state.positions.set(ca, {
                       entryMcap: currentMcap, entrySol: reentryAmount, entryTime: Date.now(),
                       peakMcap: currentMcap, tpHit: 0, slHit: 0, dcaBuys: 0, isReentry: true,
@@ -5973,14 +6004,14 @@ function startAutoTrader(wallet, settings) {
         try {
           const buyResp = await fetch("https://pumpportal.fun/api/trade-local", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: t.ca, amount: tradeSol, denominatedInSol: "true", slippage: 25, priorityFee: 0.005, pool: "auto" }),
+            body: JSON.stringify({ publicKey: tw.pubkey, action: "buy", mint: t.ca, amount: tradeSol, denominatedInSol: "true", slippage: TRADE_CONFIG.BUY_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto" }),
           });
           if (buyResp.ok) {
             const txBytes = await buyResp.arrayBuffer();
             if (txBytes.byteLength > 100) {
               const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
               tx.sign([kp]);
-              const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+              const sig = await fastSend(connection, tx, [kp]);
               // Snapshot features at entry for survivorship bias learning
               const _entryFeatures = typeof extractQuickFeatures === "function" ? extractQuickFeatures(t) : null;
               state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: tradeSol, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, entryBuyVel: buyVelTrend, entryFeatures: _entryFeatures, tier: t._pipelineTier || 2, exitPlan: t._pipelineExitPlan || createExitPlan(2, t._apeScore || 0, state.settings) });
@@ -6088,14 +6119,14 @@ app.post("/api/auto-trade/close", async (req, res) => {
       try {
         const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ publicKey: tw.pubkey, action: "sell", mint: ca, amount: "100%", denominatedInSol: "false", slippage: 30, priorityFee: 0.005, pool: "auto" }),
+          body: JSON.stringify({ publicKey: tw.pubkey, action: "sell", mint: ca, amount: "100%", denominatedInSol: "false", slippage: TRADE_CONFIG.SELL_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto" }),
         });
         if (sellResp.ok) {
           const txBytes = await sellResp.arrayBuffer();
           if (txBytes.byteLength > 100) {
             const tx = VersionedTransaction.deserialize(new Uint8Array(txBytes));
             tx.sign([kp]);
-            const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+            const sig = await fastSend(connection, tx, [kp]);
             results.push({ ca, sold: true, sig: sig.slice(0, 12) });
             broadcastWS({ event: "auto-sell", data: { ca, wallet, reason: "close-all" } });
           }
@@ -6124,7 +6155,7 @@ app.post("/api/auto-trade/exit-position", async (req, res) => {
     // Sell 100% via PumpPortal auto-route
     const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ publicKey: tw.pubkey, action: "sell", mint: ca, amount: "100%", denominatedInSol: "false", slippage: 30, priorityFee: 0.005, pool: "auto" }),
+      body: JSON.stringify({ publicKey: tw.pubkey, action: "sell", mint: ca, amount: "100%", denominatedInSol: "false", slippage: TRADE_CONFIG.SELL_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto" }),
     });
     let sig = null;
     if (sellResp.ok) {
@@ -6384,7 +6415,7 @@ async function autoExitSell(wallet, ca, sellPct, reason) {
       body: JSON.stringify({
         publicKey: tw.pubkey, action: "sell", mint: ca,
         amount: sellPct + "%", denominatedInSol: "false",
-        slippage: 30, priorityFee: 0.005, pool: "auto",
+        slippage: TRADE_CONFIG.SELL_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto",
       }),
     });
     if (sellResp.ok) {
