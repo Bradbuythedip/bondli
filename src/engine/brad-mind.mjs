@@ -78,7 +78,7 @@ Rules:
 /**
  * Build the context message for Grok from BRAD's state.
  */
-function buildContext(bradMetrics, bradState, pipelineStats, autoTradeStatus) {
+function buildContext(bradMetrics, bradState, pipelineStats, autoTradeStatus, radarSnapshot) {
   const parts = [];
 
   if (bradMetrics) {
@@ -152,13 +152,30 @@ function buildContext(bradMetrics, bradState, pipelineStats, autoTradeStatus) {
     }
   }
 
-  return parts.join("\n\n") || "No BRAD data available yet. Engine may be starting up.";
+  // Always include live radar data — this is what makes thoughts work even without auto-ape
+  if (radarSnapshot) {
+    parts.push(`## Live Radar (PumpPortal feed)
+- Total tokens on radar: ${radarSnapshot.totalTokens}
+- Hot tokens (score 30+): ${radarSnapshot.hotCount}
+- Rug-flagged tokens: ${radarSnapshot.rugCount}
+- Graduated tokens: ${radarSnapshot.gradCount}
+- Average score: ${radarSnapshot.avgScore}`);
+
+    if (radarSnapshot.topTokens && radarSnapshot.topTokens.length > 0) {
+      const tokenLines = radarSnapshot.topTokens.map(t =>
+        `${t.name} — score:${t.score}, MC:$${t.mcap}, buys:${t.buys}, sells:${t.sells}, rugFlags:${t.rugFlags}, trend:${t.trend}, age:${t.age}min`
+      ).join("\n- ");
+      parts.push(`## Top Tokens Right Now\n- ${tokenLines}`);
+    }
+  }
+
+  return parts.join("\n\n") || "BRAD engine starting up. Waiting for first radar data from PumpPortal.";
 }
 
 /**
  * Get BRAD Mind thoughts — combines BRAD state with Grok reasoning.
  */
-export async function getBradMind(autoTradeStatus) {
+export async function getBradMind(autoTradeStatus, radarSnapshot) {
   // Return cache if fresh
   if (_cache && Date.now() - _cacheTime < CACHE_TTL_MS) {
     return _cache;
@@ -166,7 +183,7 @@ export async function getBradMind(autoTradeStatus) {
 
   // If no Grok key, return raw BRAD data without AI commentary
   if (!XAI_API_KEY) {
-    return buildFallbackMind(autoTradeStatus);
+    return buildFallbackMind(autoTradeStatus, radarSnapshot);
   }
 
   // Fetch BRAD state
@@ -176,7 +193,7 @@ export async function getBradMind(autoTradeStatus) {
   ]);
 
   const pipelineStats = autoTradeStatus?.pipeline || null;
-  const context = buildContext(metrics, state, pipelineStats, autoTradeStatus);
+  const context = buildContext(metrics, state, pipelineStats, autoTradeStatus, radarSnapshot);
 
   // Call Grok
   const controller = new AbortController();
@@ -206,12 +223,12 @@ export async function getBradMind(autoTradeStatus) {
 
     if (!resp.ok) {
       console.error(`[BRAD-MIND] Grok error ${resp.status}`);
-      return buildFallbackMind(autoTradeStatus);
+      return buildFallbackMind(autoTradeStatus, radarSnapshot);
     }
 
     const data = await resp.json();
     const content = data.choices?.[0]?.message?.content;
-    if (!content) return buildFallbackMind(autoTradeStatus);
+    if (!content) return buildFallbackMind(autoTradeStatus, radarSnapshot);
 
     let parsed;
     try {
@@ -220,9 +237,9 @@ export async function getBradMind(autoTradeStatus) {
       // Grok sometimes wraps in markdown — try to extract JSON
       const match = content.match(/\{[\s\S]*\}/);
       if (match) {
-        try { parsed = JSON.parse(match[0]); } catch { return buildFallbackMind(autoTradeStatus); }
+        try { parsed = JSON.parse(match[0]); } catch { return buildFallbackMind(autoTradeStatus, radarSnapshot); }
       } else {
-        return buildFallbackMind(autoTradeStatus);
+        return buildFallbackMind(autoTradeStatus, radarSnapshot);
       }
     }
 
@@ -260,35 +277,98 @@ export async function getBradMind(autoTradeStatus) {
   } catch (err) {
     clearTimeout(timeout);
     console.error(`[BRAD-MIND] Error: ${err.message}`);
-    return buildFallbackMind(autoTradeStatus);
+    return buildFallbackMind(autoTradeStatus, radarSnapshot);
   }
 }
 
 /**
- * Fallback when Grok is unavailable — return raw BRAD data as thoughts.
+ * Fallback when Grok is unavailable — generate thoughts from raw data.
+ * Always produces useful output even without Grok or auto-ape running.
  */
-function buildFallbackMind(autoTradeStatus) {
+function buildFallbackMind(autoTradeStatus, radarSnapshot) {
   const brad = autoTradeStatus?.pipeline?.brad;
   const thoughts = [];
 
+  // BRAD engine status
   if (!bradClient.isHealthy()) {
-    thoughts.push({ type: "meta", text: "BRAD engine offline. Running on bondli ML scoring only.", urgency: "medium" });
-  } else {
-    if (brad?.topPick) {
-      thoughts.push({ type: "pick", text: `Top pick: ${brad.topPick.name} (confidence ${(brad.topPick.confidence || 0).toFixed(2)})`, urgency: "high", token: brad.topPick.name });
+    thoughts.push({ type: "meta", text: "BRAD cognitive engine offline — running on bondli ML scoring only.", urgency: "medium" });
+  }
+
+  // BRAD-specific thoughts (when auto-ape is running)
+  if (brad?.topPick) {
+    thoughts.push({ type: "pick", text: `Top pick: ${brad.topPick.name} — confidence ${(brad.topPick.confidence || 0).toFixed(2)}`, urgency: "high", token: brad.topPick.name });
+  }
+  if (brad?.apes > 0) {
+    thoughts.push({ type: "strategy", text: `Evaluated ${brad.evaluated || 0} tokens this cycle — ${brad.apes} APE, ${brad.skips} SKIP, ${brad.vetos} vetoed`, urgency: "low" });
+  }
+  if (brad?.vetos > 0) {
+    thoughts.push({ type: "risk", text: `Blocked ${brad.vetos} entries — L2 meta-cognitive override active`, urgency: "high" });
+  }
+
+  // Live radar thoughts (always available)
+  if (radarSnapshot) {
+    const r = radarSnapshot;
+    thoughts.push({ type: "market", text: `Watching ${r.totalTokens} tokens on radar — ${r.hotCount} scoring above 30, avg score ${r.avgScore}`, urgency: "low" });
+
+    if (r.rugCount > 0) {
+      const rugPct = r.totalTokens > 0 ? ((r.rugCount / r.totalTokens) * 100).toFixed(0) : 0;
+      thoughts.push({ type: "risk", text: `${r.rugCount} tokens flagged as potential rugs (${rugPct}% of radar)`, urgency: r.rugCount > 10 ? "high" : "medium" });
     }
-    if (brad?.apes > 0) {
-      thoughts.push({ type: "market", text: `Evaluated ${brad.evaluated || 0} tokens — ${brad.apes} look good, ${brad.skips} skipped, ${brad.vetos} vetoed.`, urgency: "low" });
+
+    if (r.gradCount > 0) {
+      thoughts.push({ type: "market", text: `${r.gradCount} tokens have graduated to Raydium`, urgency: "low" });
     }
-    if (brad?.vetos > 0) {
-      thoughts.push({ type: "risk", text: `Vetoed ${brad.vetos} entries — meta-cognitive layer detected issues.`, urgency: "high" });
+
+    // Top token callouts
+    if (r.topTokens && r.topTokens.length > 0) {
+      const best = r.topTokens[0];
+      thoughts.push({ type: "pick", text: `Highest scoring: ${best.name} at ${best.score} — MC:$${best.mcap}, ${best.buys} buys, ${best.rugFlags > 0 ? best.rugFlags + " rug flags" : "clean"}`, urgency: best.score >= 60 ? "high" : "medium", token: best.name });
+
+      // Second pick if very different
+      if (r.topTokens.length > 1) {
+        const second = r.topTokens[1];
+        if (second.score >= 40) {
+          thoughts.push({ type: "pick", text: `Also watching: ${second.name} at ${second.score} — ${second.trend} trend, ${second.age}min old`, urgency: "low", token: second.name });
+        }
+      }
+    }
+
+    // Market temperature
+    if (r.hotCount === 0) {
+      thoughts.push({ type: "strategy", text: "No high-scoring tokens on radar — market is cold, staying patient", urgency: "medium" });
+    } else if (r.hotCount >= 10) {
+      thoughts.push({ type: "strategy", text: `${r.hotCount} hot tokens — market is active, widening scan`, urgency: "medium" });
     }
   }
 
+  // Positions
+  const positions = autoTradeStatus?.positions || [];
+  if (positions.length > 0) {
+    const winners = positions.filter(p => p.changePct > 0);
+    const losers = positions.filter(p => p.changePct < 0);
+    thoughts.push({ type: "strategy", text: `${positions.length} open positions — ${winners.length} green, ${losers.length} red`, urgency: losers.length > winners.length ? "medium" : "low" });
+  }
+
+  // Determine mood
+  let mood = "hunting";
+  if (!bradClient.isHealthy()) mood = "cautious";
+  else if (radarSnapshot?.hotCount === 0) mood = "paused";
+  else if (radarSnapshot?.hotCount >= 5) mood = "hunting";
+  else if (radarSnapshot?.rugCount > 10) mood = "cautious";
+
+  // One-liner
+  let oneLiner = "Scanning market...";
+  if (radarSnapshot) {
+    if (radarSnapshot.hotCount === 0) oneLiner = `${radarSnapshot.totalTokens} tokens — nothing hot yet`;
+    else if (brad?.topPick) oneLiner = `Eyes on ${brad.topPick.name} — ${radarSnapshot.hotCount} hot tokens`;
+    else if (radarSnapshot.topTokens?.[0]) oneLiner = `${radarSnapshot.topTokens[0].name} leading at ${radarSnapshot.topTokens[0].score} — ${radarSnapshot.hotCount} hot`;
+    else oneLiner = `${radarSnapshot.hotCount} hot tokens across ${radarSnapshot.totalTokens} tracked`;
+  }
+
   return {
-    thoughts,
-    mood: bradClient.isHealthy() ? "hunting" : "paused",
-    oneLiner: bradClient.isHealthy() ? "Scanning..." : "BRAD offline — ML scoring only",
+    thoughts: thoughts.length > 0 ? thoughts : [{ type: "meta", text: "Initializing cognitive engine — connecting to radar feed...", urgency: "low" }],
+    mood,
+    oneLiner,
     timestamp: Date.now(),
     metrics: null,
     bradOnline: bradClient.isHealthy(),
