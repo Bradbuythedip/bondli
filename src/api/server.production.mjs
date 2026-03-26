@@ -69,18 +69,44 @@ const RPC_URL = process.env.RPC_URL || CONFIG.RPC_URL || "https://api.mainnet-be
 const rpcSendRawTx = smartSend;
 
 // ═══ TRADE EXECUTION CONFIG ═══
-// Tuned for speed: higher tips = faster inclusion, wider slippage = fewer failures
+// PumpPortal's `priorityFee` param IS the Jito tip — they add the tip instruction
+// for us. No need for separate Jito tip logic. Higher fee = faster inclusion.
 const TRADE_CONFIG = {
-  BUY_SLIPPAGE: parseInt(process.env.BUY_SLIPPAGE || "30"),        // 30% — memecoins move fast
-  SELL_SLIPPAGE: parseInt(process.env.SELL_SLIPPAGE || "35"),       // 35% — exit is more important than precision
-  PRIORITY_FEE_SOL: parseFloat(process.env.PRIORITY_FEE_SOL || "0.01"),  // 0.01 SOL (~$1.50) — 2x default
-  JITO_TIP_SOL: parseFloat(process.env.JITO_TIP_SOL || "0.001"),  // 0.001 SOL Jito tip per trade
+  BUY_SLIPPAGE: parseInt(process.env.BUY_SLIPPAGE || "30"),         // 30% — memecoins move fast
+  SELL_SLIPPAGE: parseInt(process.env.SELL_SLIPPAGE || "35"),        // 35% — exit > precision
+  PRIORITY_FEE_SOL: parseFloat(process.env.PRIORITY_FEE_SOL || "0.008"), // PumpPortal Jito tip
 };
 
-// Fast send: single call to smartSend — no additional fallbacks to avoid double-send
+// Fast send for PumpPortal transactions.
+// PumpPortal txs already include Jito tip via priorityFee param.
+// Just send via RPC — don't also submit as Jito bundle (redundant, slower).
 async function fastSend(connection, tx, signers) {
   const serialized = tx.serialize();
-  return rpcSendRawTx(connection, serialized);
+  const base58Tx = bs58.encode(serialized);
+
+  // Send to primary RPC only — PumpPortal's built-in tip handles inclusion.
+  // Adding Jito bundle on top is redundant and adds ~500ms latency.
+  try {
+    const res = await fetch(CONFIG.RPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1,
+        method: "sendTransaction",
+        params: [base58Tx, { skipPreflight: true, encoding: "base58", maxRetries: 3 }],
+      }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.result) return data.result;
+      if (data.error) throw new Error(JSON.stringify(data.error));
+    }
+    throw new Error("RPC not ok");
+  } catch (e) {
+    // Fallback: use connection object
+    return connection.sendRawTransaction(serialized, { skipPreflight: true, maxRetries: 3 });
+  }
 }
 const REDIS_URL = process.env.REDIS_URL || null;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
@@ -3342,7 +3368,7 @@ app.post("/api/session/sell-sweep", async (req, res) => {
                 try {
                   const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
                     method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ publicKey: devKp.publicKey.toBase58(), action: "sell", mint: session.tokenCA, amount: "100%", denominatedInSol: "false", slippage: 50, priorityFee: 0.01, pool: "auto" }),
+                    body: JSON.stringify({ publicKey: devKp.publicKey.toBase58(), action: "sell", mint: session.tokenCA, amount: "100%", denominatedInSol: "false", slippage: TRADE_CONFIG.SELL_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto" }),
                     signal: AbortSignal.timeout(15000),
                   });
                   if (sellResp.ok) {
@@ -3393,7 +3419,7 @@ app.post("/api/session/sell-sweep", async (req, res) => {
           try {
             const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ publicKey: fkKp.publicKey.toBase58(), action: "sell", mint: session.tokenCA, amount: "100%", denominatedInSol: "false", slippage: 50, priorityFee: 0.01, pool: "auto" }),
+              body: JSON.stringify({ publicKey: fkKp.publicKey.toBase58(), action: "sell", mint: session.tokenCA, amount: "100%", denominatedInSol: "false", slippage: TRADE_CONFIG.SELL_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto" }),
               signal: AbortSignal.timeout(10000),
             });
             if (sellResp.ok) {
@@ -3505,7 +3531,7 @@ app.post("/api/session/force-recover", async (req, res) => {
           try {
             const sellResp = await fetch("https://pumpportal.fun/api/trade-local", {
               method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ publicKey: kp.publicKey.toBase58(), action: "sell", mint: session.tokenCA, amount: "100%", denominatedInSol: "false", slippage: 50, priorityFee: 0.01, pool: "auto" }),
+              body: JSON.stringify({ publicKey: kp.publicKey.toBase58(), action: "sell", mint: session.tokenCA, amount: "100%", denominatedInSol: "false", slippage: TRADE_CONFIG.SELL_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto" }),
               signal: AbortSignal.timeout(10000),
             });
             if (sellResp.ok) {
@@ -3613,8 +3639,8 @@ app.post("/api/quick-ape", async (req, res) => {
     const { wallet, ca, solAmount, slippage: userSlippage, priorityFee: userPriorityFee } = req.body;
     if (!wallet || !ca || !solAmount) return res.status(400).json({ error: "wallet, ca, solAmount required" });
     if (solAmount <= 0 || solAmount > 100) return res.status(400).json({ error: "Invalid SOL amount (0-100)" });
-    const apeSlippage = (userSlippage != null && userSlippage >= 1 && userSlippage <= 50) ? userSlippage : 25;
-    const apePriorityFee = (userPriorityFee != null && userPriorityFee >= 0.0001 && userPriorityFee <= 0.5) ? userPriorityFee : 0.008;
+    const apeSlippage = (userSlippage != null && userSlippage >= 1 && userSlippage <= 50) ? userSlippage : TRADE_CONFIG.BUY_SLIPPAGE;
+    const apePriorityFee = (userPriorityFee != null && userPriorityFee >= 0.0001 && userPriorityFee <= 0.5) ? userPriorityFee : TRADE_CONFIG.PRIORITY_FEE_SOL;
 
     const tw = await getTradingWallet(wallet);
     if (!tw) return res.status(400).json({ error: "No trading wallet — create one first" });
@@ -3861,7 +3887,7 @@ app.post("/api/quick-sell", async (req, res) => {
     let errors = []; // collect all errors for debugging
 
     // Helper: try a single PumpPortal pool sell
-    const tryPPSell = async (pool, slippage = 30, fee = 0.008, timeout = 5000) => {
+    const tryPPSell = async (pool, slippage = TRADE_CONFIG.SELL_SLIPPAGE, fee = TRADE_CONFIG.PRIORITY_FEE_SOL, timeout = 8000) => {
       const response = await fetch("https://pumpportal.fun/api/trade-local", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -3974,7 +4000,7 @@ app.post("/api/quick-sell", async (req, res) => {
         const reqBody = {
           publicKey: tw.pubkey, action: "sell", mint: ca,
           amount: tokenBalance.toString(), denominatedInSol: "false",
-          slippage: 50, priorityFee: 0.01, pool: "auto",
+          slippage: TRADE_CONFIG.SELL_SLIPPAGE, priorityFee: TRADE_CONFIG.PRIORITY_FEE_SOL, pool: "auto",
         };
         const response = await fetch("https://pumpportal.fun/api/trade-local", {
           method: "POST",
