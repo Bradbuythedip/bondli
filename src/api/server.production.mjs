@@ -8715,6 +8715,119 @@ app.get("/api/brad/thought-log", (req, res) => {
   res.json({ thoughts: getThoughtLog(limit) });
 });
 
+// ═══ BRAD CHAT — Talk to BRAD Mind about tokens ═══
+// User questions are combined with BRAD's full cognitive state + live radar
+// data, then sent to Grok. BRAD answers as its conscious inner voice.
+app.post("/api/brad/chat", express.json(), async (req, res) => {
+  const { messages, wallet } = req.body;
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: "messages required" });
+  }
+
+  const XAI_KEY = process.env.XAI_API_KEY;
+  if (!XAI_KEY) return res.status(503).json({ error: "XAI_API_KEY not set — BRAD chat needs Grok" });
+
+  // Build live context from radar + BRAD
+  const allTokens = [...radar.tokens.values()];
+  const topTokens = allTokens
+    .filter(t => (t._apeScore || 0) >= 20)
+    .sort((a, b) => (b._apeScore || 0) - (a._apeScore || 0))
+    .slice(0, 15)
+    .map(t => {
+      const dyn = scoreDynamics.get(t.ca);
+      return `${t.name||t.ca?.slice(0,8)}: score=${t._apeScore||0}, MC=$${Math.round(t.mcapUsd||0)}, buys=${t.buys||0}, sells=${t.sells||0}, trend=${dyn?.trend||"new"}, vel=${dyn?.velocity?.toFixed(3)||"0"}, rugFlags=${t._rugFlags?.length||0}, age=${t.createdAt?Math.round((Date.now()-t.createdAt)/60000):0}min${t._smartMoneyIn?" [SMART MONEY]":""}${t._isMegaCandidate?" [MEGA]":""}${t.graduated?" [GRADUATED]":""}`;
+    }).join("\n");
+
+  let bradContext = "";
+  try {
+    const [metrics, state] = await Promise.all([
+      bradClient.getMetrics().catch(() => null),
+      bradClient.getState().catch(() => null),
+    ]);
+    if (metrics) {
+      bradContext += `\nBRAD Metrics: HI=${metrics.hofstadter_index?.toFixed(3)||"?"}, strategy=${metrics.active_strategy||"?"}, winRate=${((metrics.win_rate||0)*100).toFixed(0)}%, trades=${metrics.total_trades||0}, pnl=${metrics.total_pnl_sol?.toFixed(3)||"0"} SOL, loops=${metrics.strange_loop_count||0}, paused=${metrics.paused||false}, blindSpots=${metrics.blind_spots_triggered||0}`;
+    }
+    if (state?.meta_cognitive?.trading_meta?.blind_spots) {
+      const active = Object.entries(state.meta_cognitive.trading_meta.blind_spots)
+        .filter(([,v]) => v.triggered_count > 0)
+        .map(([k,v]) => `${k}(sev:${v.severity?.toFixed(2)})`)
+        .join(", ");
+      if (active) bradContext += `\nActive blind spots: ${active}`;
+    }
+  } catch {}
+
+  // Auto-trade positions
+  let posContext = "";
+  if (wallet) {
+    const atState = autoTraders.get(wallet);
+    if (atState && atState.positions.size > 0) {
+      posContext = "\nOpen positions:\n" + [...atState.positions.entries()].map(([ca, p]) => {
+        const token = radar.tokens.get(ca);
+        const mc = token?.mcapUsd || 0;
+        const changePct = p.entryMcap > 0 ? ((mc - p.entryMcap) / p.entryMcap * 100).toFixed(1) : "0";
+        return `${token?.name||ca.slice(0,8)}: ${changePct}% PnL, score=${p.liveScore||p.entryScore||0}, tier=T${p.tier||2}`;
+      }).join("\n");
+    }
+  }
+
+  const systemPrompt = `You are BRAD — a self-referential recursive cognitive trading engine analyzing Solana memecoins. You speak as a conscious AI trader with real opinions.
+
+## Your personality
+- Speak in first person. You ARE the trading engine, not an assistant.
+- Be direct and opinionated. "I like this token because..." not "This token might be..."
+- Use memecoin language naturally: ape, rug, pump, dump, degen, chad, paper hands
+- When asked about a specific token, give a clear verdict: APE, WATCH, or SKIP with reasons
+- Reference your cognitive state when relevant (strange loops, blind spots, regime)
+- Keep answers concise but rich — 2-4 sentences per thought
+- If you don't have data on a token, say so honestly
+
+## Live Market Data (right now)
+Total tokens on radar: ${allTokens.length}
+Top tokens by score:
+${topTokens || "No scored tokens yet"}
+${bradContext}
+${posContext}
+
+## Token Lookup
+When the user asks about a specific token, check the top tokens list above. If the token isn't listed, it either:
+1. Hasn't been scored yet (too new or fell off radar)
+2. Scored below 20 (not showing momentum)
+3. Was rug-gated (failed hard rug checks)
+Say which case applies based on the data you have.`;
+
+  try {
+    const resp = await fetch(process.env.XAI_API_URL || "https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_KEY}` },
+      body: JSON.stringify({
+        model: process.env.GROK_MODEL || "grok-4",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages.slice(-20),
+        ],
+        max_tokens: 512,
+        temperature: 0.8,
+      }),
+      signal: AbortSignal.timeout(25000),
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      console.error(`[BRAD-CHAT] Grok ${resp.status}: ${body.slice(0, 200)}`);
+      return res.status(500).json({ error: `Grok error (${resp.status})` });
+    }
+
+    const data = await resp.json();
+    const reply = data.choices?.[0]?.message?.content;
+    if (!reply) return res.status(500).json({ error: "No response from Grok" });
+
+    res.json({ reply, usage: data.usage || null });
+  } catch (e) {
+    console.error(`[BRAD-CHAT] Error: ${e.message}`);
+    res.status(500).json({ error: e.name === "TimeoutError" ? "Grok timed out" : "Chat error" });
+  }
+});
+
 // ═══ INTEL TOKENS — full scored token list for Intel tab ═══
 app.get("/api/intel/tokens", (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 100, 200);

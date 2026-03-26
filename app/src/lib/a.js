@@ -81,6 +81,7 @@ brs(){return this.f("/api/brad/status")}
 brh(){return this.f("/api/brad/health")}
 brmd(w){return this.f(`/api/brad/mind${w?"?wallet="+w:""}`,{timeout:15000})}
 brtl(n){return this.f(`/api/brad/thought-log?limit=${n||20}`)}
+brch(msgs,w){return this.f("/api/brad/chat",{method:"POST",timeout:30000,body:{messages:msgs,wallet:w}})}
 // Chat support (Grok AI)
 cht(msgs,w){return this.f("/api/chat",{method:"POST",timeout:30000,body:{messages:msgs,wallet:w}})}
 chts(){return this.f("/api/chat/status")}

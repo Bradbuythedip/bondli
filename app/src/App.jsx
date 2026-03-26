@@ -583,7 +583,7 @@ const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");co
 const[vipDash,sVipDash]=useState(null);const[vipCustomCode,sVipCustomCode]=useState("");const[vipClaiming,sVipClaiming]=useState(false);const[demoProfits,sDemoProfits]=useState(null);const[demoLoading,sDemoLoading]=useState(false);
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);const[showModel,sShowModel]=useState(false);const[launchTarget,sLTarget]=useState("pump"); // "pump" | "bags"
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
-const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);const[bradMind,sBradMind]=useState(null);const[bradMindOpen,sBradMindOpen]=useState(true);const[brainOpen,sBrainOpen]=useState(false);
+const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);const[bradMind,sBradMind]=useState(null);const[bradMindOpen,sBradMindOpen]=useState(true);const[brainOpen,sBrainOpen]=useState(false);const[bradChat,sBradChat]=useState([]);const[bradChatIn,sBradChatIn]=useState("");const[bradChatLoading,sBradChatLoading]=useState(false);
 // GPU Earn tab state
 const[gpuDash,sGpuDash]=useState(null);const[gpuFleet,sGpuFleet]=useState(null);const[gpuLoading,sGpuLoading]=useState(false);const[gpuRegWallet,sGpuRegWallet]=useState("");
 const[gpuCmdLoading,sGpuCmdLoading]=useState(false);const[gpuLogs,sGpuLogs]=useState(null);const[gpuShowLogs,sGpuShowLogs]=useState(false);const[gpuShowDetails,sGpuShowDetails]=useState(false);
@@ -1613,6 +1613,19 @@ return<div style={{background:`linear-gradient(135deg,${T.bg},${moodC}06)`,borde
 </div>
 <span style={{width:4,height:4,borderRadius:"50%",background:urgColors[t.urgency]||T.ft,marginTop:5,flexShrink:0}}/>
 </div>)}
+{/* Chat history */}
+{bradChat.length>0&&<div style={{marginTop:6,borderTop:"1px solid "+T.bd+"44",paddingTop:6,maxHeight:200,overflowY:"auto"}}>
+{bradChat.map((m,i)=><div key={i} style={{display:"flex",gap:6,padding:"3px 0",alignItems:"flex-start"}}>
+<span style={{fontSize:10,fontWeight:900,color:m.role==="user"?T.yl:T.cy,minWidth:14}}>{m.role==="user"?"you":"BRAD"}</span>
+<span style={{fontSize:11,color:m.role==="user"?T.dm:T.tx,lineHeight:"1.3"}}>{m.content}</span>
+</div>)}
+{bradChatLoading&&<div style={{display:"flex",gap:6,padding:"3px 0"}}><span style={{fontSize:10,fontWeight:900,color:T.cy,minWidth:14}}>BRAD</span><span style={{fontSize:11,color:T.ft,fontStyle:"italic"}}>thinking...</span></div>}
+</div>}
+{/* Chat input */}
+<div style={{marginTop:6,display:"flex",gap:4,borderTop:"1px solid "+T.bd+"44",paddingTop:6}}>
+<input value={bradChatIn} onChange={e=>sBradChatIn(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&bradChatIn.trim()&&!bradChatLoading){e.preventDefault();const msg=bradChatIn.trim();const newMsgs=[...bradChat,{role:"user",content:msg}];sBradChat(newMsgs);sBradChatIn("");sBradChatLoading(true);a.brch(newMsgs,user?.pubkey).then(r=>{if(r.reply)sBradChat(m=>[...m,{role:"assistant",content:r.reply}]);else sBradChat(m=>[...m,{role:"assistant",content:r.error||"Error"}])}).catch(e=>sBradChat(m=>[...m,{role:"assistant",content:"Connection error"}])).finally(()=>sBradChatLoading(false))}}} placeholder="Ask BRAD about any token..." style={{flex:1,background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 10px",fontSize:11,color:T.tx,outline:"none",fontFamily:"inherit"}}/>
+<button onClick={()=>{const msg=bradChatIn.trim();if(!msg||bradChatLoading)return;const newMsgs=[...bradChat,{role:"user",content:msg}];sBradChat(newMsgs);sBradChatIn("");sBradChatLoading(true);a.brch(newMsgs,user?.pubkey).then(r=>{if(r.reply)sBradChat(m=>[...m,{role:"assistant",content:r.reply}]);else sBradChat(m=>[...m,{role:"assistant",content:r.error||"Error"}])}).catch(()=>sBradChat(m=>[...m,{role:"assistant",content:"Connection error"}])).finally(()=>sBradChatLoading(false))}} disabled={bradChatLoading||!bradChatIn.trim()} style={{padding:"6px 12px",borderRadius:6,border:"none",background:bradChatIn.trim()?T.cy:T.bd,color:bradChatIn.trim()?"#000":T.ft,fontWeight:800,fontSize:10,cursor:bradChatIn.trim()&&!bradChatLoading?"pointer":"default",whiteSpace:"nowrap"}}>{bradChatLoading?"...":"Ask"}</button>
+</div>
 {/* Timestamp */}
 {bm?.timestamp&&<div style={{fontSize:8,color:T.ft,textAlign:"right",marginTop:4}}>{new Date(bm.timestamp).toLocaleTimeString()}{bm.grokPowered?" · Grok 4":" · raw BRAD"}</div>}
 </div>}
