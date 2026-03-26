@@ -1586,27 +1586,30 @@ return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16p
 {/* ═══ BRAD MIND — Live Cognitive Thought Stream ═══ */}
 {(()=>{const bm=bradMind;const moodColors={hunting:T.gn,cautious:T.yl,paused:T.ft,confident:T.cy,adapting:T.pu};const moodC=moodColors[bm?.mood]||T.cy;const typeIcons={market:"~",pick:"$",risk:"!",meta:"@",strategy:">"};const typeColors={market:T.cy,pick:T.gn,risk:T.rd,meta:T.pu,strategy:T.yl};const urgColors={high:T.rd,medium:T.yl,low:T.ft};
 return<div style={{background:`linear-gradient(135deg,${T.bg},${moodC}04)`,border:"1px solid "+moodC+"22",borderRadius:10,marginBottom:6,overflow:"hidden",height:bradMindOpen?(mb?520:560):"auto",display:"flex",flexDirection:"column"}}>
-{/* ── Header: title + metrics inline + mood ── */}
-<div onClick={()=>sBradMindOpen(!bradMindOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 10px",cursor:"pointer",borderBottom:bradMindOpen?"1px solid "+T.bd+"44":"none",flexShrink:0,background:moodC+"06"}}>
-<div style={{display:"flex",alignItems:"center",gap:5}}>
-<span style={{fontSize:12,fontWeight:900,color:moodC}}>BRAD</span>
-{bm?.bradOnline&&<span style={{width:4,height:4,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}
-{bm?.grokPowered&&<span style={{fontSize:6,fontWeight:700,color:T.dm,background:T.dm+"10",padding:"1px 3px",borderRadius:2}}>GROK</span>}
-{/* Inline metrics — compact single row */}
-{bm?.metrics&&<><span style={{fontSize:8,color:T.pu}}>HI:{bm.metrics.hofstadterIndex?.toFixed(2)}</span>
-<span style={{fontSize:8,color:T.cy}}>{bm.metrics.strategy}</span>
-<span style={{fontSize:8,color:bm.metrics.winRate>=0.5?T.gn:T.rd}}>{((bm.metrics.winRate||0)*100).toFixed(0)}%W</span>
-<span style={{fontSize:8,color:bm.metrics.pnlSol>=0?T.gn:T.rd}}>{(bm.metrics.pnlSol||0).toFixed(3)}SOL</span>
-{bm.metrics.blindSpots>0&&<span style={{fontSize:7,color:T.rd,background:T.rd+"15",padding:"0 3px",borderRadius:2}}>{bm.metrics.blindSpots}blind</span>}</>}
+{/* ── Header: title + one-liner + mood ── */}
+<div onClick={()=>sBradMindOpen(!bradMindOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 10px",cursor:"pointer",borderBottom:bradMindOpen?"1px solid "+T.bd+"44":"none",flexShrink:0,background:moodC+"06",gap:6,minHeight:28}}>
+<div style={{display:"flex",alignItems:"center",gap:5,minWidth:0,flex:1,overflow:"hidden"}}>
+<span style={{fontSize:12,fontWeight:900,color:moodC,flexShrink:0}}>BRAD</span>
+{bm?.bradOnline&&<span style={{width:4,height:4,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite",flexShrink:0}}/>}
+{bm?.grokPowered&&<span style={{fontSize:6,fontWeight:700,color:T.dm,background:T.dm+"10",padding:"1px 3px",borderRadius:2,flexShrink:0}}>GROK</span>}
+<span style={{fontSize:9,color:T.dm,fontStyle:"italic",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",minWidth:0}}>{bm?.oneLiner||"Connecting..."}</span>
 </div>
-<div style={{display:"flex",alignItems:"center",gap:4}}>
+<div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
 {bm?.mood&&<span style={{fontSize:7,fontWeight:800,color:moodC,background:moodC+"12",padding:"2px 5px",borderRadius:3,textTransform:"uppercase",letterSpacing:.5}}>{bm.mood}</span>}
 <span style={{fontSize:10,color:T.ft}}>{bradMindOpen?"▾":"▸"}</span>
 </div>
 </div>
 {bradMindOpen&&<div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
-{/* ── One-liner ── */}
-{bm?.oneLiner&&<div style={{padding:"4px 10px",fontSize:10,color:T.dm,fontStyle:"italic",borderBottom:"1px solid "+T.bd+"22",flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{bm.oneLiner}</div>}
+{/* ── Metrics row — compact ── */}
+{bm?.metrics&&<div style={{display:"flex",gap:6,padding:"3px 10px",borderBottom:"1px solid "+T.bd+"22",flexShrink:0,fontSize:8,flexWrap:"wrap"}}>
+<span style={{color:T.pu}}>HI:{bm.metrics.hofstadterIndex?.toFixed(2)}</span>
+<span style={{color:T.cy}}>{bm.metrics.strategy}</span>
+<span style={{color:bm.metrics.winRate>=0.5?T.gn:T.rd}}>{((bm.metrics.winRate||0)*100).toFixed(0)}%W</span>
+<span style={{color:bm.metrics.pnlSol>=0?T.gn:T.rd}}>{(bm.metrics.pnlSol||0).toFixed(3)}SOL</span>
+<span style={{color:T.dm}}>{bm.metrics.totalTrades}trades</span>
+<span style={{color:T.pu}}>{bm.metrics.strangeLoops}loops</span>
+{bm.metrics.blindSpots>0&&<span style={{color:T.rd}}>{bm.metrics.blindSpots}blind</span>}
+</div>}
 {/* ── Thought feed — compact, scrollable, capped height ── */}
 <div style={{maxHeight:mb?120:140,overflowY:"auto",flexShrink:0,borderBottom:"1px solid "+T.bd+"33"}}>
 {!bm?<div style={{padding:10,textAlign:"center",fontSize:10,color:T.ft}}>Connecting...</div>
