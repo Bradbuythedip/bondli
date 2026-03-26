@@ -81,7 +81,8 @@ brs(){return this.f("/api/brad/status")}
 brh(){return this.f("/api/brad/health")}
 brmd(w){return this.f(`/api/brad/mind${w?"?wallet="+w:""}`,{timeout:15000})}
 brtl(n){return this.f(`/api/brad/thought-log?limit=${n||20}`)}
-brch(msgs,w){return this.f("/api/brad/chat",{method:"POST",timeout:30000,body:{messages:msgs,wallet:w}})}
+brch(msgs,w){return this.f("/api/brad/chat",{method:"POST",timeout:30000,body:{messages:msgs,wallet:w,stream:false}})}
+async brchStream(msgs,w,onToken){const r=await fetch(API+"/api/brad/chat",{method:"POST",headers:{"Content-Type":"application/json",...(this.w?{"X-Wallet":this.w}:{})},body:JSON.stringify({messages:msgs,wallet:w,stream:true})});if(!r.ok)throw new Error("Stream failed");const reader=r.body.getReader();const dec=new TextDecoder();let buf="";let full="";while(true){const{done,value}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});const lines=buf.split("\n");buf=lines.pop()||"";for(const line of lines){if(!line.startsWith("data: "))continue;const d=line.slice(6).trim();if(!d||d==="[DONE]")continue;try{const j=JSON.parse(d);if(j.token){full+=j.token;onToken(full)}if(j.error)throw new Error(j.error);if(j.done)return full}catch(e){if(e.message&&!e.message.includes("JSON"))throw e}}}return full}
 brps(){return this.f("/api/brad/paper/status")}
 brpstart(b){return this.f("/api/brad/paper/start",{method:"POST",body:{bankroll:b||10}})}
 brpstop(){return this.f("/api/brad/paper/stop",{method:"POST"})}
