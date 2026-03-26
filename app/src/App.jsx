@@ -1585,53 +1585,57 @@ return<div key={fullCA+i} style={{display:"grid",gridTemplateColumns:canApe?"16p
 
 {/* ═══ BRAD MIND — Live Cognitive Thought Stream ═══ */}
 {(()=>{const bm=bradMind;const moodColors={hunting:T.gn,cautious:T.yl,paused:T.ft,confident:T.cy,adapting:T.pu};const moodC=moodColors[bm?.mood]||T.cy;const typeIcons={market:"~",pick:"$",risk:"!",meta:"@",strategy:">"};const typeColors={market:T.cy,pick:T.gn,risk:T.rd,meta:T.pu,strategy:T.yl};const urgColors={high:T.rd,medium:T.yl,low:T.ft};
-return<div style={{background:`linear-gradient(135deg,${T.bg},${moodC}06)`,border:"1px solid "+moodC+"33",borderRadius:8,marginBottom:6,overflow:"hidden",minHeight:bradMindOpen?360:42,height:bradMindOpen?420:"auto",display:"flex",flexDirection:"column"}}>
-<div onClick={()=>sBradMindOpen(!bradMindOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 10px",cursor:"pointer",borderBottom:bradMindOpen?"1px solid "+T.bd:"none",flexShrink:0}}>
-<div style={{display:"flex",alignItems:"center",gap:6}}>
-<span style={{fontSize:13,fontWeight:800,color:moodC}}>BRAD Mind</span>
-{bm?.bradOnline&&<span style={{width:5,height:5,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}
-{bm?.grokPowered&&<span style={{fontSize:7,fontWeight:700,color:T.dm,background:T.dm+"12",padding:"1px 4px",borderRadius:2}}>GROK</span>}
-{bm?.metrics&&<span style={{fontSize:8,fontWeight:700,color:T.pu,background:T.pu+"12",padding:"1px 4px",borderRadius:2}}>HI:{bm.metrics.hofstadterIndex?.toFixed(2)}</span>}
-<span style={{fontSize:10,color:T.dm,fontStyle:"italic",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:mb?140:300}}>{bm?.oneLiner||"Connecting..."}</span>
+return<div style={{background:`linear-gradient(135deg,${T.bg},${moodC}04)`,border:"1px solid "+moodC+"22",borderRadius:10,marginBottom:6,overflow:"hidden",height:bradMindOpen?(mb?520:560):"auto",display:"flex",flexDirection:"column"}}>
+{/* ── Header: title + metrics inline + mood ── */}
+<div onClick={()=>sBradMindOpen(!bradMindOpen)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 10px",cursor:"pointer",borderBottom:bradMindOpen?"1px solid "+T.bd+"44":"none",flexShrink:0,background:moodC+"06"}}>
+<div style={{display:"flex",alignItems:"center",gap:5}}>
+<span style={{fontSize:12,fontWeight:900,color:moodC}}>BRAD</span>
+{bm?.bradOnline&&<span style={{width:4,height:4,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}
+{bm?.grokPowered&&<span style={{fontSize:6,fontWeight:700,color:T.dm,background:T.dm+"10",padding:"1px 3px",borderRadius:2}}>GROK</span>}
+{/* Inline metrics — compact single row */}
+{bm?.metrics&&<><span style={{fontSize:8,color:T.pu}}>HI:{bm.metrics.hofstadterIndex?.toFixed(2)}</span>
+<span style={{fontSize:8,color:T.cy}}>{bm.metrics.strategy}</span>
+<span style={{fontSize:8,color:bm.metrics.winRate>=0.5?T.gn:T.rd}}>{((bm.metrics.winRate||0)*100).toFixed(0)}%W</span>
+<span style={{fontSize:8,color:bm.metrics.pnlSol>=0?T.gn:T.rd}}>{(bm.metrics.pnlSol||0).toFixed(3)}SOL</span>
+{bm.metrics.blindSpots>0&&<span style={{fontSize:7,color:T.rd,background:T.rd+"15",padding:"0 3px",borderRadius:2}}>{bm.metrics.blindSpots}blind</span>}</>}
 </div>
 <div style={{display:"flex",alignItems:"center",gap:4}}>
-{bm?.mood&&<span style={{fontSize:8,fontWeight:800,color:moodC,background:moodC+"15",padding:"2px 6px",borderRadius:3,textTransform:"uppercase"}}>{bm.mood}</span>}
-<span style={{fontSize:11,color:T.ft}}>{bradMindOpen?"▾":"▸"}</span>
+{bm?.mood&&<span style={{fontSize:7,fontWeight:800,color:moodC,background:moodC+"12",padding:"2px 5px",borderRadius:3,textTransform:"uppercase",letterSpacing:.5}}>{bm.mood}</span>}
+<span style={{fontSize:10,color:T.ft}}>{bradMindOpen?"▾":"▸"}</span>
 </div>
 </div>
-{bradMindOpen&&<div style={{padding:"6px 10px",flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
-{/* Metrics bar */}
-{bm?.metrics&&<div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:6,padding:"4px 0",borderBottom:"1px solid "+T.bd+"44",flexShrink:0}}>
-{[{l:"Strategy",v:bm.metrics.strategy,c:T.cy},{l:"Win Rate",v:((bm.metrics.winRate||0)*100).toFixed(0)+"%",c:bm.metrics.winRate>=0.5?T.gn:T.rd},{l:"Trades",v:bm.metrics.totalTrades,c:T.tx},{l:"PnL",v:(bm.metrics.pnlSol||0).toFixed(3)+" SOL",c:bm.metrics.pnlSol>=0?T.gn:T.rd},{l:"Loops",v:bm.metrics.strangeLoops,c:T.pu},{l:"Blind Spots",v:bm.metrics.blindSpots,c:bm.metrics.blindSpots>0?T.rd:T.ft}].map(m=><div key={m.l} style={{textAlign:"center"}}><div style={{fontSize:7,color:T.ft,fontWeight:700}}>{m.l}</div><div style={{fontSize:11,fontWeight:800,color:m.c}}>{m.v}</div></div>)}
-</div>}
-{/* Thought stream — scrollable, fixed area */}
-<div style={{flex:1,overflowY:"auto",minHeight:80}}>
-{!bm?<div style={{padding:16,textAlign:"center",fontSize:11,color:T.ft}}>Connecting to BRAD cognitive engine...</div>
-:!bm.thoughts||bm.thoughts.length===0?<div style={{padding:16,textAlign:"center",fontSize:11,color:T.ft}}>Waiting for market data...</div>
-:bm.thoughts.map((t,i)=><div key={i} onClick={()=>{if(t.ca&&t.ca.length>=20){sTab("radar");sRS(t.ca);sRExp(t.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",gap:6,padding:"4px 2px",borderBottom:i<bm.thoughts.length-1?"1px solid "+T.bd+"22":"none",alignItems:"flex-start",animation:"si .3s ease",cursor:t.ca?"pointer":"default",borderRadius:3}} onMouseEnter={e=>{if(t.ca)e.currentTarget.style.background=moodC+"0a"}} onMouseLeave={e=>{e.currentTarget.style.background="transparent"}}>
-<span style={{fontSize:12,fontWeight:900,color:typeColors[t.type]||T.cy,minWidth:14,textAlign:"center",marginTop:1}}>{typeIcons[t.type]||">"}</span>
-<div style={{flex:1,minWidth:0}}>
-<span style={{fontSize:11,fontWeight:600,color:T.tx,lineHeight:"1.3"}}>{t.text}</span>
-{t.token&&<span onClick={e=>{e.stopPropagation();if(t.ca&&t.ca.length>=20){sTab("radar");sRS(t.ca);sRExp(t.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{fontSize:8,fontWeight:800,color:T.gn,background:T.gn+"12",padding:"1px 5px",borderRadius:3,marginLeft:4,cursor:t.ca?"pointer":"default",border:t.ca?"1px solid "+T.gn+"33":"none"}}>{t.token}{t.ca?" →":""}</span>}
-</div>
-<span style={{width:4,height:4,borderRadius:"50%",background:urgColors[t.urgency]||T.ft,marginTop:5,flexShrink:0}}/>
+{bradMindOpen&&<div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+{/* ── One-liner ── */}
+{bm?.oneLiner&&<div style={{padding:"4px 10px",fontSize:10,color:T.dm,fontStyle:"italic",borderBottom:"1px solid "+T.bd+"22",flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{bm.oneLiner}</div>}
+{/* ── Thought feed — compact, scrollable, capped height ── */}
+<div style={{maxHeight:mb?120:140,overflowY:"auto",flexShrink:0,borderBottom:"1px solid "+T.bd+"33"}}>
+{!bm?<div style={{padding:10,textAlign:"center",fontSize:10,color:T.ft}}>Connecting...</div>
+:!bm.thoughts||bm.thoughts.length===0?<div style={{padding:10,textAlign:"center",fontSize:10,color:T.ft}}>Waiting for data...</div>
+:bm.thoughts.map((t,i)=><div key={i} onClick={()=>{if(t.ca&&t.ca.length>=20){sTab("radar");sRS(t.ca);sRExp(t.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{display:"flex",gap:4,padding:"2px 10px",alignItems:"baseline",cursor:t.ca?"pointer":"default",fontSize:10,lineHeight:"1.4"}} onMouseEnter={e=>{if(t.ca)e.currentTarget.style.background=moodC+"08"}} onMouseLeave={e=>{e.currentTarget.style.background="transparent"}}>
+<span style={{fontWeight:900,color:typeColors[t.type]||T.cy,flexShrink:0}}>{typeIcons[t.type]||">"}</span>
+<span style={{color:T.tx,overflow:"hidden",textOverflow:"ellipsis"}}>{t.text}</span>
+{t.token&&<span onClick={e=>{e.stopPropagation();if(t.ca&&t.ca.length>=20){sTab("radar");sRS(t.ca);sRExp(t.ca);setTimeout(()=>document.getElementById("tc")?.scrollIntoView({behavior:"smooth",block:"start"}),150)}}} style={{fontSize:7,fontWeight:800,color:T.gn,background:T.gn+"12",padding:"0 4px",borderRadius:2,flexShrink:0,cursor:t.ca?"pointer":"default",border:t.ca?"1px solid "+T.gn+"22":"none"}}>{t.token}{t.ca?"→":""}</span>}
+<span style={{width:3,height:3,borderRadius:"50%",background:urgColors[t.urgency]||T.ft,flexShrink:0}}/>
 </div>)}
 </div>
-{/* Chat history — scrollable */}
-<div style={{borderTop:"1px solid "+T.bd+"44",paddingTop:4,maxHeight:140,overflowY:"auto",flexShrink:0}}>
-{bradChat.map((m,i)=><div key={i} style={{display:"flex",gap:6,padding:"3px 0",alignItems:"flex-start",animation:"si .2s ease"}}>
-<span style={{fontSize:10,fontWeight:900,color:m.role==="user"?T.yl:T.cy,minWidth:30}}>{m.role==="user"?"you":"BRAD"}</span>
-<span style={{fontSize:11,color:m.role==="user"?T.dm:T.tx,lineHeight:"1.3"}}>{m.content}</span>
+{/* ── Chat area — takes remaining space, this is the main interaction ── */}
+<div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+<div style={{flex:1,overflowY:"auto",padding:"4px 10px"}}>
+{bradChat.length===0&&<div style={{padding:8,textAlign:"center",fontSize:10,color:T.ft}}>Ask BRAD anything — tokens, strategy, how scoring works...</div>}
+{bradChat.map((m,i)=><div key={i} style={{display:"flex",gap:6,padding:"4px 0",alignItems:"flex-start",animation:"si .2s ease",borderBottom:i<bradChat.length-1?"1px solid "+T.bd+"15":"none"}}>
+<span style={{fontSize:9,fontWeight:900,color:m.role==="user"?T.yl:T.cy,minWidth:28,paddingTop:1}}>{m.role==="user"?"you":"BRAD"}</span>
+<span style={{fontSize:11,color:m.role==="user"?T.dm:T.tx,lineHeight:"1.4"}}>{m.content}</span>
 </div>)}
-{bradChatLoading&&<div style={{display:"flex",gap:6,padding:"3px 0"}}><span style={{fontSize:10,fontWeight:900,color:T.cy,minWidth:30}}>BRAD</span><span style={{fontSize:11,color:T.ft,fontStyle:"italic",animation:"gp 1s infinite"}}>thinking...</span></div>}
+{bradChatLoading&&<div style={{display:"flex",gap:6,padding:"4px 0"}}><span style={{fontSize:9,fontWeight:900,color:T.cy,minWidth:28}}>BRAD</span><span style={{fontSize:10,color:T.ft,fontStyle:"italic",animation:"gp 1s infinite"}}>thinking...</span></div>}
 </div>
-{/* Chat input — always at bottom */}
-<div style={{display:"flex",gap:4,borderTop:"1px solid "+T.bd+"44",paddingTop:6,flexShrink:0}}>
-<input value={bradChatIn} onChange={e=>sBradChatIn(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&bradChatIn.trim()&&!bradChatLoading){e.preventDefault();const msg=bradChatIn.trim();const newMsgs=[...bradChat,{role:"user",content:msg}];sBradChat(newMsgs);sBradChatIn("");sBradChatLoading(true);a.brch(newMsgs,user?.pubkey).then(r=>{if(r.reply)sBradChat(m=>[...m,{role:"assistant",content:r.reply}]);else sBradChat(m=>[...m,{role:"assistant",content:r.error||"Error"}])}).catch(e=>sBradChat(m=>[...m,{role:"assistant",content:"Connection error"}])).finally(()=>sBradChatLoading(false))}}} placeholder="Ask BRAD about any token..." style={{flex:1,background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 10px",fontSize:11,color:T.tx,outline:"none",fontFamily:"inherit"}}/>
-<button onClick={()=>{const msg=bradChatIn.trim();if(!msg||bradChatLoading)return;const newMsgs=[...bradChat,{role:"user",content:msg}];sBradChat(newMsgs);sBradChatIn("");sBradChatLoading(true);a.brch(newMsgs,user?.pubkey).then(r=>{if(r.reply)sBradChat(m=>[...m,{role:"assistant",content:r.reply}]);else sBradChat(m=>[...m,{role:"assistant",content:r.error||"Error"}])}).catch(()=>sBradChat(m=>[...m,{role:"assistant",content:"Connection error"}])).finally(()=>sBradChatLoading(false))}} disabled={bradChatLoading||!bradChatIn.trim()} style={{padding:"6px 12px",borderRadius:6,border:"none",background:bradChatIn.trim()?T.cy:T.bd,color:bradChatIn.trim()?"#000":T.ft,fontWeight:800,fontSize:10,cursor:bradChatIn.trim()&&!bradChatLoading?"pointer":"default",whiteSpace:"nowrap"}}>{bradChatLoading?"...":"Ask"}</button>
+{/* ── Input bar — pinned bottom ── */}
+<div style={{display:"flex",gap:4,padding:"6px 10px",borderTop:"1px solid "+T.bd+"44",flexShrink:0,background:T.bg+"cc"}}>
+<input value={bradChatIn} onChange={e=>sBradChatIn(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey&&bradChatIn.trim()&&!bradChatLoading){e.preventDefault();const msg=bradChatIn.trim();const newMsgs=[...bradChat,{role:"user",content:msg}];sBradChat(newMsgs);sBradChatIn("");sBradChatLoading(true);a.brch(newMsgs,user?.pubkey).then(r=>{if(r.reply)sBradChat(m=>[...m,{role:"assistant",content:r.reply}]);else sBradChat(m=>[...m,{role:"assistant",content:r.error||"Error"}])}).catch(e=>sBradChat(m=>[...m,{role:"assistant",content:"Connection error"}])).finally(()=>sBradChatLoading(false))}}} placeholder="Ask BRAD..." style={{flex:1,background:T.sf,border:"1px solid "+T.bd,borderRadius:8,padding:"8px 12px",fontSize:11,color:T.tx,outline:"none",fontFamily:"inherit"}}/>
+<button onClick={()=>{const msg=bradChatIn.trim();if(!msg||bradChatLoading)return;const newMsgs=[...bradChat,{role:"user",content:msg}];sBradChat(newMsgs);sBradChatIn("");sBradChatLoading(true);a.brch(newMsgs,user?.pubkey).then(r=>{if(r.reply)sBradChat(m=>[...m,{role:"assistant",content:r.reply}]);else sBradChat(m=>[...m,{role:"assistant",content:r.error||"Error"}])}).catch(()=>sBradChat(m=>[...m,{role:"assistant",content:"Connection error"}])).finally(()=>sBradChatLoading(false))}} disabled={bradChatLoading||!bradChatIn.trim()} style={{padding:"8px 16px",borderRadius:8,border:"none",background:bradChatIn.trim()?T.cy:T.bd,color:bradChatIn.trim()?"#000":T.ft,fontWeight:800,fontSize:11,cursor:bradChatIn.trim()&&!bradChatLoading?"pointer":"default",whiteSpace:"nowrap"}}>{bradChatLoading?"...":"Ask"}</button>
 </div>
-{/* Timestamp */}
-{bm?.timestamp&&<div style={{fontSize:8,color:T.ft,textAlign:"right",marginTop:4}}>{new Date(bm.timestamp).toLocaleTimeString()}{bm.grokPowered?" · Grok 4":" · raw BRAD"}</div>}
+</div>
+{/* ── Footer ── */}
+{bm?.timestamp&&<div style={{fontSize:7,color:T.ft,textAlign:"right",padding:"2px 10px",flexShrink:0}}>{new Date(bm.timestamp).toLocaleTimeString()}{bm.grokPowered?" · Grok":""}  · {bm.thoughts?.length||0} signals</div>}
 </div>}
 </div>})()}
 

@@ -56,6 +56,7 @@ import { NosanaJobRouter } from "../engine/nosana-job-router.mjs";
 import { mountChatRoutes } from "../engine/grok-client.mjs";
 import bradClient from "../engine/brad-client.mjs";
 import { getBradMind, getThoughtLog } from "../engine/brad-mind.mjs";
+import { startPaperTrading, stopPaperTrading, paperEvaluate, paperCheckExit, getPaperStatus, isPaperEnabled, GPU_SCALING_CONFIG } from "../engine/brad-paper.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -4670,6 +4671,25 @@ function startAutoTrader(wallet, settings) {
         await Promise.allSettled(bradPosPromises);
       }
 
+      // ═══ BRAD PAPER EXIT CHECKS ═══
+      if (isPaperEnabled()) {
+        const paperStatus = getPaperStatus();
+        for (const [ca, pPos] of Object.entries(paperStatus.openList || [])) {
+          const token = radar.tokens.get(pPos.ca);
+          if (!token) continue;
+          const dyn = scoreDynamics.get(pPos.ca);
+          const result = paperCheckExit(pPos.ca, token.mcapUsd || 0, token._apeScore || 0, dyn, null);
+          if (result?.action === "PAPER_EXIT") {
+            broadcastWS({ event: "brad_thought", data: {
+              type: result.pnlPct >= 0 ? "pick" : "risk",
+              text: `Paper exit: ${result.name} ${result.pnlPct >= 0 ? "+" : ""}${result.pnlPct}% (${result.exitReason}) — bankroll: ${getPaperStatus().bankroll} SOL`,
+              urgency: Math.abs(result.pnlPct) > 20 ? "high" : "low",
+              token: result.name, ca: pPos.ca, time: Date.now(),
+            }});
+          }
+        }
+      }
+
       // ── Check existing positions for tiered TP/SL ──
       for (const [ca, pos] of state.positions) {
         let token = radar.tokens.get(ca);
@@ -5751,6 +5771,21 @@ function startAutoTrader(wallet, settings) {
           } catch { t._bradEval = null; }
         });
         await Promise.allSettled(bradPromises);
+
+        // ═══ BRAD PAPER TRADING — virtual trades for learning ═══
+        if (isPaperEnabled()) {
+          for (const t of hot) {
+            if (!t._bradEval) continue;
+            const dyn = scoreDynamics.get(t.ca);
+            const paperResult = paperEvaluate(t, t._bradEval, dyn);
+            if (paperResult?.action === "PAPER_ENTER") {
+              broadcastWS({ event: "brad_thought", data: {
+                type: "strategy", text: `Paper entry: ${paperResult.name} at score ${paperResult.entryScore}, ${paperResult.sizeSol.toFixed(3)} SOL (conf ${paperResult.bradConfidence?.toFixed(2)})`,
+                urgency: "low", token: paperResult.name, ca: t.ca, time: Date.now(),
+              }});
+            }
+          }
+        }
 
         // ═══ BRAD RE-SORT — boost BRAD-approved tokens to the top ═══
         // BRAD APE with high confidence → sort above same-score tokens
@@ -8756,6 +8791,39 @@ app.get("/api/brad/thought-log", (req, res) => {
   res.json({ thoughts: getThoughtLog(limit) });
 });
 
+// ═══ BRAD PAPER TRADING — virtual portfolio for learning ═══
+app.post("/api/brad/paper/start", express.json(), (req, res) => {
+  const { bankroll, maxPositions, positionSizePct } = req.body || {};
+  const result = startPaperTrading(bankroll || 10, { maxPositions, positionSizePct });
+  broadcastWS({ event: "brad_thought", data: { type: "meta", text: `Paper trading started — ${result.bankroll} SOL virtual bankroll. Let's see what I'm made of.`, urgency: "medium", time: Date.now() } });
+  res.json(result);
+});
+
+app.post("/api/brad/paper/stop", (_req, res) => {
+  const result = stopPaperTrading();
+  if (result) {
+    broadcastWS({ event: "brad_thought", data: { type: "meta", text: `Paper trading stopped. ${result.totalTrades} trades, ${result.winRate}% win, ${result.pnlSol} SOL PnL. ${result.readyToGraduate ? "Ready to graduate to real SOL." : "Need more data."}`, urgency: "medium", time: Date.now() } });
+  }
+  res.json(result || { enabled: false });
+});
+
+app.get("/api/brad/paper/status", (_req, res) => {
+  res.json(getPaperStatus());
+});
+
+// ═══ BRAD GPU SCALING — multi-instance deployment config ═══
+app.get("/api/brad/gpu-scaling", (_req, res) => {
+  res.json({
+    config: GPU_SCALING_CONFIG.instances,
+    description: "Deploy multiple BRAD instances on GPU nodes, each running a different strategy. Query all and take the highest-confidence APE across the ensemble.",
+    deployGuide: {
+      railway: "Add each instance as a separate Railway service with BRAIN_DEFAULT_STRATEGY env var",
+      nosana: "Deploy via Nosana GPU marketplace — each instance is a Docker container",
+      docker: GPU_SCALING_CONFIG.instances.map(i => GPU_SCALING_CONFIG.dockerCmd(i)),
+    },
+  });
+});
+
 // ═══ BRAD CHAT — Talk to BRAD Mind about tokens ═══
 // User questions are combined with BRAD's full cognitive state + live radar
 // data, then sent to Grok. BRAD answers as its conscious inner voice.
@@ -9863,8 +9931,15 @@ server.listen(PORT, async () => {
   });
   // BRAD cognitive engine: check if sidecar is running
   bradClient.initBrad().then(ok => {
-    if (ok) console.log(`  BRAD: ACTIVE — cognitive reasoning layer online`);
-    else console.log(`  BRAD: offline (start with: cd brad && python -m bondli_bridge)`);
+    if (ok) {
+      console.log(`  BRAD: ACTIVE — cognitive reasoning layer online`);
+      // Auto-start paper trading so BRAD can learn immediately
+      const paperBankroll = parseFloat(process.env.BRAD_PAPER_BANKROLL || "10");
+      startPaperTrading(paperBankroll, { maxPositions: 10, positionSizePct: 0.05 });
+      console.log(`  BRAD: Paper trading started — ${paperBankroll} SOL virtual bankroll`);
+    } else {
+      console.log(`  BRAD: offline (start with: cd brad && python -m bondli_bridge)`);
+    }
   });
   // Nosana GPU fleet status
   const nosanaSummary = nosanaRouter.getStats();
