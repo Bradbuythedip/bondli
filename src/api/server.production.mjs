@@ -10283,4 +10283,90 @@ server.listen(PORT, async () => {
     devWalletTracker.save();
     demandAuth.cleanup();
   }, 600000);
+
+  // ═══ BACKGROUND TOKEN SCORER ═══
+  // Scores ALL radar tokens every 3s so BRAD chat, paper trading, and the
+  // frontend always have live _apeScore data — even when no auto-trader or
+  // live-sim is running. Without this, _apeScore stays 0 for every token
+  // unless a wallet has explicitly started auto-trading.
+  setInterval(() => {
+    if (autoTraders.size > 0 || liveSims.size > 0) return; // auto-ape or sim already scoring
+    const tokens = [...radar.tokens.values()];
+    if (tokens.length === 0) return;
+    let scored = 0;
+    for (const t of tokens) {
+      const mc = t.mcapUsd || 0;
+      const buys = t.buys || 0;
+      const sells = t.sells || 0;
+      const ub = t.uniqueBuyers?.size || t.uniqueBuyers || 0;
+      const ageMin = (Date.now() - (t.createdAt || Date.now())) / 60000;
+      const vol = t.volumeSol || 0;
+      const sellVol = t.sellVolumeSol || 0;
+      const dyn = scoreDynamics.get(t.ca);
+      const isAccelerating = dyn && dyn.scores >= 2 && (dyn.trend === "rocket" || dyn.trend === "rising");
+      const isDexPaid = !!radar.dexBoosted?.get?.(t.ca);
+      const isLowVelocity = mc >= 4000 && mc <= 30000 && buys >= 1 && sells <= buys && ub >= 1 && ageMin >= 0.3 && ageMin <= 30;
+
+      // Base filter — skip obvious non-starters
+      if (!isDexPaid && !isAccelerating && !isLowVelocity) {
+        if (!(mc > 5000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) continue;
+      } else if (isAccelerating) {
+        if (!(mc > 3000 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) continue;
+      }
+
+      // Hard rug gate
+      const qf = extractQuickFeatures(t);
+      if (qf) {
+        if (qf.rg_devSellSpeed > 0.5) continue;
+        if (qf.rg_coordDumpScore > 0.5 && qf._rg_sybilScore > 0.4) continue;
+        if (qf.rg_mcapDropRate > 0.5 && ageMin > 3) continue;
+      }
+
+      // Scoring (mirrors auto-ape composite)
+      const buyScore = Math.min(20, buys * 1.5);
+      const ubScore = Math.min(15, ub * 2.5);
+      const volScore = Math.min(10, (vol / Math.max(mc, 1)) * 100);
+      const mcScore = mc >= 100000 ? 3 : mc >= 50000 ? 5 : mc >= 20000 ? 8 :
+                      mc >= 10000 ? 10 : mc >= 5000 ? 8 : mc >= 4000 ? 6 : 0;
+      const spark = t.spark || [];
+      let greenScore = 0;
+      if (spark.length >= 3) {
+        const recent = spark.slice(-3);
+        const earlier = spark.slice(-6, -3);
+        if (earlier.length > 0) {
+          const avgR = recent.reduce((a, b) => a + b, 0) / recent.length;
+          const avgE = earlier.reduce((a, b) => a + b, 0) / earlier.length;
+          const growth = avgE > 0 ? (avgR - avgE) / avgE : 0;
+          if (growth > 0) greenScore = Math.min(20, growth * 60);
+        }
+      }
+      const pressureScore = buys > 2 ? Math.min(10, (buys / Math.max(1, buys + sells)) * 10) : 0;
+      const velocityScore = Math.min(10, (buys / Math.max(0.2, ageMin)) * 3);
+      const sellPenalty = sells > buys * 0.6 ? Math.min(12, (sells - buys * 0.4) * 2) : 0;
+      let rugPenalty = 0;
+      if (qf) {
+        rugPenalty += qf.rg_devSellSpeed > 0.25 ? 10 : 0;
+        rugPenalty += qf.rg_coordDumpScore > 0.25 ? 8 : 0;
+        rugPenalty += qf.rg_mcapDropRate > 0.3 ? 8 : 0;
+        rugPenalty += qf._rg_quickFlipRate > 0.15 ? 6 : 0;
+        rugPenalty += qf._rg_sybilScore > 0.3 ? 6 : 0;
+      }
+
+      let total = Math.max(0, Math.min(99, Math.round(
+        buyScore + ubScore + volScore + mcScore + greenScore +
+        pressureScore + velocityScore - sellPenalty - rugPenalty
+      )));
+
+      // Survivorship adjustment
+      if (qf && survivorBias.survivors.size >= 5) {
+        const sbAdj = survivorBias.getScoreAdjustment(qf);
+        total = Math.max(0, Math.min(99, total + sbAdj.adjustment));
+      }
+
+      if (total > 0) {
+        t._apeScore = total;
+        scored++;
+      }
+    }
+  }, 3000);
 });
