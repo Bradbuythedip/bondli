@@ -59,6 +59,11 @@ export class SmartMoneyTracker {
     // ── Manual watch (user-added wallets) ──
     this.manualWatch = new Set();
 
+    // ── Enabled state (off by default — toggled from frontend or VIP/owner activity) ──
+    this.enabled = false;
+    this._autoDisableTimer = null;
+    this.AUTO_DISABLE_MS = 30 * 60 * 1000; // 30 min inactivity → auto-disable
+
     // ── Stats ──
     this.stats = {
       totalSignals: 0,
@@ -67,6 +72,50 @@ export class SmartMoneyTracker {
       pollCount: 0,
       pollErrors: 0,
     };
+  }
+
+  // ═══════════════════════════════════════
+  // ENABLE / DISABLE — Controls whether tracker is active
+  // ═══════════════════════════════════════
+
+  enable(reason = "manual") {
+    if (this.enabled) {
+      this._resetAutoDisable();
+      return;
+    }
+    this.enabled = true;
+    console.log(`[SMART-MONEY] Enabled (reason: ${reason})`);
+    this.start();
+    this._resetAutoDisable();
+  }
+
+  disable(reason = "manual") {
+    if (!this.enabled) return;
+    this.enabled = false;
+    console.log(`[SMART-MONEY] Disabled (reason: ${reason})`);
+    this.stop();
+    if (this._autoDisableTimer) {
+      clearTimeout(this._autoDisableTimer);
+      this._autoDisableTimer = null;
+    }
+  }
+
+  /**
+   * Called when VIP/owner trades — keeps tracker alive, auto-disables after inactivity.
+   */
+  touchActivity() {
+    if (!this.enabled) {
+      this.enable("vip_owner_activity");
+    }
+    this._resetAutoDisable();
+  }
+
+  _resetAutoDisable() {
+    if (this._autoDisableTimer) clearTimeout(this._autoDisableTimer);
+    this._autoDisableTimer = setTimeout(() => {
+      console.log("[SMART-MONEY] Auto-disabling after inactivity");
+      this.disable("inactivity_timeout");
+    }, this.AUTO_DISABLE_MS);
   }
 
   // ═══════════════════════════════════════
@@ -248,6 +297,10 @@ export class SmartMoneyTracker {
 
   start() {
     if (this.pollInterval) return;
+    if (!this.enabled) {
+      console.log("[SMART-MONEY] Not enabled — skipping start (enable from frontend or trade as VIP/owner)");
+      return;
+    }
     if (!this.rpcEnabled) {
       console.log("[SMART-MONEY] No Alchemy API key — polling disabled (passive mode only)");
       return;
@@ -583,6 +636,7 @@ export class SmartMoneyTracker {
     for (const w of this.wallets.values()) tiers[w.tier]++;
 
     return {
+      enabled: this.enabled,
       totalWallets: this.wallets.size,
       watching: this.watchlist.size,
       manualWatch: this.manualWatch.size,
