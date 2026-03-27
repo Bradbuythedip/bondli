@@ -316,9 +316,6 @@ function recordKolMention(ca, handle) {
   kolCascadeTracker.set(ca, filtered);
 }
 
-// Demand Authenticity Engine — detects manufactured vs organic buying
-const demandAuth = new DemandAuthenticityEngine({ smartWallets, smartMoneyTracker });
-
 // Dev Wallet Tracker — maps every dev wallet on radar, checks balances, profiles funded devs
 const devWalletTracker = new DevWalletTracker({ redis, connection });
 // Load persisted dev wallet data from Redis
@@ -747,6 +744,10 @@ const smartWallets = {
     } catch {}
   },
 };
+
+// Demand Authenticity Engine — detects manufactured vs organic buying
+// Must be after smartWallets + smartMoneyTracker are defined
+const demandAuth = new DemandAuthenticityEngine({ smartWallets, smartMoneyTracker });
 
 const PUMP_FUN_API = "https://frontend-api-v3.pump.fun";
 
