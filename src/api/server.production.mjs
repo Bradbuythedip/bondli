@@ -9279,6 +9279,7 @@ ${posContext}
       const decoder = new TextDecoder();
       let buffer = "";
       let fullReply = "";
+      let jsonCarry = ""; // carry incomplete JSON across line boundaries
 
       try {
         while (true) {
@@ -9286,20 +9287,55 @@ ${posContext}
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
+          // Handle both \r\n and \n line endings (Grok may send either)
+          const lines = buffer.split(/\r?\n/);
           buffer = lines.pop() || ""; // keep incomplete line in buffer
 
           for (const line of lines) {
-            if (!line.startsWith("data: ")) continue;
-            const data = line.slice(6).trim();
+            const trimmed = line.trim();
+            if (!trimmed) continue; // skip empty lines between SSE events
+
+            if (!trimmed.startsWith("data: ")) continue;
+            const data = trimmed.slice(6).trim();
+            if (data === "[DONE]") {
+              res.write(`data: ${JSON.stringify({ done: true, reply: fullReply })}\n\n`);
+              continue;
+            }
+
+            // Handle JSON that may span multiple data: lines
+            const jsonStr = jsonCarry ? jsonCarry + data : data;
+            jsonCarry = "";
+
+            try {
+              const chunk = JSON.parse(jsonStr);
+              const token = chunk.choices?.[0]?.delta?.content;
+              if (token != null && token !== "") {
+                fullReply += token;
+                res.write(`data: ${JSON.stringify({ token })}\n\n`);
+              }
+            } catch (parseErr) {
+              // JSON incomplete — carry it to the next line
+              jsonCarry = jsonStr;
+            }
+          }
+        }
+        // Flush any remaining bytes from the decoder
+        const remaining = decoder.decode();
+        if (remaining) {
+          buffer += remaining;
+          const finalLines = buffer.split(/\r?\n/);
+          for (const line of finalLines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data: ")) continue;
+            const data = trimmed.slice(6).trim();
             if (data === "[DONE]") {
               res.write(`data: ${JSON.stringify({ done: true, reply: fullReply })}\n\n`);
               continue;
             }
             try {
               const chunk = JSON.parse(data);
-              const token = chunk.choices?.[0]?.delta?.content || "";
-              if (token) {
+              const token = chunk.choices?.[0]?.delta?.content;
+              if (token != null && token !== "") {
                 fullReply += token;
                 res.write(`data: ${JSON.stringify({ token })}\n\n`);
               }
@@ -9307,6 +9343,7 @@ ${posContext}
           }
         }
       } catch (e) {
+        console.error(`[BRAD-CHAT] Stream parse error: ${e.message}`);
         res.write(`data: ${JSON.stringify({ error: e.message })}\n\n`);
       }
 
