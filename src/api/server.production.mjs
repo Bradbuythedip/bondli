@@ -47,6 +47,7 @@ import SurvivorshipBias from "../engine/survivorship-bias.mjs";
 import { SmartMoneyTracker } from "../engine/smart-money-tracker.mjs";
 import { ResurgenceScanner } from "../engine/resurgence-scanner.mjs";
 import { DevWalletTracker } from "../engine/dev-wallet-tracker.mjs";
+import { DemandAuthenticityEngine } from "../engine/demand-authenticity.mjs";
 import { scoreMemeticQuick, scoreTokenMemetic, loadBlacklists as loadMemeticBlacklists, startMemeticWorkers } from "../engine/memetic-pipeline.mjs";
 import { runPipeline, runExitChecks, classifyConfidence, calculatePositionSize, createExitPlan, checkPostExitReentry, checkDipDCA } from "../autoape/pipeline.js";
 import { getSpotPrice, getMultiSpotPrices, getCandlesByMint, findPool, analyzeCandles } from "../engine/price-feeds.mjs";
@@ -314,6 +315,9 @@ function recordKolMention(ca, handle) {
   const filtered = mentions.filter(m => m.time > cutoff).slice(-20);
   kolCascadeTracker.set(ca, filtered);
 }
+
+// Demand Authenticity Engine — detects manufactured vs organic buying
+const demandAuth = new DemandAuthenticityEngine({ smartWallets, smartMoneyTracker });
 
 // Dev Wallet Tracker — maps every dev wallet on radar, checks balances, profiles funded devs
 const devWalletTracker = new DevWalletTracker({ redis, connection });
@@ -1846,6 +1850,13 @@ function extractQuickFeatures(t) {
         Math.min(0.3, (currentBuys - history.lastBuys) * 0.05)
       );
     })(),
+
+    // ═══ DEMAND AUTHENTICITY — Is the buying real or manufactured? ═══
+    // 0 = all demand is fake (bots, wash trading, sybil)
+    // 1 = all demand is organic (diverse wallets, bursty timing, real participants)
+    // Combines temporal analysis, amount distribution, buyer diversity,
+    // buyer quality (cross-ref smartWallets), and wash trade detection.
+    _demandAuthenticity: demandAuth.quickScore(t),
   };
 
   // Compute divergence after other fields are set
@@ -2253,6 +2264,9 @@ setInterval(() => {
         if (qf._rg_zeroSellFlag >= 0.5 && qf.ch_staircaseScore > 0.2) rugScore += 20;
         // Combined: zero sells + fresh wallets = dev self-buying rug
         if (qf._rg_zeroSellFlag >= 0.5 && qf._rg_freshWalletRatio > 0.6) rugScore += 15;
+        // Demand authenticity: very low = manufactured demand
+        if (qf._demandAuthenticity < 0.2) rugScore += 25;
+        else if (qf._demandAuthenticity < 0.3) rugScore += 12;
       }
     } catch {}
     // Tokens with enough buys for analysis that score high = rug
@@ -5578,13 +5592,22 @@ function startAutoTrader(wallet, settings) {
           t._narrative = metaResult.narrative;
         }
 
+        // DEMAND AUTHENTICITY: organic demand bonus, manufactured demand penalty
+        let demandAuthPenalty = 0;
+        let demandAuthBonus = 0;
+        if (qf?._demandAuthenticity != null) {
+          if (qf._demandAuthenticity < 0.25) demandAuthPenalty = Math.round((0.25 - qf._demandAuthenticity) * 60); // up to -15
+          else if (qf._demandAuthenticity > 0.7) demandAuthBonus = Math.round((qf._demandAuthenticity - 0.7) * 25); // up to +7
+          t._demandAuth = qf._demandAuthenticity;
+        }
+
         // Snapshot for second wave tracker (if score is good enough)
         if (buyScore + ubScore + volScore + mcScore + greenScore > 30) {
           secondWaveSnapshot(t);
         }
 
         t._apeScore = Math.max(0, Math.min(99, Math.round(
-          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus + devCredBonus + memeticBonus + holderQualityBonus + kolCascadeBonus + secondWaveBonus + narrativeAccelBonus - sellPenalty - rugPenalty - artPenalty - walletAgePenalty
+          buyScore + ubScore + volScore + mcScore + greenScore + pressureScore + velocityScore + boostScore + dynamicsBonus + chartBonus + earlyApeBonus + whaleBullishBonus + devCredBonus + memeticBonus + holderQualityBonus + kolCascadeBonus + secondWaveBonus + narrativeAccelBonus + demandAuthBonus - sellPenalty - rugPenalty - artPenalty - walletAgePenalty - demandAuthPenalty
         )));
 
         // ═══ SURVIVORSHIP BIAS FILTER (Kahneman) ═══
@@ -5655,7 +5678,13 @@ function startAutoTrader(wallet, settings) {
           kolCascadeBonus > 5 && `kol_cascade(${Math.round((qf?._kolCascade || 0) * 100)}%)`,
           secondWaveBonus > 5 && "second_wave",
           narrativeAccelBonus > 5 && `wave_building(pos:${t._wavePosition || 0})`,
+          demandAuthBonus > 3 && `organic_demand(${Math.round((qf?._demandAuthenticity || 0) * 100)}%)`,
         ].filter(Boolean);
+        // Demand authenticity flag
+        if (demandAuthPenalty > 5) {
+          t._rugFlags = t._rugFlags || [];
+          t._rugFlags.push(`manufactured_demand(${Math.round((qf?._demandAuthenticity || 0) * 100)}%)`);
+        }
         t._scoreTrend = dyn?.trend || "new";
         t._earlyApe = earlyApeBonus > 0; // flag for logging
         // ── SURVIVORSHIP KILL GATE — Kahneman: if it doesn't look like a winner, skip ──
@@ -8691,6 +8720,18 @@ app.get("/api/intel/artwork-stats", (req, res) => {
   res.json(artworkScanner ? artworkScanner.getStats() : { error: "not initialized" });
 });
 
+// ═══ DEMAND AUTHENTICITY — Organic vs Manufactured demand detection ═══
+app.get("/api/intel/demand-auth/:ca", (req, res) => {
+  const token = radar.tokens.get(req.params.ca);
+  if (!token) return res.status(404).json({ error: "Token not on radar" });
+  const result = demandAuth.analyze(token);
+  res.json({ ca: req.params.ca, name: token.name, ...result });
+});
+
+app.get("/api/intel/demand-auth-stats", (req, res) => {
+  res.json(demandAuth.getStats());
+});
+
 // ═══ SURVIVORSHIP BIAS — Kahneman Winner/Loser Analysis ═══
 app.get("/api/intel/survivor-stats", (req, res) => {
   res.json(survivorBias.getStats());
@@ -10196,5 +10237,6 @@ server.listen(PORT, async () => {
     smartMoneyTracker.syncFromSmartWallets(smartWallets.walletStats);
     smartMoneyTracker.save();
     devWalletTracker.save();
+    demandAuth.cleanup();
   }, 600000);
 });
