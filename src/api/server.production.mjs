@@ -238,6 +238,35 @@ const smartMoneyTracker = new SmartMoneyTracker({
   },
 });
 
+// ── Auto-enable smart money tracker when VIP/owner wallet trades ──
+async function checkSmartMoneyAutoEnable(wallet) {
+  if (!wallet) return;
+  // If already enabled, just reset the inactivity timer
+  if (smartMoneyTracker.enabled) {
+    if (isOwnerWallet(wallet)) smartMoneyTracker.touchActivity();
+    else {
+      try {
+        const user = await getUser(wallet);
+        const tierInfo = resolveTier(wallet, user);
+        if (tierInfo.tier === "vip") smartMoneyTracker.touchActivity();
+      } catch {}
+    }
+    return;
+  }
+  // Not enabled — check if this wallet qualifies to auto-enable
+  try {
+    if (isOwnerWallet(wallet)) {
+      smartMoneyTracker.touchActivity();
+      return;
+    }
+    const user = await getUser(wallet);
+    const tierInfo = resolveTier(wallet, user);
+    if (tierInfo.tier === "vip") {
+      smartMoneyTracker.touchActivity();
+    }
+  } catch {}
+}
+
 // Resurgence Scanner — finds older coins (12h-2y) with renewed momentum
 const resurgenceScanner = new ResurgenceScanner({ redis, smartMoneyTracker });
 
@@ -3828,6 +3857,9 @@ app.post("/api/quick-ape", async (req, res) => {
     }
     console.log(`[BUY] ${verified ? "VERIFIED" : "UNVERIFIED"}: ${sig} ${verifyError || ""}`);
 
+    // Auto-enable smart money tracker if VIP/owner is trading
+    checkSmartMoneyAutoEnable(wallet).catch(() => {});
+
     res.json({ ok: true, signature: sig, ca, method, verified, verifyError: verifyError || undefined, balance: +(balance - solAmount).toFixed(4), position: { mint: ca, name: boughtToken?.name || "", ticker: boughtToken?.ticker || "", image: boughtToken?.image || "", mcapUsd: boughtToken?.mcapUsd || 0, mcapSol: boughtToken?.mcapSol || 0, solSpent: solAmount } });
   } catch (e) {
     console.error("[QUICK-APE] Error:", e.message);
@@ -4103,6 +4135,9 @@ app.post("/api/quick-sell", async (req, res) => {
         console.log(`[PROFIT-SKIM] Error: ${e.message}`);
       }
     })();
+
+    // Auto-enable smart money tracker if VIP/owner is trading
+    checkSmartMoneyAutoEnable(wallet).catch(() => {});
 
     res.json({ ok: true, signature: sig, percent: pct, method, confirmed, tokenBalance: +tokenBalance.toFixed(2) });
   } catch (e) {
@@ -6177,6 +6212,8 @@ app.post("/api/auto-trade/start", async (req, res) => {
     const tw = await getTradingWallet(wallet);
     if (!tw) return res.status(400).json({ error: "No trading wallet" });
     const state = startAutoTrader(wallet, settings || {});
+    // Auto-enable smart money tracker if VIP/owner starts auto-trading
+    checkSmartMoneyAutoEnable(wallet).catch(() => {});
     res.json({ ok: true, settings: state.settings });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -8706,6 +8743,21 @@ app.post("/api/intel/smart-money/watch", express.json(), (req, res) => {
   res.json({ ok: added, action: "added", watching: smartMoneyTracker.watchlist.size });
 });
 
+// Toggle smart money tracker on/off from frontend
+app.post("/api/intel/smart-money/toggle", express.json(), (req, res) => {
+  const { enabled } = req.body || {};
+  if (enabled === true) {
+    smartMoneyTracker.enable("frontend_toggle");
+  } else if (enabled === false) {
+    smartMoneyTracker.disable("frontend_toggle");
+  } else {
+    // Toggle
+    if (smartMoneyTracker.enabled) smartMoneyTracker.disable("frontend_toggle");
+    else smartMoneyTracker.enable("frontend_toggle");
+  }
+  res.json({ enabled: smartMoneyTracker.enabled, watching: smartMoneyTracker.watchlist.size });
+});
+
 // ═══ BRAD COGNITIVE ENGINE — API endpoints ═══
 // Expose BRAD's cognitive state, metrics, and decisions for the dashboard.
 
@@ -10129,12 +10181,12 @@ server.listen(PORT, async () => {
   // Load smart wallet profiles from Redis
   await smartWallets.load();
 
-  // Load smart money tracker from Redis + start polling
+  // Load smart money tracker from Redis (but don't start — off by default)
   await smartMoneyTracker.load();
   // Initial sync from existing smartWallets data
   smartMoneyTracker.syncFromSmartWallets(smartWallets.walletStats);
-  smartMoneyTracker.start();
-  console.log(`[SMART-MONEY] Tracker started: ${smartMoneyTracker.summary().totalWallets} wallets, watching ${smartMoneyTracker.summary().watching}`);
+  // NOTE: tracker starts OFF — enable from frontend toggle or VIP/owner trade activity
+  console.log(`[SMART-MONEY] Tracker loaded (OFF): ${smartMoneyTracker.summary().totalWallets} wallets — enable from dashboard or trade as VIP/owner`);
 
   // Periodic smart wallet save + cleanup (every 10 minutes)
   setInterval(() => {

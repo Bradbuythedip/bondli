@@ -412,7 +412,41 @@ export default function IntelDashboard({ apiBase }) {
 
       {/* SMART MONEY TAB */}
       {tab === "smart" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {/* Enable/Disable banner */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: smartMoney?.enabled ? COLORS.gn + "12" : COLORS.rd + "12", border: "1px solid " + (smartMoney?.enabled ? COLORS.gn + "33" : COLORS.rd + "33"), borderRadius: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: smartMoney?.enabled ? COLORS.gn : COLORS.rd }} />
+              <span style={{ fontSize: 13, fontWeight: 700, color: smartMoney?.enabled ? COLORS.gn : COLORS.rd }}>
+                {smartMoney?.enabled ? "SMART MONEY ACTIVE" : "SMART MONEY OFF"}
+              </span>
+              <span style={{ fontSize: 11, color: COLORS.dm }}>
+                {smartMoney?.enabled ? "Polling wallets via RPC" : "Enable manually or trade as VIP/owner to auto-activate"}
+              </span>
+            </div>
+            <button onClick={async () => {
+              try {
+                const r = await fetch(API + "/api/intel/smart-money/toggle", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ enabled: !smartMoney?.enabled }),
+                });
+                if (r.ok) {
+                  const data = await r.json();
+                  setSmartMoney(prev => prev ? { ...prev, enabled: data.enabled } : prev);
+                }
+              } catch {}
+            }} style={{
+              padding: "6px 16px", borderRadius: 6, fontSize: 12, fontWeight: 800, cursor: "pointer",
+              background: smartMoney?.enabled ? COLORS.rd + "20" : COLORS.gn + "20",
+              border: "1px solid " + (smartMoney?.enabled ? COLORS.rd + "44" : COLORS.gn + "44"),
+              color: smartMoney?.enabled ? COLORS.rd : COLORS.gn,
+            }}>
+              {smartMoney?.enabled ? "DISABLE" : "ENABLE"}
+            </button>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 12 }}>
           {/* Leaderboard */}
           <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, overflow: "hidden" }}>
             <div style={{ padding: "10px 14px", borderBottom: "1px solid " + COLORS.bd, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -542,6 +576,7 @@ export default function IntelDashboard({ apiBase }) {
               ))}
             </div>
           </div>
+        </div>
         </div>
       )}
 
