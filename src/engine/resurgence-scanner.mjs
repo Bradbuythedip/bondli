@@ -483,9 +483,14 @@ export class ResurgenceScanner {
     for (const list of [olderMovers, volumeSpikes, boosted]) {
       for (const t of list) {
         if (!t.ca) continue;
+        // Normalize: boosted tokens use "icon" instead of "image"
+        if (t.icon && !t.image) t.image = t.icon;
         const existing = seen.get(t.ca);
         if (!existing || (t.volume24h && !existing.volume24h) || (t.mcapUsd && !existing.mcapUsd)) {
-          seen.set(t.ca, { ...existing, ...t });
+          const merged = { ...existing, ...t };
+          // Preserve image from either source
+          merged.image = merged.image || existing?.image || t.icon || null;
+          seen.set(t.ca, merged);
         }
       }
     }
@@ -525,7 +530,13 @@ export class ResurgenceScanner {
     scored.sort((a, b) => b.resurgenceScore - a.resurgenceScore);
 
     // Take top 30
-    const tokens = scored.slice(0, 30);
+    const tokens = scored.slice(0, 30).map(t => {
+      // Fallback image: try DexScreener token image URL if we still have nothing
+      if (!t.image && t.ca) {
+        t.image = `https://dd.dexscreener.com/ds-data/tokens/solana/${t.ca}.png`;
+      }
+      return t;
+    });
 
     // If scan yielded nothing but we have previous good results, return those
     // (API rate limits / transient failures shouldn't blank out the tab)
