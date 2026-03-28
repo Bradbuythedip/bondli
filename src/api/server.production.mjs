@@ -2285,7 +2285,11 @@ setInterval(() => {
   radar.tabs.new = rugFiltered
     .filter(t => (now - t.createdAt) < 600000)
     .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, 50).map(serialize);
+    .slice(0, 50).map(t => {
+      const s = serialize(t);
+      s.pctToGrad = t.graduated ? 100 : Math.min(99, Math.round((t.mcapUsd / gradMcUsd()) * 100));
+      return s;
+    });
 
   // ── GRAD: Real traction MC ($10K+) or graduated ($69K+) ──
   // $2.4K = launch, $3-5K = dev buy, $10K+ = real traction, $69K = graduated
@@ -2373,7 +2377,11 @@ setInterval(() => {
     })
     .filter(Boolean)
     .sort((a, b) => b._momentum - a._momentum)
-    .slice(0, 50).map(serialize);
+    .slice(0, 50).map(t => {
+      const s = serialize(t);
+      s.pctToGrad = t.graduated ? 100 : Math.min(99, Math.round((t.mcapUsd / gradMcUsd()) * 100));
+      return s;
+    });
 
   // ── BAGS: Hot tokens from Bags.fm only — heat-ranked ──
   const bagsOnly = rugFiltered.filter(t => t._source === "bags" && (t.buys > 0 || t.volumeSol > 0 || t.mcapUsd > 1000));
