@@ -2350,6 +2350,27 @@ setInterval(() => {
         const avgPrior = prior.reduce((a, b) => a + b, 0) / prior.length;
         recentTrend = avgPrior > 0 ? (avgRecent - avgPrior) / avgPrior : 0;
       }
+      // ── ML APE SCORE — the actual "should buy" composite ──
+      const apeScore = t._apeScore || 0;
+      // ── SCORE DYNAMICS — is the score accelerating or dying? ──
+      const dyn = scoreDynamics.get(t.ca);
+      const dynBonus = dyn?.trend === "rocket" ? 25 : dyn?.trend === "rising" ? 15 : dyn?.trend === "fading" ? -10 : dyn?.trend === "crashing" ? -25 : 0;
+      const velBonus = Math.min(15, Math.max(-10, (dyn?.velocity || 0) * 50));
+      // ── BUY VELOCITY ACCELERATION — new buys faster than old ──
+      let accelBonus = 0;
+      if (t.trades && t.trades.length >= 4) {
+        const trades = t.trades;
+        const mid = Math.floor(trades.length / 2);
+        const firstBuys = trades.slice(0, mid).filter(tr => tr.side === "buy").length;
+        const secondBuys = trades.slice(mid).filter(tr => tr.side === "buy").length;
+        const firstSpan = Math.max(1, ((trades[mid]?.time || now) - (trades[0]?.time || now)) / 60000);
+        const secondSpan = Math.max(0.3, (now - (trades[mid]?.time || now)) / 60000);
+        const firstRate = firstBuys / firstSpan;
+        const secondRate = secondBuys / secondSpan;
+        if (secondRate > firstRate * 1.5) accelBonus = 15;
+        else if (secondRate > firstRate * 1.2) accelBonus = 8;
+        else if (secondRate < firstRate * 0.5) accelBonus = -12;
+      }
       // ── RUG PENALTY FOR MOMENTUM TAB ──
       // Tokens with all buys / zero sells look like strong momentum but are actually rugs.
       // Penalize rug patterns to prevent them from ranking high.
@@ -2373,7 +2394,19 @@ setInterval(() => {
           if (qf._rg_zeroSellFlag >= 0.8 || (qf._rg_zeroSellFlag >= 0.5 && qf.ch_staircaseScore > 0.3)) return null;
         }
       } catch {}
-      return { ...t, _momentum: buyRate*12 + pressure*20 + ub*10 + mcGrowth*30 + recentTrend*25 + Math.min(15, t.volumeSol*3) - rugMomentumPenalty };
+      return { ...t, _momentum:
+        apeScore * 0.8            // ML score is the strongest buy signal (0-79)
+        + buyRate * 8             // buys per minute — activity level
+        + pressure * 15           // buy:sell ratio
+        + ub * 6                  // unique buyers = organic interest
+        + mcGrowth * 20           // MC growing = price confirming
+        + recentTrend * 20        // recent sparkline direction
+        + Math.min(12, t.volumeSol * 2) // volume (capped)
+        + dynBonus                // score trend: rocket/rising/fading/crashing
+        + velBonus                // score velocity (acceleration)
+        + accelBonus              // buy velocity accelerating
+        - rugMomentumPenalty      // rug pattern deduction
+      };
     })
     .filter(Boolean)
     .sort((a, b) => b._momentum - a._momentum)
