@@ -7492,14 +7492,45 @@ app.get("/api/radar/token/:ca", (req, res) => {
   res.json({ ...rest, uniqueBuyers: uniqueBuyers?.size || 0 });
 });
 
-app.get("/api/search", (req, res) => {
-  const q = (req.query.q || "").toLowerCase();
-  if (!q) return res.json({ results: [] });
-  const results = [...radar.tokens.values()]
-    .filter(t => t.name.toLowerCase().includes(q) || t.ticker.toLowerCase().includes(q) || t.ca === q)
+app.get("/api/search", async (req, res) => {
+  const q = (req.query.q || "").trim();
+  if (!q) return res.json({ results: [], source: "local" });
+  const ql = q.toLowerCase();
+  const local = [...radar.tokens.values()]
+    .filter(t => t.name.toLowerCase().includes(ql) || t.ticker.toLowerCase().includes(ql) || t.ca === q)
     .slice(0, 20)
-    .map(t => ({ ca: t.ca, name: t.name, ticker: t.ticker, image: t.image, mcapUsd: t.mcapUsd }));
-  res.json({ results });
+    .map(t => ({ ca: t.ca, name: t.name, ticker: t.ticker, image: t.image, mcapUsd: t.mcapUsd, priceUsd: t.priceUsd || 0, source: "radar" }));
+  // If local has enough results or query looks like a CA, return local only
+  const isCA = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q);
+  if (local.length >= 5 || isCA) return res.json({ results: local, source: "local" });
+  // Fall back to DexScreener search for historical pump.fun / Solana tokens
+  try {
+    const dxRes = await fetch(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`, { signal: AbortSignal.timeout(6000) });
+    if (!dxRes.ok) return res.json({ results: local, source: "local" });
+    const dx = await dxRes.json();
+    const localCAs = new Set(local.map(t => t.ca));
+    const dxTokens = (dx.pairs || [])
+      .filter(p => p.chainId === "solana" && !localCAs.has(p.baseToken?.address))
+      .slice(0, 30)
+      .map(p => ({
+        ca: p.baseToken?.address,
+        name: p.baseToken?.name || "",
+        ticker: p.baseToken?.symbol || "",
+        image: p.info?.imageUrl || "",
+        mcapUsd: p.fdv || p.marketCap || 0,
+        priceUsd: parseFloat(p.priceUsd) || 0,
+        h1Change: p.priceChange?.h1 || null,
+        h24Change: p.priceChange?.h24 || null,
+        volume24h: p.volume?.h24 || 0,
+        liquidity: p.liquidity?.usd || 0,
+        dexUrl: p.url || "",
+        pairCreatedAt: p.pairCreatedAt || null,
+        source: "dexscreener",
+      }));
+    res.json({ results: [...local, ...dxTokens], source: local.length > 0 ? "mixed" : "dexscreener" });
+  } catch (e) {
+    res.json({ results: local, source: "local" });
+  }
 });
 
 // ═══════════════════════════════════════
