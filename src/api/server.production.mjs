@@ -2304,15 +2304,48 @@ setInterval(() => {
     });
 
   // ── MOMENTUM: Sustained buying pressure ──
+  // Only tokens with RECENT activity — not historical buy counts from dead tokens
   radar.tabs.momentum = rugFiltered
-    .filter(t => t.buys >= 2 && (now - t.createdAt) > 10000 && t.mcapUsd >= 1500)
+    .filter(t => {
+      if (t.buys < 3 || t.mcapUsd < 1500) return false;
+      if ((now - t.createdAt) < 10000) return false;
+      // RECENCY: must have had a trade in the last 5 minutes
+      const trades = t.trades || [];
+      const lastTradeTime = trades.length > 0 ? trades[trades.length - 1].time : t.createdAt;
+      if (now - lastTradeTime > 300000) return false;
+      // ACTIVITY: need at least 1 unique buyer per 5 min of age, min 2 UB
+      const ub = t.uniqueBuyers?.size || 0;
+      if (ub < 2) return false;
+      // SELL RATIO: if sells > 2x buys, it's dumping not momentum
+      if ((t.sells || 0) > t.buys * 2) return false;
+      // MC FLOOR: if MC dropped below $1K it's dead
+      const spark = t.spark || [];
+      if (spark.length > 3) {
+        const peak = Math.max(...spark);
+        const current = spark[spark.length - 1] || t.mcapUsd;
+        // Dropped 80%+ from peak = rugged, not momentum
+        if (peak > 0 && current < peak * 0.2) return false;
+      }
+      return true;
+    })
     .map(t => {
       const ageMin = Math.max(0.5, (now - t.createdAt) / 60000);
       const buyRate = t.buys / ageMin;
       const pressure = t.buys / Math.max(1, t.buys + t.sells);
       const ub = t.uniqueBuyers?.size || 0;
-      const mcGrowth = t.spark?.length > 2 ? (t.spark[t.spark.length-1] - t.spark[0]) / Math.max(1, t.spark[0]) : 0;
-      if (mcGrowth < -0.3) return null;
+      const spark = t.spark || [];
+      const mcGrowth = spark.length > 2 ? (spark[spark.length-1] - spark[0]) / Math.max(1, spark[0]) : 0;
+      // Reject declining tokens — if MC is shrinking, not momentum
+      if (mcGrowth < -0.15) return null;
+      // RECENT momentum: weight recent sparkline trend heavily
+      let recentTrend = 0;
+      if (spark.length >= 4) {
+        const recent = spark.slice(-2);
+        const prior = spark.slice(-4, -2);
+        const avgRecent = recent.reduce((a, b) => a + b, 0) / recent.length;
+        const avgPrior = prior.reduce((a, b) => a + b, 0) / prior.length;
+        recentTrend = avgPrior > 0 ? (avgRecent - avgPrior) / avgPrior : 0;
+      }
       // ── RUG PENALTY FOR MOMENTUM TAB ──
       // Tokens with all buys / zero sells look like strong momentum but are actually rugs.
       // Penalize rug patterns to prevent them from ranking high.
@@ -2336,7 +2369,7 @@ setInterval(() => {
           if (qf._rg_zeroSellFlag >= 0.8 || (qf._rg_zeroSellFlag >= 0.5 && qf.ch_staircaseScore > 0.3)) return null;
         }
       } catch {}
-      return { ...t, _momentum: buyRate*12 + pressure*20 + ub*10 + mcGrowth*30 + Math.min(15, t.volumeSol*3) - rugMomentumPenalty };
+      return { ...t, _momentum: buyRate*12 + pressure*20 + ub*10 + mcGrowth*30 + recentTrend*25 + Math.min(15, t.volumeSol*3) - rugMomentumPenalty };
     })
     .filter(Boolean)
     .sort((a, b) => b._momentum - a._momentum)
