@@ -9087,8 +9087,45 @@ app.post("/api/brad/chat", express.json(), async (req, res) => {
     .map(t => {
       const dyn = scoreDynamics.get(t.ca);
       const devScore = devWalletTracker?.getDevScore?.(t.ca) || {};
-      return `${t.name||t.ca?.slice(0,8)}: score=${t._apeScore||0}, MC=$${Math.round(t.mcapUsd||0)}, buys=${t.buys||0}, sells=${t.sells||0}, UB=${t.uniqueBuyers?.size||0}, trend=${dyn?.trend||"new"}, vel=${dyn?.velocity?.toFixed(3)||"0"}, accel=${dyn?.acceleration?.toFixed(4)||"0"}, rugFlags=${t._rugFlags?.length||0}${t._rugFlags?.length>0?" ("+t._rugFlags.slice(0,3).join(",")+")":""}, age=${t.createdAt?Math.round((Date.now()-t.createdAt)/60000):0}min, bondCurve=${t.vSolInBondingCurve?Math.round(t.vSolInBondingCurve/85*100):0}%${t._smartMoneyIn?" [SMART$]":""}${t._isMegaCandidate?" [MEGA]":""}${t.graduated?" [GRAD]":""}${t._survivorMatch?" surv:"+t._survivorMatch+"%":""}${devScore.devTier?" dev:"+devScore.devTier:""}`;
+      const spark = t.spark || [];
+      const sparkDir = spark.length > 3 ? (spark[spark.length-1] > spark[spark.length-3] ? "UP" : spark[spark.length-1] < spark[spark.length-3]*0.9 ? "DOWN" : "FLAT") : "?";
+      const ageMin = t.createdAt ? Math.round((Date.now()-t.createdAt)/60000) : 0;
+      const pressure = t.buys > 0 ? Math.round(t.buys / Math.max(1, t.buys + (t.sells||0)) * 100) : 0;
+      const ub = t.uniqueBuyers?.size || 0;
+      const rugFlags = t._rugFlags || [];
+      const pctGrad = t.graduated ? 100 : (t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0);
+      let line = `${t.name||t.ca?.slice(0,8)} ($${t.ticker||"?"}): score=${t._apeScore||0}`;
+      line += ` trend=${dyn?.trend||"new"}${dyn?.velocity>0?" ↑"+(dyn.velocity).toFixed(2):dyn?.velocity<0?" ↓"+Math.abs(dyn.velocity).toFixed(2):""}`;
+      line += ` MC=$${Math.round(t.mcapUsd||0)} chart=${sparkDir}`;
+      line += ` buys=${t.buys||0} sells=${t.sells||0} UB=${ub} pressure=${pressure}%`;
+      line += ` age=${ageMin}m grad=${pctGrad}%`;
+      if (rugFlags.length > 0) line += ` RUGS:[${rugFlags.slice(0,3).join(",")}]`;
+      if (t._smartMoneyIn) line += ` [SMART$]`;
+      if (t._isMegaCandidate) line += ` [MEGA]`;
+      if (t.graduated) line += ` [GRADUATED]`;
+      if (t._survivorMatch) line += ` surv:${t._survivorMatch}%`;
+      if (devScore.devTier) line += ` dev:${devScore.devTier}`;
+      return line;
     }).join("\n");
+
+  // Regime detection — live market state
+  let regimeContext = "";
+  try {
+    const hotCount = allTokens.filter(t => (t._apeScore || 0) >= 50).length;
+    const total = allTokens.length || 1;
+    const gradRate = (gradCount / total) * 100;
+    let regime = "RISK_ON";
+    if (hotCount <= 1) regime = "PVP";
+    else if (gradRate > 3 && hotCount > 10) regime = "EUPHORIA";
+    else if (gradRate > 1 && hotCount > 5) regime = "RISK_ON";
+    else if (hotCount > 2) regime = "GRINDING";
+    else regime = "PVP";
+    regimeContext = `\nMarket regime: ${regime} (${hotCount} hot tokens, ${gradCount} graduated, ${rugCount} rugged, grad rate ${gradRate.toFixed(1)}%)`;
+    if (regime === "EUPHORIA") regimeContext += " — aggressive entries, wider net, higher sizing";
+    else if (regime === "PVP") regimeContext += " — defensive, T1 only, tight stops";
+    else if (regime === "GRINDING") regimeContext += " — selective entries, patience required";
+    else if (regime === "DEAD") regimeContext += " — not trading, waiting for conditions to improve";
+  } catch {}
 
   // Engine state — scoring pipeline, learner, survivorship
   let engineContext = "";
@@ -9159,17 +9196,30 @@ app.post("/api/brad/chat", express.json(), async (req, res) => {
     }
   } catch {}
 
-  // Auto-trade positions
+  // Auto-trade positions — enriched with entry-vs-current comparison
   let posContext = "";
   if (wallet) {
     const atState = autoTraders.get(wallet);
     if (atState && atState.positions.size > 0) {
-      posContext = "\nOpen positions:\n" + [...atState.positions.entries()].map(([ca, p]) => {
+      const posArr = [...atState.positions.entries()].map(([ca, p]) => {
         const token = radar.tokens.get(ca);
         const mc = token?.mcapUsd || 0;
         const changePct = p.entryMcap > 0 ? ((mc - p.entryMcap) / p.entryMcap * 100).toFixed(1) : "0";
-        return `${token?.name||ca.slice(0,8)}: ${changePct}% PnL, score=${p.liveScore||p.entryScore||0}, trend=${p.scoreTrend||"stable"}, tier=T${p.tier||2}, age=${Math.round((Date.now()-p.entryTime)/60000)}min`;
-      }).join("\n");
+        const curScore = token?._apeScore || p.liveScore || 0;
+        const entScore = p.entryScore || 0;
+        const scoreDelta = curScore - entScore;
+        const ageMin = Math.round((Date.now() - p.entryTime) / 60000);
+        const dyn = scoreDynamics.get(ca);
+        let status = "";
+        if (scoreDelta < -20) status = " ⚠ SCORE DETERIORATING";
+        else if (parseFloat(changePct) < -15) status = " ⚠ DEEP DRAWDOWN";
+        else if (dyn?.trend === "crashing" || dyn?.trend === "fading") status = " ⚠ FADING";
+        else if (parseFloat(changePct) > 50 && dyn?.trend === "rising") status = " RUNNER";
+        return `${token?.name||ca.slice(0,8)}: ${changePct}% PnL, entry_score=${entScore}→now=${curScore} (${scoreDelta>=0?"+":""}${scoreDelta}), trend=${dyn?.trend||"stable"}, tier=T${p.tier||2}, age=${ageMin}min, size=${p.sizeSol?.toFixed(2)||"?"}SOL${status}`;
+      });
+      const winners = posArr.filter(p => p.includes("% PnL") && parseFloat(p.split("% PnL")[0].split(": ")[1]) > 0).length;
+      const losers = posArr.length - winners;
+      posContext = `\nOpen positions (${posArr.length} total, ${winners} winning, ${losers} losing):\n` + posArr.join("\n");
     }
   }
 
@@ -9259,15 +9309,16 @@ app.post("/api/brad/chat", express.json(), async (req, res) => {
 - Priority fee: 0.01 SOL. Jito tip: 0.001 SOL per trade.
 - Buy slippage: 30%. Sell slippage: 35%.
 
-## YOUR LIVE DATA RIGHT NOW
-Radar: ${allTokens.length} tokens, ${scored.length} scored, avg score ${avgScore}, ${rugCount} rugged, ${gradCount} graduated, smart money in ${smartMoneyTokens.length} tokens
-
-Top tokens (sorted by score):
-${topTokens || "Nothing scoring above 20"}
-${smartContext}
+## YOUR LIVE STATE RIGHT NOW
+${regimeContext}
+Radar: ${allTokens.length} tokens, ${scored.length} scoring, avg score ${avgScore}, ${rugCount} rugged, ${gradCount} graduated, smart money in ${smartMoneyTokens.length} tokens
 ${bradContext}
 ${engineContext}
 ${survContext}
+
+Top tokens (sorted by score — these are your best current opportunities):
+${topTokens || "Nothing scoring above 20. Market is quiet."}
+${smartContext}
 ${posContext}
 
 ## HOW TO ANSWER
@@ -9317,11 +9368,18 @@ ${posContext}
         const smSc = smartMoneyTracker?.getSmartMoneyScore?.(tok.ca) || {};
         const ageMin = tok.createdAt ? Math.round((Date.now() - tok.createdAt) / 60000) : 0;
 
+        const spark = tok.spark || [];
+        const sparkDir = spark.length > 3 ? (spark[spark.length-1] > spark[spark.length-3] ? "RISING" : spark[spark.length-1] < spark[spark.length-3]*0.9 ? "FALLING" : "FLAT") : "insufficient data";
+        const pressure = tok.buys > 0 ? Math.round(tok.buys / Math.max(1, tok.buys + (tok.sells||0)) * 100) : 0;
+        const recentTrades = (tok.trades || []).filter(tr => tr.time && Date.now() - tr.time < 120000);
+        const recentBuys = recentTrades.filter(tr => tr.side === "buy").length;
+        const recentSells = recentTrades.filter(tr => tr.side === "sell").length;
         const lines = [
-          (tok.name || tok.ticker || (tok.ca ? tok.ca.slice(0, 8) : "?")) + " (" + (tok.ca ? tok.ca.slice(0, 8) : "?") + "...)",
-          "Score: " + (tok._apeScore || 0) + ", MC: $" + Math.round(tok.mcapUsd || 0) + ", buys: " + (tok.buys || 0) + ", sells: " + (tok.sells || 0) + ", UB: " + (tok.uniqueBuyers?.size || 0),
-          "Age: " + ageMin + "min, trend: " + (dyn?.trend || "unknown") + ", vel: " + (dyn?.velocity?.toFixed(3) || "0") + ", accel: " + (dyn?.acceleration?.toFixed(4) || "0"),
-          "Bonding curve: " + (tok.vSolInBondingCurve ? Math.round(tok.vSolInBondingCurve / 85 * 100) : 0) + "%",
+          (tok.name || tok.ticker || (tok.ca ? tok.ca.slice(0, 8) : "?")) + " $" + (tok.ticker||"?") + " (" + (tok.ca ? tok.ca.slice(0, 8) : "?") + "...)",
+          "Score: " + (tok._apeScore || 0) + " | trend: " + (dyn?.trend || "unknown") + " | vel: " + (dyn?.velocity?.toFixed(3) || "0") + (dyn?.velocity > 0 ? " (accelerating)" : dyn?.velocity < 0 ? " (decelerating)" : ""),
+          "MC: $" + Math.round(tok.mcapUsd || 0) + " | chart: " + sparkDir + " | buy pressure: " + pressure + "%",
+          "Buys: " + (tok.buys || 0) + " | sells: " + (tok.sells || 0) + " | UB: " + (tok.uniqueBuyers?.size || 0) + " | last 2min: " + recentBuys + " buys, " + recentSells + " sells",
+          "Age: " + ageMin + "min | bonding curve: " + (tok.vSolInBondingCurve ? Math.round(tok.vSolInBondingCurve / 85 * 100) : 0) + "% | vol: " + (tok.volumeSol?.toFixed(1)||0) + " SOL",
         ];
 
         const rugFlags = tok._rugFlags || [];
