@@ -20,12 +20,12 @@ import bradClient from "./brad-client.mjs";
 
 const XAI_API_URL = process.env.XAI_API_URL || "https://api.x.ai/v1/chat/completions";
 const XAI_API_KEY = process.env.XAI_API_KEY || "";
-const GROK_MODEL = process.env.GROK_MODEL || "grok-4";
+const GROK_MODEL = process.env.GROK_MIND_MODEL || process.env.GROK_MODEL || "grok-3-mini-fast";
 
 // Cache to avoid hammering Grok on every poll
 let _cache = null;
 let _cacheTime = 0;
-const CACHE_TTL_MS = 5000; // 5s cache — UI polls every 6s
+const CACHE_TTL_MS = 10000; // 10s cache — mind doesn't need to refresh every poll
 
 // Recent thoughts log (rolling buffer)
 const _thoughtLog = [];

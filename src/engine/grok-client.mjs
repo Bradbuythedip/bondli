@@ -14,7 +14,7 @@
 
 const XAI_API_URL = process.env.XAI_API_URL || "https://api.x.ai/v1/chat/completions";
 const XAI_API_KEY = process.env.XAI_API_KEY || "";
-const GROK_MODEL = process.env.GROK_MODEL || "grok-4";
+const GROK_MODEL = process.env.GROK_SUPPORT_MODEL || process.env.GROK_MODEL || "grok-3-mini-fast";
 const MAX_TOKENS = parseInt(process.env.GROK_MAX_TOKENS || "1024");
 const TEMPERATURE = parseFloat(process.env.GROK_TEMPERATURE || "0.7");
 
