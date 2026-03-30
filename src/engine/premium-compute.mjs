@@ -237,6 +237,35 @@ function buildPortfolioRebalanceJob(positions = []) {
   });
 }
 
+function buildCustomModelJob(walletAddress, params = {}) {
+  return buildJobDefinition({
+    image: "docker.io/bondli/custom-model:latest",
+    cmd: ["--train", "--wallet", walletAddress, "--device", "cuda"],
+    gpu: true,
+    requiredVram: 12,
+    variables: {
+      WALLET_ADDRESS: walletAddress,
+      TRADE_HISTORY_DAYS: String(params.historyDays || 30),
+      MODEL_TYPE: "lora_scorer",
+      EPOCHS: "10",
+    },
+  });
+}
+
+function buildChartPatternProJob(params = {}) {
+  return buildJobDefinition({
+    image: "docker.io/bondli/chart-cnn:latest",
+    cmd: ["--scan", "--device", "cuda"],
+    gpu: true,
+    requiredVram: 8,
+    variables: {
+      TOKEN_MINTS: JSON.stringify((params.mints || []).slice(0, 50)),
+      PATTERN_TYPES: "accumulation,distribution,breakout,trap,divergence",
+      TIMEFRAME: params.timeframe || "5m",
+    },
+  });
+}
+
 // Map feature ID → job builder
 const JOB_BUILDERS = {
   deep_rug_scan: (params) => buildDeepRugScanJob(params.mint, params),
@@ -246,6 +275,8 @@ const JOB_BUILDERS = {
   launch_simulator: (params) => buildLaunchSimulatorJob(params),
   mev_shield: (params) => buildMevShieldJob(params.mint, params),
   portfolio_rebalance: (params) => buildPortfolioRebalanceJob(params.positions || []),
+  custom_model: (params) => buildCustomModelJob(params.wallet, params),
+  chart_pattern_pro: (params) => buildChartPatternProJob(params),
 };
 
 // ═══════════════════════════════════════
@@ -443,14 +474,17 @@ export class PremiumComputeEngine {
 
   _pollResult(jobId, userId, featureId) {
     let checks = 0;
+    let consecutiveErrors = 0;
     const interval = setInterval(async () => {
       checks++;
       if (checks > 60) { // 60 × 10s = 10 min max
         clearInterval(interval);
+        console.warn(`[PREMIUM] Polling timeout for ${jobId}`);
         return;
       }
       try {
         const record = await this.getResult(jobId);
+        consecutiveErrors = 0; // reset on success
         if (record?.status === "completed" || record?.status === "failed") {
           clearInterval(interval);
           this.broadcastWS({
@@ -458,7 +492,13 @@ export class PremiumComputeEngine {
             data: { jobId, feature: featureId, userId, status: record.status, result: record.result },
           });
         }
-      } catch {}
+      } catch (err) {
+        consecutiveErrors++;
+        if (consecutiveErrors >= 5) {
+          clearInterval(interval);
+          console.error(`[PREMIUM] Polling abandoned for ${jobId} after ${consecutiveErrors} errors: ${err.message}`);
+        }
+      }
     }, 10000);
   }
 
