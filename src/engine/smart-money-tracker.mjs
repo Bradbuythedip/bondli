@@ -47,7 +47,7 @@ export class SmartMoneyTracker {
     this.MAX_WATCH = 50;       // max wallets to actively poll
 
     // ── Signal dedup ──
-    // ca → { time, wallets: Set, signalCount }
+    // ca → { time, wallets: Set, signalCount, cachedScore }
     this.recentSignals = new Map();
     this.SIGNAL_DEDUP_MS = 300000; // 5 min dedup window
 
@@ -55,6 +55,8 @@ export class SmartMoneyTracker {
     this.pollInterval = null;
     this.POLL_INTERVAL_MS = 30000; // poll every 30s (was 15s — halves RPC cost)
     this.lastPollSignatures = new Map(); // wallet → last seen signature
+    this._analyzedTxs = new Set(); // cache of already-analyzed tx signatures
+    this._pollCycle = 0; // cycle counter for adaptive polling
 
     // ── Manual watch (user-added wallets) ──
     this.manualWatch = new Set();
@@ -246,11 +248,19 @@ export class SmartMoneyTracker {
   // ═══════════════════════════════════════
 
   _updateWatchlist() {
-    // Rank all wallets by score, pick top N with full addresses
+    // Rank by score blended with recency — active profitable wallets first
+    const now = Date.now();
     const ranked = [...this.wallets.values()]
       .filter(w => w.fullAddress && w.score >= 0.35 && (w.wins + w.losses) >= 3)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, this.MAX_WATCH);
+      .map(w => {
+        // Recency bonus: wallets seen in last hour get up to +0.15 boost
+        const hoursSince = Math.max(0, (now - (w.lastSeen || 0)) / 3600000);
+        const recencyBonus = hoursSince < 1 ? 0.15 : hoursSince < 6 ? 0.08 : hoursSince < 24 ? 0.03 : 0;
+        return { w, rankScore: w.score + recencyBonus };
+      })
+      .sort((a, b) => b.rankScore - a.rankScore)
+      .slice(0, this.MAX_WATCH)
+      .map(r => r.w);
 
     this.watchlist.clear();
     for (const w of ranked) {
@@ -321,33 +331,56 @@ export class SmartMoneyTracker {
   async _pollWatchlist() {
     if (this.watchlist.size === 0) return;
     this.stats.pollCount++;
+    this._pollCycle++;
 
-    // Poll in batches of 5 to avoid rate limits
-    const addresses = [...this.watchlist];
-    const batchSize = 5;
+    // Adaptive polling: S/A tier every cycle, B/C every other cycle
+    const addresses = [...this.watchlist].filter(addr => {
+      const w = this.wallets.get(addr);
+      if (!w) return true;
+      if (w.tier === "s" || w.tier === "a") return true;
+      return this._pollCycle % 2 === 0; // B/C every other cycle
+    });
+
+    // Batch size 10 (Alchemy handles 330+ RPS easily)
+    const batchSize = 10;
 
     for (let i = 0; i < addresses.length; i += batchSize) {
       const batch = addresses.slice(i, i + batchSize);
       const promises = batch.map(addr => this._pollWallet(addr).catch(() => null));
       await Promise.all(promises);
 
-      // Small delay between batches to respect rate limits
+      // 200ms delay between batches
       if (i + batchSize < addresses.length) {
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 200));
       }
+    }
+
+    // Prune tx cache every 20 cycles to prevent unbounded growth
+    if (this._pollCycle % 20 === 0 && this._analyzedTxs.size > 5000) {
+      this._analyzedTxs.clear();
     }
   }
 
   async _pollWallet(address) {
     try {
       const pubkey = new PublicKey(address);
-      const sigs = await this.connection.getSignaturesForAddress(pubkey, { limit: 3 }, "confirmed");
+      const w = this.wallets.get(address);
+      // S/A tier wallets get deeper sig history (5) to reduce missed buys
+      const sigLimit = (w?.tier === "s" || w?.tier === "a") ? 5 : 3;
+      const sigs = await this.connection.getSignaturesForAddress(pubkey, { limit: sigLimit }, "confirmed");
       if (!sigs || !sigs.length) return;
 
       const lastSig = this.lastPollSignatures.get(address);
 
       for (const sig of sigs) {
         if (sig.signature === lastSig) break;
+
+        // Skip already-analyzed transactions
+        if (this._analyzedTxs.has(sig.signature)) continue;
+        this._analyzedTxs.add(sig.signature);
+
+        // Skip failed transactions without fetching
+        if (sig.err) continue;
 
         // Fetch full parsed transaction to detect pump.fun buys
         const tx = await this.connection.getParsedTransaction(sig.signature, { maxSupportedTransactionVersion: 0 });
@@ -361,10 +394,10 @@ export class SmartMoneyTracker {
             walletPrefix: address.slice(0, 8),
             mint: isPumpBuy.mint,
             solAmount: isPumpBuy.solAmount,
-            walletTier: this.wallets.get(address)?.tier || "b",
-            walletScore: this.wallets.get(address)?.score || 0,
-            walletWinRate: this.wallets.get(address)?.winRate || 0,
-            walletWins: this.wallets.get(address)?.wins || 0,
+            walletTier: w?.tier || "b",
+            walletScore: w?.score || 0,
+            walletWinRate: w?.winRate || 0,
+            walletWins: w?.wins || 0,
             timestamp: (sig.blockTime || 0) * 1000,
           });
         }
@@ -405,7 +438,7 @@ export class SmartMoneyTracker {
         const postSol = (tx.meta?.postBalances?.[0] || 0) / 1e9;
         const solSpent = preSol - postSol;
 
-        if (solSpent > 0.005) {
+        if (solSpent > 0.001) {
           return { mint: post.mint, solAmount: solSpent };
         }
       }
@@ -420,26 +453,34 @@ export class SmartMoneyTracker {
 
   _emitSignal(signal) {
     const { mint } = signal;
+    const now = Date.now();
 
     // Dedup check
     let existing = this.recentSignals.get(mint);
-    if (existing && Date.now() - existing.time < this.SIGNAL_DEDUP_MS) {
+    if (existing && now - existing.time < this.SIGNAL_DEDUP_MS) {
       existing.wallets.add(signal.wallet);
       existing.signalCount++;
-      signal.convergence = existing.wallets.size; // multiple smart wallets = stronger
+      // Track temporal clustering — buys within 60s are "tight" convergence
+      existing.lastBuyTime = now;
+      if (!existing.firstBuyTime) existing.firstBuyTime = existing.time;
+      existing.tightConvergence = (now - existing.firstBuyTime) < 60000 && existing.wallets.size >= 2;
     } else {
-      existing = { time: Date.now(), wallets: new Set([signal.wallet]), signalCount: 1 };
+      existing = { time: now, firstBuyTime: now, lastBuyTime: now, wallets: new Set([signal.wallet]), signalCount: 1, tightConvergence: false, cachedScore: null };
       this.recentSignals.set(mint, existing);
     }
 
     signal.convergence = existing.wallets.size;
-    signal.isConvergence = existing.wallets.size >= 2; // 2+ smart wallets = convergence signal
+    signal.isConvergence = existing.wallets.size >= 2;
+    signal.tightConvergence = existing.tightConvergence; // multiple wallets within 60s
+
+    // Pre-compute and cache the smart money score for this token
+    existing.cachedScore = null; // invalidate on new signal
 
     this.stats.totalSignals++;
     this.stats.signalsToday++;
     this.stats.lastSignalTime = Date.now();
 
-    console.log(`[SMART-MONEY] Signal: ${signal.walletPrefix}... (tier:${signal.walletTier} wr:${(signal.walletWinRate * 100).toFixed(0)}%) → ${signal.mint.slice(0, 8)} | ${signal.solAmount.toFixed(3)} SOL${signal.isConvergence ? ` | CONVERGENCE (${signal.convergence} wallets)` : ""}`);
+    console.log(`[SMART-MONEY] Signal: ${signal.walletPrefix}... (tier:${signal.walletTier} wr:${(signal.walletWinRate * 100).toFixed(0)}%) → ${signal.mint.slice(0, 8)} | ${signal.solAmount.toFixed(3)} SOL${signal.isConvergence ? ` | CONVERGENCE (${signal.convergence} wallets)` : ""}${signal.tightConvergence ? " | TIGHT (<60s)" : ""}`);
 
     // Emit to callback (radar/scoring integration)
     if (this.onSignal) {
@@ -466,7 +507,10 @@ export class SmartMoneyTracker {
    */
   getSmartMoneyScore(ca) {
     const signal = this.recentSignals.get(ca);
-    if (!signal) return { score: 0, walletCount: 0, topTier: null, convergence: false };
+    if (!signal) return { score: 0, walletCount: 0, topTier: null, convergence: false, tightConvergence: false };
+
+    // Return cached score if available (invalidated on new signal)
+    if (signal.cachedScore) return signal.cachedScore;
 
     const walletCount = signal.wallets.size;
     let topTier = "c";
@@ -482,17 +526,24 @@ export class SmartMoneyTracker {
       }
     }
 
-    // Score: wallet count * tier multiplier
+    // Score: wallet count * tier multiplier + tight convergence bonus
     const tierMult = { s: 1.0, a: 0.7, b: 0.4, c: 0.15 }[topTier] || 0.15;
-    const rawScore = Math.min(1, walletCount * 0.25 * tierMult + bestScore * 0.5);
+    let rawScore = walletCount * 0.25 * tierMult + bestScore * 0.5;
+    // Tight convergence (multiple wallets within 60s) gets extra boost
+    if (signal.tightConvergence) rawScore += 0.15;
+    rawScore = Math.min(1, rawScore);
 
-    return {
+    const result = {
       score: +rawScore.toFixed(3),
       walletCount,
       topTier,
       convergence: walletCount >= 2,
+      tightConvergence: !!signal.tightConvergence,
       bestWalletScore: +bestScore.toFixed(3),
     };
+
+    signal.cachedScore = result;
+    return result;
   }
 
   // ═══════════════════════════════════════

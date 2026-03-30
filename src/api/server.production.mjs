@@ -1796,7 +1796,7 @@ function extractQuickFeatures(t) {
       }
       // Normalize: 1 proven = 0.25, 2 = 0.45, 3+ = 0.6+, convergence = 0.8+
       if (provenCount === 0) return 0;
-      return Math.min(1, provenCount * 0.2 + totalScore * 0.15 + (smScore?.convergence ? 0.3 : 0));
+      return Math.min(1, provenCount * 0.2 + totalScore * 0.15 + (smScore?.tightConvergence ? 0.45 : smScore?.convergence ? 0.3 : 0));
     })(),
 
     // ═══ KOL CASCADE TIMING — multiple KOLs mentioning within tight window ═══
