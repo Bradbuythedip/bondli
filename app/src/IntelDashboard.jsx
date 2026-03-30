@@ -446,6 +446,36 @@ export default function IntelDashboard({ apiBase }) {
             </button>
           </div>
 
+          {/* Polling config */}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 8, padding: "6px 12px", flex: 1, minWidth: 200 }}>
+              <span style={{ fontSize: 11, color: COLORS.ft, fontWeight: 700, whiteSpace: "nowrap" }}>Poll interval</span>
+              <input type="range" min={5} max={120} step={5} value={Math.round((smartMoney?.pollIntervalMs || 30000) / 1000)}
+                onChange={async (e) => {
+                  const s = Number(e.target.value);
+                  try {
+                    const r = await fetch(API + "/api/intel/smart-money/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pollInterval: s }) });
+                    if (r.ok) { const d = await r.json(); setSmartMoney(prev => prev ? { ...prev, pollIntervalMs: d.pollIntervalMs } : prev); }
+                  } catch {}
+                }}
+                style={{ flex: 1, cursor: "pointer" }} />
+              <span style={{ fontSize: 12, fontWeight: 800, color: COLORS.gn, minWidth: 30, textAlign: "right" }}>{Math.round((smartMoney?.pollIntervalMs || 30000) / 1000)}s</span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 8, padding: "6px 12px", minWidth: 160 }}>
+              <span style={{ fontSize: 11, color: COLORS.ft, fontWeight: 700, whiteSpace: "nowrap" }}>Max wallets</span>
+              <input type="range" min={10} max={200} step={10} value={smartMoney?.maxWatch || 50}
+                onChange={async (e) => {
+                  const n = Number(e.target.value);
+                  try {
+                    const r = await fetch(API + "/api/intel/smart-money/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ maxWatch: n }) });
+                    if (r.ok) { const d = await r.json(); setSmartMoney(prev => prev ? { ...prev, maxWatch: d.maxWatch } : prev); }
+                  } catch {}
+                }}
+                style={{ flex: 1, cursor: "pointer" }} />
+              <span style={{ fontSize: 12, fontWeight: 800, color: COLORS.cy, minWidth: 30, textAlign: "right" }}>{smartMoney?.maxWatch || 50}</span>
+            </div>
+          </div>
+
           <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 12 }}>
           {/* Leaderboard */}
           <div style={{ background: COLORS.sf, border: "1px solid " + COLORS.bd, borderRadius: 10, overflow: "hidden" }}>
