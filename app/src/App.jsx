@@ -637,9 +637,19 @@ const tierLabel=isOwner?"OWNER":user?.whitelisted?"VIP":user?.tier==="vip"?"VIP"
 const isApe=!!eCA;const pv=dbp(sol,isApe);const nw=wc(sol);
 const canLaunch=(trW||isApe)&&(eCA||tkr)&&sol>=0.2&&trB>=sol;
 const applyPreset=p=>{sSol(p.sol);sSn(p.snc);sSl(p.slip);sDur(p.dur);sJt(p.jt)};
-// Resolve connected wallet — if it's a trading key, use parent wallet & auto-set trading key
-const resolveWallet=async(pk)=>{try{const id=await a.itk(pk);if(id.isTradeKey&&id.parentWallet){sU({pubkey:id.parentWallet,tier:id.tier||"free",demo:false,whitelisted:!!id.whitelisted,paid:!!id.paid});sTrW(id.tradingWallet||pk);a.sw(id.parentWallet);toast("Trading key detected — logged in","success");return}}catch{}sU({pubkey:pk,tier:"free",demo:false});a.chk(pk).then(d=>{if(d.tier)sU(u=>({...u,whitelisted:!!d.whitelisted,paid:!!d.paid,tier:d.tier}))}).catch(()=>{})};
-const connect=async()=>{didDisconnectRef.current=false;try{const p=window?.phantom?.solana?.isPhantom?window.phantom.solana:window?.solana?.isPhantom?window.solana:null;if(!p){if(/iPhone|iPad|Android/i.test(navigator.userAgent)){window.location.href="https://phantom.app/ul/browse/"+encodeURIComponent(window.location.href);return}toast("Install Phantom","error");return}const r=await p.connect();const pk=r.publicKey.toString();await resolveWallet(pk)}catch(e){toast(e.code===4001?"Rejected":"Failed","error")}};
+// Resolve connected wallet — set user IMMEDIATELY, resolve trading key + access in background
+let _resolveId=0;
+const resolveWallet=async(pk)=>{
+const rid=++_resolveId; // guard against rapid reconnect race
+// Set user state instantly so app renders without waiting for API
+sU({pubkey:pk,tier:"free",demo:false});a.sw(pk);
+// Background: check if trading key + access tier in parallel
+Promise.all([a.itk(pk).catch(()=>null),a.chk(pk).catch(()=>null)]).then(([id,acc])=>{
+if(rid!==_resolveId)return; // stale — user reconnected with different wallet
+if(id?.isTradeKey&&id.parentWallet){sU({pubkey:id.parentWallet,tier:acc?.tier||id.tier||"free",demo:false,whitelisted:!!(acc?.whitelisted||id.whitelisted),paid:!!(acc?.paid||id.paid)});sTrW(id.tradingWallet||pk);a.sw(id.parentWallet);toast("Trading key detected","success")}
+else if(acc?.tier){sU(u=>({...u,whitelisted:!!acc.whitelisted,paid:!!acc.paid,tier:acc.tier}))}
+})};
+const connect=async()=>{didDisconnectRef.current=false;try{const p=window?.phantom?.solana?.isPhantom?window.phantom.solana:window?.solana?.isPhantom?window.solana:null;if(!p){if(/iPhone|iPad|Android/i.test(navigator.userAgent)){window.location.href="https://phantom.app/ul/browse/"+encodeURIComponent(window.location.href);return}toast("Install Phantom","error");return}const r=await p.connect();const pk=r.publicKey.toString();resolveWallet(pk)}catch(e){toast(e.code===4001?"Rejected":"Failed","error")}};
 
 useEffect(()=>{if(user?.pubkey)a.sw(user.pubkey)},[user?.pubkey]);
 useEffect(()=>{if(user?.pubkey&&!user?.demo)a.afr(user.pubkey).catch(()=>{})},[user?.pubkey]);
@@ -650,14 +660,14 @@ useEffect(()=>{if(!user?.pubkey||user.demo)return;a.ls(user.pubkey).then(d=>{if(
 const refreshWallet=useCallback(()=>{if(!user?.pubkey||user.demo)return;a.gtw(user.pubkey).then(d=>{if(d.tradingWallet){sTrW(d.tradingWallet);sTrB(d.balance||0);sTrSol(d.solBalance||0);sTrTok(d.tokenValueSol||0)}}).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;refreshWallet();const iv=setInterval(refreshWallet,15000);a.etw(user.pubkey).then(d=>{if(d.ok&&d.privateKey)sTrK(d)}).catch(()=>{});return()=>clearInterval(iv)},[user?.pubkey,refreshWallet]);
 const refreshAutoExit=useCallback(()=>{if(!user?.pubkey||user.demo)return;a.aes(user.pubkey).then(d=>sAutoExitSt(d)).catch(()=>{})},[user?.pubkey]);
-useEffect(()=>{if(!user?.pubkey||user.demo)return;refreshAutoExit();const iv=setInterval(refreshAutoExit,8000);return()=>clearInterval(iv)},[user?.pubkey,refreshAutoExit]);
+useEffect(()=>{if(!user?.pubkey||user.demo)return;refreshAutoExit();const iv=setInterval(refreshAutoExit,15000);return()=>clearInterval(iv)},[user?.pubkey,refreshAutoExit]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.gu(user.pubkey).then(d=>{if(d.username)sCU(d.username)}).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{const iv=setInterval(()=>{a.gr().then(d=>{if(d.online!=null){const real=d.online;const inflated=Math.max(real,Math.round(real*1.3+Math.floor(Math.random()*5)+3));sOl(inflated)}}).catch(()=>{})},15000);return()=>clearInterval(iv)},[]);
 useEffect(()=>{if(!launched||!lCA)return;const poll=()=>{a.gfs().then(d=>{const sess=d.sessions?.[lCA];if(sess){sFl({...sess,wallets:sess.walletDetails||[],trades:sess.recentTrades||[],ca:lCA})}else{sFl(d)}}).catch(()=>{})};poll();const iv=setInterval(poll,5000);return()=>clearInterval(iv)},[launched,lCA]);
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>{if(!r.ok)throw new Error(r.status);return r.json()}).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,2000);return()=>clearInterval(iv)},[tab]);
 // GPU Earn tab polling
-useEffect(()=>{if(tab!=="gpu"||demoProfits)return;const poll=()=>{if(user?.pubkey&&!user.demo){fetch(API+"/api/gpu/dashboard?wallet="+user.pubkey).then(r=>r.json()).then(d=>sGpuDash(d)).catch(()=>{})}fetch(API+"/api/gpu/fleet").then(r=>r.json()).then(d=>sGpuFleet(d)).catch(()=>{})};poll();const iv=setInterval(poll,5000);return()=>clearInterval(iv)},[tab,user?.pubkey,demoProfits]);
+useEffect(()=>{if(tab!=="gpu"||demoProfits)return;const poll=()=>{if(user?.pubkey&&!user.demo){fetch(API+"/api/gpu/dashboard?wallet="+user.pubkey).then(r=>r.ok?r.json():null).then(d=>{if(d)sGpuDash(d)}).catch(()=>{})}fetch(API+"/api/gpu/fleet").then(r=>r.ok?r.json():null).then(d=>{if(d)sGpuFleet(d)}).catch(()=>{})};poll();const iv=setInterval(poll,5000);return()=>clearInterval(iv)},[tab,user?.pubkey,demoProfits]);
 // Engine state polling (for visualization)
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{a.ges().then(d=>sEngineState(d)).catch(()=>{})};poll();const iv=setInterval(poll,2000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?2000:8000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
@@ -678,7 +688,7 @@ useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const r=awa
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.vrd(user.pubkey).then(d=>sVipDash(d)).catch(()=>{});poll();const iv=setInterval(poll,15000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
 useEffect(()=>{if(!user?.pubkey||user.demo||!trW)return;const f=()=>a.gp(user.pubkey).then(d=>{if(d.positions){preloadTokenImages(d.positions.map(p=>({image:p.image})));const onChainMints=new Set(d.positions.map(p=>p.mint));const serverPositions=d.positions.map(p=>{if(p.pending&&p.time&&(Date.now()-p.time)>120000)return{...p,pending:false,pendingExpired:true};return p});sPos(prev=>{const now=Date.now();const recentPending=prev.filter(p=>{if(!p.pendingSince)return false;const age=now-p.pendingSince;// Already expired — keep the expired state, don't re-add as pending
 if(p.pendingExpired&&!p.pending)return!onChainMints.has(p.mint)&&age<60000;// Still pending — keep if not on-chain yet and under 20s (reduced from 30s)
-return p.pending&&!onChainMints.has(p.mint)&&age<20000});return[...serverPositions,...recentPending]});sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,8000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
+return p.pending&&!onChainMints.has(p.mint)&&age<20000});return[...serverPositions,...recentPending]});sHeld(new Set(d.positions.map(p=>p.mint)))}}).catch(()=>{});f();const iv=setInterval(f,12000);return()=>clearInterval(iv)},[user?.pubkey,trW]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.grf(user.pubkey).then(d=>sRefData(d)).catch(()=>{})},[user?.pubkey]);
 // Auto-apply referral from ?ref= URL parameter
 useEffect(()=>{if(!user?.pubkey||user.demo)return;try{const p=new URLSearchParams(window.location.search);const rc=p.get("ref");if(rc){a.arf(user.pubkey,rc.trim()).then(()=>{a.grf(user.pubkey).then(d=>sRefData(d)).catch(()=>{})}).catch(()=>{});try{const u=new URL(window.location);u.searchParams.delete("ref");window.history.replaceState({},"",u.toString())}catch{}}}catch{}},[user?.pubkey]);
@@ -1163,7 +1173,7 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 <div style={{background:T.sf,border:"1px solid "+T.bd,borderRadius:10,padding:mb?10:14}}>
 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
 <div style={{display:"flex",alignItems:"center",gap:6}}><IC.nos s={16}/><span style={{fontSize:15,fontWeight:700,fontFamily:"'Space Grotesk',sans-serif"}}>Bondli × <span style={{letterSpacing:"1.5px"}}>NOSANA</span> Fleet</span></div>
-<button onClick={()=>{fetch(API+"/api/gpu/fleet").then(r=>r.json()).then(d=>sGpuFleet(d)).catch(()=>{})}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:5,padding:"4px 9px",cursor:"pointer",fontSize:14,color:T.dm}}>↻</button>
+<button onClick={()=>{fetch(API+"/api/gpu/fleet").then(r=>r.ok?r.json():null).then(d=>{if(d)sGpuFleet(d)}).catch(()=>{})}} style={{background:"none",border:"1px solid "+T.bd,borderRadius:5,padding:"4px 9px",cursor:"pointer",fontSize:14,color:T.dm}}>↻</button>
 </div>
 <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:6,marginBottom:10}}>
 {[
