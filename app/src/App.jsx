@@ -602,7 +602,7 @@ const[refData,sRefData]=useState(null);const[refInput,sRefInput]=useState("");co
 const[vipDash,sVipDash]=useState(null);const[vipCustomCode,sVipCustomCode]=useState("");const[vipClaiming,sVipClaiming]=useState(false);const[demoProfits,sDemoProfits]=useState(null);const[demoLoading,sDemoLoading]=useState(false);
 const[expert,sExpert]=useState(false);const[launchStep,sLS]=useState(null);const[showHow,sShowHow]=useState(false);const[showModel,sShowModel]=useState(false);const[launchTarget,sLTarget]=useState("pump"); // "pump" | "bags"
 // launchStep: null | "creating" | "uploading" | "funding" | "dev_buy" | "snipers" | "live"
-const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);const[bradMind,sBradMind]=useState(null);const[bradMindOpen,sBradMindOpen]=useState(true);const[brainOpen,sBrainOpen]=useState(false);const[bradChat,sBradChat]=useState([]);const[bradChatIn,sBradChatIn]=useState("");const[bradChatLoading,sBradChatLoading]=useState(false);const bradChatInitRef=useRef(false);const[bradSettings,sBradSettings]=useState(null);const[bradSettingsOpen,sBradSettingsOpen]=useState(false);
+const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[chartPatterns,sChartPatterns]=useState(null);const[gradsOpen,sGradsOpen]=useState(false);const[dexMovers,sDexMovers]=useState(null);const[engineState,sEngineState]=useState(null);const[intelTokens,sIntelTokens]=useState(null);const[intelTSort,sITSort]=useState("score");const[intelTSrc,sITSrc]=useState("all");const[intelTOpen,sITOpen]=useState(true);const[bradMind,sBradMind]=useState(null);const[bradMindOpen,sBradMindOpen]=useState(true);const[brainOpen,sBrainOpen]=useState(false);const[bradChat,sBradChat]=useState([]);const[bradChatIn,sBradChatIn]=useState("");const[bradChatLoading,sBradChatLoading]=useState(false);const bradChatInitRef=useRef(false);const[bradSettings,sBradSettings]=useState(null);const[bradSettingsOpen,sBradSettingsOpen]=useState(false);const[smConfig,sSmConfig]=useState(null);const[smPollVal,sSmPollVal]=useState(30);const[smMaxVal,sSmMaxVal]=useState(50);
 // GPU Earn tab state
 const[gpuDash,sGpuDash]=useState(null);const[gpuFleet,sGpuFleet]=useState(null);const[gpuLoading,sGpuLoading]=useState(false);const[gpuRegWallet,sGpuRegWallet]=useState("");
 const[gpuCmdLoading,sGpuCmdLoading]=useState(false);const[gpuLogs,sGpuLogs]=useState(null);const[gpuShowLogs,sGpuShowLogs]=useState(false);const[gpuShowDetails,sGpuShowDetails]=useState(false);
@@ -661,6 +661,7 @@ useEffect(()=>{if(tab!=="intel")return;const poll=()=>fetch(API+"/api/intel/toke
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>a.brmd(user?.pubkey).then(d=>{if(d)sBradMind(d)}).catch(()=>{});poll();const iv=setInterval(poll,6000);return()=>clearInterval(iv)},[tab,user?.pubkey]);
 // BRAD config fetch
 useEffect(()=>{if(tab!=="intel")return;a.brcfg().then(d=>{if(d&&!d.error)sBradSettings(d)}).catch(()=>{});const iv=setInterval(()=>a.brcfg().then(d=>{if(d&&!d.error)sBradSettings(d)}).catch(()=>{}),30000);return()=>clearInterval(iv)},[tab]);
+useEffect(()=>{if(tab!=="intel")return;const poll=()=>fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})}).then(r=>r.ok?r.json():null).then(d=>{if(d){sSmConfig(d);if(d.pollIntervalMs)sSmPollVal(Math.round(d.pollIntervalMs/1000));if(d.maxWatch)sSmMaxVal(d.maxWatch)}}).catch(()=>{});poll();return undefined},[tab]);
 // BRAD initiates conversation when mind data first loads
 useEffect(()=>{if(!bradMind||bradChatInitRef.current||bradChat.length>0)return;bradChatInitRef.current=true;sBradChatLoading(true);sBradChat([{role:"assistant",content:"",streaming:true}]);const initMsg=[{role:"user",content:"[SYSTEM: BRAD is initiating. Introduce yourself in 1-2 sentences. Comment on what you see on radar right now. If there's a hot token, call it out. If market is dead, roast it. Be yourself — high IQ degen. End with a question to engage the user like 'see anything I'm missing?' or 'want me to dig into any of these?']"}];a.brchStream(initMsg,user?.pubkey,(partial)=>{sBradChat([{role:"assistant",content:partial,streaming:true}])}).then(final=>{sBradChat([{role:"assistant",content:final}])}).catch(()=>{sBradChat([{role:"assistant",content:"yo. I'm BRAD — Bidirectional Recursive Autonomous Degen. scanning "+((bradMind?.metrics?.totalTokens)||"the")+" tokens on radar. ask me about anything."}])}).finally(()=>sBradChatLoading(false))},[bradMind,user?.pubkey]);
 useEffect(()=>{if(!hasAccess||!rEnabled)return;const f=async()=>{try{const d=await a.gr();if(d.tabs){const tabs={...d.tabs};delete tabs.graduating;if(!tabs.bags)tabs.bags=[];const allTokens=[...(tabs.new||[]),...(tabs.momentum||[]),...(tabs.bags||[])];preloadTokenImages(allTokens);sRT(prev=>{const merged={};for(const key of Object.keys(tabs)){if(key==="resurgence")continue;merged[key]=stableMerge(key,tabs[key]||[],prev[key]||[])}merged.resurgence=prev.resurgence||[];return merged})}if(d.poolSize!=null)sRP(d.poolSize);if(d.gradMc)sGradMc(d.gradMc);sRL(false)}catch{sRL(false)}};f();const iv=setInterval(f,2000);return()=>clearInterval(iv)},[hasAccess,rEnabled]);
@@ -1413,6 +1414,34 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 {[{l:"TOKENS",v:intelData?.memory?.total||"—",c:T.pu},{l:"ACCURACY",v:intelData?.scorer?.accuracy||"—",c:T.gn},{l:"GRAD RATE",v:(intelData?.memory?.graduationRate&&intelData.memory.graduationRate!=="N/A")?intelData.memory.graduationRate:(intelData?.memory?.graduated>0&&intelData?.memory?.total>0?(intelData.memory.graduated/intelData.memory.total*100).toFixed(1)+"%":"0%"),c:T.yl},{l:"TRACKING",v:intelData?.monitor?.tracking||"—",c:T.or},{l:"RUG RISK",v:(intelData?.recentEvents||[]).filter(e=>(e.data?.rugScore||0)>50||(e.data?.rugFlags||[]).length>=2).length,c:"#ff1744"}].map(s=><div key={s.l} style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 4px",textAlign:"center"}}><div style={{fontSize:18,fontWeight:900,color:s.c}}>{s.v}</div><div style={{fontSize:9,color:T.ft,fontWeight:700,marginTop:1}}>{s.l}</div></div>)}
 </div>
 <div style={{fontSize:11,color:T.ft,textAlign:"center"}}>{intelData?`${intelData.scorer?.trainCount||0} tokens scored · SOL $${intelData.solPrice?.toFixed(0)||"?"} · uptime ${intelData.uptime||"—"}`:"Connecting to intel engine..."}</div>
+
+{/* ═══ SMART MONEY CONTROLS ═══ */}
+<div style={{margin:"8px 0 6px",background:T.bg,border:"1px solid #14F19522",borderRadius:8,padding:"8px 12px"}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}>
+<span style={{width:6,height:6,borderRadius:"50%",background:smConfig?.enabled?"#14F195":"#555",boxShadow:smConfig?.enabled?"0 0 8px #14F19566":"none"}}/>
+<span style={{fontSize:11,fontWeight:800,color:"#14F195"}}>Smart Money Tracker</span>
+<span style={{fontSize:9,color:T.ft}}>{smConfig?.watching||0} wallets</span>
+</div>
+<button onClick={()=>{fetch(API+"/api/intel/smart-money/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({wallet:user?.pubkey})}).then(r=>r.json()).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} style={{fontSize:9,fontWeight:700,padding:"3px 10px",borderRadius:4,border:"1px solid "+(smConfig?.enabled?"#ef444466":"#14F19566"),background:smConfig?.enabled?"#ef444418":"#14F19518",color:smConfig?.enabled?"#ef4444":"#14F195",cursor:"pointer"}}>{smConfig?.enabled?"Disable":"Enable"}</button>
+</div>
+<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+<div>
+<div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+<span style={{fontSize:9,color:T.ft}}>Poll Interval</span>
+<span style={{fontSize:9,fontWeight:700,color:"#14F195"}}>{smPollVal}s</span>
+</div>
+<input type="range" min="5" max="300" step="5" value={smPollVal} onChange={e=>sSmPollVal(Number(e.target.value))} onMouseUp={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pollInterval:smPollVal})}).then(r=>r.json()).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} onTouchEnd={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pollInterval:smPollVal})}).then(r=>r.json()).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} style={{width:"100%",accentColor:"#14F195",height:4,cursor:"pointer"}}/>
+</div>
+<div>
+<div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+<span style={{fontSize:9,color:T.ft}}>Max Wallets</span>
+<span style={{fontSize:9,fontWeight:700,color:"#14F195"}}>{smMaxVal}</span>
+</div>
+<input type="range" min="5" max="200" step="5" value={smMaxVal} onChange={e=>sSmMaxVal(Number(e.target.value))} onMouseUp={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({maxWatch:smMaxVal})}).then(r=>r.json()).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} onTouchEnd={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({maxWatch:smMaxVal})}).then(r=>r.json()).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} style={{width:"100%",accentColor:"#14F195",height:4,cursor:"pointer"}}/>
+</div>
+</div>
+</div>
 
 {/* ═══ TOP SIGNALS + LIVE RADAR PULSE (above Oracle) ═══ */}
 <div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gridTemplateRows:"1fr",gap:4,marginBottom:6}}>
