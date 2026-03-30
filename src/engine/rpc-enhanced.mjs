@@ -60,7 +60,7 @@ export async function getOptimalPriorityFee(accountKeys = []) {
       if (data.result && data.result.length > 0) {
         const fees = data.result.map(f => f.prioritizationFee).sort((a, b) => a - b);
         const p75 = fees[Math.floor(fees.length * 0.75)] || fees[fees.length - 1];
-        _cachedPriorityFee = Math.max(50_000, Math.min(500_000, Math.ceil(p75)));
+        _cachedPriorityFee = Math.max(5_000, Math.min(100_000, Math.ceil(p75)));
         _priorityFeeTs = Date.now();
         return _cachedPriorityFee;
       }
