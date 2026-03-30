@@ -2328,7 +2328,7 @@ setInterval(() => {
   // Only tokens with RECENT activity — not historical buy counts from dead tokens
   radar.tabs.momentum = rugFiltered
     .filter(t => {
-      if (t.buys < 3 || t.mcapUsd < 1500) return false;
+      if (t.buys < 3 || t.mcapUsd < 3000) return false;
       if ((now - t.createdAt) < 10000) return false;
       // RECENCY: must have had a trade in the last 5 minutes
       const trades = t.trades || [];
@@ -2339,7 +2339,7 @@ setInterval(() => {
       if (ub < 2) return false;
       // SELL RATIO: if sells > 2x buys, it's dumping not momentum
       if ((t.sells || 0) > t.buys * 2) return false;
-      // MC FLOOR: if MC dropped below $1K it's dead
+      // MC FLOOR: if MC dropped below $3K it's likely rugged
       const spark = t.spark || [];
       if (spark.length > 3) {
         const peak = Math.max(...spark);
@@ -2427,7 +2427,7 @@ setInterval(() => {
     })
     .filter(Boolean)
     .sort((a, b) => b._momentum - a._momentum)
-    .slice(0, 50).map(t => {
+    .slice(0, 25).map(t => {
       const s = serialize(t);
       s.pctToGrad = t.graduated ? 100 : Math.min(99, Math.round((t.mcapUsd / gradMcUsd()) * 100));
       return s;
