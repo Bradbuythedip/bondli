@@ -10,9 +10,9 @@ export default defineConfig({
     minify: "esbuild",
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ["react", "react-dom"],
-          solana: ["@solana/web3.js"],
+        manualChunks(id) {
+          if (id.includes("node_modules/react-dom") || id.includes("node_modules/react/")) return "vendor";
+          if (id.includes("node_modules/@solana") || id.includes("node_modules/bs58")) return "solana";
         },
       },
     },
