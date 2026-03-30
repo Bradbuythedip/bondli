@@ -8896,9 +8896,14 @@ app.get("/api/intel/smart-money/score/:ca", (req, res) => {
   res.json({ ca: req.params.ca, ...result });
 });
 
-app.post("/api/intel/smart-money/watch", express.json(), (req, res) => {
-  const { address, action } = req.body || {};
+app.post("/api/intel/smart-money/watch", express.json(), async (req, res) => {
+  const { address, action, wallet } = req.body || {};
   if (!address) return res.status(400).json({ error: "address required" });
+  // VIP/owner gating — only privileged users can add/remove watched wallets
+  if (!wallet) return res.status(400).json({ error: "wallet required" });
+  const userInfo = users.get(wallet) || (redis ? await redis.hGetAll(`user:${wallet}`).catch(() => null) : null);
+  const isVip = isOwnerWallet(wallet) || userInfo?.tier === "vip" || userInfo?.whitelisted === "true" || userInfo?.whitelisted === true;
+  if (!isVip) return res.status(403).json({ error: "VIP or owner access required" });
   if (action === "remove") {
     smartMoneyTracker.removeManualWatch(address);
     return res.json({ ok: true, action: "removed", watching: smartMoneyTracker.watchlist.size });

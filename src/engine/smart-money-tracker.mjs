@@ -39,7 +39,9 @@ export class SmartMoneyTracker {
     // ── Wallet leaderboard ──
     // fullAddress → { prefix, wins, losses, totalReturn, score, avgReturn,
     //                 winRate, consistency, lastSeen, recentTokens: [{ca, time, graduated}],
-    //                 tracked: bool, tier: "s"|"a"|"b"|"c" }
+    //                 tracked: bool, tier: "s"|"a"|"b"|"c",
+    //                 solBalance: number|null, balanceUpdated: number,
+    //                 category: "whale"|"sniper"|"accumulator"|"mixed"|null }
     this.wallets = new Map();
 
     // ── Active watch list (top wallets we poll) ──
@@ -158,6 +160,9 @@ export class SmartMoneyTracker {
           recentTokens: [],
           tracked: false,
           tier: "c",
+          solBalance: null,
+          balanceUpdated: 0,
+          category: null,
         };
         this.wallets.set(key, wallet);
       }
@@ -217,6 +222,7 @@ export class SmartMoneyTracker {
         consistency: 0, lastSeen: Date.now(),
         recentTokens: [],
         tracked: false, tier: "c",
+        solBalance: null, balanceUpdated: 0, category: null,
       };
       this.wallets.set(fullAddress, wallet);
     }
@@ -291,8 +297,11 @@ export class SmartMoneyTracker {
         consistency: 0, lastSeen: Date.now(),
         recentTokens: [],
         tracked: true, tier: "a", // assume A-tier for manual adds
+        solBalance: null, balanceUpdated: 0, category: null,
       });
     }
+    // Fetch balance immediately for newly added wallet
+    this._fetchBalance(address).catch(() => {});
     return true;
   }
 
@@ -358,6 +367,12 @@ export class SmartMoneyTracker {
     // Prune tx cache every 20 cycles to prevent unbounded growth
     if (this._pollCycle % 20 === 0 && this._analyzedTxs.size > 5000) {
       this._analyzedTxs.clear();
+    }
+
+    // Refresh balances every 3rd cycle (~90s at default 30s interval)
+    if (this._pollCycle % 3 === 0) {
+      this._refreshBalances().catch(() => {});
+      this._categorizeWallets();
     }
   }
 
@@ -547,6 +562,75 @@ export class SmartMoneyTracker {
   }
 
   // ═══════════════════════════════════════
+  // BALANCE + CATEGORIZATION
+  // ═══════════════════════════════════════
+
+  /**
+   * Fetch SOL balance for a single wallet. Cached for 5 min.
+   */
+  async _fetchBalance(address) {
+    if (!address || address.length < 20) return;
+    const wallet = this.wallets.get(address);
+    if (!wallet) return;
+    // Skip if fetched within last 5 min
+    if (wallet.balanceUpdated && (Date.now() - wallet.balanceUpdated) < 300000) return;
+    try {
+      const pk = new PublicKey(address);
+      const lamports = await this.connection.getBalance(pk);
+      wallet.solBalance = +(lamports / 1e9).toFixed(4);
+      wallet.balanceUpdated = Date.now();
+    } catch (e) {
+      // Silently fail — balance is optional enrichment
+    }
+  }
+
+  /**
+   * Batch-fetch balances for watched wallets. Called after each poll cycle.
+   * Only refreshes stale balances (>5 min old). Max 10 per cycle to limit RPC.
+   */
+  async _refreshBalances() {
+    const stale = [...this.watchlist]
+      .map(addr => this.wallets.get(addr))
+      .filter(w => w?.fullAddress && (!w.balanceUpdated || (Date.now() - w.balanceUpdated) > 300000))
+      .slice(0, 10); // max 10 per cycle
+
+    await Promise.allSettled(stale.map(w => this._fetchBalance(w.fullAddress)));
+  }
+
+  /**
+   * Categorize wallet based on trading patterns.
+   * Called after balance refresh to enrich wallet profiles.
+   */
+  _categorizeWallets() {
+    for (const [, w] of this.wallets) {
+      if ((w.wins + w.losses) < 2) continue;
+      const totalTrades = w.wins + w.losses;
+      const tokens = w.recentTokens || [];
+
+      // Whale: high SOL balance (>10 SOL) or large avg position
+      const avgSol = tokens.length > 0
+        ? tokens.reduce((s, t) => s + (t.solAmount || 0), 0) / tokens.length
+        : 0;
+      const isWhale = (w.solBalance != null && w.solBalance >= 10) || avgSol >= 2;
+
+      // Sniper: high frequency, fast trades (many tokens in short time)
+      const recentTimes = tokens.slice(-10).map(t => t.time).filter(Boolean);
+      const avgGap = recentTimes.length >= 2
+        ? (recentTimes[recentTimes.length - 1] - recentTimes[0]) / (recentTimes.length - 1)
+        : Infinity;
+      const isSniper = totalTrades >= 5 && avgGap < 600000; // <10 min avg gap
+
+      // Accumulator: steady, consistent, moderate size
+      const isAccumulator = totalTrades >= 8 && w.winRate >= 0.5 && !isWhale && !isSniper;
+
+      if (isWhale) w.category = "whale";
+      else if (isSniper) w.category = "sniper";
+      else if (isAccumulator) w.category = "accumulator";
+      else w.category = "mixed";
+    }
+  }
+
+  // ═══════════════════════════════════════
   // LEADERBOARD — Ranked wallet list
   // ═══════════════════════════════════════
 
@@ -567,6 +651,9 @@ export class SmartMoneyTracker {
         totalReturn: +w.totalReturn.toFixed(2),
         tracked: w.tracked,
         lastSeen: w.lastSeen,
+        solBalance: w.solBalance,
+        category: w.category,
+        manual: this.manualWatch.has(w.fullAddress),
         recentTokens: w.recentTokens.slice(-5).map(t => ({
           ca: t.ca,
           time: t.time,
@@ -622,6 +709,8 @@ export class SmartMoneyTracker {
           t: w.lastSeen,
           tier: w.tier,
           rt: w.recentTokens.slice(-10), // last 10 tokens
+          bal: w.solBalance,
+          cat: w.category,
         };
       }
       await this.redis.set("smart:money:wallets", JSON.stringify(walletData), { EX: 604800 }); // 7 days
@@ -659,6 +748,9 @@ export class SmartMoneyTracker {
             recentTokens: d.rt || [],
             tracked: false,
             tier: d.tier || "c",
+            solBalance: d.bal ?? null,
+            balanceUpdated: d.bal != null ? d.t : 0,
+            category: d.cat || null,
           });
         }
         console.log(`[SMART-MONEY] Loaded ${this.wallets.size} wallets from Redis`);
