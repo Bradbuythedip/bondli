@@ -613,6 +613,7 @@ const[intelData,sIntel]=useState(null);const[wsLog,sWsLog]=useState([]);const[ch
 // GPU Earn tab state
 const[gpuDash,sGpuDash]=useState(null);const[gpuFleet,sGpuFleet]=useState(null);const[gpuLoading,sGpuLoading]=useState(false);const[gpuRegWallet,sGpuRegWallet]=useState("");
 const[gpuCmdLoading,sGpuCmdLoading]=useState(false);const[gpuLogs,sGpuLogs]=useState(null);const[gpuShowLogs,sGpuShowLogs]=useState(false);const[gpuShowDetails,sGpuShowDetails]=useState(false);
+const[computeMarkets,sComputeMarkets]=useState([]);const[computeJobs,sComputeJobs]=useState([]);const[computeOpen,sComputeOpen]=useState(false);const[computeImage,sComputeImage]=useState("");const[computeMarket,sComputeMarket]=useState("RTX 4090");const[computeCmd,sComputeCmd]=useState("");const[computePort,sComputePort]=useState("");const[computeTimeout,sComputeTimeout]=useState(3600);const[computeSubmitting,sComputeSubmitting]=useState(false);const[computeEstimate,sComputeEstimate]=useState(null);
 const sendGpuCmd=useCallback(async(command,params={})=>{if(!user?.pubkey||gpuCmdLoading)return;sGpuCmdLoading(true);try{const r=await fetch(API+"/api/gpu/command",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({wallet:user.pubkey,command,params})});const d=await r.json();if(d.success){toast(d.message,"success");if(command==="get_logs"){setTimeout(async()=>{try{const lr=await fetch(API+"/api/gpu/node-logs?wallet="+user.pubkey);const ld=await lr.json();sGpuLogs(ld.logs||[]);sGpuShowLogs(true)}catch{}},3000)}setTimeout(()=>a.gpd(user.pubkey).then(d=>sGpuDash(d)).catch(()=>{}),5000)}else{toast(d.error||"Command failed","error")}}catch(e){toast("Failed to send command","error")}sGpuCmdLoading(false)},[user?.pubkey,gpuCmdLoading]);
 // Chat support state
 const[chatOpen,sChatOpen]=useState(false);const[chatMsgs,sChatMsgs]=useState([]);const[chatInput,sChatInput]=useState("");const[chatLoading,sChatLoading]=useState(false);const chatEndRef=useRef(null);
@@ -654,7 +655,8 @@ const connect=async()=>{didDisconnectRef.current=false;try{const p=window?.phant
 useEffect(()=>{if(user?.pubkey)a.sw(user.pubkey)},[user?.pubkey]);
 useEffect(()=>{if(user?.pubkey&&!user?.demo)a.afr(user.pubkey).catch(()=>{})},[user?.pubkey]);
 useEffect(()=>{if(didDisconnectRef.current)return;const p=window?.phantom?.solana||window?.solana;if(p?.isPhantom&&p?.isConnected&&!user){p.connect({onlyIfTrusted:true}).then(r=>{if(didDisconnectRef.current)return;const pk=r.publicKey.toString();resolveWallet(pk)}).catch(()=>{})}},[]);
-useEffect(()=>{if(!hasAccess)return;let ws,dead=false;const conn=()=>{if(dead)return;try{ws=new WebSocket(WS_URL);wsRef.current=ws;ws.onopen=()=>{sWs(true);sWsLog(p=>[{ev:"connected",ts:Date.now()},...p].slice(0,500))};ws.onmessage=(e)=>{try{const msg=JSON.parse(e.data);if(msg.event==="mcap-update"&&msg.data){const{ca,mcap,mcapSol}=msg.data;sRT(prev=>{const update=tab=>(tab||[]).map(t=>t.ca===ca?{...t,mcapUsd:mcap,mcapSol:mcapSol||t.mcapSol}:t);return{...prev,new:update(prev.new),momentum:update(prev.momentum),resurgence:update(prev.resurgence)}})}if(msg.event==="brad_thought"&&msg.data){sBradMind(prev=>{const thoughts=[...(prev?.thoughts||[]),msg.data].slice(-12);return{...prev,thoughts,oneLiner:msg.data.text?.slice(0,80)||prev?.oneLiner,timestamp:Date.now()}});if(msg.data.urgency==="high"&&msg.data.text){sBradChat(prev=>{if(prev.length>0){return[...prev,{role:"assistant",content:msg.data.text}]}return prev})}}
+useEffect(()=>{if(!hasAccess)return;let ws,dead=false;const conn=()=>{if(dead)return;try{ws=new WebSocket(WS_URL);wsRef.current=ws;ws.onopen=()=>{sWs(true);sWsLog(p=>[{ev:"connected",ts:Date.now()},...p].slice(0,500))};ws.onmessage=(e)=>{try{const msg=JSON.parse(e.data);if(msg.event==="mcap-update"&&msg.data){const{ca,mcap,mcapSol}=msg.data;sRT(prev=>{const update=tab=>(tab||[]).map(t=>t.ca===ca?{...t,mcapUsd:mcap,mcapSol:mcapSol||t.mcapSol}:t);return{...prev,new:update(prev.new),momentum:update(prev.momentum),resurgence:update(prev.resurgence)}})}if(msg.event==="compute_job_update"&&msg.data){sComputeJobs(prev=>{const idx=prev.findIndex(j=>j.jobId===msg.data.jobId);if(idx>=0){const updated=[...prev];updated[idx]={...updated[idx],status:msg.data.status,result:msg.data.result};return updated}return prev})}
+if(msg.event==="brad_thought"&&msg.data){sBradMind(prev=>{const thoughts=[...(prev?.thoughts||[]),msg.data].slice(-12);return{...prev,thoughts,oneLiner:msg.data.text?.slice(0,80)||prev?.oneLiner,timestamp:Date.now()}});if(msg.data.urgency==="high"&&msg.data.text){sBradChat(prev=>{if(prev.length>0){return[...prev,{role:"assistant",content:msg.data.text}]}return prev})}}
 if(msg.event){sWsLog(p=>[{ev:msg.event,d:msg.data||{},ts:msg.ts||Date.now()},...p].slice(0,500))}}catch{}};ws.onclose=()=>{sWs(false);wsRef.current=null;sWsLog(p=>[{ev:"disconnected",ts:Date.now()},...p].slice(0,500));if(!dead)setTimeout(conn,3000)};ws.onerror=()=>{}}catch{}};conn();return()=>{dead=true;wsRef.current=null;if(ws)ws.close()}},[hasAccess]);
 useEffect(()=>{if(!user?.pubkey||user.demo)return;a.ls(user.pubkey).then(d=>{if(d.sessions)sPS(d.sessions.filter(s=>s.tokenCA&&s.status!=="closed"&&s.status!=="swept"&&s.status!=="recovered").slice(0,8))}).catch(()=>{})},[user?.pubkey]);
 const refreshWallet=useCallback(()=>{if(!user?.pubkey||user.demo)return;a.gtw(user.pubkey).then(d=>{if(d.tradingWallet){sTrW(d.tradingWallet);sTrB(d.balance||0);sTrSol(d.solBalance||0);sTrTok(d.tokenValueSol||0)}}).catch(()=>{})},[user?.pubkey]);
@@ -667,7 +669,7 @@ useEffect(()=>{if(!launched||!lCA)return;const poll=()=>{a.gfs().then(d=>{const 
 // Intel tab polling
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{fetch(API+"/api/intel/stats").then(r=>{if(!r.ok)throw new Error(r.status);return r.json()}).then(d=>sIntel(d)).catch(()=>{})};poll();const iv=setInterval(poll,2000);return()=>clearInterval(iv)},[tab]);
 // GPU Earn tab polling
-useEffect(()=>{if(tab!=="gpu"||demoProfits)return;const poll=()=>{if(user?.pubkey&&!user.demo){fetch(API+"/api/gpu/dashboard?wallet="+user.pubkey).then(r=>r.ok?r.json():null).then(d=>{if(d)sGpuDash(d)}).catch(()=>{})}fetch(API+"/api/gpu/fleet").then(r=>r.ok?r.json():null).then(d=>{if(d)sGpuFleet(d)}).catch(()=>{})};poll();const iv=setInterval(poll,5000);return()=>clearInterval(iv)},[tab,user?.pubkey,demoProfits]);
+useEffect(()=>{if(tab!=="gpu"||demoProfits)return;const poll=()=>{if(user?.pubkey&&!user.demo){fetch(API+"/api/gpu/dashboard?wallet="+user.pubkey).then(r=>r.ok?r.json():null).then(d=>{if(d)sGpuDash(d)}).catch(()=>{});fetch(API+"/api/compute/jobs?wallet="+user.pubkey+"&limit=10").then(r=>r.ok?r.json():null).then(d=>{if(d?.jobs)sComputeJobs(d.jobs)}).catch(()=>{})}fetch(API+"/api/gpu/fleet").then(r=>r.ok?r.json():null).then(d=>{if(d)sGpuFleet(d)}).catch(()=>{})};poll();fetch(API+"/api/compute/markets").then(r=>r.ok?r.json():null).then(d=>{if(d?.markets)sComputeMarkets(d.markets)}).catch(()=>{});const iv=setInterval(poll,5000);return()=>clearInterval(iv)},[tab,user?.pubkey,demoProfits]);
 // Engine state polling (for visualization)
 useEffect(()=>{if(tab!=="intel")return;const poll=()=>{a.ges().then(d=>sEngineState(d)).catch(()=>{})};poll();const iv=setInterval(poll,2000);return()=>clearInterval(iv)},[tab]);
 useEffect(()=>{if(tab!=="intel"||!user?.pubkey||user.demo)return;const poll=()=>a.atst(user.pubkey).then(d=>sAutoTrade(p=>({...p,...d,open:p?.open||d?.active||false,settings:p?.open?{...(d?.settings||{}),...(p?.settings||{})}:d?.settings}))).catch(()=>{});poll();const rate=autoTrade?.active?2000:8000;const iv=setInterval(poll,rate);return()=>clearInterval(iv)},[tab,user?.pubkey,autoTrade?.active]);
@@ -1220,6 +1222,64 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 </div>
 <div style={{fontSize:9,color:T.ft,marginTop:4,padding:"0 4px"}}>Laptop GPUs are matched to <a href="https://nosana.com" target="_blank" rel="noopener noreferrer" style={{color:"#10E80C",textDecoration:"none"}}>Nosana</a> markets by VRAM tier. Your 5070 Ti Laptop (8-12GB) joins the 12GB tier.</div>
 </div>
+
+{/* ═══ COMPUTE JOB SUBMISSION (VIP/Owner) ═══ */}
+{(isOwner||user?.tier==="vip"||user?.whitelisted)&&<div style={{background:T.sf,border:"1px solid "+T.pu+"22",borderRadius:10,padding:mb?10:14,marginTop:8}}>
+<div onClick={()=>sComputeOpen(p=>!p)} style={{display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer"}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}><IC.nos s={16}/><span style={{fontSize:14,fontWeight:700,color:T.pu,fontFamily:"'Space Grotesk',sans-serif"}}>Submit Compute Job</span><span style={{fontSize:8,fontWeight:800,color:T.yl,background:T.yl+"18",padding:"1px 6px",borderRadius:3}}>VIP</span></div>
+<span style={{fontSize:12,color:T.ft}}>{computeOpen?"▾":"▸"}</span>
+</div>
+{computeOpen&&<div style={{marginTop:10}}>
+<div style={{display:"grid",gridTemplateColumns:mb?"1fr":"1fr 1fr",gap:8,marginBottom:8}}>
+<div>
+<div style={{fontSize:9,color:T.ft,fontWeight:700,marginBottom:3}}>Docker Image *</div>
+<input value={computeImage} onChange={e=>sComputeImage(e.target.value)} placeholder="docker.io/org/image:tag" style={{width:"100%",padding:"7px 10px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,color:T.tx,fontSize:11,outline:"none",boxSizing:"border-box"}}/>
+</div>
+<div>
+<div style={{fontSize:9,color:T.ft,fontWeight:700,marginBottom:3}}>GPU Market</div>
+<select value={computeMarket} onChange={e=>{sComputeMarket(e.target.value);sComputeEstimate(null);fetch(API+"/api/compute/estimate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({market:e.target.value,duration:computeTimeout})}).then(r=>r.ok?r.json():null).then(d=>{if(d)sComputeEstimate(d)}).catch(()=>{})}} style={{width:"100%",padding:"7px 10px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,color:T.tx,fontSize:11,outline:"none",boxSizing:"border-box"}}>
+{(computeMarkets.length>0?computeMarkets:[{name:"RTX 4090"},{name:"RTX 3090"},{name:"RTX 3060"},{name:"A100"},{name:"H100"}]).map(m=><option key={m.name} value={m.name}>{m.name} {m.vram?`(${m.vram}GB)`:""}</option>)}
+</select>
+</div>
+<div>
+<div style={{fontSize:9,color:T.ft,fontWeight:700,marginBottom:3}}>Command (optional)</div>
+<input value={computeCmd} onChange={e=>sComputeCmd(e.target.value)} placeholder="python score.py --batch 100" style={{width:"100%",padding:"7px 10px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,color:T.tx,fontSize:11,outline:"none",boxSizing:"border-box"}}/>
+</div>
+<div>
+<div style={{fontSize:9,color:T.ft,fontWeight:700,marginBottom:3}}>Expose Port (optional)</div>
+<input value={computePort} onChange={e=>sComputePort(e.target.value)} placeholder="8080" style={{width:"100%",padding:"7px 10px",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,color:T.tx,fontSize:11,outline:"none",boxSizing:"border-box"}}/>
+</div>
+</div>
+<div style={{marginBottom:8}}>
+<div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+<span style={{fontSize:9,color:T.ft,fontWeight:700}}>Timeout</span>
+<span style={{fontSize:9,fontWeight:700,color:T.pu}}>{Math.round(computeTimeout/60)} min</span>
+</div>
+<input type="range" min={300} max={14400} step={300} value={computeTimeout} onChange={e=>{sComputeTimeout(Number(e.target.value));sComputeEstimate(null)}} onMouseUp={()=>{fetch(API+"/api/compute/estimate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({market:computeMarket,duration:computeTimeout})}).then(r=>r.ok?r.json():null).then(d=>{if(d)sComputeEstimate(d)}).catch(()=>{})}} style={{width:"100%",accentColor:T.pu,height:4}}/>
+</div>
+{computeEstimate&&<div style={{background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"8px 10px",marginBottom:8,display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+<div style={{fontSize:9}}><span style={{color:T.ft}}>NOS Cost: </span><span style={{fontWeight:700,color:"#10E80C"}}>{computeEstimate.nosEstimate} NOS</span></div>
+<div style={{fontSize:9}}><span style={{color:T.ft}}>+ Margin: </span><span style={{fontWeight:700,color:T.yl}}>{computeEstimate.nosWithMargin} NOS</span></div>
+{computeEstimate.solEstimate&&<div style={{fontSize:9}}><span style={{color:T.ft}}>Est SOL: </span><span style={{fontWeight:700,color:T.pu}}>{computeEstimate.solEstimate} SOL</span></div>}
+<div style={{fontSize:9,color:T.ft}}>VRAM: {computeEstimate.vram}GB</div>
+</div>}
+<button disabled={computeSubmitting||!computeImage.trim()} onClick={async()=>{sComputeSubmitting(true);try{const r=await fetch(API+"/api/compute/submit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({wallet:user?.pubkey,market:computeMarket,image:computeImage.trim(),cmd:computeCmd.trim()?computeCmd.trim().split(/\s+/):undefined,port:computePort?parseInt(computePort):undefined,timeout:computeTimeout})});const d=await r.json();if(d.jobId){toast("Job submitted: "+d.jobId.slice(0,12)+"...","success");sComputeImage("");sComputeCmd("");sComputePort("")}else{toast(d.error||"Submit failed","error")}}catch(e){toast(e.message||"Network error","error")}sComputeSubmitting(false)}} style={{width:"100%",padding:"10px",background:computeSubmitting||!computeImage.trim()?"transparent":"linear-gradient(135deg,"+T.pu+",#10E80C)",border:"1px solid "+(computeImage.trim()?T.pu+"66":T.bd),borderRadius:8,color:computeImage.trim()?"#fff":T.ft,fontSize:13,fontWeight:800,cursor:computeSubmitting||!computeImage.trim()?"default":"pointer",opacity:computeSubmitting?0.5:1}}>
+{computeSubmitting?"Submitting...":"Submit Job to Nosana"}
+</button>
+{computeJobs.length>0&&<div style={{marginTop:10}}>
+<div style={{fontSize:10,fontWeight:700,color:T.dm,marginBottom:4}}>Recent Jobs</div>
+{computeJobs.slice(0,5).map(j=><div key={j.jobId} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"5px 6px",fontSize:10,borderBottom:"1px solid "+T.bd}}>
+<div style={{display:"flex",alignItems:"center",gap:6}}>
+<span style={{width:6,height:6,borderRadius:"50%",background:j.status==="completed"?T.gn:j.status==="failed"?T.rd:j.status==="running"?"#10E80C":T.yl}}/>
+<span style={{fontFamily:"monospace",color:T.dm}}>{j.jobId?.slice(0,10)}...</span>
+</div>
+<span style={{color:T.ft}}>{j.market}</span>
+<span style={{fontWeight:700,color:j.status==="completed"?T.gn:j.status==="failed"?T.rd:T.yl,textTransform:"uppercase",fontSize:9}}>{j.status}</span>
+<span style={{color:T.ft,fontSize:9}}>{j.createdAt?new Date(j.createdAt).toLocaleTimeString():""}</span>
+</div>)}
+</div>}
+</div>}
+</div>}
 
 {/* ═══ AI SUPPORT CHAT (Grok 4) ═══ */}
 <div style={{marginTop:8}}>
