@@ -8905,6 +8905,18 @@ app.post("/api/intel/smart-money/toggle", express.json(), (req, res) => {
   res.json({ enabled: smartMoneyTracker.enabled, watching: smartMoneyTracker.watchlist.size });
 });
 
+app.post("/api/intel/smart-money/config", express.json(), (req, res) => {
+  const { pollInterval, maxWatch } = req.body || {};
+  const result = {};
+  if (pollInterval != null) result.pollInterval = smartMoneyTracker.setPollingInterval(pollInterval);
+  if (maxWatch != null) result.maxWatch = smartMoneyTracker.setMaxWatch(maxWatch);
+  result.enabled = smartMoneyTracker.enabled;
+  result.watching = smartMoneyTracker.watchlist.size;
+  result.pollIntervalMs = smartMoneyTracker.POLL_INTERVAL_MS;
+  result.maxWatch = smartMoneyTracker.MAX_WATCH;
+  res.json(result);
+});
+
 // ═══ BRAD COGNITIVE ENGINE — API endpoints ═══
 // Expose BRAD's cognitive state, metrics, and decisions for the dashboard.
 

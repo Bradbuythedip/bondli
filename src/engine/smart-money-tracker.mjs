@@ -640,13 +640,38 @@ export class SmartMoneyTracker {
       totalWallets: this.wallets.size,
       watching: this.watchlist.size,
       manualWatch: this.manualWatch.size,
+      maxWatch: this.MAX_WATCH,
       tiers,
       recentSignals: this.recentSignals.size,
       stats: { ...this.stats },
       polling: !!this.pollInterval,
+      pollIntervalMs: this.POLL_INTERVAL_MS,
       rpcEnabled: this.rpcEnabled,
     };
   }
-}
 
-export default SmartMoneyTracker;
+  /**
+   * Update polling interval (in seconds). Restarts polling if active.
+   * Min 5s, max 300s.
+   */
+  setPollingInterval(seconds) {
+    const s = Math.max(5, Math.min(300, Math.round(seconds)));
+    this.POLL_INTERVAL_MS = s * 1000;
+    console.log(`[SMART-MONEY] Polling interval set to ${s}s`);
+    if (this.pollInterval) {
+      this.stop();
+      this.start();
+    }
+    return s;
+  }
+
+  /**
+   * Update max wallets to track. Min 5, max 200.
+   */
+  setMaxWatch(n) {
+    this.MAX_WATCH = Math.max(5, Math.min(200, Math.round(n)));
+    console.log(`[SMART-MONEY] Max watch set to ${this.MAX_WATCH}`);
+    this._updateWatchlist();
+    return this.MAX_WATCH;
+  }
+}
