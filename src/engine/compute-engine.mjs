@@ -502,10 +502,6 @@ export class ComputeEngine {
   // ═══════════════════════════════════════
 
   mountRoutes(app, { getUser, resolveTier, isOwnerWallet } = {}) {
-    const json = (await_import_workaround) => {
-      // Express json() is already available on app
-    };
-
     // GET /api/compute/markets — Available GPU tiers + pricing
     app.get("/api/compute/markets", async (_req, res) => {
       const markets = this.getMarkets();
@@ -636,6 +632,17 @@ export class ComputeEngine {
       } catch (err) {
         res.status(500).json({ error: err.message });
       }
+    });
+
+    // GET /api/compute/summary — Overall compute engine stats
+    app.get("/api/compute/summary", async (_req, res) => {
+      res.json({
+        enabled: this.enabled,
+        activePolls: this._activePolls.size,
+        marketsAvailable: Object.keys(NOSANA_MARKETS).length,
+        nosanaConfigured: nosanaClient.enabled,
+        computeWallet: this.computeKeypair?.publicKey?.toBase58()?.slice(0, 8) + "..." || null,
+      });
     });
 
     console.log("[COMPUTE] Routes mounted: /api/compute/*");
