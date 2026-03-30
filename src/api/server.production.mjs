@@ -73,9 +73,9 @@ const rpcSendRawTx = smartSend;
 // PumpPortal's `priorityFee` param IS the Jito tip — they add the tip instruction
 // for us. No need for separate Jito tip logic. Higher fee = faster inclusion.
 const TRADE_CONFIG = {
-  BUY_SLIPPAGE: parseInt(process.env.BUY_SLIPPAGE || "30"),         // 30% — memecoins move fast
-  SELL_SLIPPAGE: parseInt(process.env.SELL_SLIPPAGE || "35"),        // 35% — exit > precision
-  PRIORITY_FEE_SOL: parseFloat(process.env.PRIORITY_FEE_SOL || "0.008"), // PumpPortal Jito tip
+  BUY_SLIPPAGE: parseInt(process.env.BUY_SLIPPAGE || "15"),         // 15% — balanced speed vs cost
+  SELL_SLIPPAGE: parseInt(process.env.SELL_SLIPPAGE || "20"),        // 20% — exit reliability > precision
+  PRIORITY_FEE_SOL: parseFloat(process.env.PRIORITY_FEE_SOL || "0.0015"), // PumpPortal Jito tip — minimal viable
 };
 
 // Fast send for PumpPortal transactions.

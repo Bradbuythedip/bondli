@@ -840,7 +840,7 @@ class FleetTrader extends EventEmitter {
             mint, user: wallet.keypair.publicKey, amount: sellAmount, solAmount: solOut, slippage: 15,
           });
           const tx = new Transaction();
-          tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
+          tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 120_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
           tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
           tx.feePayer = wallet.keypair.publicKey;
           tx.sign(wallet.keypair);
@@ -1323,7 +1323,7 @@ class FleetTrader extends EventEmitter {
   }
 
   // Jito bundle — up to 5 transactions in one block, atomic (all land or none)
-  async _sendJitoBundle(transactions, tipLamports = 10000) {
+  async _sendJitoBundle(transactions, tipLamports = 1000) {
     const JITO_BUNDLE_ENDPOINTS = [
       "https://mainnet.block-engine.jito.wtf/api/v1/bundles",
       "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/bundles",
@@ -1390,7 +1390,7 @@ class FleetTrader extends EventEmitter {
           wallet.keypair.publicKey, session.mint, global, feeConfig,
           sellState.bondingCurveAccountInfo, sellState.bondingCurve,
           tokenBalance, minSolOut,
-          { units: 200_000, microLamports: 100000 }
+          { units: 120_000, microLamports: 20000 }
         );
         sellTxs.push({ tx, signers: [wallet.keypair], wallet, tokens: tokenBalance });
       } catch (e) {
@@ -1541,7 +1541,7 @@ class FleetTrader extends EventEmitter {
     // Dynamic priority fee from Helius
     const priorityFee = await getOptimalPriorityFee();
     const tx = new Transaction();
-    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 120_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
     // Use Jito for MEV protection on buys (most vulnerable to sandwich)
     const sig = await this._sendWithJito(tx, [keypair]);
     return { ok: true, sig, tokens: tokenAmount.toString() };
@@ -1563,7 +1563,7 @@ class FleetTrader extends EventEmitter {
     // Dynamic priority fee from Helius
     const priorityFee = await getOptimalPriorityFee();
     const tx = new Transaction();
-    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 120_000 }), ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }), ...instructions);
     // Use Helius smart send for sells (staked connections + auto-retry)
     tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
     tx.feePayer = keypair.publicKey;

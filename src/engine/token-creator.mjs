@@ -169,7 +169,7 @@ export async function createToken(connection, creator, tokenConfig, options = {}
   const computeUnits = devBuySol > 0 ? 600_000 : 300_000;
   tx.add(
     ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnits }),
-    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.max(150_000, tipMicroLamports) }),
+    ComputeBudgetProgram.setComputeUnitPrice({ microLamports: Math.max(20_000, tipMicroLamports) }),
   );
 
   // Add SDK instructions

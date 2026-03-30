@@ -199,7 +199,7 @@ export class ContinuousVolumeEngine extends EventEmitter {
 
     const tx = new Transaction();
     tx.add(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 120_000 }),
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }),
       ...instructions,
     );
@@ -252,7 +252,7 @@ export class ContinuousVolumeEngine extends EventEmitter {
 
     const tx = new Transaction();
     tx.add(
-      ComputeBudgetProgram.setComputeUnitLimit({ units: 200_000 }),
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 120_000 }),
       ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFee }),
       ...instructions,
     );
@@ -432,7 +432,7 @@ export class AutoRugController extends EventEmitter {
           wallet.keypair.publicKey, mint, global, feeConfig,
           sellState.bondingCurveAccountInfo, sellState.bondingCurve,
           tokenBalance, minSolOut,
-          { units: 200_000, microLamports: 200_000 }
+          { units: 120_000, microLamports: 50_000 }
         );
 
         sellTxs.push({
