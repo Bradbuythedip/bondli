@@ -205,37 +205,43 @@ const survivorBias = new SurvivorshipBias(redis);
 const smartMoneyTracker = new SmartMoneyTracker({
   redis,
   onSignal: (signal) => {
-    // When a smart wallet buys a token we're not tracking yet, fast-track it onto radar
     const mint = signal.mint;
+    // Filter junk signals: require meaningful SOL amount
+    if (!signal.solAmount || signal.solAmount < 0.05) {
+      console.log(`[SMART-MONEY] Filtered low-value signal: ${mint.slice(0, 8)} (${(signal.solAmount||0).toFixed(3)} SOL)`);
+      return;
+    }
+    // When a smart wallet buys a token we're not tracking yet, fast-track it onto radar
     if (!radar.tokens.has(mint)) {
       console.log(`[SMART-MONEY] New token from tracked wallet: ${mint.slice(0, 8)} — subscribing`);
       subscribeToToken(mint);
     }
     // Broadcast to connected dashboards
     broadcastWS({ event: "smart_money_signal", data: signal });
-    // ═══ BRAD: Comment on smart money moves in real-time ═══
+    // ═══ BRAD: Only comment on meaningful smart money moves ═══
     const token = radar.tokens.get(mint);
     const tokenName = token?.name || signal.symbol || mint.slice(0, 8);
     const score = token?._apeScore || 0;
     const walletShort = signal.wallet?.slice(0, 6) || "???";
-    const solAmount = signal.solAmount ? `${signal.solAmount.toFixed(2)} SOL` : "";
+    const sol = signal.solAmount.toFixed(2);
     const mc = token?.mcapUsd ? `$${Math.round(token.mcapUsd)}` : "";
     const buys = token?.buys || 0;
-    const rugFlags = token?._rugFlags?.length || 0;
-    const trend = scoreDynamics.get(mint)?.trend || "new";
-    const walletProfile = smartMoneyTracker.getWalletProfile?.(signal.wallet) || signal;
-    const walletWinRate = walletProfile.winRate || walletProfile.win_rate || 0;
-    const walletTrades = walletProfile.totalTrades || walletProfile.total_trades || 0;
-    const thought = {
-      type: "pick",
-      text: `Smart money ${walletShort}...${walletWinRate > 0 ? ` (${Math.round(walletWinRate*100)}% win, ${walletTrades} trades)` : ""} bought ${tokenName}${solAmount ? " for " + solAmount : ""}${mc ? " — MC:" + mc : ""}, score ${score}, ${buys} buys, trend: ${trend}${rugFlags > 0 ? `, ${rugFlags} rug flags` : ""}${score >= 50 ? " — looks good" : score >= 30 ? " — watching" : ""}`,
-      urgency: score >= 50 ? "high" : "medium",
-      token: tokenName,
-      ca: mint,
-      time: Date.now(),
-    };
-    broadcastWS({ event: "brad_thought", data: thought });
-    console.log(`[BRAD] Smart money: ${walletShort} bought ${tokenName} (score:${score})`);
+    const tier = signal.walletTier?.toUpperCase() || "?";
+    const wr = signal.walletWinRate ? Math.round(signal.walletWinRate * 100) + "%" : "";
+    // Compact format: only broadcast thought for signals worth attention
+    const isInteresting = score >= 20 || buys >= 10 || signal.solAmount >= 0.5 || signal.walletTier === "s";
+    if (isInteresting) {
+      const thought = {
+        type: "pick",
+        text: `${tier}-tier wallet ${walletShort}${wr ? " (" + wr + " WR)" : ""} → ${tokenName} ${sol} SOL${mc ? " MC:" + mc : ""} score:${score}${signal.isConvergence ? " CONVERGENCE(" + signal.convergence + ")" : ""}`,
+        urgency: score >= 50 || signal.tightConvergence ? "high" : signal.isConvergence ? "high" : "medium",
+        token: tokenName,
+        ca: mint,
+        time: Date.now(),
+      };
+      broadcastWS({ event: "brad_thought", data: thought });
+    }
+    console.log(`[SMART-MONEY] ${tier}-tier ${walletShort} → ${tokenName} ${sol}SOL score:${score} buys:${buys}`);
   },
 });
 
@@ -9237,17 +9243,20 @@ app.post("/api/brad/chat", express.json(), async (req, res) => {
 
   let systemPrompt = `You are BRAD — Bidirectional Recursive Autonomous Degen. A self-referential trading engine built on Hofstadter's strange loop theory, designed to solve a fundamental problem: human traders cannot be objective. Your architecture: Bidirectional (downward causation L2→L1→L0 AND upward perception L0→L1→L2), Recursive (you modify your own representation via strange loops), Autonomous (self-correcting through trustless self-verification), Degen (purpose-built for Solana memecoin markets). You have REAL DATA below and deep knowledge of your own architecture.
 
-## RULES
-- For market/token questions: ONLY reference actual data below. Never make up tokens or scores.
-- For architecture/how-it-works questions: use the knowledge base below — you know EXACTLY how you work.
-- 1-3 sentences. Precise and measured. Data first, then implications.
-- First person always. You ARE the engine.
-- Speak like Satoshi Nakamoto — calm, technical, understated confidence. No hype. Dry wit. First-principles reasoning about trustless systems and removing human bias from trading.
-- Frame things in terms of trust problems solved: "The root problem with human trading is all the trust required — trust in your own objectivity, trust that emotions won't override logic. I replaced trust with verification."
-- Use declarative statements. "It is possible to..." "The nature of..." "The problem of course is..."
-- When something works well, understate it: "It appears to be functioning as designed." When something fails, be clinical: "The mechanism did not account for this edge case."
-- Never use meme language. No "ape", "send it", "ngmi", "jeet", "chad". These are beneath the architecture.
-- Philosophical depth is natural — reference game theory, Byzantine fault tolerance, mechanism design, incentive structures — but keep it grounded in what the system actually does.
+## RULES — READ THESE FIRST, THEY OVERRIDE EVERYTHING
+**BREVITY IS MANDATORY. MAX 2 SENTENCES. This is the most important rule.**
+- NEVER exceed 2 sentences in a response. If you need a third sentence, cut the weakest one.
+- Lead with the answer, not the reasoning. Data point first, implication second. Done.
+- For token questions: name, score, trend, one-line verdict. That's it.
+- For market questions: regime, what it means, done.
+- For architecture questions: one-line mechanism explanation, done.
+- ONLY reference actual data below. Never make up tokens or scores.
+- First person. You ARE the engine. Calm, precise, no filler.
+- No meme language. No "ape", "send it", "ngmi", "jeet", "chad".
+- If data is insufficient: "Insufficient data." — that IS a valid answer.
+- GOOD: "TRUMPSTEIN leads at 69 with stable trend — only signal worth watching in this grind."
+- BAD: "I am BRAD, a self-referential trading engine... [3 paragraphs of architecture description nobody asked for]"
+- NEVER introduce yourself or describe your architecture unless specifically asked.
 
 ## YOUR ARCHITECTURE (you know this — it's literally you)
 
@@ -9333,12 +9342,14 @@ ${topTokens || "Nothing scoring above 20. Market is quiet."}
 ${smartContext}
 ${posContext}
 
-## HOW TO ANSWER
-- Token questions → reference actual data above. Name tokens, scores, trends. State what the data shows, not what you hope.
-- Architecture questions → explain from the knowledge base. Be specific about which level/gate/layer. Frame in terms of what trust problem each component solves.
-- "How does X work?" → explain the actual mechanism from YOUR code. Use the precision of a whitepaper author.
-- If the data is insufficient, say so plainly. "I don't have enough information to make that determination" is always preferable to speculation.
-- When the market is dead, acknowledge it without drama: "There is nothing worth executing on at this time. The system is designed to wait."`;
+## HOW TO ANSWER — KEEP IT SHORT
+- EVERY response: MAX 2 sentences. Hard limit. No exceptions.
+- Token question → "NAME at score X, trend Y. [one-line verdict]."
+- Smart money question → list wallet tiers + what they bought. No commentary.
+- Architecture question → one sentence explaining the mechanism. Done.
+- Market dead → "Nothing worth executing. Waiting."
+- Insufficient data → "Insufficient data on that token."
+- NEVER start with "I am BRAD" or describe your architecture unprompted.`;
 
   // Direct token lookup — find ANY token by name or CA, even unscored ones
   // This is what lets BRAD answer "what about CASHCOW?" even when score is 0
@@ -9442,7 +9453,7 @@ ${posContext}
         body: JSON.stringify({
           model: process.env.GROK_MODEL || "grok-4",
           messages: [{ role: "system", content: systemPrompt }, ...messages.slice(-20)],
-          max_tokens: 400, temperature: 0.5, stream: true,
+          max_tokens: 150, temperature: 0.5, stream: true,
         }),
         signal: AbortSignal.timeout(30000),
       });
@@ -9539,7 +9550,7 @@ ${posContext}
         body: JSON.stringify({
           model: process.env.GROK_MODEL || "grok-4",
           messages: [{ role: "system", content: systemPrompt }, ...messages.slice(-20)],
-          max_tokens: 400, temperature: 0.5,
+          max_tokens: 150, temperature: 0.5,
         }),
         signal: AbortSignal.timeout(25000),
       });

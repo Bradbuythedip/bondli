@@ -438,7 +438,7 @@ export class SmartMoneyTracker {
         const postSol = (tx.meta?.postBalances?.[0] || 0) / 1e9;
         const solSpent = preSol - postSol;
 
-        if (solSpent > 0.001) {
+        if (solSpent > 0.01) {
           return { mint: post.mint, solAmount: solSpent };
         }
       }
