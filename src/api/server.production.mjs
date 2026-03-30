@@ -115,6 +115,16 @@ const DEFAULT_REFERRAL_CODE = "ilikethetech"; // owner's referral code — appli
 const PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data";
 
 // ═══════════════════════════════════════
+// CRASH PROTECTION — keep server alive
+// ═══════════════════════════════════════
+process.on("uncaughtException", (err) => {
+  console.error("[FATAL] Uncaught exception:", err.message, err.stack?.slice(0, 500));
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[FATAL] Unhandled rejection:", reason?.message || reason);
+});
+
+// ═══════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════
 const app = express();
@@ -10415,6 +10425,17 @@ nosanaRouter.init().catch(err => console.warn("[NOSANA] Init error:", err.messag
 // GROK AI CHAT — GPU support & help
 // ═══════════════════════════════════════
 mountChatRoutes(app, { redis, getUser, resolveTier });
+
+// ═══════════════════════════════════════
+// GLOBAL ERROR HANDLER — catch route errors, keep server alive
+// ═══════════════════════════════════════
+app.use((err, req, res, _next) => {
+  console.error(`[EXPRESS] Route error ${req.method} ${req.path}:`, err.message);
+  if (!res.headersSent) {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 // ═══════════════════════════════════════
 // START
