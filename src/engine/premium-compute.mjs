@@ -326,8 +326,9 @@ export class PremiumComputeEngine {
     const marketInfo = NOSANA_MARKETS[feature.gpu_market];
     if (!marketInfo) throw new Error(`Unknown GPU market: ${feature.gpu_market}`);
 
-    // Estimate NOS cost
-    const nosCost = +(marketInfo.nosPerSec * feature.est_duration_sec).toFixed(4);
+    // Estimate NOS cost (with Bondli margin)
+    const rawNosCost = +(marketInfo.nosPerSec * feature.est_duration_sec).toFixed(4);
+    const nosCost = +(rawNosCost * (1 + PREMIUM_MARGIN)).toFixed(4);
 
     // Submit to Nosana via compute engine
     let jobResult;
@@ -356,15 +357,19 @@ export class PremiumComputeEngine {
     };
 
     if (this.redis) {
-      await Promise.all([
-        this.redis.set(`premium:job:${jobId}`, JSON.stringify(record), { EX: 86400 * 7 }),
-        this.redis.zAdd(`premium:user:${userId}:jobs`, { score: Date.now(), value: jobId }),
-        this.redis.expire(`premium:user:${userId}:jobs`, 86400 * 30),
-        // Global NOS burn tracking
-        this.redis.incrByFloat("premium:total_nos_burned", nosCost),
-        this.redis.incrByFloat("premium:total_revenue_sol", feature.price_sol),
-        this.redis.hIncrBy("premium:feature_usage", featureId, 1),
-      ]);
+      try {
+        await Promise.all([
+          this.redis.set(`premium:job:${jobId}`, JSON.stringify(record), { EX: 86400 * 7 }),
+          this.redis.zAdd(`premium:user:${userId}:jobs`, { score: Date.now(), value: jobId }),
+          this.redis.expire(`premium:user:${userId}:jobs`, 86400 * 30),
+          // Global NOS burn tracking
+          this.redis.incrByFloat("premium:total_nos_burned", nosCost),
+          this.redis.incrByFloat("premium:total_revenue_sol", feature.price_sol),
+          this.redis.hIncrBy("premium:feature_usage", featureId, 1),
+        ]);
+      } catch (redisErr) {
+        console.error(`[PREMIUM] Redis tracking failed for ${jobId}: ${redisErr.message}`);
+      }
     }
 
     // Update local stats
@@ -400,7 +405,13 @@ export class PremiumComputeEngine {
    */
   async getResult(jobId) {
     if (!this.redis) return null;
-    const raw = await this.redis.get(`premium:job:${jobId}`);
+    let raw;
+    try {
+      raw = await this.redis.get(`premium:job:${jobId}`);
+    } catch (err) {
+      console.error(`[PREMIUM] Redis get failed for ${jobId}: ${err.message}`);
+      return null;
+    }
     if (!raw) return null;
     const record = JSON.parse(raw);
 
@@ -438,13 +449,18 @@ export class PremiumComputeEngine {
    */
   async getUserHistory(userId, limit = 20) {
     if (!this.redis) return [];
-    const jobIds = await this.redis.zRange(`premium:user:${userId}:jobs`, 0, limit - 1, { REV: true });
-    if (!jobIds?.length) return [];
-    const jobs = await Promise.all(jobIds.map(async id => {
-      const raw = await this.redis.get(`premium:job:${id}`);
-      return raw ? JSON.parse(raw) : null;
-    }));
-    return jobs.filter(Boolean);
+    try {
+      const jobIds = await this.redis.zRange(`premium:user:${userId}:jobs`, 0, limit - 1, { REV: true });
+      if (!jobIds?.length) return [];
+      const jobs = await Promise.all(jobIds.map(async id => {
+        const raw = await this.redis.get(`premium:job:${id}`);
+        return raw ? JSON.parse(raw) : null;
+      }));
+      return jobs.filter(Boolean);
+    } catch (err) {
+      console.error(`[PREMIUM] Redis history failed for ${userId}: ${err.message}`);
+      return [];
+    }
   }
 
   /**
@@ -453,18 +469,22 @@ export class PremiumComputeEngine {
   async getGlobalStats() {
     const stats = { ...this.stats };
     if (this.redis) {
-      const [nosBurned, revenueSol, featureUsage] = await Promise.all([
-        this.redis.get("premium:total_nos_burned"),
-        this.redis.get("premium:total_revenue_sol"),
-        this.redis.hGetAll("premium:feature_usage"),
-      ]);
-      stats.totalNosBurned = parseFloat(nosBurned || "0");
-      stats.totalRevenueSol = parseFloat(revenueSol || "0");
-      stats.featureUsage = {};
-      if (featureUsage) {
-        for (const [k, v] of Object.entries(featureUsage)) {
-          stats.featureUsage[k] = parseInt(v);
+      try {
+        const [nosBurned, revenueSol, featureUsage] = await Promise.all([
+          this.redis.get("premium:total_nos_burned"),
+          this.redis.get("premium:total_revenue_sol"),
+          this.redis.hGetAll("premium:feature_usage"),
+        ]);
+        stats.totalNosBurned = parseFloat(nosBurned || "0");
+        stats.totalRevenueSol = parseFloat(revenueSol || "0");
+        stats.featureUsage = {};
+        if (featureUsage) {
+          for (const [k, v] of Object.entries(featureUsage)) {
+            stats.featureUsage[k] = parseInt(v);
+          }
         }
+      } catch (err) {
+        console.error(`[PREMIUM] Redis stats failed: ${err.message}`);
       }
     }
     return stats;

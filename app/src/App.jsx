@@ -1551,7 +1551,7 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 <span style={{fontSize:11,fontWeight:800,color:"#14F195"}}>Smart Money Tracker</span>
 <span style={{fontSize:9,color:T.ft}}>{smConfig?.watching||0} wallets</span>
 </div>
-<button onClick={()=>{fetch(API+"/api/intel/smart-money/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({wallet:user?.pubkey})}).then(r=>r.json()).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} style={{fontSize:9,fontWeight:700,padding:"3px 10px",borderRadius:4,border:"1px solid "+(smConfig?.enabled?"#ef444466":"#14F19566"),background:smConfig?.enabled?"#ef444418":"#14F19518",color:smConfig?.enabled?"#ef4444":"#14F195",cursor:"pointer"}}>{smConfig?.enabled?"Disable":"Enable"}</button>
+<button onClick={()=>{fetch(API+"/api/intel/smart-money/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({wallet:user?.pubkey})}).then(r=>r.ok?r.json():null).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} style={{fontSize:9,fontWeight:700,padding:"3px 10px",borderRadius:4,border:"1px solid "+(smConfig?.enabled?"#ef444466":"#14F19566"),background:smConfig?.enabled?"#ef444418":"#14F19518",color:smConfig?.enabled?"#ef4444":"#14F195",cursor:"pointer"}}>{smConfig?.enabled?"Disable":"Enable"}</button>
 </div>
 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
 <div>
@@ -1559,14 +1559,14 @@ catch(e){toast(e.message,"error");sLS(null)}}} style={{animation:canLaunch?"gp 2
 <span style={{fontSize:9,color:T.ft}}>Poll Interval</span>
 <span style={{fontSize:9,fontWeight:700,color:"#14F195"}}>{smPollVal}s</span>
 </div>
-<input type="range" min="5" max="300" step="5" value={smPollVal} onChange={e=>sSmPollVal(Number(e.target.value))} onMouseUp={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pollInterval:smPollVal})}).then(r=>r.json()).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} onTouchEnd={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pollInterval:smPollVal})}).then(r=>r.json()).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} style={{width:"100%",accentColor:"#14F195",height:4,cursor:"pointer"}}/>
+<input type="range" min="5" max="300" step="5" value={smPollVal} onChange={e=>sSmPollVal(Number(e.target.value))} onMouseUp={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pollInterval:smPollVal})}).then(r=>r.ok?r.json():null).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} onTouchEnd={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({pollInterval:smPollVal})}).then(r=>r.ok?r.json():null).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} style={{width:"100%",accentColor:"#14F195",height:4,cursor:"pointer"}}/>
 </div>
 <div>
 <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
 <span style={{fontSize:9,color:T.ft}}>Max Wallets</span>
 <span style={{fontSize:9,fontWeight:700,color:"#14F195"}}>{smMaxVal}</span>
 </div>
-<input type="range" min="5" max="200" step="5" value={smMaxVal} onChange={e=>sSmMaxVal(Number(e.target.value))} onMouseUp={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({maxWatch:smMaxVal})}).then(r=>r.json()).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} onTouchEnd={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({maxWatch:smMaxVal})}).then(r=>r.json()).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} style={{width:"100%",accentColor:"#14F195",height:4,cursor:"pointer"}}/>
+<input type="range" min="5" max="200" step="5" value={smMaxVal} onChange={e=>sSmMaxVal(Number(e.target.value))} onMouseUp={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({maxWatch:smMaxVal})}).then(r=>r.ok?r.json():null).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} onTouchEnd={()=>{fetch(API+"/api/intel/smart-money/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({maxWatch:smMaxVal})}).then(r=>r.ok?r.json():null).then(d=>{if(d)sSmConfig(p=>({...p,...d}))}).catch(()=>{})}} style={{width:"100%",accentColor:"#14F195",height:4,cursor:"pointer"}}/>
 </div>
 </div>
 {/* ═══ WALLET LEADERBOARD ═══ */}

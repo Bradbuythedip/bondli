@@ -138,6 +138,10 @@ export class ComputeEngine {
       }),
     });
 
+    if (!swapRes.ok) {
+      const err = await swapRes.text().catch(() => "unknown");
+      throw new Error(`Jupiter swap failed (${swapRes.status}): ${err}`);
+    }
     const { swapTransaction } = await swapRes.json();
     const tx = VersionedTransaction.deserialize(Buffer.from(swapTransaction, "base64"));
     tx.sign([keypair]);
@@ -235,11 +239,15 @@ export class ComputeEngine {
     };
 
     if (this.redis) {
-      await Promise.all([
-        this.redis.set(`compute:job:${jobId}`, JSON.stringify(jobRecord), { EX: 86400 * 7 }), // 7 days
-        this.redis.zAdd(`compute:user:${userId}:jobs`, { score: Date.now(), value: jobId }),
-        this.redis.expire(`compute:user:${userId}:jobs`, 86400 * 30), // 30 days
-      ]);
+      try {
+        await Promise.all([
+          this.redis.set(`compute:job:${jobId}`, JSON.stringify(jobRecord), { EX: 86400 * 7 }), // 7 days
+          this.redis.zAdd(`compute:user:${userId}:jobs`, { score: Date.now(), value: jobId }),
+          this.redis.expire(`compute:user:${userId}:jobs`, 86400 * 30), // 30 days
+        ]);
+      } catch (redisErr) {
+        console.error(`[COMPUTE] Redis tracking failed for ${jobId}: ${redisErr.message}`);
+      }
     }
 
     // Start polling for status updates
@@ -346,8 +354,12 @@ export class ComputeEngine {
   async getJobStatus(jobId) {
     let local = null;
     if (this.redis) {
-      const raw = await this.redis.get(`compute:job:${jobId}`);
-      if (raw) local = JSON.parse(raw);
+      try {
+        const raw = await this.redis.get(`compute:job:${jobId}`);
+        if (raw) local = JSON.parse(raw);
+      } catch (err) {
+        console.error(`[COMPUTE] Redis get failed for ${jobId}: ${err.message}`);
+      }
     }
 
     // If job is already completed locally, return cached result
@@ -386,18 +398,20 @@ export class ComputeEngine {
    */
   async getUserJobs(userId, limit = 20) {
     if (!this.redis) return [];
-
-    const jobIds = await this.redis.zRange(`compute:user:${userId}:jobs`, 0, limit - 1, { REV: true });
-    if (!jobIds?.length) return [];
-
-    const jobs = await Promise.all(
-      jobIds.map(async (id) => {
-        const raw = await this.redis.get(`compute:job:${id}`);
-        return raw ? JSON.parse(raw) : { jobId: id, status: "unknown" };
-      })
-    );
-
-    return jobs;
+    try {
+      const jobIds = await this.redis.zRange(`compute:user:${userId}:jobs`, 0, limit - 1, { REV: true });
+      if (!jobIds?.length) return [];
+      const jobs = await Promise.all(
+        jobIds.map(async (id) => {
+          const raw = await this.redis.get(`compute:job:${id}`);
+          return raw ? JSON.parse(raw) : { jobId: id, status: "unknown" };
+        })
+      );
+      return jobs;
+    } catch (err) {
+      console.error(`[COMPUTE] Redis jobs failed for ${userId}: ${err.message}`);
+      return [];
+    }
   }
 
   /**
@@ -405,7 +419,7 @@ export class ComputeEngine {
    */
   async getUserDeployments(userId, limit = 10) {
     if (!this.redis) return [];
-
+    try {
     const deployIds = await this.redis.zRange(`compute:user:${userId}:deploys`, 0, limit - 1, { REV: true });
     if (!deployIds?.length) return [];
 
@@ -417,6 +431,10 @@ export class ComputeEngine {
     );
 
     return deploys;
+    } catch (err) {
+      console.error(`[COMPUTE] Redis deploys failed for ${userId}: ${err.message}`);
+      return [];
+    }
   }
 
   // ═══════════════════════════════════════
@@ -428,6 +446,7 @@ export class ComputeEngine {
     if (this._activePolls.has(jobId)) return;
 
     let checks = 0;
+    let consecutiveErrors = 0;
     const maxChecks = 360; // 360 × 10s = 1 hour max
 
     const interval = setInterval(async () => {
@@ -435,11 +454,13 @@ export class ComputeEngine {
       if (checks > maxChecks) {
         clearInterval(interval);
         this._activePolls.delete(jobId);
+        console.warn(`[COMPUTE] Polling timeout for ${jobId}`);
         return;
       }
 
       try {
         const job = await this.getJobStatus(jobId);
+        consecutiveErrors = 0;
         const status = job?.status;
 
         // Broadcast status to frontend
@@ -453,8 +474,13 @@ export class ComputeEngine {
           clearInterval(interval);
           this._activePolls.delete(jobId);
         }
-      } catch {
-        // Silently continue polling
+      } catch (err) {
+        consecutiveErrors++;
+        if (consecutiveErrors >= 5) {
+          clearInterval(interval);
+          this._activePolls.delete(jobId);
+          console.error(`[COMPUTE] Polling abandoned for ${jobId} after ${consecutiveErrors} errors: ${err.message}`);
+        }
       }
     }, JOB_POLL_INTERVAL_MS);
 
