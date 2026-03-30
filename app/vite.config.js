@@ -3,5 +3,18 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   server: { port: 5173, proxy: { "/api": { target: "http://localhost:3001", changeOrigin: true }, "/ws": { target: "ws://localhost:3001", ws: true } } },
-  build: { outDir: "dist", sourcemap: false },
+  build: {
+    outDir: "dist",
+    sourcemap: false,
+    target: "es2020",
+    minify: "esbuild",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules/react-dom") || id.includes("node_modules/react/")) return "vendor";
+          if (id.includes("node_modules/@solana") || id.includes("node_modules/bs58")) return "solana";
+        },
+      },
+    },
+  },
 });

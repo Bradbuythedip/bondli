@@ -236,7 +236,7 @@ return<div style={{width:"100%",borderRadius:8,overflow:"hidden",background:T.bg
 <div style={{width:28,height:28,border:"2px solid "+T.bd,borderTopColor:T.gn||"#00e676",borderRadius:"50%",animation:"sp .8s linear infinite"}}/>
 <span style={{fontSize:11,color:T.ft,fontWeight:600}}>Loading chart...</span>
 </div>}
-<iframe src={url} style={{width:"100%",height:h,border:"none",background:T.bg,opacity:loaded?1:0,transition:"opacity .3s"}} allow="clipboard-write" loading="eager" title="chart" onLoad={()=>sLoaded(true)}/>
+<iframe src={url} style={{width:"100%",height:h,border:"none",background:T.bg,opacity:loaded?1:0,transition:"opacity .3s"}} allow="clipboard-write" loading="lazy" title="chart" onLoad={()=>sLoaded(true)}/>
 </div>
 </div>}
 
