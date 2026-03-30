@@ -55,6 +55,7 @@ import { BagsClient } from "../engine/bags-client.mjs";
 import { mountGpuRoutes } from "../engine/gpu-earnings.mjs";
 import { NosanaJobRouter } from "../engine/nosana-job-router.mjs";
 import { ComputeEngine } from "../engine/compute-engine.mjs";
+import { PremiumComputeEngine } from "../engine/premium-compute.mjs";
 import { mountChatRoutes } from "../engine/grok-client.mjs";
 import bradClient from "../engine/brad-client.mjs";
 import { getBradMind, getThoughtLog } from "../engine/brad-mind.mjs";
@@ -10437,6 +10438,17 @@ const computeEngine = new ComputeEngine({
   broadcastWS,
 });
 computeEngine.mountRoutes(app, { getUser, resolveTier, isOwnerWallet });
+
+// ═══════════════════════════════════════
+// PREMIUM COMPUTE — Paid GPU features (NOS burn flywheel)
+// ═══════════════════════════════════════
+const premiumCompute = new PremiumComputeEngine({
+  redis,
+  connection,
+  computeEngine,
+  broadcastWS,
+});
+premiumCompute.mountRoutes(app, { getUser, resolveTier, isOwnerWallet });
 
 // ═══════════════════════════════════════
 // GROK AI CHAT — GPU support & help
