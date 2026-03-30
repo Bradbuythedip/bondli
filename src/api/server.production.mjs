@@ -2210,6 +2210,7 @@ setInterval(() => {
           scoreVelocity: dyn?.velocity || 0,
           scoreMomentum: dyn?.momentum || "nascent",
           volSpike: +(Math.min(10, volSpike).toFixed(1)),
+          smartMoneyIn: !!t._smartMoneyIn,
         };
       })(),
     };
