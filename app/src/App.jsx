@@ -1019,7 +1019,7 @@ return<TC.Provider value={T}><style>{css(T)}</style>
 {/* User's Node Dashboard */}
 {gpuDash?.registered?<div style={{background:T.sf,border:"1px solid "+T.gn+"22",borderRadius:10,padding:mb?10:14,marginBottom:8}}>
 <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}><IC.gpu s={16} c={T.gn}/><span style={{fontSize:15,fontWeight:800}}>Your Node</span><span style={{width:6,height:6,borderRadius:"50%",background:(gpuDash.node?.status==="offline"||gpuDash.node?.status==="disconnected")?T.rd:T.gn,animation:(gpuDash.node?.status!=="offline"&&gpuDash.node?.status!=="disconnected")?"gp 2s infinite":"none"}}/><span style={{fontSize:11,color:(gpuDash.node?.status==="offline"||gpuDash.node?.status==="disconnected")?T.rd:T.gn,fontWeight:700,textTransform:"uppercase"}}>{gpuDash.node?.status||"offline"}</span></div>
-<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:mb?4:6,marginBottom:10}}>
+<div style={{display:"grid",gridTemplateColumns:mb?"repeat(2,1fr)":"repeat(4,1fr)",gap:mb?4:6,marginBottom:10}}>
 {[
 {l:"EARNED",v:(gpuDash.earnings?.totalNOS||0).toFixed(2)+" NOS",c:T.gn},
 {l:"PENDING",v:(gpuDash.earnings?.pendingNOS||0).toFixed(4)+" NOS",c:T.yl},
@@ -1113,7 +1113,7 @@ return<div style={{marginTop:8,background:activeStep?(activeStep.n===3?T.yl:T.gn
 {l:"Fan",v:(gpuDash.node?.fanSpeed||"—")+"%"},
 {l:"GPU Clock",v:(gpuDash.node?.gpuClock||"—")+" MHz"},
 {l:"Mem Clock",v:(gpuDash.node?.memClock||"—")+" MHz"},
-{l:"VRAM",v:gpuDash.node?.gpuUtil?Math.round((parseInt(gpuDash.node.gpuUtil)||0))+"% used":"—"},
+{l:"VRAM",v:gpuDash.node?.memUtil?Math.round((parseInt(gpuDash.node.memUtil)||0))+"% used":"—"},
 {l:"Temp",v:(gpuDash.node?.gpuTemp||"—")+"C"},
 ].map(d=><div key={d.l} style={{padding:"4px 6px",fontSize:9}}><div style={{color:T.ft,fontWeight:700}}>{d.l}</div><div style={{color:T.tx,fontWeight:800,marginTop:1}}>{d.v}</div></div>)}
 </div>
