@@ -4573,6 +4573,7 @@ function startAutoTrader(wallet, settings) {
       const tw = await getTradingWallet(wallet);
       if (!tw) return;
       const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+      const bradOn = state.settings.bradEnabled !== false && bradClient.isHealthy();
 
       // ═══ DRAWDOWN GOVERNOR — reduce sizing as drawdown deepens ═══
       // Tracks equity curve: if portfolio drops from peak, reduce bet sizes
@@ -5931,7 +5932,6 @@ function startAutoTrader(wallet, settings) {
       // ═══ BRAD PRE-EVALUATION — run cognitive engine on top candidates ═══
       // BRAD evaluations run in parallel (non-blocking) for the top candidates.
       // Results are attached to tokens as _bradEval for the pipeline to consume.
-      const bradOn = state.settings.bradEnabled !== false && bradClient.isHealthy();
       if (bradOn) {
         const bradPromises = hot.slice(0, 5).map(async (t) => {
           try {
