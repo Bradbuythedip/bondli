@@ -25,7 +25,7 @@ export class Engine extends EventEmitter {
     this.dataDir = dataDir;
     this.env = envelope;
     this.clock = clock;
-    this.cfg = { governorMs: 5_000, saveMs: 5_000, reentryCooldownMs: 5 * 60_000, retrainEvery: 50, ...config };
+    this.cfg = { governorMs: 5_000, saveMs: 5_000, reentryCooldownMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, ...config };
     this.ledger = new Ledger(path.join(dataDir, "ledger.jsonl"), { now: clock });
     this.store = new Store(path.join(dataDir, "state.json"), { now: clock });
     this.weights = new WeightStore(path.join(dataDir, "weights"));
@@ -42,6 +42,7 @@ export class Engine extends EventEmitter {
     this.blocked = {};          // venue -> reason from the supervisor (feed stale, router down)
     this.inflight = new Set();  // instruments with an order in flight
     this.cooldown = new Map();  // instrument -> until
+    this.disqualified = new Map(); // instrument -> until; a fatal gate-1 reject is not re-judged every poll
     this.stats = statsFromOutcomes(this.ledger.query({ kind: "outcome", limit: 5000 }));
     this.checksums = checksumFiles();
     this.verdict = { throttle: 1, halt: false, reasons: [] };
@@ -150,9 +151,11 @@ export class Engine extends EventEmitter {
     if (!v.runner) return;
     const gov = this.governorContext(venue);
     const t0 = performance.now();
+    if (event.kind === "candidate" && (this.disqualified.get(event.id) || 0) > event.t_observed) return;
     const decisions = v.runner.run(event, { governor: gov, stats: this.stats, weights: { pumpfun: this.weights.current().weights } });
     const decideMs = performance.now() - t0;
     for (const d of decisions) {
+      if (d.action === "REJECT" && d.gate === "disqualifiers") this.disqualified.set(d.instrument, event.t_observed + this.cfg.disqualifyMs);
       this.latency[venue].decide.record(decideMs);
       d.decide_ms = +decideMs.toFixed(3);
       this.ledger.append({ kind: "decision", venue, id: d.id, decisionId: d.id, ...d });

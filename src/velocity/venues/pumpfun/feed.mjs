@@ -77,6 +77,8 @@ export class PumpfunFeed extends Feed {
     this.fetch = fetchImpl;
     this.wsFactory = wsFactory;
     this.solPrice = 0;
+    this.reemitMs = rest.reemitMs ?? 30_000;
+    this._lastEmitted = new Map();
     this._timers = [];
     this._ws = null;
     this.errors = 0;
@@ -88,15 +90,33 @@ export class PumpfunFeed extends Feed {
     return res.json();
   }
 
+  /** A token is re-emitted only when something the gates read has changed, or
+   *  after reemitMs regardless. Same token, same numbers, no new decision. */
+  _changed(r) {
+    const t = r.payload.token, sc = r.payload.scores || {};
+    const key = `${sc.apeScore | 0}|${t.buys | 0}|${t.sells | 0}|${Math.round((r.payload.mcapUsd || 0) / 250)}|${(r.payload.dynamics || {}).trend || ""}`;
+    const prev = this._lastEmitted.get(r.id);
+    const now = this.clock();
+    if (prev && prev.key === key && now - prev.at < this.reemitMs) return false;
+    this._lastEmitted.set(r.id, { key, at: now });
+    if (this._lastEmitted.size > 5000) for (const [k, v] of this._lastEmitted) { if (now - v.at > 30 * 60_000) this._lastEmitted.delete(k); }
+    return true;
+  }
+
   /** One candidate poll. Returns number of candidates emitted. */
   async pollOnce() {
     const json = await this._get(`/api/radar/scored?min=${this.minScore}&limit=100`);
     this.solPrice = Number(json.solPrice) || this.solPrice;
     const rows = parseScoredResponse(json);
-    for (const r of rows) this.emitEvent({ kind: "candidate", id: r.id, payload: r.payload, t_venue: r.t_venue });
+    let emitted = 0;
+    for (const r of rows) {
+      if (!this._changed(r)) continue;
+      this.emitEvent({ kind: "candidate", id: r.id, payload: r.payload, t_venue: r.t_venue });
+      emitted++;
+    }
     this.touch();
-    this.markHealth(true, `poll ok (${rows.length} of ${json.count ?? "?"} scored)`);
-    return rows.length;
+    this.markHealth(true, `poll ok (${rows.length} of ${json.count ?? "?"} scored, ${emitted} changed)`);
+    return emitted;
   }
 
   /** One tick poll for every watched instrument. */
