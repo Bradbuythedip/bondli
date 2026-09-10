@@ -150,6 +150,13 @@ export class Sizer {
     cap("DAILY_LOSS_BUDGET", budget / stop);
 
     stake = Math.floor(stake * 100) / 100;
+    if (stake > 0 && stake < vc.min_stake_usd && t >= 1) {
+      // A small bankroll: fractional Kelly on $50 lands under the venue's minimum viable order.
+      // Trade the minimum when every cap still admits it; otherwise trade nothing. A stake the
+      // governor has shrunk (throttle < 1) is never floored back up: shrinking means not trading here.
+      const room = Math.min(env.per_trade_max_usd, vc.max_exposure_usd - venueOpen, env.portfolio_max_exposure_usd - totalOpen, budget / stop);
+      if (vc.min_stake_usd <= room) { stake = vc.min_stake_usd; caps.push("MIN_STAKE_FLOOR"); }
+    }
     if (stake < vc.min_stake_usd) return zero(`BELOW_MIN_STAKE_${vc.min_stake_usd}`);
     return {
       stake_usd: stake,

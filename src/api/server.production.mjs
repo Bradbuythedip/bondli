@@ -585,6 +585,7 @@ if (process.env.OWNER_WALLET) registerOwner(process.env.OWNER_WALLET);
 // FIX: Replaces hardcoded * 170
 // ═══════════════════════════════════════
 let solUsdPrice = 135;
+let solUsdPriceAt = 0; // ms of the last successful fetch; 0 until then, so a consumer can tell a live price from the default
 // Pump.fun graduation: bonding curve fills at ~85 SOL virtual reserves
 // Total supply 1B, ~800M on curve. At graduation the price × supply ≈ 69K USD.
 // Formula: 85 SOL in curve × solPrice × ~5.4 (supply/curve distribution ratio)
@@ -594,14 +595,30 @@ async function pollSolPrice() {
   // Primary: Jupiter (free, no key, generous rate limits)
   try {
     const r = await fetch("https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112", { signal: AbortSignal.timeout(5000) });
-    if (r.ok) { const d = await r.json(); const sp = d?.data?.["So11111111111111111111111111111111111111112"]?.price; if (sp > 0) { solUsdPrice = +sp; return; } }
+    if (r.ok) { const d = await r.json(); const sp = d?.data?.["So11111111111111111111111111111111111111112"]?.price; if (sp > 0) { solUsdPrice = +sp; solUsdPriceAt = Date.now(); return; } }
+  } catch {}
+  // Jupiter's current price API (v2 above is legacy and may answer nothing)
+  try {
+    const r = await fetch("https://lite-api.jup.ag/price/v3?ids=So11111111111111111111111111111111111111112", { signal: AbortSignal.timeout(5000) });
+    if (r.ok) { const d = await r.json(); const sp = d?.["So11111111111111111111111111111111111111112"]?.usdPrice; if (sp > 0) { solUsdPrice = +sp; solUsdPriceAt = Date.now(); return; } }
   } catch {}
   // Fallback: CoinGecko (rate-limited on free tier)
   try {
     const r2 = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
       { signal: AbortSignal.timeout(5000) });
-    if (r2.ok) { const d2 = await r2.json(); if (d2?.solana?.usd > 0) solUsdPrice = d2.solana.usd; }
+    if (r2.ok) { const d2 = await r2.json(); if (d2?.solana?.usd > 0) { solUsdPrice = d2.solana.usd; solUsdPriceAt = Date.now(); return; } }
   } catch {}
+  // Exchange spot prices: the trader refuses to size an order in SOL without a fresh stamp,
+  // so a price must come from somewhere.
+  try {
+    const r3 = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT", { signal: AbortSignal.timeout(5000) });
+    if (r3.ok) { const d3 = await r3.json(); if (+d3?.price > 0) { solUsdPrice = +d3.price; solUsdPriceAt = Date.now(); return; } }
+  } catch {}
+  try {
+    const r4 = await fetch("https://api.coinbase.com/v2/prices/SOL-USD/spot", { signal: AbortSignal.timeout(5000) });
+    if (r4.ok) { const d4 = await r4.json(); if (+d4?.data?.amount > 0) { solUsdPrice = +d4.data.amount; solUsdPriceAt = Date.now(); return; } }
+  } catch {}
+  console.warn(`[sol-price] every source failed; serving ${solUsdPrice} from ${solUsdPriceAt ? new Date(solUsdPriceAt).toISOString() : "the default"}`);
 }
 pollSolPrice();
 setInterval(pollSolPrice, 60000); // 60s — SOL price doesn't move fast enough to justify 30s
@@ -7792,7 +7809,7 @@ app.get("/api/radar/scored", (req, res) => {
     });
   }
   rows.sort((a, b) => (b.scores.apeScore || 0) - (a.scores.apeScore || 0));
-  res.json({ ts: now, solPrice: solUsdPrice, gradMc: gradMcUsd(), count: rows.length, tokens: rows.slice(0, limit) });
+  res.json({ ts: now, solPrice: solUsdPrice, solPriceAt: solUsdPriceAt || null, gradMc: gradMcUsd(), count: rows.length, tokens: rows.slice(0, limit) });
 });
 
 app.get("/api/radar/token/:ca", (req, res) => {

@@ -19,6 +19,7 @@ export function hydrateToken(raw) {
 /** Pure: turn one /api/radar/scored response into candidate payloads. */
 export function parseScoredResponse(json) {
   const solPrice = Number(json?.solPrice) || 0;
+  const solPriceAt = Number(json?.solPriceAt) || 0; // 0: the server never fetched a price (it serves its default)
   const rows = Array.isArray(json?.tokens) ? json.tokens : [];
   return rows
     .filter(r => r?.token?.ca)
@@ -31,6 +32,7 @@ export function parseScoredResponse(json) {
         scores: r.scores || { apeScore: r.token._apeScore || 0 },
         dynamics: r.dynamics || null,
         solPrice,
+        solPriceAt,
         mcapUsd: Number(r.token.mcapUsd) || 0,
         vSolInBondingCurve: Number(r.token.vSolInBondingCurve) || 0,
       },

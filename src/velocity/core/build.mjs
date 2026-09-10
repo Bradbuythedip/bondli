@@ -24,7 +24,9 @@ export const DEFAULT_CONFIG = Object.freeze({
 });
 
 export function buildEngine(config, { clock } = {}) {
-  const cfg = { ...DEFAULT_CONFIG, ...config, venues: { ...DEFAULT_CONFIG.venues, ...(config.venues || {}) } };
+  const venueNames = new Set([...Object.keys(DEFAULT_CONFIG.venues), ...Object.keys(config.venues || {})]);
+  const venuesCfg = Object.fromEntries([...venueNames].map(k => [k, { ...(DEFAULT_CONFIG.venues[k] || {}), ...((config.venues || {})[k] || {}) }]));
+  const cfg = { ...DEFAULT_CONFIG, ...config, venues: venuesCfg };
   const dataDir = path.resolve(cfg.dataDir);
   const envelope = loadRiskEnvelope(path.resolve(cfg.riskFile));
   const venues = {};

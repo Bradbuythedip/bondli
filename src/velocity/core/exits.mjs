@@ -77,6 +77,8 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   const p = tick.payload || {};
   const token = p.token ? { ...p.token, mcapUsd: Number(p.mcapUsd) || p.token.mcapUsd || 0, vSolInBondingCurve: Number(p.vSolInBondingCurve) || p.token.vSolInBondingCurve || 0 }
     : { mcapUsd: Number(p.mcapUsd) || 0, vSolInBondingCurve: Number(p.vSolInBondingCurve) || 0 };
+  // The time stop needs no price: a token that left the radar or went to zero still gets sold.
+  if (held > plan.max_hold_ms) return { action: "SELL", pct: 100, reason: "MAX_HOLD", layer: 2, detail: `${Math.round(held / 60000)}min` };
   if (!(token.mcapUsd > 0)) return null;
   const pos = position._bondli || (position._bondli = {
     entryMcap: position.entryMark, peakMcap: position.peak || position.entryMark, tier: Number(plan.key), entryScore: position.entryScore || 0,
@@ -87,10 +89,7 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   pos.liveBuys = token.buys ?? pos.liveBuys ?? 0;
   const r = withClock(now, () => runExitChecks(pos, token, p.dynamics || null, plan.settings));
   position.peak = pos.peakMcap;
-  if (!r) {
-    if (held > plan.max_hold_ms) return { action: "SELL", pct: 100, reason: "MAX_HOLD", layer: 2, detail: `${Math.round(held / 60000)}min` };
-    return null;
-  }
+  if (!r) return null;
   if (r.action === "WIDEN_TPS") {
     const tp = pos.exitPlan.tpLevels; const m = r.multiplier || 1.25;
     pos.exitPlan.tpLevels = { ...tp, tp1: Math.round(tp.tp1 * m), tp2: Math.round(tp.tp2 * m), tp3: tp.tp3 ? Math.round(tp.tp3 * m) : 0 };

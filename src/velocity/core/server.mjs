@@ -13,7 +13,8 @@ function readBody(req) {
 
 export function renderStatusHtml(s) {
   const esc = v => String(v ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-  const halt = s.halt?.mode ? `<div class="banner red">HALTED (${esc(s.halt.mode)}): ${esc(s.halt.reason)}</div>` : "";
+  const halt = (s.halt?.mode ? `<div class="banner red">HALTED (${esc(s.halt.mode)}): ${esc(s.halt.reason)}</div>` : "")
+    + Object.entries(s.halt?.venues || {}).filter(([, h]) => h?.mode).map(([v, h]) => `<div class="banner red">${esc(v)} ${esc(h.mode)}: ${esc(h.reason)} (velocity resume ${esc(v)})</div>`).join("");
   const stale = s.now - (s.heartbeatAt || 0) > 60_000 ? `<div class="banner amber">stale: last heartbeat ${Math.round((s.now - s.heartbeatAt) / 1000)}s ago</div>` : "";
   const venues = Object.entries(s.venues).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v.mode)}</td><td>${v.blocked ? esc(v.blocked) : v.feed?.stale ? "stale" : v.feed ? "ok" : "no data"}</td><td>${v.feed?.ageMs ?? "-"}</td><td>${v.latency?.observe?.p95 ?? "-"}/${v.budget.observe}</td><td>${v.latency?.decide?.p95 ?? "-"}/${v.budget.decide}</td><td>${v.gos}/${v.evaluated}</td><td>${v.promotion.ok ? "ready" : v.promotion.items.filter(i => !i.ok).map(i => esc(i.name)).join(", ")}</td></tr>`).join("");
   const positions = s.positions.length ? s.positions.map(p => `<tr><td>${esc(p.venue)}</td><td>${esc(p.instrument)}</td><td>${esc(p.plan?.key)}</td><td>$${(p.notional_usd || 0).toFixed(2)}</td><td>${p.changePct == null ? "-" : p.changePct.toFixed(1) + "%"}</td><td>${p.unrealized_usd ?? "-"}</td></tr>`).join("") : `<tr><td colspan="6">no positions</td></tr>`;
@@ -46,8 +47,10 @@ export function startControlServer({ engine, host = "127.0.0.1", port = 3210 }) 
         return json(res, 200, r);
       }
       if (req.method === "POST" && url.pathname === "/resume") { const body = await readBody(req); return json(res, 200, engine.resume(body.venue, { by: "http" })); }
-      if (req.method === "POST" && url.pathname === "/venue") { const body = await readBody(req); return json(res, 200, await engine.setVenueMode(body.venue, body.mode, { override: !!body.override, by: "http" })); }
-      if (req.method === "POST" && url.pathname.startsWith("/promote/")) return json(res, 200, await engine.setVenueMode(url.pathname.slice(9), "live", { by: "http" }));
+      // A mode change runs inside the engine queue so it cannot interleave with an entry or an exit.
+      const queued = fn => new Promise(resolve => engine.enqueue(async () => { try { resolve(await fn()); } catch (err) { resolve({ ok: false, error: err.message }); } }));
+      if (req.method === "POST" && url.pathname === "/venue") { const body = await readBody(req); return json(res, 200, await queued(() => engine.setVenueMode(body.venue, body.mode, { override: !!body.override, by: "http" }))); }
+      if (req.method === "POST" && url.pathname.startsWith("/promote/")) return json(res, 200, await queued(() => engine.setVenueMode(url.pathname.slice(9), "live", { by: "http" })));
       json(res, 404, { error: "not found" });
     } catch (err) {
       json(res, 500, { error: err.message });

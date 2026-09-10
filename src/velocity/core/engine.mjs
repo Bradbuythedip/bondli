@@ -25,7 +25,7 @@ export class Engine extends EventEmitter {
     this.dataDir = dataDir;
     this.env = envelope;
     this.clock = clock;
-    this.cfg = { governorMs: 5_000, saveMs: 5_000, reentryCooldownMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, ...config };
+    this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000, failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, ...config };
     this.ledger = new Ledger(path.join(dataDir, "ledger.jsonl"), { now: clock });
     this.store = new Store(path.join(dataDir, "state.json"), { now: clock });
     this.weights = new WeightStore(path.join(dataDir, "weights"));
@@ -35,7 +35,9 @@ export class Engine extends EventEmitter {
     this.venues = {};
     for (const [venue, v] of Object.entries(venues)) {
       this.venues[venue] = { ...v, runner: v.edge ? new GateRunner({ venue, edge: v.edge }) : null };
-      if (v.mode) this.store.setVenueMode(venue, v.mode);
+      // The config mode seeds a venue the store has never seen. A persisted mode (an operator's
+      // go-live, or a paper downgrade) wins over the file on restart.
+      if (v.mode && !this.store.state.venues[venue]?.mode) this.store.setVenueMode(venue, v.mode);
     }
     this.latency = {};
     for (const venue of Object.keys(this.venues)) this.latency[venue] = { decide: new LatencyHistogram(10_000, 1), send: new LatencyHistogram(), confirm: new LatencyHistogram() };
@@ -43,6 +45,8 @@ export class Engine extends EventEmitter {
     this.inflight = new Set();  // instruments with an order in flight
     this.cooldown = new Map();  // instrument -> until
     this.disqualified = new Map(); // instrument -> until; a fatal gate-1 reject is not re-judged every poll
+    this.pendingBuys = new Map();  // instrument -> { sig, decision, orderId, stake, sizing, at }: sent, not yet confirmed
+    this._lastSweepTry = new Map();
     this.stats = statsFromOutcomes(this.ledger.query({ kind: "outcome", limit: 5000 }));
     this.checksums = checksumFiles();
     this.verdict = { throttle: 1, halt: false, reasons: [] };
@@ -58,6 +62,7 @@ export class Engine extends EventEmitter {
     this.running = true;
     this.store.state.startedAt = this.clock();
     this.store.rollDay();
+    await this.initLiveRouters();
     if (reconcile) await this.reconcile();
     this.evaluateGovernor();
     for (const [venue, v] of Object.entries(this.venues)) {
@@ -69,12 +74,78 @@ export class Engine extends EventEmitter {
     // unref: the control server keeps a real deployment alive; tests and tools must be able to exit.
     this._timers.push(setInterval(() => this.enqueue(() => this.evaluateGovernor()), this.cfg.governorMs).unref());
     this._timers.push(setInterval(() => this.store.save(), this.cfg.saveMs).unref());
+    this._timers.push(setInterval(() => this.enqueue(() => this.sweep()), this.cfg.sweepMs).unref());
     this.store.save();
     this.emit("started");
   }
 
+  /** A venue persisted as live gets its router initialized before any reconcile, order or exit.
+   *  If that fails the venue freezes rather than treating an uninitialized router as an empty venue. */
+  async initLiveRouters() {
+    for (const [venue, v] of Object.entries(this.venues)) {
+      const mode = this.store.venueMode(venue);
+      if (v.mode && v.mode !== mode) this.log("warn", `${venue}: config says ${v.mode}, persisted mode ${mode} wins (change it with: velocity venue ${venue} ${v.mode})`);
+      if (mode !== "live" || !v.liveRouter || v.liveRouter.ready) continue;
+      try {
+        const pre = await v.liveRouter.init();
+        const h = await v.liveRouter.health();
+        if (!h.ok) throw new Error(h.detail);
+        this.ledger.append({ kind: "venue", venue, mode: "live", by: "restart", preflight: pre });
+        this.log("info", `${venue}: live router ready${pre?.wallet ? ` (wallet ${pre.wallet}, ${Number(pre.balanceSol).toFixed(4)} SOL)` : ""}`);
+        this._clearStartupFreeze(venue, /^(live router not ready|reconcile)/);
+      } catch (err) {
+        const reason = `live router not ready: ${err.message}`;
+        this.log("error", `${venue}: ${reason}; entries frozen`);
+        this.store.setHalt("freeze", reason, venue);
+        this.ledger.append({ kind: "halt", mode: "freeze", reason, by: "restart", venue });
+        this.alerter?.send("error", `${venue} is live but its router failed to initialize: ${err.message}. Entries frozen; fix .env and restart, or: velocity venue ${venue} paper`);
+      }
+    }
+  }
+
+  /** A freeze this engine wrote at a failed startup is lifted by a startup that succeeds; an
+   *  operator's own freeze (halt freeze, governor) is not touched. */
+  _clearStartupFreeze(venue, pattern) {
+    const h = this.store.state.halt.venues?.[venue];
+    if (!h || !pattern.test(h.reason || "")) return;
+    this.store.setHalt(null, null, venue);
+    this.ledger.append({ kind: "resume", venue, by: "restart", cleared: h.reason });
+    this.log("info", `${venue}: earlier freeze lifted (${h.reason})`);
+  }
+
+  /** Clock-driven safety net, independent of ticks: settles buys that confirmed after their
+   *  timeout, retries a flatten that failed, and sells a position past its max hold whose
+   *  instrument has gone quiet (left the radar, zero mcap). */
+  async sweep() {
+    const now = this.clock();
+    const due = key => { if (now - (this._lastSweepTry.get(key) || 0) < this.cfg.sweepRetryMs) return false; this._lastSweepTry.set(key, now); return true; };
+    for (const [inst, pb] of [...this.pendingBuys]) {
+      const router = this.routerFor(pb.venue);
+      if (!router?.resolvePending || !due(`buy:${inst}`)) continue;
+      let r;
+      try { r = await router.resolvePending({ instrument: inst, side: "BUY", sig: pb.sig, at: pb.at, reference: pb.decision.reference, stakeUsd: pb.stake }); } catch (err) { r = { ok: false, failure: { code: "ROUTER_THREW", reason: err.message } }; }
+      if (r.ok) { this.pendingBuys.delete(inst); this.ledger.append({ kind: "order", venue: pb.venue, orderId: pb.orderId, decisionId: pb.decision.id, stage: "sent", instrument: inst, side: "BUY", stake_usd: pb.stake, late: true, t_sent: pb.at }); this._openPosition(pb.decision, pb.orderId, pb.stake, pb.sizing, r); }
+      else if (r.failure?.expired) {
+        this.pendingBuys.delete(inst);
+        this.ledger.append({ kind: "order", venue: pb.venue, orderId: pb.orderId, decisionId: pb.decision.id, stage: "failed", reason: r.failure.reason, code: r.failure.code, venue_ref: pb.sig, late: true });
+        if (r.failure.fee_usd > 0) this.chargeFee(pb.venue, inst, r.failure.fee_usd, `failed late buy ${pb.sig}`);
+      }
+    }
+    for (const p of this.store.openPositions()) {
+      if (this.inflight.has(p.instrument) || !this.venues[p.venue]) continue;
+      const halted = this.store.isHalted(p.venue);
+      if (halted?.mode === "flatten") { if (due(p.id)) await this.closePosition(p, 100, "FLATTEN", { by: "retry" }); continue; }
+      if (p.legs?.length) continue; // multi-leg sets hold to redemption
+      const maxHold = p.plan?.max_hold_ms;
+      const quiet = now - (p.lastTickAt || p.entryTime);
+      if (maxHold && now - p.entryTime > maxHold && quiet > this.cfg.tickSilenceMs && due(p.id))
+        await this.closePosition(p, 100, "MAX_HOLD", { by: "timer", detail: `${Math.round((now - p.entryTime) / 60000)}min, no tick for ${Math.round(quiet / 1000)}s` });
+    }
+  }
+
   async stop() {
     this.running = false;
+    this.stopping = true; // queued exits still run; queued candidates do not open new risk
     for (const t of this._timers) clearInterval(t);
     this._timers = [];
     for (const v of Object.values(this.venues)) { try { await v.feed?.stop(); } catch {} }
@@ -119,26 +190,44 @@ export class Engine extends EventEmitter {
 
   async setVenueMode(venue, mode, { override = false, by = "operator" } = {}) {
     if (!this.venues[venue]) throw new Error(`unknown venue ${venue}`);
+    const current = this.store.venueMode(venue);
+    const refuse = (error, extra = {}) => ({ ok: false, mode: current, error, ...extra });
     let preflight = null;
+    let liveStartCapUsd = null;
+    if (mode !== "live" && current === "live") {
+      // Real tokens must not be handed to the paper router: flatten them first.
+      const liveOpen = this.store.openPositions(venue).filter(p => !p.paper);
+      const pending = [...this.pendingBuys.values()].filter(pb => pb.venue === venue);
+      if (liveOpen.length || pending.length) return refuse(`${liveOpen.length} live position(s) and ${pending.length} unconfirmed buy(s) still open (${[...liveOpen.map(p => p.instrument), ...pending.map(pb => pb.decision.instrument)].join(", ")}); run: velocity halt flatten, wait for the sweep, then retry, then: velocity resume ${venue}`);
+    }
     if (mode === "live") {
       const gate = this.promotion(venue);
-      if (!gate.ok && !override) return { ok: false, gate, mode: this.store.venueMode(venue) };
+      if (!gate.ok && !override) return { ok: false, gate, mode: current };
       const router = this.venues[venue].liveRouter;
-      if (!router) return { ok: false, mode: this.store.venueMode(venue), error: "no live router configured for this venue" };
+      if (!router) return refuse("no live router configured for this venue");
       try { preflight = await router.init(); }
-      catch (err) { return { ok: false, mode: this.store.venueMode(venue), error: `live router not ready: ${err.message}` }; }
+      catch (err) { return refuse(`live router not ready: ${err.message}`); }
       const h = await router.health();
-      if (!h.ok) return { ok: false, mode: this.store.venueMode(venue), error: `live venue unreachable: ${h.detail}` };
-      const minSol = this.env.venues[venue].min_stake_usd / Math.max(1, this.solPriceHint || 100);
-      if (preflight && preflight.balanceSol != null && preflight.balanceSol < minSol + 0.01)
-        return { ok: false, mode: this.store.venueMode(venue), error: `wallet ${preflight.wallet} holds ${preflight.balanceSol.toFixed(4)} SOL, below one minimum stake plus fees`, preflight };
-      this.venues[venue].liveStartCapUsd = gate.liveStartCapUsd;
+      if (!h.ok) return refuse(`live venue unreachable: ${h.detail}`);
+      // Before the first radar poll no SOL price is known; $100 asks for more SOL than a dearer
+      // SOL needs, so an unknown price refuses rather than admits a wallet that cannot cover one order.
+      const solPrice = this.solPriceHint || this.venues[venue].feed?.solPrice || 0;
+      const minSol = this.env.venues[venue].min_stake_usd / (solPrice > 0 ? solPrice : 100) + (router.priorityFeeSol || 0) + 0.006;
+      if (preflight && preflight.balanceSol != null && preflight.balanceSol < minSol)
+        return refuse(`wallet ${preflight.wallet} holds ${preflight.balanceSol.toFixed(4)} SOL, below one minimum stake plus fees (${minSol.toFixed(4)} SOL)`, { preflight });
+      // Paper positions cannot be sold through the live router: close them while the paper router still serves the venue.
+      for (const p of this.store.openPositions(venue).filter(p => p.paper)) {
+        const r = await this.closePosition(p, 100, "VENUE_MODE_CHANGE", { by });
+        if (!r.ok) return refuse(`paper position ${p.instrument} could not be closed (${r.failure.reason}); run: velocity halt flatten, then retry`, { preflight });
+      }
+      liveStartCapUsd = gate.liveStartCapUsd;
+      this.venues[venue].liveStartCapUsd = liveStartCapUsd;
       if (!gate.ok) this.alerter?.send("warn", `${venue} switched to LIVE by operator override with the paper gate red: ${gate.items.filter(i => !i.ok).map(i => i.name).join(", ")}`);
     }
-    this.store.setVenueMode(venue, mode);
-    this.ledger.append({ kind: "venue", venue, mode, by, override: !!override, gateOk: mode === "live" ? this.promotion(venue).ok : null, preflight });
+    this.store.setVenueMode(venue, mode, mode === "live" ? { liveStartCapUsd } : {});
+    this.ledger.append({ kind: "venue", venue, mode, by, override: !!override, gateOk: mode === "live" ? this.promotion(venue).ok : null, preflight, liveStartCapUsd });
     this.store.save();
-    return { ok: true, mode, liveStartCapUsd: this.venues[venue].liveStartCapUsd || null, override: !!override, preflight };
+    return { ok: true, mode, liveStartCapUsd: liveStartCapUsd || null, override: !!override, preflight };
   }
 
   routerFor(venue) {
@@ -156,6 +245,7 @@ export class Engine extends EventEmitter {
 
     // Exits first: a held instrument's tick is worth more than a new candidate.
     await this.checkExits(event);
+    if (this.stopping) return; // queued behind a slow order at shutdown: exits ran, no new entries
 
     if (event.payload?.solPrice > 0) this.solPriceHint = event.payload.solPrice;
     if (!v.runner) return;
@@ -197,13 +287,13 @@ export class Engine extends EventEmitter {
     const venue = decision.venue;
     const v = this.venues[venue];
     const inst = decision.instrument;
-    if (this.inflight.has(inst) || this.store.openPositions(venue).some(p => p.instrument === inst))
+    if (this.inflight.has(inst) || this.pendingBuys.has(inst) || this.store.openPositions(venue).some(p => p.instrument === inst))
       return this.ledger.append({ kind: "order", venue, orderId: `${decision.id}:o`, decisionId: decision.id, stage: "failed", reason: "ALREADY_IN_OR_INFLIGHT" });
     if ((this.cooldown.get(inst) || 0) > event.t_observed)
       return this.ledger.append({ kind: "order", venue, orderId: `${decision.id}:o`, decisionId: decision.id, stage: "failed", reason: "REENTRY_COOLDOWN" });
 
     const sizing = this.sizer.size({ decision, portfolio: this.portfolioSnapshot(), throttle: this.verdict.throttle, halted: !!this.store.isHalted(venue) });
-    const liveCap = this.store.venueMode(venue) === "live" ? v.liveStartCapUsd || null : null;
+    const liveCap = this.store.venueMode(venue) === "live" ? (v.liveStartCapUsd ?? this.store.state.venues[venue]?.liveStartCapUsd ?? null) : null;
     let stake = sizing.stake_usd;
     if (liveCap && stake > liveCap) { stake = liveCap; sizing.caps.push("LIVE_START_CAP"); }
     const orderId = `${decision.id}:o`;
@@ -224,10 +314,30 @@ export class Engine extends EventEmitter {
     try { r = await router.submit(order); } catch (err) { r = { ok: false, failure: { orderId, code: "ROUTER_THREW", reason: err.message } }; }
     this.inflight.delete(inst);
     if (!r.ok) {
-      this.ledger.append({ kind: "order", venue, orderId, decisionId: decision.id, stage: r.unwound ? "unwound" : "failed", reason: r.failure.reason, code: r.failure.code, unwound: r.unwound || null });
+      this.ledger.append({ kind: "order", venue, orderId, decisionId: decision.id, stage: r.unwound ? "unwound" : "failed", reason: r.failure.reason, code: r.failure.code, venue_ref: r.failure.venue_ref || null, unwound: r.unwound || null });
       if (r.unwound) this.ledger.append({ kind: "outcome", venue, instrument: inst, decisionId: decision.id, pnl_usd: -(r.unwound.reduce((s, u) => s + (u.failed ? 0 : Math.max(0, (u.stake_usd || 0) - (u.notional_usd || 0))), 0)), pnl_pct: 0, stake_usd: stake, p_win: decision.p_win, confidence: decision.confidence, model: decision.model, tier: decision.tier, held_ms: 0, reason: "LEG_UNWOUND", paper: !!(r.unwound[0]?.paper) });
+      // A venue failure is not retried on the next poll: the candidate re-emits every few seconds
+      // and each on-chain failure costs the priority fee.
+      if (["SEND_FAILED", "UNCONFIRMED", "INSUFFICIENT_SOL", "ROUTER_THREW", "STALE_SOL_PRICE"].includes(r.failure.code)) this.cooldown.set(inst, event.t_observed + this.cfg.failCooldownMs);
+      if (r.failure.fee_usd > 0) this.chargeFee(venue, inst, r.failure.fee_usd, `failed send ${r.failure.venue_ref || ""}`);
+      // Sent but not confirmed in time: the transaction may still land. The sweep settles it either way.
+      if (r.failure.code === "UNCONFIRMED" && r.failure.venue_ref) this.pendingBuys.set(inst, { venue, sig: r.failure.venue_ref, decision, orderId, stake, sizing, at: t_sent });
       return;
     }
+    this._openPosition(decision, orderId, stake, sizing, r);
+  }
+
+  /** A fee the venue charged for nothing (a send that failed on chain) is real money: the day sees it. */
+  chargeFee(venue, instrument, usd, note) {
+    this.store.rollDay();
+    this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd - usd).toFixed(4);
+    this.ledger.append({ kind: "fee", venue, instrument, usd: +usd.toFixed(4), note });
+  }
+
+  _openPosition(decision, orderId, stake, sizing, r) {
+    const venue = decision.venue;
+    const v = this.venues[venue];
+    const inst = decision.instrument;
     const fill = r.fill;
     this.latency[venue].confirm.record(fill.latency_ms || 0);
     const key = venue === "pumpfun" ? decision.tier : decision.model;
@@ -235,7 +345,8 @@ export class Engine extends EventEmitter {
     const position = {
       id: `${venue}:${inst}:${fill.t_filled}`, venue, instrument: inst, model: decision.model, tier: decision.tier, group: decision.group,
       decisionId: decision.id, orderId, entryTime: fill.t_filled, entryPrice: fill.price, qty: fill.qty, notional_usd: fill.notional_usd, stake_usd: stake,
-      cost_usd: fill.notional_usd + (fill.fee_usd || 0), proceeds_usd: 0, remaining_qty: fill.qty,
+      // notional_usd is what left the wallet, fees included, for paper and live alike; fee_usd is informational.
+      cost_usd: fill.notional_usd, proceeds_usd: 0, remaining_qty: fill.qty,
       entryMark: venue === "pumpfun" ? (decision.reference?.mcapUsd || 0) : fill.price, mark: null, peak: null, changePct: 0,
       entryScore: decision.features ? Math.round((decision.features.apeScore || 0) * 100) : 0,
       worst_case_fraction: sizing.stop_fraction ?? decision.stop_fraction ?? 1, plan, status: "open",
@@ -291,6 +402,7 @@ export class Engine extends EventEmitter {
       if (event.kind === "market" && !event.payload.closed) continue;
       if (p.legs && event.kind !== "fact" && event.kind !== "market") continue; // multi-leg sets hold to redemption
       markPosition(p, tick);
+      if (tick.payload?.vSolInBondingCurve > 0) p.lastVSol = tick.payload.vSolInBondingCurve;
       let action = null;
       try { action = evaluateExit(p, tick, { now: event.t_observed }); }
       catch (err) { this.log("error", `exit eval ${p.id}: ${err.message}`); continue; }
@@ -300,10 +412,16 @@ export class Engine extends EventEmitter {
   }
 
   async closePosition(p, pct, reason, { action = "SELL", layer = null, detail = null, tick = null, by = "plan" } = {}) {
+    if (p.status !== "open") return { ok: false, failure: { code: "ALREADY_CLOSED", reason: "position is not open" } };
     const venue = p.venue;
     const router = this.routerFor(venue);
     if (!router) return { ok: false, failure: { reason: "NO_ROUTER" } };
-    const reference = tick?.payload?.book ? { book: tick.payload.book } : tick?.payload ? { ...p.reference, ...tick.payload, solPrice: tick.payload.solPrice || p.reference?.solPrice } : p.reference;
+    // Proceeds are measured in SOL; the freshest known SOL price converts them.
+    const freshSol = tick?.payload?.solPrice || this.solPriceHint || p.reference?.solPrice || 0;
+    // With no tick, a paper sell is priced at the last mark, not the entry curve: a token goes quiet
+    // when it dies. (A live sell measures real proceeds; the reference only sizes the model check.)
+    const lastMark = venue === "pumpfun" && p.mark > 0 ? { mcapUsd: p.mark, mcapSol: undefined, vTokensInBondingCurve: undefined, vSolInBondingCurve: p.lastVSol || p.reference?.vSolInBondingCurve } : {};
+    const reference = tick?.payload?.book ? { book: tick.payload.book } : tick?.payload ? { ...p.reference, ...tick.payload, solPrice: freshSol } : { ...(p.reference || {}), ...lastMark, solPrice: freshSol };
     let r;
     if (action === "REDEEM") {
       // Paper redemption: the winning side pays 1.00 per share.
@@ -315,10 +433,38 @@ export class Engine extends EventEmitter {
       r = await router.close(p, pct, { reference });
     }
     if (!r.ok) {
-      this.ledger.append({ kind: "exit", venue, positionId: p.id, instrument: p.instrument, pct, reason, failed: true, error: r.failure.reason });
+      const code = r.failure.code;
+      // Sent but not confirmed in time: remember the signature so the next attempt settles it
+      // instead of selling twice. A repeat of the same signature keeps its original send time,
+      // or the blockhash lifetime would never run out and a dropped sell could never be resent.
+      if (code === "UNCONFIRMED" && r.failure.venue_ref && p.pendingExit?.sig !== r.failure.venue_ref) p.pendingExit = { sig: r.failure.venue_ref, pct, reason, at: r.failure.t_sent || this.clock() };
+      if (r.failure.fee_usd > 0) this.chargeFee(venue, p.instrument, r.failure.fee_usd, `failed sell ${r.failure.venue_ref || ""}`);
+      if (code === "NO_POSITION" && !p.paper && this.store.venueMode(venue) === "live") {
+        // One empty wallet read is not proof; two, a retry interval apart, are.
+        if (p.flatSeenAt && this.clock() - p.flatSeenAt >= this.cfg.sweepRetryMs) return this.finalizeFlat(p, reason, r, by);
+        if (!p.flatSeenAt) p.flatSeenAt = this.clock();
+      } else if (p.flatSeenAt) delete p.flatSeenAt;
+      this.ledger.append({ kind: "exit", venue, positionId: p.id, instrument: p.instrument, pct, reason, failed: true, error: r.failure.reason, code, venue_ref: r.failure.venue_ref || null });
       this.log("warn", `EXIT FAILED ${p.instrument} ${reason}: ${r.failure.reason}`);
+      this.store.save();
       return r;
     }
+    if (p.pendingExit) { pct = r.fill.pending_pct ?? pct; delete p.pendingExit; }
+    if (p.flatSeenAt) delete p.flatSeenAt;
+    return this._bookExit(p, r, pct, reason, { action, layer, detail, by });
+  }
+
+  /** The venue holds none of this instrument and no pending sell explains it: the tokens left the
+   *  wallet outside the engine. Book the whole cost as lost so the daily limit sees real money. */
+  finalizeFlat(p, reason, r, by) {
+    const why = `${reason}:FLAT_AT_VENUE`;
+    const fill = { price: 0, qty: p.remaining_qty ?? p.qty, notional_usd: 0, fee_usd: 0, t_filled: this.clock(), latency_ms: 0, venue_ref: null, paper: false, flat_at_venue: true };
+    this.alerter?.send("error", `${p.venue} ${p.instrument}: wallet holds none of it and no pending sell explains that (${r.failure.reason}); booked as a loss of $${Math.max(0, (p.cost_usd || 0) - (p.proceeds_usd || 0)).toFixed(2)}`);
+    return this._bookExit(p, { ok: true, fill, flat: true }, 100, why, { action: "SELL", layer: null, detail: r.failure.reason, by, flat: true });
+  }
+
+  _bookExit(p, r, pct, reason, { action = "SELL", layer = null, detail = null, by = "plan", flat = false } = {}) {
+    const venue = p.venue;
     const f = r.fill;
     const proceeds = f.notional_usd;
     p.proceeds_usd = (p.proceeds_usd || 0) + proceeds;
@@ -332,7 +478,7 @@ export class Engine extends EventEmitter {
       this.store.rollDay();
       this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4);
       this.store.state.day.trades++;
-      this.ledger.append({ kind: "outcome", venue, instrument: p.instrument, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: held, reason, features: p.features, paper: !!f.paper });
+      this.ledger.append({ kind: "outcome", venue, instrument: p.instrument, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: held, reason, features: p.features, paper: !!f.paper, by, flat_at_venue: flat || undefined });
       this.cooldown.set(p.instrument, this.clock() + this.cfg.reentryCooldownMs);
       this.venues[venue].feed?.unwatch(p.instrument);
       for (const l of p.legs || []) this.venues[venue].feed?.unwatch(l.instrument);
@@ -391,8 +537,10 @@ export class Engine extends EventEmitter {
       const mode = this.store.venueMode(venue);
       if (mode === "off") continue;
       const router = this.routerFor(venue);
-      const rep = { matched: [], adopted: [], closed: [], frozen: false, error: null };
+      const rep = { matched: [], adopted: [], closed: [], unknown: [], frozen: false, error: null };
       report.venues[venue] = rep;
+      // An uninitialized live router reports an empty wallet; that is not a reason to close anything.
+      if (!router || router.ready === false) { rep.error = "live router not initialized"; rep.frozen = true; if (!this.store.state.halt.venues?.[venue]) this.store.setHalt("freeze", "reconcile: live router not initialized", venue); continue; }
       let venuePositions;
       try { venuePositions = await router.positions(); }
       catch (err) { rep.error = err.message; rep.frozen = true; this.store.setHalt("freeze", `reconcile failed: ${err.message}`, venue); continue; }
@@ -402,9 +550,14 @@ export class Engine extends EventEmitter {
       const fills = this.ledger.readAll(r => r.kind === "fill" && r.venue === venue && r.side === "BUY");
       const finals = new Set(this.ledger.readAll(r => r.kind === "exit" && r.venue === venue && r.final).map(r => r.positionId));
       const openInLedger = new Map(fills.filter(f => !finals.has(f.positionId)).map(f => [f.instrument, f]));
+      // Orders this engine sent: a buy that confirmed after its timeout is ours; an airdrop is not.
+      const sent = new Map(this.ledger.readAll(r => r.kind === "order" && r.venue === venue && r.stage === "sent" && r.instrument).map(r => [r.instrument, r]));
       for (const [inst, vp] of atVenue) {
-        if (inStore.has(inst)) { const p = inStore.get(inst); if (vp.qty != null) { p.qty = vp.qty; p.remaining_qty = vp.qty; } rep.matched.push(inst); continue; }
+        // A pending partial sell may already be reflected in the wallet: its settlement subtracts
+        // the sold quantity later, so the store's quantity is left alone until then.
+        if (inStore.has(inst)) { const p = inStore.get(inst); if (vp.qty != null && !p.pendingExit) { p.qty = vp.qty; p.remaining_qty = vp.qty; } rep.matched.push(inst); continue; }
         const f = openInLedger.get(inst);
+        if (!f && !sent.has(inst)) { rep.unknown.push({ instrument: inst, qty: vp.qty }); continue; }
         const decision = f ? this.ledger.readAll(r => r.kind === "decision" && r.decisionId === f.decisionId)[0] : null;
         const tier = decision?.tier || 2;
         const key = venue === "pumpfun" ? (tier >= 1 && tier <= 3 ? tier : 2) : (decision?.model || "resolved_fact");
@@ -412,7 +565,7 @@ export class Engine extends EventEmitter {
         const position = {
           id: f?.positionId || `${venue}:${inst}:adopted:${this.clock()}`, venue, instrument: inst, model: decision?.model || "adopted", tier, group: decision?.group || null,
           decisionId: f?.decisionId || null, orderId: f?.orderId || null, entryTime: f?.ts || this.clock(), entryPrice: f?.price || vp.avgPrice || 0, qty: vp.qty, remaining_qty: vp.qty,
-          notional_usd: f?.notional_usd || vp.notional_usd || 0, stake_usd: f?.notional_usd || vp.notional_usd || 0, cost_usd: (f?.notional_usd || vp.notional_usd || 0) + (f?.fee_usd || 0), proceeds_usd: 0,
+          notional_usd: f?.notional_usd || vp.notional_usd || sent.get(inst)?.stake_usd || 0, stake_usd: f?.notional_usd || vp.notional_usd || sent.get(inst)?.stake_usd || 0, cost_usd: f?.notional_usd || vp.notional_usd || sent.get(inst)?.stake_usd || 0, proceeds_usd: 0,
           entryMark: venue === "pumpfun" ? decision?.reference?.mcapUsd || 0 : f?.price || vp.avgPrice || 0, mark: null, peak: null, changePct: 0, entryScore: decision?.features ? Math.round(decision.features.apeScore * 100) : 0,
           worst_case_fraction: decision?.stop_fraction ?? 1, plan, status: "open", p_win: decision?.p_win ?? null, confidence: decision?.confidence ?? null, features: decision?.features || null,
           reference: decision?.reference || null, legs: null, paper: mode === "paper", adopted: true,
@@ -422,10 +575,22 @@ export class Engine extends EventEmitter {
       }
       for (const [inst, p] of inStore) {
         if (atVenue.has(inst)) continue;
-        this.store.closePosition(p.id, { exitReason: "MISSING_AT_VENUE", pnl_usd: null });
-        this.ledger.append({ kind: "outcome", venue, instrument: inst, positionId: p.id, decisionId: p.decisionId, pnl_usd: 0, pnl_pct: 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: this.clock() - p.entryTime, reason: "MISSING_AT_VENUE", reconciled: true, paper: !!p.paper });
+        // A sell that confirmed after its timeout, then a crash: the venue can still prove the proceeds.
+        if (p.pendingExit?.sig && router.resolvePending) {
+          let r = null;
+          try { r = await router.resolvePending({ instrument: inst, side: "SELL", sig: p.pendingExit.sig, at: p.pendingExit.at, reference: { ...(p.reference || {}), mcapUsd: p.mark || p.reference?.mcapUsd }, qtyHint: (Number(p.remaining_qty ?? p.qty) || 0) * (Number(p.pendingExit.pct) || 100) / 100 }); } catch {}
+          if (r?.ok) { const { pct, reason } = p.pendingExit; delete p.pendingExit; this._bookExit(p, r, pct, reason || "PENDING_SELL", { by: "reconcile" }); rep.closed.push(inst); continue; }
+        }
+        // Real tokens gone with no record of the sale: the cost is lost until proven otherwise.
+        const pnl = p.paper ? 0 : +((p.proceeds_usd || 0) - (p.cost_usd || 0)).toFixed(4);
+        this.ledger.append({ kind: "exit", venue, positionId: p.id, decisionId: p.decisionId, instrument: inst, pct: 100, reason: "MISSING_AT_VENUE", price: 0, qty: p.remaining_qty ?? p.qty, proceeds_usd: 0, fee_usd: 0, final: true, by: "reconcile" });
+        this.store.closePosition(p.id, { exitReason: "MISSING_AT_VENUE", pnl_usd: pnl, remaining_qty: 0 });
+        if (!p.paper) { this.store.rollDay(); this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4); this.store.state.day.trades++; }
+        this.ledger.append({ kind: "outcome", venue, instrument: inst, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: this.clock() - p.entryTime, reason: "MISSING_AT_VENUE", reconciled: true, paper: !!p.paper });
         rep.closed.push(inst);
       }
+      if (rep.unknown.length) this.log("warn", `${venue}: wallet holds ${rep.unknown.length} token(s) this engine never bought (${rep.unknown.map(u => u.instrument.slice(0, 8)).join(", ")}); left alone`);
+      this._clearStartupFreeze(venue, /^reconcile/);
     }
     this.store.state.reconciledAt = report.at;
     this.ledger.append({ kind: "reconcile", report });

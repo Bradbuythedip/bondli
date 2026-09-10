@@ -32,9 +32,9 @@ function loadConfig() {
 const cfg = loadConfig();
 const base = `http://${cfg.host || DEFAULT_CONFIG.host}:${cfg.port || DEFAULT_CONFIG.port}`;
 
-async function api(pathname, method = "GET", body = null) {
+async function api(pathname, method = "GET", body = null, timeoutMs = 5_000) {
   try {
-    const res = await fetch(`${base}${pathname}`, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(5_000) });
+    const res = await fetch(`${base}${pathname}`, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(timeoutMs) });
     return { ok: res.ok, json: await res.json() };
   } catch { return { ok: false, offline: true }; }
 }
@@ -58,7 +58,8 @@ async function main() {
       engine.on("log", l => console.log(`[${new Date(l.ts).toISOString()}] ${l.level.toUpperCase()} ${l.text}`));
       engine.on("reconciled", r => console.log(`[reconcile] ${JSON.stringify(r.venues)}`));
       const { url } = await startControlServer({ engine, host: c.host, port: c.port });
-      out(`velocity starting. venues: ${Object.entries(c.venues).map(([k, v]) => `${k}=${v.mode}`).join(" ")}; caps: per trade $${engine.env.per_trade_max_usd}, daily loss $${engine.env.daily_loss_limit_usd}; control ${url}`);
+      // The persisted mode wins over the config file: an operator's go-live survives a restart.
+      out(`velocity starting. venues: ${Object.keys(engine.venues).map(k => `${k}=${engine.store.venueMode(k)}`).join(" ")}; caps: per trade $${engine.env.per_trade_max_usd}, daily loss $${engine.env.daily_loss_limit_usd}; control ${url}`);
       await engine.start();
       sup.start();
       out(`running. status: ${url}/status.html  halt: velocity halt freeze|flatten`);
@@ -68,7 +69,7 @@ async function main() {
     }
     case "status": {
       const r = await api("/status");
-      if (r.ok) { const s = r.json; out(`throttle ${s.throttle} regime ${s.regime} halt ${s.halt?.mode || "none"} day $${s.day.realizedUsd} (${s.day.used_pct}% of limit) positions ${s.positions.length}`); for (const [k, v] of Object.entries(s.venues)) out(`  ${k}: ${v.mode}${v.blocked ? ` BLOCKED ${v.blocked}` : ""} feed age ${v.feed?.ageMs ?? "-"}ms go ${v.gos}/${v.evaluated} promotion ${v.promotion.ok ? "READY" : v.promotion.items.filter(i => !i.ok).map(i => i.name).join(",")}`); for (const p of s.positions) out(`  pos ${p.venue} ${p.instrument} $${p.notional_usd?.toFixed(2)} ${p.changePct?.toFixed?.(1) ?? "-"}% plan ${p.plan.key}`); for (const d of s.lastDecisions.slice(0, 10)) out(`  ${d.action.padEnd(6)} ${d.venue} ${d.instrument} ${d.gate || ""} ${d.reason || ""} [${d.id}]`); return; }
+      if (r.ok) { const s = r.json; out(`throttle ${s.throttle} regime ${s.regime} halt ${s.halt?.mode || "none"} day $${s.day.realizedUsd} (${s.day.used_pct}% of limit) positions ${s.positions.length}`); for (const [k, v] of Object.entries(s.venues)) out(`  ${k}: ${v.mode}${v.blocked ? ` BLOCKED ${v.blocked}` : ""}${v.halted ? ` HALTED ${v.halted.mode}: ${v.halted.reason}` : ""} feed age ${v.feed?.ageMs ?? "-"}ms go ${v.gos}/${v.evaluated} promotion ${v.promotion.ok ? "READY" : v.promotion.items.filter(i => !i.ok).map(i => i.name).join(",")}`); for (const p of s.positions) out(`  pos ${p.venue} ${p.instrument} $${p.notional_usd?.toFixed(2)} ${p.changePct?.toFixed?.(1) ?? "-"}% plan ${p.plan.key}`); for (const d of s.lastDecisions.slice(0, 10)) out(`  ${d.action.padEnd(6)} ${d.venue} ${d.instrument} ${d.gate || ""} ${d.reason || ""} [${d.id}]`); return; }
       const dataDir = path.resolve(cfg.dataDir || DEFAULT_CONFIG.dataDir);
       const dead = Supervisor.deadman(dataDir);
       out(`engine not reachable at ${base} (${dead.detail}). Showing the last snapshot:`);
@@ -98,8 +99,9 @@ async function main() {
       const [, venue, mode] = args;
       if (!venue || !["off", "paper", "live"].includes(mode)) { out("usage: velocity venue <pumpfun|polymarket|perps> off|paper|live"); process.exit(2); }
       const override = args.includes("--i-accept-the-risk");
-      const r = await api("/venue", "POST", { venue, mode, override });
-      if (!r.ok) { out("engine not reachable; edit velocity.config.json and restart"); process.exit(1); }
+      // Going live initializes the wallet and probes the RPC: allow well over the usual 5s.
+      const r = await api("/venue", "POST", { venue, mode, override }, 90_000);
+      if (!r.ok) { out(r.offline ? "engine not reachable or no reply within 90s; run: velocity status" : `engine error: ${r.json?.error || JSON.stringify(r.json)}`); process.exit(1); }
       if (r.json.ok) {
         out(`${venue} -> ${mode}${r.json.liveStartCapUsd ? ` (live start cap $${r.json.liveStartCapUsd} per trade)` : ""}${r.json.override ? " [paper gate overridden by operator]" : ""}`);
         if (r.json.preflight) out(`  wallet ${r.json.preflight.wallet}  balance ${r.json.preflight.balanceSol.toFixed(4)} SOL  rpc ${r.json.preflight.rpc}`);
@@ -125,7 +127,7 @@ async function main() {
       for (const i of gate.items) out(`  ${i.ok ? "ok " : "RED"} ${i.name}: ${i.detail}`);
       if (!gate.ok) { out(`${venue} is not ready for live. Keep it in paper; run this again later.`); return; }
       if (!r.ok) { out(`gate green, but the engine is not running; start it and run: velocity venue ${venue} live`); return; }
-      if (args.includes("--go")) { const p = await api(`/promote/${venue}`, "POST"); out(p.json); }
+      if (args.includes("--go")) { const p = await api(`/promote/${venue}`, "POST", null, 90_000); out(p.json); }
       else out(`gate green. Starting live cap would be $${gate.liveStartCapUsd}. Run: velocity venue ${venue} live`);
       return;
     }
