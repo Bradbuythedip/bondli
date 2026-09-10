@@ -98,7 +98,7 @@ export default function Simple() {
   const narRef = useRef(null);
   const running = !!st?.running;
   const s = st?.status; const day = s?.day; const pnl = day?.realizedUsd || 0;
-  const say = (m, kind = "info") => { sMsg({ m, kind }); setTimeout(() => sMsg(x => (x?.m === m ? null : x)), 6000); };
+  const say = (m, kind = "info") => { sMsg({ m, kind }); if (kind !== "error") setTimeout(() => sMsg(x => (x?.m === m ? null : x)), 6000); };
 
   useEffect(() => { const p = phantom(); if (p?.isConnected && p.publicKey) sPk(p.publicKey.toString()); else p?.connect?.({ onlyIfTrusted: true }).then(r => sPk(r.publicKey.toString())).catch(() => {}); }, []);
   useEffect(() => { a.sw(pk); }, [pk]);
@@ -131,7 +131,12 @@ export default function Simple() {
   };
   const stop = async () => { if (!confirm("Sell everything the bot holds and stop?")) return; sBusy("stop"); try { const r = await a.vsp(pk); sSt({ running: false }); if (r.failed?.length) say(`${r.failed.length} token(s) could not be sold yet; retrying in the background`, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
   const withdraw = async () => { if (running) { say("Stop the bot first", "error"); return; } if (!confirm(`Send all SOL from the trading wallet back to ${pk.slice(0, 6)}…?`)) return; sBusy("withdraw"); try { const r = await a.wdr(pk, pk, "all"); say(`Sent ${r.sol.toFixed(4)} SOL`, "ok"); await loadWallet(); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
-  const exportKey = async () => { sBusy("key"); try { const r = await a.etw(pk); sShowKey(r.privateKey); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
+  const exportKey = async () => {
+    sBusy("key"); sMsg(null);
+    try { const r = await a.etw(pk); if (!r?.privateKey) throw new Error("The server returned no key (" + JSON.stringify(r).slice(0, 80) + ")"); sShowKey(r.privateKey); }
+    catch (e) { console.error("export key", e); say("Export failed: " + (e.message || String(e)), "error"); }
+    finally { sBusy(null); }
+  };
   const copy = async (text) => { try { await navigator.clipboard.writeText(text); sCopied(true); setTimeout(() => sCopied(false), 1500); } catch {} };
 
   const funded = (tw?.solBalance || 0) >= 0.06;
@@ -198,6 +203,7 @@ export default function Simple() {
       <Btn ghost T={T} onClick={withdraw} disabled={busy === "withdraw" || running}>{busy === "withdraw" ? "Sending…" : "Withdraw"}</Btn>
       <Btn ghost T={T} onClick={exportKey} disabled={busy === "key"}>{busy === "key" ? "Signing…" : "Export key"}</Btn>
     </div>}
+    {msg && !running && pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 8, fontSize: 13, color: msg.kind === "error" ? T.rd : T.gn }}>{msg.m}</div>}
     {showKey && <div style={{ width: "100%", maxWidth: 440, marginTop: 10, background: T.sf, border: `1px solid ${T.yl}`, borderRadius: 12, padding: 14 }}>
       <div style={{ ...muted, color: T.yl, marginBottom: 6 }}>Your bot wallet's private key. Anyone with it owns the wallet. Import it into Phantom to control the wallet directly.</div>
       <div onClick={() => copy(showKey)} title="tap to copy" style={{ fontFamily: M, fontSize: 12, wordBreak: "break-all", cursor: "pointer", color: T.tx, padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{showKey}</div>
