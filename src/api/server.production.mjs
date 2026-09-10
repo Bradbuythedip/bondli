@@ -892,6 +892,20 @@ function connectPumpPortal() {
     radar.ws.on("message", (raw) => {
       try {
         const data = JSON.parse(raw);
+        // Radar health counters: how many trade messages arrive vs creates.
+        // Printed once a minute so a silent trade drought is visible in the log.
+        radar._msgStats = radar._msgStats || { create: 0, trade: 0, other: 0, since: Date.now(), tradeSamples: 0 };
+        const st = radar._msgStats;
+        if (data.txType === "create") st.create++;
+        else if (data.txType === "buy" || data.txType === "sell") {
+          st.trade++;
+          if (st.tradeSamples < 3) { st.tradeSamples++; console.log(`[RADAR] trade sample:`, JSON.stringify(data).slice(0, 400)); }
+        } else st.other++;
+        if (Date.now() - st.since >= 60000) {
+          console.log(`[RADAR] stats/min: creates ${st.create} trades ${st.trade} other ${st.other} | subscribed ${radar.subscribedTokens.size} | tokens ${radar.tokens.size} | scored>0 ${[...radar.tokens.values()].filter(t => (t._apeScore || 0) > 0).length}`);
+          if (st.trade === 0 && radar.subscribedTokens.size > 0) console.warn(`[RADAR] WARNING: ${radar.subscribedTokens.size} tokens subscribed but zero trade messages in the last minute`);
+          st.create = 0; st.trade = 0; st.other = 0; st.since = Date.now();
+        }
         processRadarMessage(data);
       } catch {}
     });
