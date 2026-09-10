@@ -879,9 +879,20 @@ async function fetchPumpFunMetadata(ca) {
 }
 
 // Fetch token image from metadata URI (IPFS JSON → image URL)
-async function fetchTokenImage(ca, uri) {
+// One try is not enough: pinata often answers slowly or 5xx in the first seconds after a launch.
+// Three attempts (0s, 8s, 25s), the last two through a second gateway, then the pump.fun API
+// fallback in the create handler is the fourth.
+async function fetchTokenImage(ca, uri, attempt = 0) {
+  const ok = await fetchTokenImageOnce(ca, uri, attempt);
+  if (ok) return;
+  const t = radar.tokens.get(ca);
+  if (!t || t.image || attempt >= 2) return;
+  setTimeout(() => fetchTokenImage(ca, uri, attempt + 1).catch(() => {}), attempt === 0 ? 8000 : 17000);
+}
+async function fetchTokenImageOnce(ca, uri, attempt = 0) {
   try {
     let url = uri;
+    if (attempt > 0 && /pump\.mypinata\.cloud\/ipfs\//.test(url)) url = url.replace("pump.mypinata.cloud/ipfs/", "ipfs.io/ipfs/");
     if (url.startsWith("ipfs://")) url = "https://pump.mypinata.cloud/ipfs/" + url.slice(7);
     // pump.fun uses IPFS for metadata
     if (url.includes("bafkrei") && !url.startsWith("http")) url = "https://pump.mypinata.cloud/ipfs/" + url;
@@ -893,19 +904,19 @@ async function fetchTokenImage(ca, uri) {
       signal: AbortSignal.timeout(8000),
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
     });
-    if (!r.ok) return;
+    if (!r.ok) return false;
     const ct = r.headers.get("content-type") || "";
     const token = radar.tokens.get(ca);
-    if (!token) return;
+    if (!token) return true;
 
     // If the URI points directly to an image (not JSON metadata), use it as the image URL
     if (ct.includes("image") || ct.includes("octet")) {
       token.image = url;
-      return;
+      return true;
     }
 
     let meta;
-    try { meta = await r.json(); } catch { token.image = url; return; }
+    try { meta = await r.json(); } catch { token.image = url; return true; }
     let img = meta.image || meta.imageUri || "";
     if (img.startsWith("ipfs://")) img = "https://pump.mypinata.cloud/ipfs/" + img.slice(7);
     if (img && !img.startsWith("http")) img = "https://pump.mypinata.cloud/ipfs/" + img;
@@ -939,8 +950,9 @@ async function fetchTokenImage(ca, uri) {
         }
       }).catch(() => {});
     }
+    return !!img;
   } catch (e) {
-    // Silent fail — image just won't load
+    return false; // the caller retries
   }
 }
 
@@ -7930,8 +7942,12 @@ app.get("/api/radar/live", (req, res) => {
   const rows = all.filter(t => now - (t.createdAt || 0) < 30 * 60_000).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0)).slice(0, limit).map(t => {
     const score = t._apeScore || 0;
     const rug = (t._rugFlags?.length || 0) > 0 || t._scoreSkippedAt && now - t._scoreSkippedAt < 10_000 && (t.buys || 0) >= 5;
-    const tag = t._mayhem ? "mayhem" : t._copyOf ? "copy" : rug && score === 0 ? "rug" : score >= 60 ? "hot" : score >= 40 ? "live" : "watching";
-    return { ca: t.ca, name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(t.mcapUsd || 0), buys: t.buys || 0, sells: t.sells || 0, buyers: t.uniqueBuyers?.size || 0, spark: (t.spark || []).slice(-30), score, tag, copies: t._copies || 0 };
+    const buyers = t.uniqueBuyers?.size || 0, ageS = (now - (t.createdAt || now)) / 1000, mc = t.mcapUsd || 0;
+    // The one reason the bot is not in yet, in the order it checks them.
+    const tag = t._mayhem ? "mayhem" : t._copyOf ? "copy" : rug && score === 0 ? "rug"
+      : ageS < 30 ? "new" : buyers === 0 ? "nobuyers" : buyers < 3 ? "fewbuyers" : mc < 4000 ? "small"
+      : score >= 60 ? "hot" : score >= 40 ? "close" : "weak";
+    return { ca: t.ca, name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(t.mcapUsd || 0), buys: t.buys || 0, sells: t.sells || 0, buyers, spark: (t.spark || []).slice(-30), score, tag, copies: t._copies || 0 };
   });
   res.json({
     ts: now, solPrice: solUsdPrice, online: radar.online,
