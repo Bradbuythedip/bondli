@@ -7921,6 +7921,26 @@ function buildScoredResponse(query = {}) {
 }
 app.get("/api/radar/scored", (req, res) => res.json(buildScoredResponse(req.query)));
 
+// ═══ The front page's live view: what the bot is looking at right now, light enough to poll ═══
+// Newest launches first, with the one word the bot has for each: mayhem / copy / rug / hot / watching.
+app.get("/api/radar/live", (req, res) => {
+  const now = Date.now(), limit = Math.min(60, Math.max(5, parseInt(req.query.limit || "30") || 30));
+  const all = [...radar.tokens.values()];
+  const hour = all.filter(t => now - (t.createdAt || 0) < 3600_000);
+  const rows = all.filter(t => now - (t.createdAt || 0) < 30 * 60_000).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0)).slice(0, limit).map(t => {
+    const score = t._apeScore || 0;
+    const rug = (t._rugFlags?.length || 0) > 0 || t._scoreSkippedAt && now - t._scoreSkippedAt < 10_000 && (t.buys || 0) >= 5;
+    const tag = t._mayhem ? "mayhem" : t._copyOf ? "copy" : rug && score === 0 ? "rug" : score >= 60 ? "hot" : score >= 40 ? "live" : "watching";
+    return { ca: t.ca, name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(t.mcapUsd || 0), buys: t.buys || 0, sells: t.sells || 0, buyers: t.uniqueBuyers?.size || 0, spark: (t.spark || []).slice(-30), score, tag, copies: t._copies || 0 };
+  });
+  res.json({
+    ts: now, solPrice: solUsdPrice, online: radar.online,
+    hour: { launches: hour.length, mayhem: hour.filter(t => t._mayhem).length, copies: hour.filter(t => t._copyOf).length, hot: hour.filter(t => (t._apeScore || 0) >= 60).length },
+    bots: velocityHub ? velocityHub.list().length : null,
+    tokens: rows,
+  });
+});
+
 app.get("/api/radar/token/:ca", (req, res) => {
   const token = radar.tokens.get(req.params.ca);
   if (!token) return res.status(404).json({ error: "Token not in radar" });

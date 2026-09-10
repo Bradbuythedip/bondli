@@ -46,5 +46,7 @@ class A {
   vst(w, s) { return this.f("/api/velocity/start", { method: "POST", body: { wallet: w, settings: s }, timeout: 90000 }); }
   vsp(w) { return this.f("/api/velocity/stop", { method: "POST", body: { wallet: w }, timeout: 90000 }); }
   vstat(w) { return this.f(`/api/velocity/status?wallet=${w}`); }
+  // What the bot sees (public)
+  live() { return this.f("/api/radar/live", { noauth: true, timeout: 8000 }); }
 }
 export const a = new A(); export default a;

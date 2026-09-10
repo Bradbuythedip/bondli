@@ -16,6 +16,48 @@ function Btn({ children, onClick, disabled, danger, ghost, T, big }) {
   return <button onClick={disabled ? undefined : onClick} style={{ width: "100%", padding: big ? "18px 20px" : "12px 16px", borderRadius: 12, border: ghost || danger ? `1px solid ${danger ? T.rd : T.bd}` : "none", background: ghost || danger ? "transparent" : T.gn, color: danger ? T.rd : ghost ? T.tx : "#000", fontFamily: S, fontWeight: 900, fontSize: big ? 20 : 15, letterSpacing: ".01em", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? .45 : 1 }}>{children}</button>;
 }
 
+// The market as the bot sees it: newest launches, a sparkline, the score, and the bot's one-word verdict.
+const ago = ms => ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))}s` : ms < 3600_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 3600_000)}h`;
+const kfmt = n => n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(n >= 1e5 ? 0 : 1)}k` : `$${Math.round(n)}`;
+function Spark({ v, T, w = 72, h = 22 }) {
+  const pts = (v || []).filter(x => x > 0);
+  if (pts.length < 2) return <svg width={w} height={h} />;
+  const mn = Math.min(...pts), mx = Math.max(...pts), r = mx - mn || 1;
+  const d = pts.map((y, i) => `${(i / (pts.length - 1)) * w},${h - 2 - ((y - mn) / r) * (h - 4)}`).join(" ");
+  const up = pts[pts.length - 1] >= pts[0];
+  return <svg width={w} height={h} style={{ display: "block" }}><polyline points={d} fill="none" stroke={up ? T.gn : T.rd} strokeWidth="1.5" strokeLinejoin="round" /></svg>;
+}
+const TAG = { hot: ["BUY ZONE", "gn"], live: ["scoring", "tx"], watching: ["watching", "ft"], rug: ["rug", "rd"], mayhem: ["mayhem, skipped", "ft"], copy: ["copy, skipped", "ft"] };
+function Live({ T }) {
+  const [d, sD] = useState(null);
+  useEffect(() => { let on = true; const poll = async () => { try { const r = await a.live(); if (on) sD(r); } catch {} }; poll(); const id = setInterval(poll, 3000); return () => { on = false; clearInterval(id); }; }, []);
+  if (!d) return null;
+  const now = d.ts || Date.now();
+  const muted = { color: T.ft, fontSize: 12 };
+  return <div style={{ width: "100%", maxWidth: 440, marginTop: 28 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+      <span style={{ fontWeight: 800, display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: d.online ? T.gn : T.rd, animation: d.online ? "gp 2s infinite" : "none" }} />What the bot sees</span>
+      <span style={muted}>{d.bots != null ? `${d.bots} bot${d.bots === 1 ? "" : "s"} trading` : ""}</span>
+    </div>
+    <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+      {[["launched", d.hour.launches, "tx"], ["buy zone", d.hour.hot, "gn"], ["mayhem", d.hour.mayhem, "ft"], ["copies", d.hour.copies, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 18, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
+    </div>
+    <div style={{ ...muted, marginBottom: 6 }}>last hour · newest first</div>
+    <div style={{ background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
+      {d.tokens.slice(0, 20).map(t => { const [label, c] = TAG[t.tag] || TAG.watching; const dim = t.tag === "mayhem" || t.tag === "copy"; return <div key={t.ca} style={{ display: "grid", gridTemplateColumns: "28px 1fr 72px 52px", gap: 10, alignItems: "center", padding: "7px 10px", borderTop: `1px solid ${T.bd}`, opacity: dim ? .45 : 1 }}>
+        <div style={{ width: 28, height: 28, borderRadius: 8, background: T.bg, overflow: "hidden" }}>{t.image && <img src={t.image} alt="" loading="lazy" style={{ width: 28, height: 28, objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} />}</div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", gap: 6, alignItems: "baseline", minWidth: 0 }}><span style={{ fontWeight: 800, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name || t.ca.slice(0, 6)}</span><span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{t.ticker}</span></div>
+          <div style={{ ...muted, fontFamily: M, fontSize: 11 }}>{ago(now - t.createdAt)} · {kfmt(t.mcapUsd)} · {t.buyers} buyers{t.copies ? ` · ${t.copies} copies` : ""}</div>
+        </div>
+        <Spark v={t.spark} T={T} />
+        <div style={{ textAlign: "right" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 15, color: t.score >= 60 ? T.gn : t.score >= 40 ? T.tx : T.ft }}>{dim ? "" : t.score}</div><div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: T[c], whiteSpace: "nowrap" }}>{label}</div></div>
+      </div>; })}
+      {!d.tokens.length && <div style={{ ...muted, padding: 14, textAlign: "center" }}>waiting for the next launch…</div>}
+    </div>
+  </div>;
+}
+
 export default function Simple() {
   const [dark] = useState(() => { try { return localStorage.getItem("bondli_theme") !== "light"; } catch { return true; } });
   const T = dark ? D : L;
@@ -130,6 +172,7 @@ export default function Simple() {
       <Btn ghost T={T} onClick={withdraw} disabled={busy === "withdraw" || running}>{busy === "withdraw" ? "Sending…" : "Withdraw"}</Btn>
       <Btn ghost T={T} onClick={exportKey} disabled={busy === "key"}>Export key</Btn>
     </div>}
+    <Live T={T} />
     {showKey && <div style={{ width: "100%", maxWidth: 440, marginTop: 10, background: T.sf, border: `1px solid ${T.yl}`, borderRadius: 12, padding: 14 }}>
       <div style={{ ...muted, color: T.yl, marginBottom: 6 }}>Your bot wallet's private key. Anyone with it owns the wallet. Import it into Phantom to control the wallet directly.</div>
       <div onClick={() => copy(showKey)} style={{ fontFamily: M, fontSize: 11, wordBreak: "break-all", cursor: "pointer", color: T.tx }}>{showKey}{copied ? "  copied" : ""}</div>
