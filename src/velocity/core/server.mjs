@@ -46,8 +46,10 @@ export function startControlServer({ engine, host = "127.0.0.1", port = 3210 }) 
         return json(res, 200, r);
       }
       if (req.method === "POST" && url.pathname === "/resume") { const body = await readBody(req); return json(res, 200, engine.resume(body.venue, { by: "http" })); }
-      if (req.method === "POST" && url.pathname === "/venue") { const body = await readBody(req); return json(res, 200, await engine.setVenueMode(body.venue, body.mode, { override: !!body.override, by: "http" })); }
-      if (req.method === "POST" && url.pathname.startsWith("/promote/")) return json(res, 200, await engine.setVenueMode(url.pathname.slice(9), "live", { by: "http" }));
+      // A mode change runs inside the engine queue so it cannot interleave with an entry or an exit.
+      const queued = fn => new Promise(resolve => engine.enqueue(async () => { try { resolve(await fn()); } catch (err) { resolve({ ok: false, error: err.message }); } }));
+      if (req.method === "POST" && url.pathname === "/venue") { const body = await readBody(req); return json(res, 200, await queued(() => engine.setVenueMode(body.venue, body.mode, { override: !!body.override, by: "http" }))); }
+      if (req.method === "POST" && url.pathname.startsWith("/promote/")) return json(res, 200, await queued(() => engine.setVenueMode(url.pathname.slice(9), "live", { by: "http" })));
       json(res, 404, { error: "not found" });
     } catch (err) {
       json(res, 500, { error: err.message });

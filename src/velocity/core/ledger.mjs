@@ -10,6 +10,7 @@ import path from "node:path";
 export const RECORD_KINDS = Object.freeze([
   "decision", "order", "fill", "exit", "outcome", "halt", "resume",
   "reconcile", "weights", "governor", "alert", "heartbeat", "violation", "feed", "venue",
+  "fee", // a venue fee paid for nothing (a send that failed on chain): real money, charged to the day
 ]);
 
 // Order lifecycle stages, in order. The stage reached is what a crash reveals.

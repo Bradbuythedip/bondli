@@ -25,7 +25,13 @@ export class Supervisor {
   start() {
     this.heartbeat();
     this._timers.push(setInterval(() => this.heartbeat(), this.heartbeatMs).unref());
-    this._timers.push(setInterval(() => this.engine.enqueue(() => this.watchdog()), this.watchdogMs).unref());
+    this._timers.push(setInterval(() => {
+      // A live order can hold the engine queue for tens of seconds; queued watchdogs would then
+      // run back to back and delay exits. One in flight at a time.
+      if (this._watchdogPending) return;
+      this._watchdogPending = true;
+      this.engine.enqueue(() => this.watchdog().finally(() => { this._watchdogPending = false; }));
+    }, this.watchdogMs).unref());
   }
   stop() { for (const t of this._timers) clearInterval(t); this._timers = []; }
 
@@ -58,8 +64,8 @@ export class Supervisor {
     // HALT file: works even when the control server is down.
     if (fs.existsSync(this.haltFile)) {
       const mode = (fs.readFileSync(this.haltFile, "utf8").trim() || "freeze").toLowerCase();
-      fs.unlinkSync(this.haltFile);
       await e.halt(mode === "flatten" ? "flatten" : "freeze", "HALT file", { by: "file" });
+      try { fs.unlinkSync(this.haltFile); } catch {}
     }
   }
 

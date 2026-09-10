@@ -51,7 +51,7 @@ export function makePumpfunEdge({
         instrument: p.token.ca,
         token: p.token, qf: p.qf, scores: p.scores || {}, dynamics: p.dynamics,
         solPrice: p.solPrice || 0,
-        reference: { mcapUsd: p.mcapUsd || p.token.mcapUsd || 0, vSolInBondingCurve: p.vSolInBondingCurve || p.token.vSolInBondingCurve || 0, solPrice: p.solPrice || 0 },
+        reference: { mcapUsd: p.mcapUsd || p.token.mcapUsd || 0, vSolInBondingCurve: p.vSolInBondingCurve || p.token.vSolInBondingCurve || 0, solPrice: p.solPrice || 0, solPriceAt: p.solPriceAt || 0 },
         group: p.token.devWallet || null,
       }];
     },

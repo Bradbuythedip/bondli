@@ -95,9 +95,9 @@ export class Store {
     if (venue && this.state.halt.venues?.[venue]) return this.state.halt.venues[venue];
     return null;
   }
-  setVenueMode(venue, mode) {
+  setVenueMode(venue, mode, extra = {}) {
     if (!VENUE_MODES.includes(mode)) throw new Error(`venue mode must be one of ${VENUE_MODES.join("|")}`);
-    this.state.venues[venue] = { ...(this.state.venues[venue] || {}), mode, since: this.now() };
+    this.state.venues[venue] = { ...(this.state.venues[venue] || {}), mode, since: this.now(), ...extra };
     return this.state.venues[venue];
   }
   venueMode(venue) {
