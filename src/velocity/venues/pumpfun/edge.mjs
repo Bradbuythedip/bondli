@@ -61,6 +61,7 @@ export function makePumpfunEdge({
       const p = event.payload || {};
       if (!p.token || !p.token.ca) return [];
       if (p.token._mayhem) return []; // Mayhem launches are never looked at
+      if (p.token._copyOf) return []; // a same-name copy is an advert for another token, never a trade
       return [{
         model: "bondli_gates",
         instrument: p.token.ca,

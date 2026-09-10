@@ -117,10 +117,11 @@ async function collect() {
 function tally(rows, gate, featuresOf) {
   const fire = Object.fromEntries(Object.keys(RULES).map(k => [k, 0]));
   const pass1 = new Set(), pass2 = new Set(), pass3 = new Set(), dropOne = Object.fromEntries(Object.keys(RULES).map(k => [k, new Set()]));
-  const g2 = {}, g3 = {}, tiers = {}; let passed1 = 0, passed2 = 0, mayhem = 0;
+  const g2 = {}, g3 = {}, tiers = {}; let passed1 = 0, passed2 = 0, mayhem = 0, copycats = 0;
   let mismatch = 0; const mmEx = [];
   for (const { t, r, ts } of rows) {
     if (t._mayhem) { mayhem++; continue; } // never looked at
+    if (t._copyOf) { copycats++; continue; } // an advert, never a trade
     const q = featuresOf(t, r.qf);
     const { flags } = evalRules(t, q, ts);
     for (const f of flags) fire[f]++;
@@ -151,7 +152,7 @@ function tally(rows, gate, featuresOf) {
       } finally { Date.now = now; }
     } else if (!flags.length) pass1.add(t.ca);
   }
-  return { fire, pass1, pass2, pass3, dropOne, mismatch, mmEx, g2, g3, tiers, passed1, passed2, mayhem };
+  return { fire, pass1, pass2, pass3, dropOne, mismatch, mmEx, g2, g3, tiers, passed1, passed2, mayhem, copycats };
 }
 
 async function report(file) {
@@ -192,6 +193,7 @@ async function report(file) {
   for (const [k, v] of Object.entries(missing).sort((a, b) => b[1] - a[1])) console.log(`  ${P(k)} ${fmt(v, N)}`);
   console.log(`\nTokens passing gate 1 (any qualifying snapshot): recorded ${rec.pass1.size} -> recomputed ${fix.pass1.size}   passing gate 1 AND gate 2: ${gate ? `${rec.pass2.size} -> ${fix.pass2.size}` : "n/a (gates not importable)"}${gate ? `   AND gate 3 (enterable): ${fix.pass3.size}` : ""}`);
   if (fix.mayhem) console.log(`Mayhem token-snapshots skipped (never looked at): ${fix.mayhem}`);
+  if (fix.copycats) console.log(`Copycat token-snapshots skipped (same-name adverts): ${fix.copycats}`);
   if (gate) {
     console.log(`\nGATE 2 (viability) checks among token-snapshots that passed gate 1, aggression ${gate.level} (${fix.passed1} snapshots):`);
     for (const [k, v] of Object.entries(fix.g2).sort((a, b) => b[1] - a[1])) console.log(`  ${P(k)} ${fmt(v, fix.passed1)} (${v})`);
