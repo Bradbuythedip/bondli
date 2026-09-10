@@ -74,6 +74,7 @@ export default function Simple() {
 
   return <TC.Provider value={T}><style>{css(T)}</style><div style={wrap}>
     <div style={{ textAlign: "center", marginBottom: 28 }}>
+      <img src="/bondli-logo.svg" alt="Bondli" style={{ height: 72, marginBottom: 14 }} />
       <div style={{ fontSize: 34, fontWeight: 900, letterSpacing: "-.02em", lineHeight: 1.1 }}>A bot that trades memecoins for you.</div>
       <div style={{ ...muted, fontSize: 16, marginTop: 10 }}>You keep the wallet. It does the trading.</div>
     </div>
