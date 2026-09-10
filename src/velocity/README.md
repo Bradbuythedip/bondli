@@ -75,7 +75,7 @@ reconciliation. `weights/` every learner version. `heartbeat`, `HALT`.
   "host": "127.0.0.1", "port": 3210,
   "alerts": { "webhook": null },
   "venues": {
-    "pumpfun":    { "mode": "paper", "bondliUrl": "http://127.0.0.1:3001", "minScore": 40, "pollMs": 2000, "tickMs": 1000, "pumpportal": false },
+    "pumpfun":    { "mode": "paper", "bondliUrl": "http://127.0.0.1:3001", "minScore": 25, "pollMs": 2000, "tickMs": 1000, "pumpportal": false },
     "polymarket": { "mode": "paper", "maxMarkets": 150, "minLiquidity": 1000,
                     "factSources": [{ "type": "file", "path": "./data/velocity/facts.json", "source": "manual", "confidence": 0.95 }] },
     "perps":      { "mode": "off" }

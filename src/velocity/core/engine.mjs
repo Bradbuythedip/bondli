@@ -55,6 +55,7 @@ export class Engine extends EventEmitter {
   // ── lifecycle ──
   async start({ reconcile = true } = {}) {
     this.running = true;
+    this.store.state.startedAt = this.clock();
     this.store.rollDay();
     if (reconcile) await this.reconcile();
     this.evaluateGovernor();
