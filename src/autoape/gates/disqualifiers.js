@@ -35,12 +35,15 @@ export function checkDisqualifiers(token, qf, opts = {}) {
   if (qf?._rg_buyTimingRegularity > 0.6 && qf?._rg_singleWalletDominance > 0.4) flags.push("BOT_PUMP");
 
   // Multiple moderate rug signals firing simultaneously
+  // Two of these were base rates rather than signals, for the same reasons the hard rules above
+  // were corrected: top-3 share is structurally high with a handful of buyers, and sells landing
+  // within 3s of each other is what any active token looks like unless they come as a burst.
   const moderateSignals = [
     qf?.rg_devSellSpeed > 0.35,
-    qf?.rg_coordDumpScore > 0.3,
+    qf?.rg_coordDumpScore > 0.3 && qf?.rg_sellWaveDetect > 0.3,
     qf?._rg_sybilScore > 0.3,
     qf?._rg_quickFlipRate > 0.2,
-    qf?.rg_holderConcentration > 0.65,
+    qf?.rg_holderConcentration > 0.65 && (qf?._rg_organicBuyers ?? 99) >= 8,
     qf?._rg_earlyDump > 0.3,
     qf?.rg_mcapDropRate > 0.3,
     qf?._rg_pumpDump > 0.35,
