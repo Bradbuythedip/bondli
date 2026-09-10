@@ -171,13 +171,12 @@ export class VelocityHub {
   async stopAll() { for (const w of this.list()) { try { await this.stop(w, { flatten: false }); } catch {} } }
 }
 
-/** Express routes. deps: { hub, requireOwner, getTradingWallet, getUser, resolveTier } */
-export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet, getUser, resolveTier }) {
-  const allowed = async wallet => { const t = resolveTier(wallet, await getUser(wallet)); return t.tier === "pro" || t.tier === "vip" || t.whitelisted; };
+/** Express routes. deps: { hub, requireOwner, getTradingWallet } */
+export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }) {
+  // Anyone with a trading wallet can run the bot: the fee on profit is the only price of admission.
   app.post("/api/velocity/start", requireOwner, async (req, res) => {
     try {
       const { wallet, settings } = req.body || {};
-      if (!(await allowed(wallet))) return res.status(403).json({ error: "Pro or VIP required to run velocity" });
       const tw = await getTradingWallet(wallet);
       if (!tw?.secret) return res.status(400).json({ error: "No trading wallet; create one first" });
       res.json(await hub.start({ wallet, secret: tw.secret, settings: settings || {} }));
