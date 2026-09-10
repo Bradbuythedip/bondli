@@ -596,7 +596,7 @@ const rAutoFlowRef=useRef(false);// ref for access inside stableMerge
 const queuedNewRef=useRef({momentum:[],new:[],resurgence:[]});// queued tokens when auto-flow is off
 const[queuedCount,sQueuedCount]=useState(0);// trigger re-render for queued badge
 useEffect(()=>{rAutoFlowRef.current=rAutoFlow;if(rAutoFlow){// flush all queued tokens when toggling auto on
-const q=queuedNewRef.current;const hasQueued=Object.values(q).some(a=>a.length>0);if(hasQueued){sRT(prev=>{const next={...prev};for(const tab of Object.keys(q)){if(q[tab].length>0){next[tab]=[...q[tab],...(prev[tab]||[])];q[tab].forEach(t=>{newTokensRef.current.add(t.ca);setTimeout(()=>newTokensRef.current.delete(t.ca),8000)});const order=prevOrderRef.current[tab]||[];prevOrderRef.current[tab]=[...q[tab].map(t=>t.ca),...order];q[tab]=[]}}return next});sQueuedCount(0)}},[rAutoFlow]);
+const q=queuedNewRef.current;const hasQueued=Object.values(q).some(a=>a.length>0);if(hasQueued){sRT(prev=>{const next={...prev};for(const tab of Object.keys(q)){if(q[tab].length>0){next[tab]=[...q[tab],...(prev[tab]||[])];q[tab].forEach(t=>{newTokensRef.current.add(t.ca);setTimeout(()=>newTokensRef.current.delete(t.ca),8000)});const order=prevOrderRef.current[tab]||[];prevOrderRef.current[tab]=[...q[tab].map(t=>t.ca),...order];q[tab]=[]}}return next});sQueuedCount(0)}}},[rAutoFlow]);
 // Stable merge: new tokens go to top, existing tokens keep position, removed tokens get 30s grace period
 const stableMerge=(tab,incoming,prev)=>{const prevOrder=prevOrderRef.current[tab]||[];const prevSet=new Set(prevOrder);const incomingMap=new Map(incoming.map(t=>[t.ca,t]));// New tokens = in incoming but NOT in previous order
 const brandNew=incoming.filter(t=>!prevSet.has(t.ca));const now=Date.now();
