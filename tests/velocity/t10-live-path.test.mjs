@@ -515,7 +515,8 @@ test("T10: with bankroll_source wallet the live wallet is the bankroll; no readi
     assert.equal(pos.stake_usd, 5, "Kelly on $25.9 is $1.73, floored to the $5 minimum");
     assert.ok(live.calls.filter(c => c === "preflight").length > before, "wallet re-read after the fill");
     const withOpen = engine.portfolioSnapshot();
-    assert.equal(withOpen.equity_usd, +(((0.1495 - 0.02) * 200) + pos.notional_usd).toFixed(2));
+    // The candidate carried the feed's SOL price (150), which is fresher than the 200 seeded above.
+    assert.equal(withOpen.equity_usd, +(((0.1495 - 0.02) * 150) + pos.notional_usd).toFixed(2));
     // Stale reading: nothing is sized, and the sweep refreshes it.
     now += 6 * 60_000;
     assert.equal(engine.portfolioSnapshot().equity_reason, "WALLET_UNKNOWN");
