@@ -35,3 +35,9 @@ venv/
 
 # Runtime
 *.pid
+
+# velocity runtime files
+data/velocity/
+risk.json
+risk.json.last-good
+velocity.config.json

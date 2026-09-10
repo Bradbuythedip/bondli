@@ -111,6 +111,19 @@ export class PumpFunClient {
   }
 
   async _sendPumpTx(keypair, mint, side, amount, minOut, opts) {
+    const tx = await this.buildPumpTx(keypair, mint, side, amount, minOut, opts);
+    console.log(`[PUMP] ${side.toUpperCase()} ${amount} on ${mint}`);
+    const sig = await this.connection.sendRawTransaction(tx.serialize(), {
+      skipPreflight: true,
+      maxRetries: 3,
+    });
+    await this.connection.confirmTransaction(sig, "confirmed");
+    return sig;
+  }
+
+  // Build and sign the pump.fun buy/sell transaction without sending it.
+  // Callers that want a different send path (e.g. RPC + Jito race) use this.
+  async buildPumpTx(keypair, mint, side, amount, minOut, opts = {}) {
     const mintPk = new PublicKey(mint);
     const curve = await this.getBondingCurve(mint);
     const curveAta = getAssociatedTokenAddressSync(mintPk, curve, true);
@@ -150,15 +163,8 @@ export class PumpFunClient {
     ];
 
     tx.add(new TransactionInstruction({ programId: PUMP_PROGRAM, keys, data }));
-
-    console.log(`[PUMP] ${side.toUpperCase()} ${amount} on ${mint}`);
     tx.sign(keypair);
-    const sig = await this.connection.sendRawTransaction(tx.serialize(), {
-      skipPreflight: true,
-      maxRetries: 3,
-    });
-    await this.connection.confirmTransaction(sig, "confirmed");
-    return sig;
+    return tx;
   }
 }
 

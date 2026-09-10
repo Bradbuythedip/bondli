@@ -1,0 +1,100 @@
+# Velocity Trader
+
+Autonomous multi-venue trading core built on bondli (scorer, gates, exits,
+execution) and the BRAD bridge (blind-spot governor). Design, requirements,
+design matrix and interaction spec: `BRAD/prompts/VELOCITY_TRADER_ONESHOT.md`.
+
+Two venues in the first release: pump.fun (the fast side, through bondli's
+radar) and Polymarket (the accurate side: resolved facts and negative-risk
+consistency). Perps and equities are disabled adapter stubs.
+
+Excluded by constraint: bondli's fleet wallets, wash volume and anti-detection
+modules. Nothing here manufactures volume or poses as retail.
+
+## Operator flow
+
+```
+cp src/velocity/config/risk.example.json risk.json     # E1: the only place capital is set
+npm run velocity -- validate                             # prints the worst day you are agreeing to
+npm run velocity -- start                                # E3: paper by default, control on 127.0.0.1:3210
+npm run velocity -- status                               # E5: one screen (also http://127.0.0.1:3210/)
+npm run velocity -- why last                             # E6: the trail of the last decision
+npm run velocity -- halt freeze | flatten                # E4: kill switch (falls back to a HALT file)
+npm run velocity -- resume pumpfun                       # a halt is never lifted automatically
+npm run velocity -- promote polymarket                   # E7: paper-to-live checklist
+npm run velocity -- venue polymarket live                # refused until the gate is green
+```
+
+Before enabling any venue, verify you are eligible to trade on it where you
+live. The bot never circumvents geo or KYC controls.
+
+## Files
+
+```
+src/velocity/
+  index.mjs                CLI
+  config/risk.example.json risk envelope template (USD, immutable at runtime)
+  core/
+    events.mjs             MarketEvent schema, latency histogram          (DP1 contract)
+    feed.mjs, replay.mjs   feed base, scripted feed, capture and replay   (DP1)
+    pipeline.mjs           venue-agnostic gate runner                     (DP2)
+    plans.mjs              static exit plan table                         (DP2/DP5)
+    risk.mjs               envelope loader, validator, fractional Kelly   (DP3)
+    router.mjs             router interface, paper router with unwind    (DP4)
+    exits.mjs              plans at entry, layered exit monitor           (DP5)
+    ledger.mjs, store.mjs  append-only JSONL ledger, atomic snapshot      (DP6)
+    governor.mjs           blind spots, tilt, regime -> throttle/halt     (DP7)
+    learner.mjs            bounded retrain, sacred inversions, checksums  (DP8)
+    supervisor.mjs         heartbeat, watchdogs, HALT file, dead-man      (DP9)
+    engine.mjs             wiring, entries, exits, reconciliation
+    promote.mjs, stats.mjs promotion gate, realized statistics
+    server.mjs, alerts.mjs control server, alerts
+    build.mjs              engine from velocity.config.json
+  venues/
+    pumpfun/    feed (bondli /api/radar/scored), edge (bondli gates), router (curve model, live via smartSend)
+    polymarket/ feed (Gamma + CLOB WS + fact sources), edge (resolved_fact, consistency), router (book walk, live via clob-client)
+    perps/      stub, disabled
+tests/velocity/  T1..T9 (node --test)
+```
+
+## Runtime files (data/velocity)
+
+`ledger.jsonl` every decision, order stage, fill, exit, outcome, halt, governor
+verdict and alert, with reasons, fsynced. `state.json` the current picture,
+written atomically. `paper-book-<venue>.json` the paper venue's truth for
+reconciliation. `weights/` every learner version. `heartbeat`, `HALT`.
+
+## Config
+
+`velocity.config.json` (all optional, defaults shown in `core/build.mjs`):
+
+```json
+{
+  "dataDir": "./data/velocity",
+  "riskFile": "./risk.json",
+  "host": "127.0.0.1", "port": 3210,
+  "alerts": { "webhook": null },
+  "venues": {
+    "pumpfun":    { "mode": "paper", "bondliUrl": "http://127.0.0.1:3001", "minScore": 40, "pollMs": 2000, "tickMs": 1000, "pumpportal": false },
+    "polymarket": { "mode": "paper", "maxMarkets": 150, "minLiquidity": 1000,
+                    "factSources": [{ "type": "file", "path": "./data/velocity/facts.json", "source": "manual", "confidence": 0.95 }] },
+    "perps":      { "mode": "off" }
+  }
+}
+```
+
+pump.fun needs bondli's server running (it exposes `GET /api/radar/scored`).
+Polymarket facts come from sources you name; a file source is a JSON array of
+`{ "conditionId", "outcome", "source", "confidence", "t_fact" }`. The edge only
+acts when the market's own rules name the same source.
+
+Live pump.fun needs `MASTER_SEED` and an RPC. Live Polymarket needs
+`POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER` and the packages
+`@polymarket/clob-client` and `ethers`. On-chain redemption of resolved
+Polymarket positions is not automated in live mode; paper mode models it.
+
+## Deviations from the design doc
+
+Two, both in the direction of fewer parts: the risk file is JSON, not YAML
+(no parser dependency); live state is one atomically written JSON snapshot,
+not Redis (no service dependency). Same requirements, same tests.
