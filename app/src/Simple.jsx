@@ -45,13 +45,18 @@ function Dial({ value, onChange, T }) {
   </div>;
 }
 const HUE = s => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
-// A token picture through the proxy: lettered tile until it lands, blur-in, three retries, then the tile stays.
+// A token picture through the proxy (by url, else by mint from DexScreener's copy). While it loads the
+// tile is a soft, shimmering blur in the token's own hue with the ticker over it; the picture blurs in
+// on top. Six retries over ~90s because a token's picture usually exists a minute after its launch.
 function TokenImg({ src, ca, label, size, T }) {
   const [tries, sTries] = useState(0); const [ok, sOk] = useState(true); const [loaded, sLoaded] = useState(false);
-  useEffect(() => { sTries(0); sOk(true); sLoaded(false); }, [src]);
-  const tile = { width: size, height: size, borderRadius: Math.round(size / 4), background: `hsl(${HUE(ca)} 30% 22%)`, overflow: "hidden", position: "relative", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: M, fontWeight: 900, fontSize: Math.round(size / 3), color: T.dm };
-  if (!src || !ok) return <div style={tile}>{label}</div>;
-  return <div style={tile}>{!loaded && label}<img key={tries} src={imgUrl(src) + (tries ? `&r=${tries}` : "")} alt="" loading="lazy" style={{ position: "absolute", inset: 0, width: size, height: size, objectFit: "cover", filter: loaded ? "blur(0)" : "blur(10px)", opacity: loaded ? 1 : 0, transition: "filter .3s, opacity .3s" }} onLoad={() => sLoaded(true)} onError={() => { if (tries < 3) setTimeout(() => sTries(t => t + 1), 1500 * (tries + 1)); else sOk(false); }} /></div>;
+  useEffect(() => { sTries(0); sOk(true); sLoaded(false); }, [src, ca]);
+  const h = HUE(ca);
+  const tile = { width: size, height: size, borderRadius: Math.round(size / 4), overflow: "hidden", position: "relative", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: M, fontWeight: 900, fontSize: Math.round(size / 3.2), color: "rgba(255,255,255,.55)", background: `radial-gradient(circle at 30% 30%, hsl(${h} 45% 34%), hsl(${(h + 40) % 360} 40% 18%))` };
+  const fuzz = <div style={{ position: "absolute", inset: 0, background: `linear-gradient(110deg, transparent 30%, hsl(${h} 60% 60% / .25) 50%, transparent 70%)`, backgroundSize: "200% 100%", animation: "shimmer 1.6s linear infinite", filter: "blur(6px)" }} />;
+  const url = imgUrl(src, ca);
+  if (!url || !ok) return <div style={tile}>{label}</div>;
+  return <div style={tile}>{!loaded && fuzz}{!loaded && <span style={{ position: "relative" }}>{label}</span>}<img key={tries} src={url + (tries ? `&r=${tries}` : "")} alt="" loading="lazy" style={{ position: "absolute", inset: 0, width: size, height: size, objectFit: "cover", filter: loaded ? "blur(0)" : "blur(12px)", opacity: loaded ? 1 : 0, transform: loaded ? "scale(1)" : "scale(1.15)", transition: "filter .35s, opacity .35s, transform .35s" }} onLoad={() => sLoaded(true)} onError={() => { if (tries < 6) setTimeout(() => sTries(t => t + 1), Math.min(30000, 3000 * (tries + 1))); else sOk(false); }} /></div>;
 }
 function Live({ T }) {
   const [d, sD] = useState(null);
