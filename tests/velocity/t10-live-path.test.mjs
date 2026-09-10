@@ -525,3 +525,37 @@ test("T10: with bankroll_source wallet the live wallet is the bankroll; no readi
     assert.ok(engine.portfolioSnapshot().equity_usd > 0);
   } finally { await engine.stop(); }
 });
+
+test("T10: the wallet's own balance change is read by account key, not by a fixed index", async () => {
+  const { walletDelta } = await import("../../tools/tx-audit.mjs");
+  const key = v => ({ toBase58: () => v });
+  // A transaction where our wallet pays: it is the fee payer, so it sits at index 0.
+  const payer = {
+    transaction: { message: { getAccountKeys: () => ({ keySegments: () => [[key("ME"), key("CURVE"), key("SYS")]] }) } },
+    meta: { fee: 5_000, err: null, preBalances: [100_000_000, 5_000, 1], postBalances: [70_000_000, 35_000, 1],
+      preTokenBalances: [], postTokenBalances: [{ owner: "ME", mint: "M", uiTokenAmount: { uiAmount: 1200 } }] },
+  };
+  const a = walletDelta(payer, { owner: "ME", mint: "M" });
+  assert.equal(a.index, 0); assert.equal(a.indexZeroIsWallet, true);
+  assert.equal(a.solDelta, -0.03); assert.equal(a.tokenDelta, 1200); assert.equal(a.feeSol, 0.000005);
+
+  // The same read when our wallet is NOT first: index 0 would report someone else's balance.
+  const notFirst = {
+    transaction: { message: { getAccountKeys: () => ({ keySegments: () => [[key("OTHER"), key("ME")]] }) } },
+    meta: { fee: 5_000, err: null, preBalances: [9_000_000_000, 100_000_000], postBalances: [8_000_000_000, 130_000_000],
+      preTokenBalances: [{ owner: "ME", mint: "M", uiTokenAmount: { uiAmount: 1200 } }], postTokenBalances: [] },
+  };
+  const b = walletDelta(notFirst, { owner: "ME", mint: "M" });
+  assert.equal(b.index, 1); assert.equal(b.indexZeroIsWallet, false);
+  assert.equal(b.solDelta, 0.03, "our wallet received 0.03 SOL");
+  assert.equal(b.solDeltaAtIndexZero, -1, "index 0 would have claimed a whole SOL left the wallet");
+  assert.equal(b.tokenDelta, -1200, "a 100% sell that closes the token account still shows the full outflow");
+
+  // Balances that only mention other owners contribute nothing, and a failed tx is reported as failed.
+  const foreign = { transaction: { message: { getAccountKeys: () => ({ keySegments: () => [[key("ME")]] }) } },
+    meta: { fee: 5_000, err: { InstructionError: [3, { Custom: 6002 }] }, preBalances: [1_000_000], postBalances: [995_000],
+      preTokenBalances: [{ owner: "SOMEONE", mint: "M", uiTokenAmount: { uiAmount: 500 } }], postTokenBalances: [] } };
+  const c = walletDelta(foreign, { owner: "ME", mint: "M" });
+  assert.equal(c.tokenDelta, 0); assert.ok(c.err); assert.equal(c.solDelta, -0.000005, "a failed transaction still paid its fee");
+  assert.equal(walletDelta(null, { owner: "ME" }), null);
+});

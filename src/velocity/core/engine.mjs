@@ -396,7 +396,7 @@ export class Engine extends EventEmitter {
       p_win: decision.p_win, confidence: decision.confidence, features: decision.features || null,
       reference: decision.reference || null, legs: r.fills ? r.fills.map(f => ({ instrument: f.instrument, qty: f.qty, price: f.price })) : null, paper: !!fill.paper,
     };
-    this.ledger.append({ kind: "fill", venue, orderId, decisionId: decision.id, positionId: position.id, side: "BUY", instrument: inst, price: fill.price, qty: fill.qty, notional_usd: fill.notional_usd, fee_usd: fill.fee_usd || 0, slippage_bps: fill.slippage_bps, latency_ms: fill.latency_ms, venue_ref: fill.venue_ref, plan: { venue: plan.venue, key: plan.key, mode: plan.mode }, paper: !!fill.paper });
+    this.ledger.append({ kind: "fill", venue, orderId, decisionId: decision.id, positionId: position.id, side: "BUY", instrument: inst, price: fill.price, qty: fill.qty, notional_usd: fill.notional_usd, fee_usd: fill.fee_usd || 0, slippage_bps: fill.slippage_bps, latency_ms: fill.latency_ms, venue_ref: fill.venue_ref, sol_spent: fill.sol_spent ?? null, exact: fill.exact ?? null, plan: { venue: plan.venue, key: plan.key, mode: plan.mode }, paper: !!fill.paper });
     this.ledger.append({ kind: "order", venue, orderId, decisionId: decision.id, stage: "filled", positionId: position.id });
     this.store.upsertPosition(position);
     if (!fill.paper && this.walletMode()) this.refreshWallet().catch(() => {});
@@ -514,7 +514,7 @@ export class Engine extends EventEmitter {
     p.proceeds_usd = (p.proceeds_usd || 0) + proceeds;
     p.remaining_qty = Math.max(0, (p.remaining_qty ?? p.qty) - (f.qty || 0));
     const done = !!(pct >= 100 || p.remaining_qty <= 1e-9 || action === "REDEEM" || (p.legs && p.legs.length));
-    this.ledger.append({ kind: "exit", venue, positionId: p.id, decisionId: p.decisionId, instrument: p.instrument, pct, reason, layer, detail, price: f.price, qty: f.qty, proceeds_usd: proceeds, fee_usd: f.fee_usd || 0, latency_ms: f.latency_ms, venue_ref: f.venue_ref, final: done, by });
+    this.ledger.append({ kind: "exit", venue, positionId: p.id, decisionId: p.decisionId, instrument: p.instrument, pct, reason, layer, detail, price: f.price, qty: f.qty, proceeds_usd: proceeds, fee_usd: f.fee_usd || 0, latency_ms: f.latency_ms, venue_ref: f.venue_ref, sol_received: f.sol_received ?? null, exact: f.exact ?? null, final: done, by });
     if (done) {
       const pnl = +(p.proceeds_usd - p.cost_usd).toFixed(4);
       const held = (f.t_filled || this.clock()) - p.entryTime;
