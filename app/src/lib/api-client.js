@@ -59,6 +59,7 @@ vsp(w){return this.f("/api/velocity/stop",{method:"POST",body:{wallet:w},timeout
 vhl(w,m){return this.f("/api/velocity/halt",{method:"POST",body:{wallet:w,mode:m||"flatten"},timeout:90000})}
 vstat(w){return this.f(`/api/velocity/status?wallet=${w}`)}
 vhealth(){return this.f("/api/velocity/health",{noauth:true})}
+wdr(w,to,sol){return this.f("/api/trading-wallet/withdraw",{method:"POST",body:{wallet:w,to,sol:sol||"all"},timeout:60000})}
 ats(w,s){return this.f("/api/auto-trade/start",{method:"POST",body:{wallet:w,settings:s}})}
 atp(w){return this.f("/api/auto-trade/stop",{method:"POST",body:{wallet:w}})}
 atc(w){return this.f("/api/auto-trade/close",{method:"POST",body:{wallet:w}})}

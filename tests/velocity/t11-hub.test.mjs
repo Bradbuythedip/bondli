@@ -134,3 +134,16 @@ test("T11: a shared feed view forwards events and reference-counts watches", asy
   await v1.stop(); feed.emitEvent({ kind: "tick", id: "N", payload: {} }); assert.deepEqual(got, ["M"], "a stopped view hears nothing");
   await feed.stop();
 });
+
+test("T11: a flat fee rate takes that share of realized profit, nothing on a loss, nothing from the owner", async () => {
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] }); await feed.start();
+  const deps = { ...feeDeps("free"), isOwnerWallet: w => w === "Owner" };
+  const hub = new VelocityHub({ feed, rootDir: tmp(), platformWallet: "PLATFORM_FRESH_WALLET", fee: deps, feePct: 5, log: { log() {}, error() {}, warn() {} } });
+  assert.equal(hub.feePct, 5);
+  assert.deepEqual(hub.flatFee(0.05, 0.09, "UserE"), { fee: 0.002, net: 0.04, rate: 5, type: "profit-share" }, "5% of 0.04 SOL profit");
+  assert.equal(hub.flatFee(0.05, 0.04, "UserE").fee, 0, "a loss pays nothing");
+  assert.equal(hub.flatFee(0.05, 0.0505, "UserE").fee, 0, "dust pays nothing");
+  assert.equal(hub.flatFee(0.05, 0.09, "Owner").fee, 0, "the owner pays nothing");
+  assert.equal(new VelocityHub({ feed, rootDir: tmp(), platformWallet: "P", fee: deps, log: { error() {} } }).feePct, null, "unset means the site's ladder");
+  await feed.stop();
+});

@@ -3458,6 +3458,27 @@ app.post("/api/trading-wallet/create", requireOwner, async (req, res) => {
   res.json({ ok: true, tradingWallet: tw.pubkey, privateKey: tw.secret });
 });
 
+// Withdraw: SOL from the trading wallet back to the connected wallet (or any address the owner names).
+app.post("/api/trading-wallet/withdraw", requireOwner, async (req, res) => {
+  try {
+    const { wallet, to, sol } = req.body || {};
+    const tw = await getTradingWallet(wallet);
+    if (!tw?.secret) return res.status(404).json({ error: "No trading wallet" });
+    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+    const dest = new PublicKey(to || wallet);
+    const bal = await connection.getBalance(kp.publicKey);
+    const keep = 5_000 + 890_880; // fee + rent floor
+    const lamports = sol === "all" || sol == null ? bal - keep : Math.floor(Number(sol) * LAMPORTS_PER_SOL);
+    if (!(lamports > 0) || lamports > bal - keep) return res.status(400).json({ error: `nothing to withdraw (balance ${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL)` });
+    if (velocityHub?.has(wallet)) return res.status(409).json({ error: "stop Velocity first" });
+    const { SystemProgram, Transaction } = await import("@solana/web3.js");
+    const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: dest, lamports }));
+    tx.feePayer = kp.publicKey; tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash; tx.sign(kp);
+    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+    res.json({ ok: true, sig, sol: lamports / LAMPORTS_PER_SOL, to: dest.toBase58() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post("/api/trading-wallet/export", requireOwner, async (req, res) => {
   const { wallet } = req.body;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
@@ -10776,7 +10797,8 @@ if (process.env.VELOCITY_HOSTED === "1") {
   const hubFeed = new PumpfunFeed({ bondliUrl: "http://in-process", minScore: parseInt(process.env.VELOCITY_MIN_SCORE || "25") || 25, pollMs: 2000, tickMs: 1000, pumpportal: false, fetchImpl: inProcessFetch });
   velocityHub = new VelocityHub({
     feed: hubFeed, rootDir: path.resolve(process.env.VELOCITY_DATA_DIR || "data/velocity/users"), platformWallet: process.env.PLATFORM_WALLET || null, rpcUrl: RPC_URL,
-    fee: { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser },
+    fee: { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser, isOwnerWallet },
+    feePct: process.env.VELOCITY_FEE_PCT != null ? Number(process.env.VELOCITY_FEE_PCT) : 5,
   });
   hubFeed.start().then(() => console.log(`[VELOCITY-HUB] radar feed started; fee wallet ${velocityHub.feeOk ? "configured" : "NOT configured"}`)).catch(e => console.error("[VELOCITY-HUB] feed failed to start:", e.message));
   mountVelocityRoutes(app, { hub: velocityHub, requireOwner, getTradingWallet, getUser, resolveTier });

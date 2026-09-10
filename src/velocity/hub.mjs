@@ -71,8 +71,10 @@ export class VelocityHub {
    * @param fee         { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser }
    * @param makeLiveRouter  ({ secret }) => router; tests inject a double
    */
-  constructor({ feed, rootDir, platformWallet, fee, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, clock = () => Date.now(), log = console }) {
+  constructor({ feed, rootDir, platformWallet, fee, feePct = null, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, clock = () => Date.now(), log = console }) {
     this.feed = feed; this.rootDir = rootDir; this.platformWallet = platformWallet || null; this.fee = fee; this.rpcUrl = rpcUrl;
+    // A flat rate on realized profit (VELOCITY_FEE_PCT) replaces the site's ladder when set: one number, said plainly.
+    this.feePct = feePct != null && feePct !== "" && Number.isFinite(Number(feePct)) && Number(feePct) >= 0 ? Number(feePct) : null;
     this.makeLiveRouter = makeLiveRouter || (({ secret }) => new PumpfunLiveRouter({ secret, rpcUrl, clock }));
     this.clock = clock; this.log = log;
     this.users = new Map(); // wallet -> { engine, sup, view, settings, startedAt }
@@ -146,7 +148,7 @@ export class VelocityHub {
     const solIn = Number(position.sol_spent) || 0, solOut = Number(position.sol_received) || 0;
     if (!(solIn > 0) || !(solOut > 0)) return null; // no measured SOL on both sides: no basis for a fee
     const tier = this.fee.resolveTier(wallet, await this.fee.getUser?.(wallet));
-    const f = this.fee.calculateFee(solIn, solOut, wallet, tier.tier);
+    const f = this.feePct != null ? this.flatFee(solIn, solOut, wallet) : this.fee.calculateFee(solIn, solOut, wallet, tier.tier);
     this.fee.recordTradeOutcome?.(wallet, f.net);
     if (!(f.fee > 0.0005)) return { fee: 0, net: f.net };
     if (!this.feeOk) { u.engine.log("warn", `platform fee ${f.fee.toFixed(6)} SOL not collected: PLATFORM_WALLET not set`); return { fee: f.fee, net: f.net, collected: false }; }
@@ -157,6 +159,13 @@ export class VelocityHub {
     this.fee.recordGlobalFee?.(f.fee);
     u.engine.log("info", `platform fee ${f.fee.toFixed(6)} SOL (${f.rate ?? "?"}% of ${f.net.toFixed(4)} profit) tx ${String(sig).slice(0, 10)}`);
     return { fee: f.fee, net: f.net, collected: true, sig };
+  }
+
+  /** feePct of realized profit; nothing on a loss or dust; the owner pays nothing. */
+  flatFee(solIn, solOut, wallet) {
+    const net = +(solOut - solIn).toFixed(6);
+    if (net <= 0.001 || this.fee.isOwnerWallet?.(wallet)) return { fee: 0, net, rate: this.feePct };
+    return { fee: +(net * this.feePct / 100).toFixed(6), net, rate: this.feePct, type: "profit-share" };
   }
 
   async stopAll() { for (const w of this.list()) { try { await this.stop(w, { flatten: false }); } catch {} } }
