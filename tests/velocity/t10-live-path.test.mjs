@@ -134,7 +134,7 @@ test("T10: going live closes paper positions through the paper router first; goi
     assert.equal(pos.cost_usd, 5.12, "cost is what left the wallet; the fee is not added twice");
     assert.equal(pos.notional_usd, 5.12);
     const back = await engine.setVenueMode("pumpfun", "paper");
-    assert.equal(back.ok, false); assert.match(back.error, /live position\(s\) still open/);
+    assert.equal(back.ok, false); assert.match(back.error, /1 live position\(s\) and 0 unconfirmed buy\(s\) still open/);
     assert.equal(engine.store.venueMode("pumpfun"), "live");
   } finally { await engine.stop(); }
 });
@@ -174,7 +174,7 @@ test("T10: the SOL a buy needs counts fees and rent, and the fill is read from t
   assert.ok(solNeededForBuy(0.025, { hasAccount: true }) < solNeededForBuy(0.025), "an existing token account needs no rent");
   const poor = liveRouter(fakeConn({ sol: 0.0275 }));
   const p = await poor.submit(buyOrder());
-  assert.equal(p.failure.code, "INSUFFICIENT_SOL"); assert.match(p.failure.reason, /order needs 0\.0288/);
+  assert.equal(p.failure.code, "INSUFFICIENT_SOL"); assert.match(p.failure.reason, /order needs 0\.0326/, "15% slippage headroom, fees and rent are all counted");
   assert.equal(poor.connection.sent, 0);
 
   // Confirmed: the transaction metadata gives the exact debit (stake + fees) and tokens received,
@@ -255,10 +255,18 @@ test("T10: the engine finalizes a live position the wallet no longer holds, and 
   const dir = tmp(); const env = smallEnvelope(dir);
   const live = new FakeLive();
   const engine = mkEngine(dir, { envelope: env, mode: "live", live });
-  const mk = (id) => ({ id, venue: "pumpfun", instrument: id, status: "open", paper: false, qty: 1000, remaining_qty: 1000, cost_usd: 5.2, notional_usd: 5.2, stake_usd: 5, proceeds_usd: 0, entryTime: Date.now() - 60_000, entryMark: 9000, tier: 2, model: "bondli_gates", plan: createPlan({ venue: "pumpfun", key: 2, entry: { score: 60 } }), reference: { solPrice: 200 } });
+  let now = Date.now(); engine.clock = () => now;
+  const mk = (id) => ({ id, venue: "pumpfun", instrument: id, status: "open", paper: false, qty: 1000, remaining_qty: 1000, cost_usd: 5.2, notional_usd: 5.2, stake_usd: 5, proceeds_usd: 0, entryTime: now - 60_000, entryMark: 9000, tier: 2, model: "bondli_gates", plan: createPlan({ venue: "pumpfun", key: 2, entry: { score: 60 } }), reference: { solPrice: 200 } });
   engine.store.upsertPosition(mk("Gone")); engine.store.upsertPosition(mk("Slow"));
   try {
     await engine.start({ reconcile: false });
+    // One empty wallet read is a failed exit, not a loss; a second one a retry interval later is.
+    const first = await engine.closePosition(engine.store.state.positions.Gone, 100, "SL1");
+    assert.equal(first.ok, false); assert.equal(engine.store.state.positions.Gone.status, "open");
+    now += 5_000;
+    const soon = await engine.closePosition(engine.store.state.positions.Gone, 100, "SL1");
+    assert.equal(soon.ok, false, "5s later: still not proof");
+    now += 15_000;
     const r = await engine.closePosition(engine.store.state.positions.Gone, 100, "SL1");
     assert.equal(r.ok, true); assert.equal(r.flat, true);
     assert.equal(engine.store.state.positions.Gone.status, "closed");
@@ -271,8 +279,14 @@ test("T10: the engine finalizes a live position the wallet no longer holds, and 
     assert.equal(u.ok, false);
     assert.equal(engine.store.state.positions.Slow.status, "open");
     assert.deepEqual({ sig: engine.store.state.positions.Slow.pendingExit.sig, pct: engine.store.state.positions.Slow.pendingExit.pct }, { sig: "SIGSELL", pct: 100 });
+    // The same signature reported again keeps its original send time and percentage, so the
+    // blockhash lifetime can actually run out and a dropped sell gets resent.
+    const at0 = engine.store.state.positions.Slow.pendingExit.at;
+    now += 30_000;
+    await engine.closePosition(engine.store.state.positions.Slow, 50, "STOP");
+    assert.equal(engine.store.state.positions.Slow.pendingExit.at, at0); assert.equal(engine.store.state.positions.Slow.pendingExit.pct, 100);
     // The next attempt returns the settled fill for the pending sell; the position closes with it.
-    live.closeImpl = (p) => ({ ok: true, fill: { price: 0.006, qty: 1000, notional_usd: 6, fee_usd: 0, t_filled: Date.now(), latency_ms: 0, venue_ref: p.pendingExit.sig, pending_pct: p.pendingExit.pct } });
+    live.closeImpl = (p) => ({ ok: true, fill: { price: 0.006, qty: 1000, notional_usd: 6, fee_usd: 0, t_filled: now, latency_ms: 0, venue_ref: p.pendingExit.sig, pending_pct: p.pendingExit.pct } });
     const done = await engine.closePosition(engine.store.state.positions.Slow, 50, "TP3");
     assert.equal(done.ok, true);
     assert.equal(engine.store.state.positions.Slow.status, "closed", "closed at the pending sell's 100%, not the later 50%");
@@ -365,4 +379,98 @@ test("T10: a partial venue entry in velocity.config.json keeps the documented de
   assert.equal(cfg.venues.pumpfun.minScore, DEFAULT_CONFIG.venues.pumpfun.minScore);
   assert.equal(cfg.venues.pumpfun.bondliUrl, DEFAULT_CONFIG.venues.pumpfun.bondliUrl);
   assert.equal(cfg.venues.polymarket.mode, "off");
+});
+
+test("T10: a signature survives an RPC that drops the reply; a zero read is re-read; a sale with no visible proceeds is not booked at zero", async () => {
+  const fakeTx = () => ({ sign() {}, serialize() { return new Uint8Array(1); }, signatures: [new Uint8Array(64)] });
+  // sendRawTransaction throws after the RPC may have forwarded it: the locally known signature is kept.
+  const dropped = fakeConn({ sol: 0.5 });
+  dropped.sendRawTransaction = async () => { throw new Error("socket hang up"); };
+  const r1 = liveRouter(dropped); r1.web3.VersionedTransaction.deserialize = fakeTx; r1.bs58 = { encode: () => "LOCALSIG" };
+  const a = await r1.submit(buyOrder());
+  assert.equal(a.failure.code, "UNCONFIRMED"); assert.equal(a.failure.venue_ref, "LOCALSIG");
+  // getSignatureStatuses throws after the send: same.
+  const flaky = fakeConn({ sol: 0.5 });
+  flaky.getSignatureStatuses = async () => { throw new Error("429"); };
+  const r2 = liveRouter(flaky); r2.web3.VersionedTransaction.deserialize = fakeTx; r2.bs58 = { encode: () => "LOCALSIG" };
+  const b = await r2.submit(buyOrder());
+  assert.equal(b.failure.code, "UNCONFIRMED"); assert.equal(b.failure.venue_ref, "SIG1", "the RPC's signature once it answered the send");
+  // Without bs58 (never initialized) a thrown send is still an honest SEND_FAILED.
+  const r3 = liveRouter(dropped); r3.web3.VersionedTransaction.deserialize = fakeTx;
+  assert.equal((await r3.submit(buyOrder())).failure.code, "SEND_FAILED");
+
+  // A token balance that reads 0 once and 1000 next is a position, not NO_POSITION.
+  const lag = fakeConn({ sol: 0.5, tokens: { M: 1000 }, statuses: { SIG1: confirmed }, txs: { SIG1: meta(0.03, -1000) } });
+  let reads = 0; const orig = lag.getParsedTokenAccountsByOwner.bind(lag);
+  lag.getParsedTokenAccountsByOwner = async (...args) => (++reads === 1 ? { value: [] } : orig(...args));
+  const r4 = liveRouter(lag);
+  const sold = await r4.close({ id: "p", instrument: "M", decisionId: "d", reference: { solPrice: 200 } }, 100, { reference: { solPrice: 200 } });
+  assert.equal(sold.ok, true); assert.equal(sold.fill.notional_usd, 6);
+
+  // Tokens gone, SOL not visible, transaction not readable: UNCONFIRMED, never a $0 sale.
+  const half = fakeConn({ sol: 0.5, tokens: { M: 1000 }, statuses: { SIG1: confirmed }, txs: {} });
+  const r5 = liveRouter(half);
+  half.sendRawTransaction = async () => { half.tokens.M = 0; return "SIG1"; };
+  const z = await r5.close({ id: "p", instrument: "M", decisionId: "d", reference: { solPrice: 200 } }, 100, { reference: { solPrice: 200 } });
+  assert.equal(z.failure.code, "UNCONFIRMED"); assert.equal(z.failure.venue_ref, "SIG1");
+  // Later, still unreadable but long confirmed: the curve model's estimate is booked, flagged.
+  r5.tick(100_000);
+  const est = await r5.resolvePending({ instrument: "M", side: "SELL", sig: "SIG1", at: 1_000_000, reference: { solPrice: 200, mcapUsd: 9000, vSolInBondingCurve: 30 }, qtyHint: 1000 });
+  assert.equal(est.ok, true); assert.equal(est.fill.estimated, true); assert.ok(est.fill.notional_usd > 0);
+});
+
+test("T10: a throttled stake is never floored back up; a failed startup freeze lifts on a good restart; stopping opens no new risk", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const sizer = new Sizer(env);
+  const d = { venue: "pumpfun", p_win: 0.45, payoff: 3, stop_fraction: 1 };
+  assert.equal(sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: 0 }, throttle: 1 }).stake_usd, 5);
+  const shrunk = sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: 0 }, throttle: 0.5 });
+  assert.equal(shrunk.stake_usd, 0); assert.match(shrunk.reasons[0], /BELOW_MIN_STAKE/, "the governor's shrink means not trading at this bankroll");
+
+  const first = mkEngine(dir, { envelope: env, mode: "paper", live: new FakeLive({ failInit: true }) });
+  first.store.setVenueMode("pumpfun", "live");
+  try { await first.start(); assert.equal(first.store.isHalted("pumpfun")?.mode, "freeze"); } finally { await first.stop(); }
+  const second = mkEngine(dir, { envelope: env, mode: "paper", live: new FakeLive() });
+  try {
+    await second.start();
+    assert.equal(second.store.isHalted("pumpfun"), null, "the startup freeze is gone once the router initializes");
+    assert.equal(second.ledger.query({ kind: "resume", limit: 1 })[0].by, "restart");
+    // Leaving live with an unconfirmed buy outstanding is refused.
+    second.pendingBuys.set("MintLate", { venue: "pumpfun", sig: "S", decision: { instrument: "MintLate", reference: {} }, orderId: "o", stake: 5, sizing: {}, at: Date.now() });
+    const back = await second.setVenueMode("pumpfun", "paper");
+    assert.equal(back.ok, false); assert.match(back.error, /1 unconfirmed buy/);
+    second.pendingBuys.clear();
+  } finally { await second.stop(); }
+
+  // A candidate queued behind a slow order when stop() is called opens nothing.
+  const third = mkEngine(dir, { envelope: env, mode: "paper", config: { reentryCooldownMs: 0 } });
+  third.store.setVenueMode("pumpfun", "paper");
+  await third.start({ reconcile: false });
+  let release; const gate = new Promise(r => { release = r; }); third.enqueue(() => gate);
+  const queued = third.enqueue(() => third.onEvent(cand("MintStop")));
+  const stopped = third.stop();
+  release(); await queued; await stopped;
+  assert.equal(third.store.openPositions().length, 0, "no entry after stop()");
+});
+
+test("T10: a tick-less paper sell is priced at the last mark, not the entry", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  let now = Date.now();
+  const engine = mkEngine(dir, { envelope: env, mode: "paper", config: { reentryCooldownMs: 0, sweepRetryMs: 0 } });
+  engine.clock = () => now;
+  try {
+    await engine.start({ reconcile: false });
+    await engine.enqueue(() => engine.onEvent(cand("MintFade", now)));
+    const p = engine.store.openPositions("pumpfun")[0];
+    assert.ok(p);
+    // One tick 40% down that trips no plan rule of its own (the fixture's plan stop is wider on a
+    // stable trend), then silence.
+    await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "tick", id: "MintFade", t_venue: now + 400, t_observed: now + 500, payload: tickPayload("MintFade", 10_800) })));
+    if (engine.store.openPositions("pumpfun").length === 0) return; // the plan sold on the tick: nothing left to test here
+    now += p.plan.max_hold_ms + 60_000; await engine.sweep();
+    assert.equal(engine.store.openPositions("pumpfun").length, 0);
+    const out = engine.ledger.query({ kind: "outcome", limit: 1 })[0];
+    assert.equal(out.reason, "MAX_HOLD");
+    assert.ok(out.pnl_pct < -30, `booked at the last mark (-40%), got ${out.pnl_pct}%`);
+  } finally { await engine.stop(); }
 });

@@ -76,9 +76,11 @@ export const BASE_FEE_SOL = 0.000005;
 export const BLOCKHASH_LIFETIME_MS = 90_000;   // a sent transaction can still land for about this long
 export const SOL_PRICE_MAX_AGE_MS = 10 * 60_000;
 
-/** SOL a buy of `solAmount` needs in the wallet. `hasAccount` skips the token-account rent. */
-export function solNeededForBuy(solAmount, { priorityFeeSol = 0.0005, hasAccount = false } = {}) {
-  return solAmount * (1 + (PUMP_FEE_BPS + PUMP_PORTAL_FEE_BPS) / 1e4) + priorityFeeSol + BASE_FEE_SOL + (hasAccount ? 0 : RENT_ATA_SOL) + RENT_WALLET_MIN_SOL;
+/** SOL a buy of `solAmount` needs in the wallet. A SOL-denominated pump.fun buy may debit up to
+ *  `slippagePct` more than the amount if the curve moves before it lands. `hasAccount` skips the
+ *  token-account rent. */
+export function solNeededForBuy(solAmount, { priorityFeeSol = 0.0005, hasAccount = false, slippagePct = 0 } = {}) {
+  return solAmount * (1 + slippagePct / 100) * (1 + (PUMP_FEE_BPS + PUMP_PORTAL_FEE_BPS) / 1e4) + priorityFeeSol + BASE_FEE_SOL + (hasAccount ? 0 : RENT_ATA_SOL) + RENT_WALLET_MIN_SOL;
 }
 
 /** Exact wallet deltas of a confirmed transaction from its metadata: index 0 is the fee payer (us). */
@@ -94,7 +96,10 @@ export class PumpfunLiveRouter extends Router {
     // On-chain tolerance for our own transaction, separate from the envelope's modeled-impact cap:
     // bondli's trader has run at 15% for a reason (a fresh curve moves between build and land).
     buySlippagePct = Number(process.env.BUY_SLIPPAGE || 15), sellSlippagePct = Number(process.env.SELL_SLIPPAGE || 15),
-    priorityFeeSol = Number(process.env.PRIORITY_FEE_SOL || 0.0005), confirmTimeoutMs = 25_000, lateConfirmMs = 20_000,
+    // An order holds the engine queue while it waits, and no other position can exit meanwhile:
+    // wait a normal confirmation's worth, then hand the signature to the sweep (buys) or the next
+    // exit attempt (sells), which settle it from the chain without blocking anyone.
+    priorityFeeSol = Number(process.env.PRIORITY_FEE_SOL || 0.0005), confirmTimeoutMs = 12_000, lateConfirmMs = 0,
     tradeLocalUrl = "https://pumpportal.fun/api/trade-local", fetchImpl = globalThis.fetch, clock, sleep = ms => new Promise(r => setTimeout(r, ms)),
   } = {}) {
     super({ venue: "pumpfun", mode: "live", clock });
@@ -110,7 +115,8 @@ export class PumpfunLiveRouter extends Router {
     if (!this.secret) throw new Error("pumpfun live router needs MASTER_SEED (base58 secret key of a dedicated wallet) in .env");
     const [web3, bs58, cfg] = await Promise.all([import("@solana/web3.js"), import("bs58"), import("../../../engine/config.mjs")]);
     this.web3 = web3;
-    this.keypair = web3.Keypair.fromSecretKey((bs58.default || bs58).decode(this.secret.trim()));
+    this.bs58 = bs58.default || bs58;
+    this.keypair = web3.Keypair.fromSecretKey(this.bs58.decode(this.secret.trim()));
     this.publicKey = this.keypair.publicKey.toBase58();
     this.connection = new web3.Connection(this.rpcUrl || cfg.default.RPC_URL, "confirmed");
     this.ready = true;
@@ -142,11 +148,28 @@ export class PumpfunLiveRouter extends Router {
     if (bytes.byteLength < 100) throw new Error("trade builder returned an empty transaction");
     const tx = this.web3.VersionedTransaction.deserialize(bytes);
     tx.sign([this.keypair]);
+    // The signature is ours before the RPC sees it: an RPC that forwards the transaction and then
+    // drops the reply must not lose track of a transaction that can still land.
+    let sig = null;
+    try { sig = this.bs58 && tx.signatures?.[0] ? this.bs58.encode(tx.signatures[0]) : null; } catch { sig = null; }
     const t_sent = this.clock();
-    const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
-    const st = await this._awaitStatus(sig, this.confirmTimeoutMs);
+    try {
+      sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
+    } catch (err) {
+      if (sig) throw Object.assign(err, { sig, unconfirmed: true, t_sent });
+      throw err;
+    }
+    let st;
+    try { st = await this._awaitStatus(sig, this.confirmTimeoutMs); }
+    catch (err) { throw Object.assign(err, { sig, unconfirmed: true, t_sent }); }
     if (st.err) throw this._chainError(sig, st.err);
     return { sig, t_sent, t_filled: st.confirmed ? this.clock() : null, unconfirmed: !st.confirmed };
+  }
+
+  /** A thrown error after a send: the transaction may still land, so it is UNCONFIRMED, not failed. */
+  _sendFailure(order, err, solPrice) {
+    if (err.unconfirmed && err.sig) return failure(order, "UNCONFIRMED", `${err.message}; tx ${err.sig} may still land`, { venue_ref: err.sig, t_sent: err.t_sent || null });
+    return failure(order, "SEND_FAILED", err.message, { venue_ref: err.sig || null, fee_usd: err.fee_sol > 0 ? +(err.fee_sol * solPrice).toFixed(4) : 0 });
   }
 
   _chainError(sig, err) {
@@ -184,32 +207,57 @@ export class PumpfunLiveRouter extends Router {
     let solAfter = solBefore, qtyAfter = qtyBefore;
     for (let i = 0; i < 8; i++) {
       [solAfter, qtyAfter] = await Promise.all([this._solBalance().catch(() => solBefore), this._tokenBalance(mint).catch(() => null)]);
-      if (qtyAfter != null && qtyAfter !== qtyBefore) break;
+      // Both legs must have moved: a token read from one node and a SOL read from a node behind it
+      // would book a sell with zero proceeds.
+      const tokensMoved = qtyAfter != null && qtyAfter !== qtyBefore;
+      const solMoved = expectSign < 0 ? solAfter > solBefore : solAfter < solBefore;
+      if (tokensMoved && solMoved) break;
       await this.sleep(400);
     }
     return { solDelta: solAfter - solBefore, tokenDelta: qtyAfter == null ? null : qtyAfter - qtyBefore, exact: false };
   }
 
+  /** The wallet's balance of a mint, re-read a few times before a zero is believed. */
+  async _tokenBalanceSettled(mint, { reads = 5 } = {}) {
+    let qty = 0;
+    for (let i = 0; i < reads; i++) {
+      qty = await this._tokenBalance(mint);
+      if (qty > 0) return qty;
+      if (i < reads - 1) await this.sleep(400);
+    }
+    return qty;
+  }
+
   /** A signature sent earlier: did it land? Used for buys and sells that outlived their timeout. */
-  async resolvePending({ instrument, side, sig, at, reference = {} }) {
+  async resolvePending({ instrument, side, sig, at, reference = {}, qtyHint = 0, stakeUsd = 0 }) {
     if (!this.ready) return failure({ id: sig }, "NOT_READY", "call init() first");
     const st = await this._awaitStatus(sig, 0, { history: true });
     const solPrice = Number(reference?.solPrice) || 0;
     if (st.err) return failure({ id: sig }, "SEND_FAILED", `tx ${sig} failed on chain: ${JSON.stringify(st.err)}`, { expired: true, venue_ref: sig, fee_usd: +((this.priorityFeeSol + BASE_FEE_SOL) * solPrice).toFixed(4) });
+    const age = this.clock() - (at || 0);
     if (!st.confirmed) {
-      const expired = this.clock() - (at || 0) > BLOCKHASH_LIFETIME_MS;
+      const expired = age > BLOCKHASH_LIFETIME_MS;
       return failure({ id: sig }, expired ? "EXPIRED" : "UNCONFIRMED", expired ? `tx ${sig} never landed` : `tx ${sig} still unconfirmed`, { expired, venue_ref: sig });
     }
-    const d = await this._txDeltas(sig, instrument).catch(() => null);
-    if (!d) return failure({ id: sig }, "UNCONFIRMED", `tx ${sig} confirmed but not yet readable`, { venue_ref: sig });
+    let d = await this._txDeltas(sig, instrument).catch(() => null);
     const t = this.clock();
+    if (!d) {
+      if (age <= BLOCKHASH_LIFETIME_MS) return failure({ id: sig }, "UNCONFIRMED", `tx ${sig} confirmed but not yet readable`, { venue_ref: sig });
+      // Confirmed, still unreadable long after: book the curve model's estimate rather than nothing.
+      const est = side === "BUY"
+        ? pumpfunFillModel({ side: "BUY", stake_usd: stakeUsd, reference })
+        : pumpfunFillModel({ side: "SELL", qty: qtyHint, reference });
+      if (est.reject) return failure({ id: sig }, "UNCONFIRMED", `tx ${sig} confirmed but unreadable and no estimate (${est.reason})`, { venue_ref: sig });
+      const solOf = usd => (solPrice > 0 ? usd / solPrice : 0);
+      d = side === "BUY" ? { solDelta: -solOf(est.notional_usd + est.fee_usd), tokenDelta: est.qty, estimated: true } : { solDelta: solOf(est.notional_usd), tokenDelta: -est.qty, estimated: true };
+    }
     if (side === "BUY") {
       const costSol = Math.max(0, -d.solDelta), qty = Math.max(0, d.tokenDelta);
       if (!(qty > 0)) return failure({ id: sig }, "EXPIRED", `tx ${sig} landed without tokens`, { expired: true, venue_ref: sig });
-      return { ok: true, fill: { venue: "pumpfun", instrument, side: "BUY", price: (costSol * solPrice) / qty, qty, notional_usd: +(costSol * solPrice).toFixed(4), slippage_bps: null, fee_usd: 0, t_sent: at || t, t_filled: t, latency_ms: at ? t - at : 0, venue_ref: sig, sol_spent: costSol, late: true } };
+      return { ok: true, fill: { venue: "pumpfun", instrument, side: "BUY", price: (costSol * solPrice) / qty, qty, notional_usd: +(costSol * solPrice).toFixed(4), slippage_bps: null, fee_usd: 0, t_sent: at || t, t_filled: t, latency_ms: at ? t - at : 0, venue_ref: sig, sol_spent: costSol, late: true, estimated: !!d.estimated } };
     }
     const proceedsSol = Math.max(0, d.solDelta), qty = Math.max(0, -d.tokenDelta);
-    return { ok: true, fill: { venue: "pumpfun", instrument, side: "SELL", price: qty > 0 ? (proceedsSol * solPrice) / qty : 0, qty, notional_usd: +(proceedsSol * solPrice).toFixed(4), slippage_bps: null, fee_usd: 0, t_sent: at || t, t_filled: t, latency_ms: at ? t - at : 0, venue_ref: sig, sol_received: proceedsSol, late: true } };
+    return { ok: true, fill: { venue: "pumpfun", instrument, side: "SELL", price: qty > 0 ? (proceedsSol * solPrice) / qty : 0, qty, notional_usd: +(proceedsSol * solPrice).toFixed(4), slippage_bps: null, fee_usd: 0, t_sent: at || t, t_filled: t, latency_ms: at ? t - at : 0, venue_ref: sig, sol_received: proceedsSol, late: true, estimated: !!d.estimated } };
   }
 
   async submit(order) {
@@ -227,16 +275,16 @@ export class PumpfunLiveRouter extends Router {
     let sig = null;
     try {
       const [solBefore, qtyBefore] = await Promise.all([this._solBalance(), this._tokenBalance(order.instrument).catch(() => 0)]);
-      const need = solNeededForBuy(solAmount, { priorityFeeSol: this.priorityFeeSol, hasAccount: qtyBefore > 0 });
+      const need = solNeededForBuy(solAmount, { priorityFeeSol: this.priorityFeeSol, hasAccount: qtyBefore > 0, slippagePct: this.buySlippagePct });
       if (solBefore < need) return failure(order, "INSUFFICIENT_SOL", `wallet has ${solBefore.toFixed(4)} SOL, order needs ${need.toFixed(4)}`);
       const body = tradeLocalBody({ publicKey: this.publicKey, action: "buy", mint: order.instrument, amount: solAmount, denominatedInSol: true, slippagePct: this.buySlippagePct, priorityFeeSol: this.priorityFeeSol });
       const sent = await this._buildSignSend(body);
       sig = sent.sig;
       let t_filled = sent.t_filled;
       if (sent.unconfirmed) {
-        // Give it one more window; after that the sweep settles it from the signature.
-        const st = await this._awaitStatus(sig, this.lateConfirmMs);
+        const st = this.lateConfirmMs > 0 ? await this._awaitStatus(sig, this.lateConfirmMs) : { confirmed: false, err: null };
         if (st.err) throw this._chainError(sig, st.err);
+        // Not confirmed in time: the sweep settles it from the signature without holding the queue.
         if (!st.confirmed) return failure(order, "UNCONFIRMED", `tx ${sig} not confirmed within ${this.confirmTimeoutMs + this.lateConfirmMs}ms`, { venue_ref: sig, t_sent: sent.t_sent });
         t_filled = this.clock();
       }
@@ -248,7 +296,7 @@ export class PumpfunLiveRouter extends Router {
       const notional = +((costSol > 0 ? costSol : estCostSol) * solPrice).toFixed(4);
       return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "pumpfun", instrument: order.instrument, side: "BUY", price: qty > 0 ? notional / qty : est.price, qty, notional_usd: +notional.toFixed(4), slippage_bps: +est.slippage_bps.toFixed(2), fee_usd: +(Math.max(0, costSol - solAmount) * solPrice).toFixed(4), t_sent: sent.t_sent, t_filled, latency_ms: t_filled - sent.t_sent, venue_ref: sig, sol_spent: costSol, exact: d.exact } };
     } catch (err) {
-      return failure(order, "SEND_FAILED", err.message, { venue_ref: err.sig || sig, fee_usd: err.fee_sol > 0 ? +(err.fee_sol * solPrice).toFixed(4) : 0 });
+      return this._sendFailure(order, err, solPrice);
     }
   }
 
@@ -259,11 +307,13 @@ export class PumpfunLiveRouter extends Router {
     try {
       // A sell sent earlier that outlived its timeout: settle it before selling again.
       if (position.pendingExit?.sig) {
-        const prev = await this.resolvePending({ instrument: position.instrument, side: "SELL", sig: position.pendingExit.sig, at: position.pendingExit.at, reference: { solPrice } });
-        if (prev.ok) return { ...prev, fill: { ...prev.fill, orderId: `${position.id}:close`, decisionId: position.decisionId, pending_pct: position.pendingExit.pct } };
+        const pendPct = Number(position.pendingExit.pct) || 100;
+        const prev = await this.resolvePending({ instrument: position.instrument, side: "SELL", sig: position.pendingExit.sig, at: position.pendingExit.at, reference: { ...(ctx.reference || position.reference || {}), solPrice }, qtyHint: (Number(position.remaining_qty ?? position.qty) || 0) * pendPct / 100 });
+        if (prev.ok) return { ...prev, fill: { ...prev.fill, orderId: `${position.id}:close`, decisionId: position.decisionId, pending_pct: pendPct } };
         if (!prev.failure.expired) return prev; // still in flight: do not sell twice
       }
-      const qtyBefore = await this._tokenBalance(position.instrument);
+      // One empty read from a node behind the slot is not proof the tokens are gone.
+      const qtyBefore = await this._tokenBalanceSettled(position.instrument);
       if (!(qtyBefore > 0)) return failure({ id: position.id }, "NO_POSITION", "no token balance to sell");
       const solBefore = await this._solBalance();
       const p = Math.min(100, Math.max(1, Math.round(pct)));
@@ -272,18 +322,21 @@ export class PumpfunLiveRouter extends Router {
       sig = sent.sig;
       let t_filled = sent.t_filled;
       if (sent.unconfirmed) {
-        const st = await this._awaitStatus(sig, this.lateConfirmMs);
+        const st = this.lateConfirmMs > 0 ? await this._awaitStatus(sig, this.lateConfirmMs) : { confirmed: false, err: null };
         if (st.err) throw this._chainError(sig, st.err);
-        if (!st.confirmed) return failure({ id: position.id }, "UNCONFIRMED", `tx ${sig} not confirmed within ${this.confirmTimeoutMs + this.lateConfirmMs}ms`, { venue_ref: sig });
+        if (!st.confirmed) return failure({ id: position.id }, "UNCONFIRMED", `tx ${sig} not confirmed within ${this.confirmTimeoutMs + this.lateConfirmMs}ms`, { venue_ref: sig, t_sent: sent.t_sent });
         t_filled = this.clock();
       }
       const d = await this._settle(sig, position.instrument, { solBefore, qtyBefore, expectSign: -1 });
+      // Tokens left but no SOL is visible yet: never book a sale at zero. The next attempt reads
+      // the transaction itself.
+      if (!(d.solDelta > 0) && d.tokenDelta != null && d.tokenDelta < 0) return failure({ id: position.id }, "UNCONFIRMED", `tx ${sig} sold ${-d.tokenDelta} tokens but proceeds are not readable yet`, { venue_ref: sig, t_sent: sent.t_sent });
       const proceedsSol = Math.max(0, d.solDelta);
       // A post-trade token read that failed says nothing: sold what was asked, not everything.
       const qty = d.tokenDelta == null ? qtyBefore * p / 100 : (Math.max(0, -d.tokenDelta) || qtyBefore * p / 100);
       return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "pumpfun", instrument: position.instrument, side: "SELL", price: qty > 0 ? (proceedsSol * solPrice) / qty : 0, qty, notional_usd: +(proceedsSol * solPrice).toFixed(4), slippage_bps: null, fee_usd: 0, t_sent: sent.t_sent, t_filled, latency_ms: t_filled - sent.t_sent, venue_ref: sig, sol_received: proceedsSol, exact: d.exact } };
     } catch (err) {
-      return failure({ id: position.id }, "SEND_FAILED", err.message, { venue_ref: err.sig || sig, fee_usd: err.fee_sol > 0 ? +(err.fee_sol * solPrice).toFixed(4) : 0 });
+      return this._sendFailure({ id: position.id }, err, solPrice);
     }
   }
 
