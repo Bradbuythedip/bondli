@@ -102,6 +102,9 @@ export class VelocityHub {
     engine.on("outcome", ({ position }) => { this.settleFee(wallet, position).catch(err => this.log.error?.(`[VELOCITY-HUB] fee ${wallet.slice(0, 8)}: ${err.message}`)); });
     const sup = new Supervisor({ engine, dataDir, alerter: engine.alerter, clock: this.clock });
     await engine.start();
+    // Start is the user's intent to trade: a halt left over from their last stop or pause must not
+    // outlive it. resume() re-runs the governor, so a daily-loss halt that still applies comes back.
+    if (engine.store.state.halt?.mode || engine.store.isHalted("pumpfun")) engine.resume("pumpfun", { by: "user" });
     const live = await engine.setVenueMode("pumpfun", "live", { override: true, by: "user" });
     if (!live.ok) { await engine.stop(); return { ok: false, error: live.error || "could not go live", preflight: live.preflight || null }; }
     sup.start();
@@ -125,6 +128,20 @@ export class VelocityHub {
     const u = this.users.get(wallet);
     if (!u) return { ok: false, error: "not running" };
     return { ok: true, ...(await u.engine.halt(mode, "user halt", { by: "user" })) };
+  }
+
+  /** Pause: no new entries, open positions keep their exit plans. Resume lifts it. */
+  async pause(wallet) {
+    const u = this.users.get(wallet);
+    if (!u) return { ok: false, error: "not running" };
+    await u.engine.halt("freeze", "paused by user", { by: "user" });
+    return { ok: true, ...this.status(wallet) };
+  }
+  resume(wallet) {
+    const u = this.users.get(wallet);
+    if (!u) return { ok: false, error: "not running" };
+    u.engine.resume("pumpfun", { by: "user" });
+    return { ok: true, ...this.status(wallet) };
   }
 
   status(wallet) {
@@ -183,6 +200,8 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
   app.post("/api/velocity/stop", requireOwner, async (req, res) => { try { res.json(await hub.stop(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
+  app.post("/api/velocity/pause", requireOwner, async (req, res) => { try { res.json(await hub.pause(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
+  app.post("/api/velocity/resume", requireOwner, (req, res) => { try { res.json(hub.resume(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/halt", requireOwner, async (req, res) => { try { res.json(await hub.halt(req.body.wallet, req.body.mode === "freeze" ? "freeze" : "flatten")); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.get("/api/velocity/status", requireOwner, (req, res) => res.json({ ok: true, ...hub.status(req.query.wallet), narration: hub.narration(req.query.wallet, 40) }));
   app.get("/api/velocity/health", (req, res) => res.json({ ok: true, users: hub.list().length, feeConfigured: hub.feeOk, feed: hub.feed.status?.() || null }));

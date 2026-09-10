@@ -36,7 +36,7 @@ function Pulse({ st, T }) {
   const last = st.narration?.length ? (now - st.narration[st.narration.length - 1].ts) / 1000 : null;
   const dead = hb != null && hb > 45, stale = v.feed?.stale || (feedAge != null && feedAge > 30);
   const c = dead ? T.rd : stale ? T.yl : T.gn;
-  const what = dead ? "engine not responding" : stale ? "market feed stale" : s.halt?.mode ? "paused" : judged === 0 ? "waiting for the first token to qualify" : "watching for the next token";
+  const what = dead ? "engine not responding" : stale ? "market feed stale" : s.halt?.mode ? (/user/.test(s.halt.reason || "") ? "paused by you" : "paused: " + s.halt.reason) : judged === 0 ? "waiting for the first token to qualify" : "watching for the next token";
   const dots = ".".repeat(1 + (Math.floor(now / 500) % 3));
   return <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, fontFamily: M, fontSize: 11, color: T.ft }}>
     <span style={{ display: "flex", alignItems: "center", gap: 6, color: c }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: c, animation: dead ? "none" : "gp 1.5s infinite" }} />{what}{dead || stale ? "" : dots}</span>
@@ -156,6 +156,9 @@ export default function Simple() {
     } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
   };
   const stop = async () => { if (!confirm("Sell everything the bot holds and stop?")) return; sBusy("stop"); try { const r = await a.vsp(pk); sSt({ running: false }); if (r.failed?.length) say(`${r.failed.length} token(s) could not be sold yet; retrying in the background`, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
+  const paused = !!s?.halt?.mode;
+  const pause = async () => { sBusy("pause"); try { const r = await a.vpause(pk); if (r.ok) sSt(x => ({ ...x, ...r })); else say(r.error, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
+  const resume = async () => { sBusy("pause"); try { const r = await a.vresume(pk); if (r.ok) sSt(x => ({ ...x, ...r })); else say(r.error, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
   const withdraw = async () => { if (running) { say("Stop the bot first", "error"); return; } if (!confirm(`Send all SOL from the trading wallet back to ${pk.slice(0, 6)}…?`)) return; sBusy("withdraw"); try { const r = await a.wdr(pk, pk, "all"); say(`Sent ${r.sol.toFixed(4)} SOL`, "ok"); await loadWallet(); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
   const exportKey = async () => {
     sBusy("key"); sMsg(null);
@@ -213,14 +216,17 @@ export default function Simple() {
           <span style={{ fontFamily: M, fontWeight: 900, fontSize: 30, color: pnl >= 0 ? T.gn : T.rd }}>{pnl >= 0 ? "+" : ""}{fmt(pnl)}</span>
         </div>
         <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span>today, {day?.trades || 0} trades</span><span>{s?.bankroll?.wallet ? Number(s.bankroll.wallet.sol).toFixed(3) + " SOL" : ""}</span></div>
-        {s?.halt?.mode && <div style={{ color: T.yl, fontSize: 13, marginTop: 8 }}>Paused: {s.halt.reason}</div>}
+        {paused && <div style={{ color: T.yl, fontSize: 13, marginTop: 8 }}>{/user/.test(s.halt.reason || "") ? "Paused. Open positions still get sold on their plan; nothing new is bought." : `Paused by the bot: ${s.halt.reason}`}</div>}
         {s?.positions?.length > 0 && <div style={{ marginTop: 12 }}>{s.positions.map(p => <div key={p.id} style={{ display: "flex", justifyContent: "space-between", fontFamily: M, fontSize: 13, padding: "5px 0", borderTop: `1px solid ${T.bd}` }}><span style={{ color: T.dm }}>{p.instrument.slice(0, 6)}…</span><span>{fmt(p.notional_usd)}</span><span style={{ color: (p.changePct || 0) >= 0 ? T.gn : T.rd }}>{p.changePct != null ? (p.changePct >= 0 ? "+" : "") + p.changePct.toFixed(1) + "%" : ""}</span></div>)}</div>}
         <div ref={narRef} style={{ marginTop: 14, fontFamily: M, fontSize: 11, lineHeight: 1.55, height: 200, overflowY: "auto", background: T.bg, border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 10px", color: T.ft }}>
           {(st.narration || []).map((n, i) => <div key={i} style={{ color: /FILLED|SOLD|P&L/.test(n.line) ? T.tx : /fee/.test(n.line) ? T.yl : T.ft, whiteSpace: "pre-wrap" }}>{n.line}</div>)}
           {!(st.narration || []).length && <div>watching every new token…</div>}
         </div>
         <Pulse st={st} T={T} />
-        <div style={{ marginTop: 14 }}><Btn danger T={T} onClick={stop} disabled={busy === "stop"}>{busy === "stop" ? "Selling…" : "Sell everything and stop"}</Btn></div>
+        <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
+          <Btn ghost T={T} onClick={paused ? resume : pause} disabled={busy === "pause"}>{busy === "pause" ? "…" : paused ? "Resume" : "Pause"}</Btn>
+          <Btn danger T={T} onClick={stop} disabled={busy === "stop"}>{busy === "stop" ? "Selling…" : "Sell all & stop"}</Btn>
+        </div>
       </>}
       {msg && <div style={{ marginTop: 12, fontSize: 13, color: msg.kind === "error" ? T.rd : T.gn }}>{msg.m}</div>}
     </div>

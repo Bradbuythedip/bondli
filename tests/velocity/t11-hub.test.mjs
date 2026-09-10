@@ -147,3 +147,24 @@ test("T11: a flat fee rate takes that share of realized profit, nothing on a los
   assert.equal(new VelocityHub({ feed, rootDir: tmp(), platformWallet: "P", fee: deps, log: { error() {} } }).feePct, null, "unset means the site's ladder");
   await feed.stop();
 });
+
+test("T11: a stop's halt does not outlive the next start; pause freezes entries and resume lifts it", async () => {
+  const root = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  feed.solPrice = 100;
+  const hub = new VelocityHub({ feed, rootDir: root, platformWallet: "PLATFORM_FRESH_WALLET", fee: feeDeps("pro"), makeLiveRouter: ({ secret, wallet }) => new FakeLive({ secret, wallet }), log: { log() {}, error() {}, warn() {} } });
+  await feed.start();
+  try {
+    await hub.start({ wallet: "UserC", secret: "sC", settings: { bankrollUsd: 100 } });
+    await hub.stop("UserC"); // halt("flatten", "user stop") is persisted in the user's store
+    const again = await hub.start({ wallet: "UserC", secret: "sC", settings: { bankrollUsd: 100 } });
+    assert.equal(again.ok, true);
+    assert.equal(again.status.halt.mode, null, "the old user stop is gone: the bot judges tokens again");
+    const p = await hub.pause("UserC");
+    assert.equal(p.status.halt.mode, "freeze"); assert.match(p.status.halt.reason, /paused by user/);
+    assert.equal(hub.status("UserC").running, true, "paused is still running: positions keep their exit plans");
+    const r = hub.resume("UserC");
+    assert.equal(r.status.halt.mode, null);
+    assert.equal(hub.pause("Nobody") instanceof Promise, true); assert.equal((await hub.pause("Nobody")).ok, false);
+  } finally { await hub.stopAll(); await feed.stop(); }
+});
