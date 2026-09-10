@@ -1158,7 +1158,7 @@ function processRadarMessage(data) {
       volumeSol: 0, sellVolumeSol: 0,
       mcapSol: mcSol,
       mcapUsd: mcUsd,
-      prevVSol: vSol,
+      prevVSol: vSol, vSolInBondingCurve: vSol,
       uniqueBuyers: new Set(),
       spark: mcUsd > 0 ? [mcUsd] : [],
       h1Change: 0,
@@ -1275,7 +1275,7 @@ function processRadarMessage(data) {
         description: "", image: "",
         twitter: "", website: "", telegram: "",
         createdAt: now, trades: [], buys: 0, sells: 0, volumeSol: 0,
-        mcapSol: mcSol, mcapUsd: mcUsd, prevVSol: vSol,
+        mcapSol: mcSol, mcapUsd: mcUsd, prevVSol: vSol, vSolInBondingCurve: vSol,
         uniqueBuyers: new Set(), spark: mcUsd > 0 ? [mcUsd] : [],
         h1Change: 0, devWallet: "", graduated: false, bundled: false, initialBuy: 0,
       };
@@ -1296,6 +1296,7 @@ function processRadarMessage(data) {
     // Calculate SOL amount from vSol delta
     const solDelta = Math.abs(vSol - (token.prevVSol || vSol));
     token.prevVSol = vSol;
+    if (vSol > 0) token.vSolInBondingCurve = vSol; // curve depth: TOO_LATE, curve-window checks and impact estimates read this
     const sol = solDelta > 0.0001 ? solDelta : 0;
 
     if (data.txType === "buy") {
@@ -1879,6 +1880,7 @@ function extractQuickFeatures(t) {
     // Rug detection (enhanced)
     rg_devSellSpeed: devSellSpeed,
     rg_holderConcentration: holderConcentration,
+    _rg_organicBuyers: walletBuys.size, // distinct non-hub buyer wallets behind the concentration figure
     rg_coordDumpScore: Math.min(1, coordDumps / 5),
     rg_liqRemovalSpeed: sellBuyRatio,
     // Wallet age: use cached on-chain age data if available, else fall back to sybil heuristic
@@ -7739,15 +7741,30 @@ app.get("/api/radar", (req, res) => {
 // Returns token + quick features + scores + dynamics: exactly the four objects
 // the auto-ape gates consume, so an external pipeline reuses this scorer as-is.
 // ?min=40 score floor, ?limit=60, ?ca=a,b,c to fetch specific tokens regardless of score.
+// bondli's own trader only ever gates tokens that passed its base filter: at least 3 buyers,
+// at least 1 sell, at least 5 buys (3 when DexScreener-boosted), 30s old, $4k market cap.
+// Serving the same population to external pipelines keeps the gates meaning what they mean there.
+function passesTraderBaseFilter(t, now = Date.now()) {
+  const ub = t.uniqueBuyers?.size || 0, buys = t.buys || 0, sells = t.sells || 0, mc = t.mcapUsd || 0;
+  const ageMin = (now - (t.createdAt || now)) / 60000;
+  const boosted = !!radar.dexBoosted?.get?.(t.ca);
+  return ub >= 3 && sells >= 1 && buys >= (boosted ? 3 : 5) && ageMin >= 0.5 && mc >= 4000;
+}
+
 app.get("/api/radar/scored", (req, res) => {
   const min = Math.max(0, parseInt(req.query.min || "40") || 0);
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || "60") || 60));
   const only = req.query.ca ? String(req.query.ca).split(",").map(s => s.trim()).filter(Boolean) : null;
+  const all = !!req.query.all; // ?all=1: everything, for calibration tools and the frontend
   const now = Date.now();
   const source = only ? only.map(ca => radar.tokens.get(ca)).filter(Boolean) : [...radar.tokens.values()];
   const rows = [];
   for (const t of source) {
     if (!only && (t._apeScore || 0) < min) continue;
+    // A score the background scorer has not refreshed within 10s is stale: the scorer skipped
+    // the token (rug gate or base filter) and its old score must not be served as current.
+    if (!only && !all && (!t._scoredAt || now - t._scoredAt > 10_000)) continue;
+    if (!only && !all && !passesTraderBaseFilter(t, now)) continue;
     let qf = null, dyn = null;
     try { qf = extractQuickFeatures(t); } catch {}
     try { dyn = scoreDynamics.get(t.ca) || null; } catch {}
@@ -7765,7 +7782,7 @@ app.get("/api/radar/scored", (req, res) => {
       dynamics: dyn,
       scores: {
         apeScore: t._apeScore || 0,
-        scoreTimestamp: now,
+        scoreTimestamp: t._scoredAt || now,
         pricePhase: t._pricePhase,
         buyVelTrend: t._buyVelTrend,
         rugFlagCount: t._rugFlags?.length || 0,
@@ -10776,19 +10793,22 @@ server.listen(PORT, async () => {
       const isDexPaid = !!radar.dexBoosted?.get?.(t.ca);
       const isLowVelocity = mc >= 4000 && mc <= 30000 && buys >= 1 && sells <= buys && ub >= 1 && ageMin >= 0.3 && ageMin <= 30;
 
+      // A skipped token must not keep an old score: clear it so it is not served as current.
+      const skip = () => { t._apeScore = 0; t._scoreSkippedAt = Date.now(); };
+
       // Base filter — skip obvious non-starters
       if (!isDexPaid && !isAccelerating && !isLowVelocity) {
-        if (!(mc > 5000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) continue;
+        if (!(mc > 5000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) { skip(); continue; }
       } else if (isAccelerating) {
-        if (!(mc > 3000 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) continue;
+        if (!(mc > 3000 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) { skip(); continue; }
       }
 
       // Hard rug gate
       const qf = extractQuickFeatures(t);
       if (qf) {
-        if (qf.rg_devSellSpeed > 0.5) continue;
-        if (qf.rg_coordDumpScore > 0.5 && qf._rg_sybilScore > 0.4) continue;
-        if (qf.rg_mcapDropRate > 0.5 && ageMin > 3) continue;
+        if (qf.rg_devSellSpeed > 0.5) { skip(); continue; }
+        if (qf.rg_coordDumpScore > 0.5 && qf._rg_sybilScore > 0.4) { skip(); continue; }
+        if (qf.rg_mcapDropRate > 0.5 && ageMin > 3) { skip(); continue; }
       }
 
       // Scoring (mirrors auto-ape composite)
@@ -10832,10 +10852,9 @@ server.listen(PORT, async () => {
         total = Math.max(0, Math.min(99, total + sbAdj.adjustment));
       }
 
-      if (total > 0) {
-        t._apeScore = total;
-        scored++;
-      }
+      t._apeScore = total;
+      t._scoredAt = Date.now(); // freshness stamp: /api/radar/scored serves only scores refreshed within 10s
+      if (total > 0) scored++;
     }
   }, 3000);
 });
