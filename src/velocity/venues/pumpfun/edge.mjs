@@ -60,6 +60,7 @@ export function makePumpfunEdge({
       if (event.kind !== "candidate") return [];
       const p = event.payload || {};
       if (!p.token || !p.token.ca) return [];
+      if (p.token._mayhem) return []; // Mayhem launches are never looked at
       return [{
         model: "bondli_gates",
         instrument: p.token.ca,

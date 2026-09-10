@@ -38,6 +38,7 @@ import { FleetTrader, skimSweep } from "../engine/fleet-trader.mjs";
 import { createToken } from "../engine/token-creator.mjs";
 import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateFee, calculateReferralSplit, getEffectiveFeeRate, recordTradeOutcome, generateWinCard, getTraderStats, addShareCredit, restoreTraderStats, PLATFORM_WALLET, NETWORK_FEE_PCT, PROFIT_LADDER } from "../engine/fee-engine.mjs";
 import { makeVault } from "../middleware/keyvault.mjs";
+import { detectMayhem, PUMP_PROGRAM as PUMP_PROGRAM_ID } from "./mayhem.mjs";
 import { VelocityHub, mountVelocityRoutes } from "../velocity/hub.mjs";
 import { PumpfunFeed } from "../velocity/venues/pumpfun/feed.mjs";
 import { generateChallenge, verifySolanaSignature, issueAuthToken, makeRequireOwner, nonces as authNonces } from "../middleware/wallet-auth.mjs";
@@ -867,6 +868,7 @@ async function fetchPumpFunMetadata(ca) {
       marketCap: d.usd_market_cap || d.market_cap || 0,
       bondingCurve: d.bonding_curve || "",
       creator: d.creator || "",
+      mayhem: detectMayhem({ meta: d }),
     };
   } catch (e) {
     console.log(`[META] Error for ${ca.slice(0,8)}: ${e.message}`);
@@ -982,7 +984,7 @@ function connectPumpPortal() {
           }
         }
         if (Date.now() - st.since >= 60000) {
-          console.log(`[RADAR] stats/min: creates ${st.create} trades ${st.trade} other ${st.other} | subscribed ${radar.subscribedTokens.size} | tokens ${radar.tokens.size} | scored>0 ${[...radar.tokens.values()].filter(t => (t._apeScore || 0) > 0).length} | hubs ${radar.hubs.size} | dup ${st.dup || 0} | src ${radar._tradeSource}${st.onchain ? " (onchain " + st.onchain + ")" : ""} | pumpportal est ${(((st.trade - (st.onchain || 0)) * 1440) / 10000 * 0.01).toFixed(2)} SOL/day`);
+          console.log(`[RADAR] stats/min: creates ${st.create} trades ${st.trade} other ${st.other} | subscribed ${radar.subscribedTokens.size} | tokens ${radar.tokens.size} | scored>0 ${[...radar.tokens.values()].filter(t => (t._apeScore || 0) > 0).length} | mayhem ${[...radar.tokens.values()].filter(t => t._mayhem).length} | hubs ${radar.hubs.size} | dup ${st.dup || 0} | src ${radar._tradeSource}${st.onchain ? " (onchain " + st.onchain + ")" : ""} | pumpportal est ${(((st.trade - (st.onchain || 0)) * 1440) / 10000 * 0.01).toFixed(2)} SOL/day`);
           if (st.trade === 0 && radar.subscribedTokens.size > 0) console.warn(`[RADAR] WARNING: ${radar.subscribedTokens.size} tokens subscribed but zero trade messages in the last minute`);
           st.create = 0; st.trade = 0; st.other = 0; st.dup = 0; st.onchain = 0; st.since = Date.now();
         }
@@ -1029,7 +1031,29 @@ function forgetTokenSubscription(mint) {
   radar._pendingSubs.delete(mint);
 }
 
+// ═══ Mayhem: mark and forget. A marked token is filtered out of the base filter, the scored feed
+// and the velocity edge, so nothing downstream ever spends a cycle on it. ═══
+radar._mayhemProbed = new Set();
+radar._mayhemLogged = 0;
+function markMayhem(mint, source) {
+  const t = radar.tokens.get(mint);
+  if (!t || t._mayhem) return;
+  t._mayhem = true; t._mayhemSource = source; t._apeScore = 0;
+  if (radar._mayhemLogged++ < 20) console.log(`[RADAR] mayhem: ${(t.name || mint).slice(0, 16)} ${mint.slice(0, 8)} excluded (${source})`);
+}
+async function probeMayhemCurve(mint) {
+  if (radar._mayhemProbed.has(mint)) return;
+  radar._mayhemProbed.add(mint);
+  try {
+    const [bc] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), new PublicKey(mint).toBuffer()], new PublicKey(PUMP_PROGRAM_ID));
+    const info = await connection.getAccountInfo(bc);
+    const v = detectMayhem({ curve: info?.data || null });
+    if (v.mayhem) markMayhem(mint, v.source);
+  } catch {}
+}
+
 function subscribeToToken(mint) {
+  probeMayhemCurve(mint);
   if (!mint || radar.subscribedTokens.has(mint) || radar._pendingSubs.has(mint)) return;
   if (radar.subscribedTokens.size >= 4500 && radar.ws && radar.ws.readyState === 1) {
     // Unsub oldest tokens to stay under 5000 limit
@@ -1195,6 +1219,7 @@ function processRadarMessage(data) {
     };
 
     radar.tokens.set(mint, token);
+    { const v = detectMayhem({ create: data }); if (v.mayhem) markMayhem(mint, v.source); }
     subscribeToToken(mint);
 
     // Register dev wallet for balance tracking & profiling
@@ -1230,6 +1255,7 @@ function processRadarMessage(data) {
     if (!data.name) {
       fetchPumpFunMetadata(mint).then(meta => {
         if (!meta) return;
+        if (meta.mayhem?.mayhem) markMayhem(mint, meta.mayhem.source);
         const t = radar.tokens.get(mint);
         if (!t) return;
         if (!t.name && meta.name) t.name = meta.name;
@@ -1310,6 +1336,7 @@ function processRadarMessage(data) {
       // Fetch metadata
       fetchPumpFunMetadata(mint).then(meta => {
         if (!meta) return;
+        if (meta.mayhem?.mayhem) markMayhem(mint, meta.mayhem.source);
         const t = radar.tokens.get(mint);
         if (!t) return;
         t.name = meta.name; t.ticker = meta.symbol;
@@ -7827,6 +7854,7 @@ app.get("/api/radar", (req, res) => {
 function passesTraderBaseFilter(t, now = Date.now()) {
   const ub = t.uniqueBuyers?.size || 0, buys = t.buys || 0, sells = t.sells || 0, mc = t.mcapUsd || 0;
   const ageMin = (now - (t.createdAt || now)) / 60000;
+  if (t._mayhem) return false;
   const boosted = !!radar.dexBoosted?.get?.(t.ca);
   return ub >= 3 && sells >= 1 && buys >= (boosted ? 3 : 5) && ageMin >= 0.5 && mc >= 4000;
 }
@@ -7841,6 +7869,7 @@ function buildScoredResponse(query = {}) {
   const source = only ? only.map(ca => radar.tokens.get(ca)).filter(Boolean) : [...radar.tokens.values()];
   const rows = [];
   for (const t of source) {
+    if (t._mayhem && !all) continue;
     if (!only && (t._apeScore || 0) < min) continue;
     // A score the background scorer has not refreshed within 10s is stale: the scorer skipped
     // the token (rug gate or base filter) and its old score must not be served as current.
