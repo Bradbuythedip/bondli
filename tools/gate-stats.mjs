@@ -116,9 +116,11 @@ async function collect() {
 /** Fire rates and pass sets over every qualifying token-snapshot, for one feature view. */
 function tally(rows, gate, featuresOf) {
   const fire = Object.fromEntries(Object.keys(RULES).map(k => [k, 0]));
-  const pass1 = new Set(), pass2 = new Set(), dropOne = Object.fromEntries(Object.keys(RULES).map(k => [k, new Set()]));
+  const pass1 = new Set(), pass2 = new Set(), pass3 = new Set(), dropOne = Object.fromEntries(Object.keys(RULES).map(k => [k, new Set()]));
+  const g2 = {}, g3 = {}, tiers = {}; let passed1 = 0, passed2 = 0, mayhem = 0;
   let mismatch = 0; const mmEx = [];
   for (const { t, r, ts } of rows) {
+    if (t._mayhem) { mayhem++; continue; } // never looked at
     const q = featuresOf(t, r.qf);
     const { flags } = evalRules(t, q, ts);
     for (const f of flags) fire[f]++;
@@ -131,16 +133,34 @@ function tally(rows, gate, featuresOf) {
         const g1 = gate.d.checkDisqualifiers(t, q, { freezeAuthority: !!t.freezeAuthority });
         const real = g1.flags.map(f => f.startsWith("MULTI_RUG_SIGNAL_") ? "MULTI_RUG_SIGNAL_*" : f).sort().join(",");
         if (real !== flags.slice().sort().join(",")) { mismatch++; if (mmEx.length < 5) mmEx.push(`${t.ca?.slice(0, 8)} real=[${real}] replica=[${flags}]`); }
-        if (g1.pass) { pass1.add(t.ca); if (gate.v.checkViability(t, q, r.scores || {}, r.dynamics).pass) pass2.add(t.ca); }
+        if (g1.pass) {
+          pass1.add(t.ca); passed1++;
+          const vi = gate.v.checkViability(t, q, r.scores || {}, r.dynamics, gate.opts);
+          for (const c of vi.checks) g2[c] = (g2[c] || 0) + 1;
+          if (vi.pass) {
+            pass2.add(t.ca); passed2++;
+            const conf = gate.c.classifyConfidence(t, q, r.scores || {}, r.dynamics, gate.opts);
+            tiers[conf.tier] = (tiers[conf.tier] || 0) + 1;
+            if (conf.tier >= 1 && conf.tier <= 3) {
+              const ew = gate.e.checkExecutionWindow({ ...t, _apeScore: r.scores?.apeScore }, conf.tier, r.scores?.scoreTimestamp, gate.opts);
+              for (const c of ew.checks) g3[c] = (g3[c] || 0) + 1;
+              if (ew.pass) pass3.add(t.ca);
+            } else g3[conf.tier === 4 ? "WATCHLIST" : "BELOW_THRESHOLD"] = (g3[conf.tier === 4 ? "WATCHLIST" : "BELOW_THRESHOLD"] || 0) + 1;
+          }
+        }
       } finally { Date.now = now; }
     } else if (!flags.length) pass1.add(t.ca);
   }
-  return { fire, pass1, pass2, dropOne, mismatch, mmEx };
+  return { fire, pass1, pass2, pass3, dropOne, mismatch, mmEx, g2, g3, tiers, passed1, passed2, mayhem };
 }
 
 async function report(file) {
   let gate = null; // real gates for cross-check + gate-2 pass count (only when run inside the repo)
-  try { gate = { d: await import("../src/autoape/gates/disqualifiers.js"), v: await import("../src/autoape/gates/viability.js") }; } catch {}
+  try {
+    const edge = await import("../src/velocity/venues/pumpfun/edge.mjs");
+    const level = Math.max(0, Math.min(3, parseInt(arg("--aggression", "2")) || 0));
+    gate = { d: await import("../src/autoape/gates/disqualifiers.js"), v: await import("../src/autoape/gates/viability.js"), c: await import("../src/autoape/gates/confidence.js"), e: await import("../src/autoape/gates/execution-window.js"), opts: edge.AGGRESSION[level], level };
+  } catch {}
   const snaps = readFileSync(file, "utf8").split("\n").filter(Boolean).map(l => JSON.parse(l));
   const FIELDS = ["rg_holderConcentration", "rg_coordDumpScore", "rg_devSellSpeed", "_rg_freshWalletRatio", "_rg_sybilScore", "ch_healthScore", "apeScore", "rg_liqRemovalSpeed", "_rg_quickFlipRate", "rg_mcapDropRate"];
   const CW = ["_whaleBullish", "_devLaunchCount", "_namePrevRugged", "_devCredScore", "_walletAgeFresh"], TK = ["_volumeLegitimacy", "_artworkOriginal", "_artworkFlags", "_rugFlags", "_survivorMatch", "_bullishSignals", "_devTier"];
@@ -170,7 +190,15 @@ async function report(file) {
   console.log(`\nHub-flagged trades: ${fmt(hubTrades, trades)} of ${trades} trades (last 60 per token-snapshot)`);
   console.log("Counterweight / enrichment fields absent or at their fallback value (startAutoTrader-only enrichment):");
   for (const [k, v] of Object.entries(missing).sort((a, b) => b[1] - a[1])) console.log(`  ${P(k)} ${fmt(v, N)}`);
-  console.log(`\nTokens passing gate 1 (any qualifying snapshot): recorded ${rec.pass1.size} -> recomputed ${fix.pass1.size}   passing gate 1 AND gate 2: ${gate ? `${rec.pass2.size} -> ${fix.pass2.size}` : "n/a (gates not importable)"}`);
+  console.log(`\nTokens passing gate 1 (any qualifying snapshot): recorded ${rec.pass1.size} -> recomputed ${fix.pass1.size}   passing gate 1 AND gate 2: ${gate ? `${rec.pass2.size} -> ${fix.pass2.size}` : "n/a (gates not importable)"}${gate ? `   AND gate 3 (enterable): ${fix.pass3.size}` : ""}`);
+  if (fix.mayhem) console.log(`Mayhem token-snapshots skipped (never looked at): ${fix.mayhem}`);
+  if (gate) {
+    console.log(`\nGATE 2 (viability) checks among token-snapshots that passed gate 1, aggression ${gate.level} (${fix.passed1} snapshots):`);
+    for (const [k, v] of Object.entries(fix.g2).sort((a, b) => b[1] - a[1])) console.log(`  ${P(k)} ${fmt(v, fix.passed1)} (${v})`);
+    console.log(`Tiers among those passing gate 2 (${fix.passed2} snapshots): ${Object.entries(fix.tiers).sort().map(([t, n]) => `tier${t}=${n}`).join("  ") || "(none)"}`);
+    console.log(`GATE 3 (execution window) checks among tiered snapshots:`);
+    for (const [k, v] of Object.entries(fix.g3).sort((a, b) => b[1] - a[1])) console.log(`  ${P(k)} ${v}`);
+  }
   console.log("\nBinding rules with recomputed features: distinct tokens that would pass gate 1 if only this rule were dropped");
   const binding = Object.entries(fix.dropOne).map(([k, s]) => [k, s.size]).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
   if (!binding.length) console.log("  (none: every blocked token trips at least two rules)");
