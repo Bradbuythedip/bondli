@@ -8,6 +8,7 @@
 //   velocity venue <name> off|paper|live set a venue mode (live goes through the gate)
 //   velocity promote <venue>             show the paper-to-live checklist, promote if green
 //   velocity why <id|last|venue last>    the full trail of one decision
+//   velocity watch [--all]               live narration: every candidate judged, why, and every order
 import "dotenv/config"; // the trader reads the same .env as the bondli server (MASTER_SEED, RPC_URL, PUMPPORTAL_API_KEY)
 import fs from "node:fs";
 import path from "node:path";
@@ -19,6 +20,7 @@ import { Store } from "./core/store.mjs";
 import { Ledger } from "./core/ledger.mjs";
 import { loadRiskEnvelope } from "./core/risk.mjs";
 import { promotionGate } from "./core/promote.mjs";
+import { followLedger } from "./core/watch.mjs";
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -129,6 +131,14 @@ async function main() {
       if (!r.ok) { out(`gate green, but the engine is not running; start it and run: velocity venue ${venue} live`); return; }
       if (args.includes("--go")) { const p = await api(`/promote/${venue}`, "POST", null, 90_000); out(p.json); }
       else out(`gate green. Starting live cap would be $${gate.liveStartCapUsd}. Run: velocity venue ${venue} live`);
+      return;
+    }
+    case "watch": {
+      const dataDir = path.resolve(cfg.dataDir || DEFAULT_CONFIG.dataDir);
+      const file = path.join(dataDir, "ledger.jsonl");
+      out(`watching ${file} (Ctrl+C stops watching, not the bot)`);
+      followLedger(file, line => console.log(line), { fromStart: args.includes("--all") });
+      await new Promise(() => {});
       return;
     }
     case "why": {

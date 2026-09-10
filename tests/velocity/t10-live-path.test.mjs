@@ -559,3 +559,26 @@ test("T10: the wallet's own balance change is read by account key, not by a fixe
   assert.equal(c.tokenDelta, 0); assert.ok(c.err); assert.equal(c.solDelta, -0.000005, "a failed transaction still paid its fee");
   assert.equal(walletDelta(null, { owner: "ME" }), null);
 });
+
+test("T10: velocity watch narrates the ledger one line per event and follows appends", async () => {
+  const { formatRecord, followLedger } = await import("../../src/velocity/core/watch.mjs");
+  assert.match(formatRecord({ kind: "decision", ts: 0, action: "REJECT", instrument: "MintAAAAAAAA", gate: "disqualifiers", reasons: ["QUICK_FLIP", "LIQ_REMOVAL"], features: { apeScore: 0.42 } }), /reject  MintAAAAAA disqualifiers: QUICK_FLIP, LIQ_REMOVAL score 42/);
+  assert.match(formatRecord({ kind: "decision", ts: 0, action: "GO", instrument: "M", tier: 2, p_win: 0.35 }), /^..:..:.. GO      M tier 2 p_win 0.35/);
+  assert.match(formatRecord({ kind: "order", stage: "sized", stake_usd: 5, sizing: { caps: ["MIN_STAKE_FLOOR"] } }), /sized   \$5.00 \(MIN_STAKE_FLOOR\)/);
+  assert.match(formatRecord({ kind: "order", stage: "sized", stake_usd: 0, sizing: { reasons: ["WALLET_UNKNOWN"] } }), /no size WALLET_UNKNOWN/);
+  assert.match(formatRecord({ kind: "fill", instrument: "M", notional_usd: 5.49, qty: 642871.5, slippage_bps: 9.9, venue_ref: "5KtSvwUuDwoT" }), /FILLED  BUY M \$5.49 qty 642872 slip 10bps tx 5KtSvwUuDw/);
+  assert.match(formatRecord({ kind: "exit", instrument: "M", pct: 100, reason: "crash-exit", detail: "v=-0.35", proceeds_usd: 5.57, final: true }), /SOLD    100% M crash-exit \(v=-0.35\) -> \$5.57$/);
+  assert.match(formatRecord({ kind: "outcome", instrument: "M", pnl_usd: -0.4617, pnl_pct: -12.58, held_ms: 1572, reason: "crash-exit" }), /P&L     M -\$0.46 \(-12.6%\) held 2s crash-exit/);
+  assert.match(formatRecord({ kind: "fee", usd: 0.05, note: "failed send X" }), /fee     -\$0.05 failed send X/);
+  assert.equal(formatRecord({ kind: "heartbeat" }), null);
+  // Following: only what is appended after the watch starts, unless --all.
+  const dir = tmp(); const file = path.join(dir, "ledger.jsonl");
+  fs.writeFileSync(file, JSON.stringify({ kind: "halt", mode: "freeze", reason: "old", by: "test" }) + "\n");
+  const seen = [];
+  const stop = followLedger(file, l => seen.push(l), { pollMs: 20 });
+  fs.appendFileSync(file, JSON.stringify({ kind: "outcome", instrument: "N", pnl_usd: 1, pnl_pct: 20, held_ms: 3000, reason: "TP2" }) + "\n" + '{"kind":"heartbeat"}\n');
+  await new Promise(r => setTimeout(r, 120));
+  stop();
+  assert.equal(seen.length, 1, "the old halt was before the watch; the heartbeat is noise");
+  assert.match(seen[0], /P&L     N \$1.00 \(20.0%\) held 3s TP2/);
+});
