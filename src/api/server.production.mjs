@@ -22,6 +22,7 @@
  * ═══════════════════════════════════════════════════════════════
  */
 
+import path from "node:path";
 import express from "express";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -36,6 +37,10 @@ import { SessionManager, calculateDevBuy } from "../engine/session-manager.mjs";
 import { FleetTrader, skimSweep } from "../engine/fleet-trader.mjs";
 import { createToken } from "../engine/token-creator.mjs";
 import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateFee, calculateReferralSplit, getEffectiveFeeRate, recordTradeOutcome, generateWinCard, getTraderStats, addShareCredit, restoreTraderStats, PLATFORM_WALLET, NETWORK_FEE_PCT, PROFIT_LADDER } from "../engine/fee-engine.mjs";
+import { makeVault } from "../middleware/keyvault.mjs";
+import { VelocityHub, mountVelocityRoutes } from "../velocity/hub.mjs";
+import { PumpfunFeed } from "../velocity/venues/pumpfun/feed.mjs";
+import { generateChallenge, verifySolanaSignature, issueAuthToken, makeRequireOwner, nonces as authNonces } from "../middleware/wallet-auth.mjs";
 import CONFIG from "../engine/config.mjs";
 import { smartSend, getOptimalPriorityFee } from "../engine/rpc-enhanced.mjs";
 import { MemeIntelligence, ScoreDynamics, loraClient } from "../engine/meme-intelligence.mjs";
@@ -153,6 +158,9 @@ app.set("trust proxy", 1);
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 const connection = new Connection(RPC_URL, "confirmed");
+// Keys at rest and proof of ownership (src/velocity/HOSTED_DESIGN.md, DP1 and DP4).
+const vault = makeVault();
+const requireOwner = makeRequireOwner({ adminSecret: process.env.ADMIN_SECRET || null });
 
 // ── RPC helper: retry with exponential backoff on 429 ──
 async function rpcRetry(fn, label = "rpc", maxRetries = 3) {
@@ -2902,7 +2910,7 @@ async function getTradingWallet(userPubkey) {
   if (!tw && redis) {
     try {
       const raw = await redis.get("tw:" + userPubkey);
-      if (raw) { tw = JSON.parse(raw); tradingWallets.set(userPubkey, tw); }
+      if (raw) { tw = vault.openRecord(JSON.parse(raw)); tradingWallets.set(userPubkey, tw); }
     } catch {}
   }
   // Maintain reverse lookup
@@ -2919,7 +2927,7 @@ async function saveTradingWallet(userPubkey, tw) {
     }
   }
   if (redis) {
-    try { await redis.set("tw:" + userPubkey, JSON.stringify(tw), { EX: 2592000 }); } catch {} // 30d
+    try { await redis.set("tw:" + userPubkey, JSON.stringify(vault.sealRecord(tw)), { EX: 2592000 }); } catch {} // 30d, secret sealed at rest
   }
 }
 
@@ -3421,11 +3429,28 @@ app.get("/api/trading-wallet/:wallet/debug", async (req, res) => {
   }
 });
 
-app.post("/api/trading-wallet/create", async (req, res) => {
+// ── Wallet sign-in: prove ownership once, then every money route takes the Bearer token ──
+app.post("/api/auth/challenge", (req, res) => {
+  const { wallet } = req.body || {};
+  try { new PublicKey(wallet); } catch { return res.status(400).json({ error: "wallet must be a Solana public key" }); }
+  res.json({ ok: true, ...generateChallenge(wallet) });
+});
+app.post("/api/auth/verify", async (req, res) => {
+  const { wallet, signature } = req.body || {};
+  const ch = wallet && authNonces.get(wallet);
+  if (!ch) return res.status(400).json({ error: "no challenge for this wallet; request one first" });
+  if (!verifySolanaSignature(wallet, signature, ch.message)) return res.status(401).json({ error: "signature does not match the wallet" });
+  authNonces.delete(wallet);
+  const tierInfo = resolveTier(wallet, await getUser(wallet));
+  res.json({ ok: true, token: issueAuthToken(wallet, tierInfo.tier), tier: tierInfo.tier, wallet });
+});
+
+app.post("/api/trading-wallet/create", requireOwner, async (req, res) => {
   const { wallet } = req.body;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const existing = await getTradingWallet(wallet);
   if (existing) return res.json({ ok: true, tradingWallet: existing.pubkey, already: true });
+  if (!vault.canCreate()) return res.status(503).json({ error: "custodial wallets are disabled until WALLET_ENCRYPTION_KEY is set on the server" });
   const kp = Keypair.generate();
   const tw = { pubkey: kp.publicKey.toBase58(), secret: bs58.encode(kp.secretKey), createdAt: new Date().toISOString() };
   await saveTradingWallet(wallet, tw);
@@ -3433,7 +3458,28 @@ app.post("/api/trading-wallet/create", async (req, res) => {
   res.json({ ok: true, tradingWallet: tw.pubkey, privateKey: tw.secret });
 });
 
-app.post("/api/trading-wallet/export", async (req, res) => {
+// Withdraw: SOL from the trading wallet back to the connected wallet (or any address the owner names).
+app.post("/api/trading-wallet/withdraw", requireOwner, async (req, res) => {
+  try {
+    const { wallet, to, sol } = req.body || {};
+    const tw = await getTradingWallet(wallet);
+    if (!tw?.secret) return res.status(404).json({ error: "No trading wallet" });
+    const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
+    const dest = new PublicKey(to || wallet);
+    const bal = await connection.getBalance(kp.publicKey);
+    const keep = 5_000 + 890_880; // fee + rent floor
+    const lamports = sol === "all" || sol == null ? bal - keep : Math.floor(Number(sol) * LAMPORTS_PER_SOL);
+    if (!(lamports > 0) || lamports > bal - keep) return res.status(400).json({ error: `nothing to withdraw (balance ${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL)` });
+    if (velocityHub?.has(wallet)) return res.status(409).json({ error: "stop Velocity first" });
+    const { SystemProgram, Transaction } = await import("@solana/web3.js");
+    const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: kp.publicKey, toPubkey: dest, lamports }));
+    tx.feePayer = kp.publicKey; tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash; tx.sign(kp);
+    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
+    res.json({ ok: true, sig, sol: lamports / LAMPORTS_PER_SOL, to: dest.toBase58() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/trading-wallet/export", requireOwner, async (req, res) => {
   const { wallet } = req.body;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const tw = await getTradingWallet(wallet);
@@ -3442,7 +3488,7 @@ app.post("/api/trading-wallet/export", async (req, res) => {
 });
 
 // ── MULTI-WALLET: Pro/VIP can create additional trading wallets ──
-app.post("/api/trading-wallet/create-extra", async (req, res) => {
+app.post("/api/trading-wallet/create-extra", requireOwner, async (req, res) => {
   const { wallet, label } = req.body;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const user = await getUser(wallet);
@@ -3450,6 +3496,7 @@ app.post("/api/trading-wallet/create-extra", async (req, res) => {
   if (tierInfo.tier === "free" && !tierInfo.whitelisted) {
     return res.status(403).json({ error: "Pro/VIP only — upgrade to create multiple wallets" });
   }
+  if (!vault.canCreate()) return res.status(503).json({ error: "custodial wallets are disabled until WALLET_ENCRYPTION_KEY is set on the server" });
   const kp = Keypair.generate();
   const newWallet = { pubkey: kp.publicKey.toBase58(), secret: bs58.encode(kp.secretKey), label: label || "Wallet " + (Date.now() % 1000), createdAt: new Date().toISOString() };
   // Store in list
@@ -3457,12 +3504,12 @@ app.post("/api/trading-wallet/create-extra", async (req, res) => {
   if (redis) {
     try {
       const raw = await redis.get("extra_wallets:" + wallet);
-      if (raw) wallets = JSON.parse(raw);
+      if (raw) wallets = vault.openRecord(JSON.parse(raw));
     } catch {}
   }
   wallets.push(newWallet);
   if (redis) {
-    try { await redis.set("extra_wallets:" + wallet, JSON.stringify(wallets), { EX: 2592000 }); } catch {}
+    try { await redis.set("extra_wallets:" + wallet, JSON.stringify(vault.sealRecord(wallets)), { EX: 2592000 }); } catch {}
   }
   console.log(`[WALLET] Extra wallet created for ${wallet.slice(0, 8)}: ${newWallet.pubkey.slice(0, 8)}`);
   res.json({ ok: true, wallet: newWallet.pubkey, label: newWallet.label, total: wallets.length });
@@ -3482,7 +3529,7 @@ app.get("/api/trading-wallet/list/:wallet", async (req, res) => {
     try {
       const raw = await redis.get("extra_wallets:" + wallet);
       if (raw) {
-        const extras = JSON.parse(raw);
+        const extras = vault.openRecord(JSON.parse(raw));
         for (const ew of extras) {
           let bal = 0;
           try { bal = await connection.getBalance(new PublicKey(ew.pubkey)) / LAMPORTS_PER_SOL; } catch {}
@@ -3495,7 +3542,7 @@ app.get("/api/trading-wallet/list/:wallet", async (req, res) => {
 });
 
 // ── IMPORT WALLET: bring your own aged wallets ──
-app.post("/api/trading-wallet/import", async (req, res) => {
+app.post("/api/trading-wallet/import", requireOwner, async (req, res) => {
   try {
     const { wallet, privateKey, label } = req.body;
     if (!wallet || !privateKey) return res.status(400).json({ error: "wallet and privateKey required" });
@@ -3532,7 +3579,7 @@ app.post("/api/trading-wallet/import", async (req, res) => {
     if (redis) {
       try {
         const raw = await redis.get("extra_wallets:" + wallet);
-        if (raw) wallets = JSON.parse(raw);
+        if (raw) wallets = vault.openRecord(JSON.parse(raw));
       } catch {}
     }
     
@@ -3543,7 +3590,7 @@ app.post("/api/trading-wallet/import", async (req, res) => {
     
     wallets.push({ pubkey: importedPubkey, secret: privateKey, label: label || "Imported " + (wallets.length + 2), createdAt: new Date().toISOString(), imported: true });
     if (redis) {
-      try { await redis.set("extra_wallets:" + wallet, JSON.stringify(wallets), { EX: 2592000 }); } catch {}
+      try { await redis.set("extra_wallets:" + wallet, JSON.stringify(vault.sealRecord(wallets)), { EX: 2592000 }); } catch {}
     }
     
     console.log(`[WALLET] Imported extra for ${wallet.slice(0, 8)}: ${importedPubkey.slice(0, 8)} (${bal.toFixed(4)} SOL) — total: ${wallets.length + 1}`);
@@ -6553,7 +6600,7 @@ function stopAutoTrader(wallet) {
 }
 
 // ── Auto-trade routes ──
-app.post("/api/auto-trade/start", async (req, res) => {
+app.post("/api/auto-trade/start", requireOwner, async (req, res) => {
   try {
     const { wallet, settings } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
@@ -6566,14 +6613,14 @@ app.post("/api/auto-trade/start", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post("/api/auto-trade/stop", async (req, res) => {
+app.post("/api/auto-trade/stop", requireOwner, async (req, res) => {
   const { wallet } = req.body;
   stopAutoTrader(wallet);
   res.json({ ok: true });
 });
 
 // Close all auto-trade positions (sell everything)
-app.post("/api/auto-trade/close", async (req, res) => {
+app.post("/api/auto-trade/close", requireOwner, async (req, res) => {
   try {
     const { wallet } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
@@ -6609,7 +6656,7 @@ app.post("/api/auto-trade/close", async (req, res) => {
 });
 
 // Manual exit single auto-trade position (user sees rug / dry vol)
-app.post("/api/auto-trade/exit-position", async (req, res) => {
+app.post("/api/auto-trade/exit-position", requireOwner, async (req, res) => {
   try {
     const { wallet, ca } = req.body;
     if (!wallet || !ca) return res.status(400).json({ error: "wallet and ca required" });
@@ -6725,7 +6772,7 @@ app.post("/api/auto-trade/exit-position", async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post("/api/auto-trade/update", async (req, res) => {
+app.post("/api/auto-trade/update", requireOwner, async (req, res) => {
   const { wallet, settings } = req.body;
   const state = autoTraders.get(wallet);
   if (!state) return res.status(404).json({ error: "No auto-trader running" });
@@ -7076,7 +7123,7 @@ app.get("/api/auto-exit/status", (req, res) => {
 // ═══════════════════════════════════════
 // SESSION LOG EXPORT — full dump for offline analysis/training
 // ═══════════════════════════════════════
-app.get("/api/auto-trade/export-session", (req, res) => {
+app.get("/api/auto-trade/export-session", requireOwner, (req, res) => {
   const wallet = req.query.wallet;
   const state = autoTraders.get(wallet);
 
@@ -7360,7 +7407,7 @@ app.get("/api/positions/:wallet", async (req, res) => {
       try {
         const raw = await redis.get("extra_wallets:" + userWallet);
         if (raw) {
-          const extras = JSON.parse(raw);
+          const extras = vault.openRecord(JSON.parse(raw));
           for (const ew of extras) {
             try { pubkeysToScan.push(Keypair.fromSecretKey(bs58.decode(ew.secret)).publicKey); } catch {}
           }
@@ -7784,11 +7831,12 @@ function passesTraderBaseFilter(t, now = Date.now()) {
   return ub >= 3 && sells >= 1 && buys >= (boosted ? 3 : 5) && ageMin >= 0.5 && mc >= 4000;
 }
 
-app.get("/api/radar/scored", (req, res) => {
-  const min = Math.max(0, parseInt(req.query.min || "40") || 0);
-  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || "60") || 60));
-  const only = req.query.ca ? String(req.query.ca).split(",").map(s => s.trim()).filter(Boolean) : null;
-  const all = !!req.query.all; // ?all=1: everything, for calibration tools and the frontend
+/** The scored radar as one object; the HTTP route and the in-process velocity hub both read it. */
+function buildScoredResponse(query = {}) {
+  const min = Math.max(0, parseInt(query.min || "40") || 0);
+  const limit = Math.min(200, Math.max(1, parseInt(query.limit || "60") || 60));
+  const only = query.ca ? String(query.ca).split(",").map(s => s.trim()).filter(Boolean) : null;
+  const all = !!query.all; // ?all=1: everything, for calibration tools and the frontend
   const now = Date.now();
   const source = only ? only.map(ca => radar.tokens.get(ca)).filter(Boolean) : [...radar.tokens.values()];
   const rows = [];
@@ -7825,8 +7873,9 @@ app.get("/api/radar/scored", (req, res) => {
     });
   }
   rows.sort((a, b) => (b.scores.apeScore || 0) - (a.scores.apeScore || 0));
-  res.json({ ts: now, solPrice: solUsdPrice, solPriceAt: solUsdPriceAt || null, gradMc: gradMcUsd(), count: rows.length, tokens: rows.slice(0, limit) });
-});
+  return { ts: now, solPrice: solUsdPrice, solPriceAt: solUsdPriceAt || null, gradMc: gradMcUsd(), count: rows.length, tokens: rows.slice(0, limit) };
+}
+app.get("/api/radar/scored", (req, res) => res.json(buildScoredResponse(req.query)));
 
 app.get("/api/radar/token/:ca", (req, res) => {
   const token = radar.tokens.get(req.params.ca);
@@ -10737,6 +10786,24 @@ premiumCompute.mountRoutes(app, { getUser, resolveTier, isOwnerWallet });
 // GROK AI CHAT — GPU support & help
 // ═══════════════════════════════════════
 mountChatRoutes(app, { redis, getUser, resolveTier });
+
+// ═══════════════════════════════════════
+// HOSTED VELOCITY — one radar, one engine per user, fee on realized profit (src/velocity/HOSTED_DESIGN.md)
+// ═══════════════════════════════════════
+let velocityHub = null;
+if (process.env.VELOCITY_HOSTED === "1") {
+  // The hub's feed reads the radar in-process: same shape as GET /api/radar/scored, no HTTP hop.
+  const inProcessFetch = async (url) => { const q = Object.fromEntries(new URL(url, "http://x").searchParams); return { ok: true, status: 200, json: async () => buildScoredResponse(q) }; };
+  const hubFeed = new PumpfunFeed({ bondliUrl: "http://in-process", minScore: parseInt(process.env.VELOCITY_MIN_SCORE || "25") || 25, pollMs: 2000, tickMs: 1000, pumpportal: false, fetchImpl: inProcessFetch });
+  velocityHub = new VelocityHub({
+    feed: hubFeed, rootDir: path.resolve(process.env.VELOCITY_DATA_DIR || "data/velocity/users"), platformWallet: process.env.PLATFORM_WALLET || null, rpcUrl: RPC_URL,
+    fee: { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser, isOwnerWallet },
+    feePct: process.env.VELOCITY_FEE_PCT != null ? Number(process.env.VELOCITY_FEE_PCT) : 5,
+  });
+  hubFeed.start().then(() => console.log(`[VELOCITY-HUB] radar feed started; fee wallet ${velocityHub.feeOk ? "configured" : "NOT configured"}`)).catch(e => console.error("[VELOCITY-HUB] feed failed to start:", e.message));
+  mountVelocityRoutes(app, { hub: velocityHub, requireOwner, getTradingWallet, getUser, resolveTier });
+  for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { velocityHub.stopAll().finally(() => process.exit(0)); });
+}
 
 // ═══════════════════════════════════════
 // GLOBAL ERROR HANDLER — catch route errors, keep server alive

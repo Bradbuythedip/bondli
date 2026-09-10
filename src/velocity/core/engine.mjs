@@ -395,6 +395,8 @@ export class Engine extends EventEmitter {
       worst_case_fraction: sizing.stop_fraction ?? decision.stop_fraction ?? 1, plan, status: "open",
       p_win: decision.p_win, confidence: decision.confidence, features: decision.features || null,
       reference: decision.reference || null, legs: r.fills ? r.fills.map(f => ({ instrument: f.instrument, qty: f.qty, price: f.price })) : null, paper: !!fill.paper,
+      // Measured SOL, for anything that must not depend on a price feed (the platform fee).
+      sol_spent: fill.sol_spent ?? null, sol_received: 0,
     };
     this.ledger.append({ kind: "fill", venue, orderId, decisionId: decision.id, positionId: position.id, side: "BUY", instrument: inst, price: fill.price, qty: fill.qty, notional_usd: fill.notional_usd, fee_usd: fill.fee_usd || 0, slippage_bps: fill.slippage_bps, latency_ms: fill.latency_ms, venue_ref: fill.venue_ref, sol_spent: fill.sol_spent ?? null, exact: fill.exact ?? null, plan: { venue: plan.venue, key: plan.key, mode: plan.mode }, paper: !!fill.paper });
     this.ledger.append({ kind: "order", venue, orderId, decisionId: decision.id, stage: "filled", positionId: position.id });
@@ -512,6 +514,7 @@ export class Engine extends EventEmitter {
     const f = r.fill;
     const proceeds = f.notional_usd;
     p.proceeds_usd = (p.proceeds_usd || 0) + proceeds;
+    if (f.sol_received > 0) p.sol_received = (p.sol_received || 0) + f.sol_received;
     p.remaining_qty = Math.max(0, (p.remaining_qty ?? p.qty) - (f.qty || 0));
     const done = !!(pct >= 100 || p.remaining_qty <= 1e-9 || action === "REDEEM" || (p.legs && p.legs.length));
     this.ledger.append({ kind: "exit", venue, positionId: p.id, decisionId: p.decisionId, instrument: p.instrument, pct, reason, layer, detail, price: f.price, qty: f.qty, proceeds_usd: proceeds, fee_usd: f.fee_usd || 0, latency_ms: f.latency_ms, venue_ref: f.venue_ref, sol_received: f.sol_received ?? null, exact: f.exact ?? null, final: done, by });

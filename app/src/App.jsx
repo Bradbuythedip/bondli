@@ -571,6 +571,62 @@ return<div style={{background:T.sf,border:"1px solid "+T.pu+"18",borderRadius:10
 </>}</div>}
 
 // ═══ MAIN APP ═══
+/* Velocity — the hosted trader. One button, one knob, and the bot's own words about what it is doing.
+   Norman: the primary action is the only big control; every number the risk envelope caps is shown
+   before it is agreed to; the fee is stated where the profit is stated; the kill switch is always visible. */
+function VelocityPanel({a,user,T,mb,toast,trW,solP}){
+const[st,sSt]=useState(null);const[busy,sBusy]=useState(false);const[open,sOpen]=useState(false);const[err,sErr]=useState(null);
+const[cfg,sCfg]=useState(()=>{try{return JSON.parse(localStorage.getItem("bondli_velocity_cfg")||"null")||{aggression:2,perTradeMaxUsd:10,maxPositions:4,dailyLossUsd:15,bankrollUsd:100}}catch{return{aggression:2,perTradeMaxUsd:10,maxPositions:4,dailyLossUsd:15,bankrollUsd:100}}});
+const set=(k,v)=>sCfg(c=>{const n={...c,[k]:v};try{localStorage.setItem("bondli_velocity_cfg",JSON.stringify(n))}catch{}return n});
+const running=!!st?.running;const s=st?.status;const w=s?.bankroll?.wallet;const day=s?.day;
+useEffect(()=>{if(!user?.pubkey||!a.token())return;let on=true;const poll=async()=>{try{const r=await a.vstat(user.pubkey);if(on){sSt(r);sErr(null)}}catch(e){if(on)sErr(e.message)}};poll();const id=setInterval(poll,running?3000:15000);return()=>{on=false;clearInterval(id)}},[user?.pubkey,running]);
+const start=async()=>{sBusy(true);try{const r=await a.vst(user.pubkey,cfg);if(!r.ok){sErr(r.error||"could not start");toast(r.error||"could not start","error")}else{sSt(r);sOpen(true);toast("Velocity live","success")}}catch(e){sErr(e.message);toast(e.message,"error")}finally{sBusy(false)}};
+const stop=async()=>{if(!confirm("Sell everything Velocity holds and stop?"))return;sBusy(true);try{const r=await a.vsp(user.pubkey);sSt({running:false});toast(r.failed?.length?`stopped; ${r.failed.length} position(s) could not be sold, retrying`:"stopped","info")}catch(e){toast(e.message,"error")}finally{sBusy(false)}};
+const Row=({l,v,c})=><div style={{display:"flex",justifyContent:"space-between",gap:8,fontSize:mb?12:12,padding:"3px 0",borderBottom:"1px solid "+T.bd+"55"}}><span style={{color:T.ft}}>{l}</span><span style={{fontFamily:M,fontWeight:700,color:c||T.tx}}>{v}</span></div>;
+const Knob=({l,k,min,max,step,fmt})=><div style={{flex:1,minWidth:110}}><div style={{fontSize:10,color:T.ft,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{l}</div><div style={{display:"flex",alignItems:"center",background:T.bg,borderRadius:6,border:"1px solid "+T.bd}}><button disabled={running} onClick={()=>set(k,Math.max(min,+(cfg[k]-step).toFixed(2)))} style={{padding:"6px 10px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:running?"not-allowed":"pointer"}}>-</button><div style={{flex:1,textAlign:"center",fontFamily:M,fontWeight:800,fontSize:13}}>{fmt?fmt(cfg[k]):cfg[k]}</div><button disabled={running} onClick={()=>set(k,Math.min(max,+(cfg[k]+step).toFixed(2)))} style={{padding:"6px 10px",background:"none",border:"none",color:T.ft,fontWeight:800,cursor:running?"not-allowed":"pointer"}}>+</button></div></div>;
+const aggLabel=["Cautious","As designed","Aggressive","Degen"][cfg.aggression]||"?";
+const pnl=day?day.realizedUsd:0;
+return<div style={{background:T.sf,border:"1px solid "+(running?T.gn:T.bd),borderRadius:10,padding:mb?8:12,marginTop:6,boxSizing:"border-box"}}>
+<div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:6}}>
+<div style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}} onClick={()=>sOpen(o=>!o)}>
+<IC.trend s={16} c={running?T.gn:T.ft}/><span style={{fontSize:15,fontWeight:800}}>Velocity</span>
+{running&&<span style={{width:6,height:6,borderRadius:"50%",background:T.gn,animation:"gp 2s infinite"}}/>}
+{running&&<span style={{fontSize:9,color:T.gn,fontWeight:700}}>{s?.positions?.length||0} open</span>}
+{running&&day&&<span style={{fontSize:10,fontFamily:M,fontWeight:800,color:pnl>=0?T.gn:T.rd}}>{pnl>=0?"+":""}${pnl.toFixed(2)} today</span>}
+</div>
+<div style={{display:"flex",gap:4}}>
+{!running?<button disabled={busy||!trW} onClick={start} style={{padding:mb?"8px 20px":"7px 18px",borderRadius:6,border:"none",background:T.gn,color:"#000",fontWeight:900,fontSize:13,cursor:busy||!trW?"not-allowed":"pointer",opacity:busy||!trW?.5:1}}>{busy?"…":"START"}</button>
+:<button disabled={busy} onClick={stop} style={{padding:mb?"8px 20px":"7px 18px",borderRadius:6,border:"1px solid "+T.rd,background:"none",color:T.rd,fontWeight:900,fontSize:13,cursor:"pointer"}}>{busy?"…":"SELL ALL & STOP"}</button>}
+</div></div>
+{!trW&&<div style={{fontSize:11,color:T.ft,marginTop:6}}>Create a trading wallet above first; Velocity trades from it.</div>}
+{err&&<div style={{fontSize:11,color:T.rd,marginTop:6}}>{err}</div>}
+{(open||running)&&<div style={{marginTop:8}}>
+{!running&&<>
+<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+<Knob l="Aggression" k="aggression" min={0} max={3} step={1} fmt={v=>`${v} ${aggLabel}`}/>
+<Knob l="Per trade" k="perTradeMaxUsd" min={5} max={200} step={5} fmt={v=>"$"+v}/>
+<Knob l="Open at once" k="maxPositions" min={1} max={10} step={1}/>
+<Knob l="Daily loss stop" k="dailyLossUsd" min={5} max={500} step={5} fmt={v=>"$"+v}/>
+</div>
+<div style={{fontSize:11,color:T.ft,marginTop:6,lineHeight:1.5}}>Trades the free SOL in your trading wallet, at most ${cfg.perTradeMaxUsd} per token and {cfg.maxPositions} tokens at once. Stops entering for the day after ${cfg.dailyLossUsd} of losses. Never enters a token the rug checks reject, whatever the aggression. Fee: a share of realized profit on winning trades only, paid from the win; losing trades pay nothing.</div>
+</>}
+{running&&<>
+<Row l="Wallet" v={w?`${Number(w.sol).toFixed(4)} SOL  (${Number(w.free_usd??0).toFixed(2)} free)`:"reading…"}/>
+<Row l="Equity" v={s?.bankroll?.equity_usd!=null?"$"+s.bankroll.equity_usd:"—"}/>
+<Row l="Today" v={`${pnl>=0?"+":""}${pnl.toFixed(2)}  (${day?.trades||0} trades, ${day?.used_pct||0}% of loss stop)`} c={pnl>=0?T.gn:T.rd}/>
+<Row l="Mode" v={`${st.settings?.aggression??"?"} ${["Cautious","As designed","Aggressive","Degen"][st.settings?.aggression]||""}${s?.halt?.mode?"  HALTED "+s.halt.mode:""}`}/>
+{s?.positions?.map(p=><Row key={p.id} l={"holding "+p.instrument.slice(0,8)+"…"} v={`${(p.notional_usd||0).toFixed(2)}  ${p.changePct!=null?(p.changePct>=0?"+":"")+p.changePct.toFixed(1)+"%":""}`} c={(p.changePct||0)>=0?T.gn:T.rd}/>)}
+<div style={{marginTop:8,fontSize:10,color:T.ft,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em"}}>What it is doing</div>
+<div style={{fontFamily:M,fontSize:mb?10:11,lineHeight:1.5,maxHeight:220,overflowY:"auto",background:T.bg,border:"1px solid "+T.bd,borderRadius:6,padding:"6px 8px",marginTop:4,color:T.dm}}>
+{(st.narration||[]).slice(-40).map((n,i)=><div key={i} style={{color:/FILLED|SOLD|P&L/.test(n.line)?T.tx:/fee/.test(n.line)?T.yl:T.ft,whiteSpace:"pre-wrap"}}>{n.line}</div>)}
+{!(st.narration||[]).length&&<div>watching the radar…</div>}
+</div>
+<div style={{display:"flex",gap:6,marginTop:8}}>
+<button disabled={busy} onClick={async()=>{try{const r=await a.vhl(user.pubkey,"freeze");toast("entries frozen; exits keep running","info")}catch(e){toast(e.message,"error")}}} style={{padding:"6px 12px",borderRadius:6,border:"1px solid "+T.yl,background:"none",color:T.yl,fontWeight:800,fontSize:11,cursor:"pointer"}}>PAUSE ENTRIES</button>
+</div>
+</>}
+</div>}
+</div>}
 export default function App(){
 const[isDark,sD]=useState(()=>{try{return localStorage.getItem("bondli_theme")!=="light"}catch{return true}});
 const T=isDark?D:L;const tog=()=>sD(d=>{try{localStorage.setItem("bondli_theme",d?"light":"dark")}catch{}return!d});
@@ -2536,6 +2592,8 @@ return<div key={i} style={{display:"flex",alignItems:"center",gap:4,padding:"3px
 </div>)}
 </div>}
 </div>})()}
+{/* Velocity — the hosted trader (src/velocity/HOSTED_DESIGN.md) */}
+{user?.pubkey&&!user.demo&&<VelocityPanel a={a} user={user} T={T} mb={mb} toast={toast} trW={trW} solP={solP}/>}
 {/* ── Sim guidelines (collapsible) ── */}
 <div style={{borderTop:"1px solid "+T.bd}}>
 <div onClick={()=>sSimGuideOpen(!simGuideOpen)} style={{padding:"4px 10px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
