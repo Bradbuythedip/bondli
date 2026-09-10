@@ -583,7 +583,7 @@ test("T10: velocity watch narrates the ledger one line per event and follows app
   assert.match(seen[0], /P&L     N \$1.00 \(20.0%\) held 3s TP2/);
 });
 
-test("T10: aggression moves gates 2 and 3 together and never touches gate 1", async () => {
+test("T10: the risk dial moves gates 1, 2 and 3 together; the designed rules are the default", async () => {
   const { AGGRESSION, makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
   const { checkViability } = await import("../../src/autoape/gates/viability.js");
   const { checkExecutionWindow } = await import("../../src/autoape/gates/execution-window.js");
@@ -607,7 +607,30 @@ test("T10: aggression moves gates 2 and 3 together and never touches gate 1", as
   assert.equal(makePumpfunEdge({ aggression: 2 }).gateOpts, AGGRESSION[2]);
   assert.equal(makePumpfunEdge({ aggression: 9 }).gateOpts, AGGRESSION[3]);
   assert.equal(makePumpfunEdge().gateOpts, AGGRESSION[1]);
-  // Gate 1 has no aggression input at all.
-  const src = fs.readFileSync(path.resolve("src/autoape/gates/disqualifiers.js"), "utf8");
-  assert.ok(!/aggression|gateOpts|opts\.scoreFloor/.test(src), "the rug disqualifiers do not read the aggression profile");
+  // Gate 1: the four rules gate-stats found binding loosen with the dial; the designed rule is the default.
+  const { checkDisqualifiers } = await import("../../src/autoape/gates/disqualifiers.js");
+  const stale = { ...token, createdAt: now - 20 * 60000, uniqueBuyers: { size: 12 } };
+  assert.ok(checkDisqualifiers(stale, {}).flags.includes("STALE"), "20 min old is stale as designed");
+  assert.ok(checkDisqualifiers(stale, {}, AGGRESSION[1]).flags.includes("STALE"));
+  assert.ok(!checkDisqualifiers(stale, {}, AGGRESSION[2]).flags.includes("STALE"), "normal allows 30 min");
+  const dump = { rg_coordDumpScore: 0.6, rg_sellWaveDetect: 0.6 };
+  const dumping = { ...token, sells: 15, uniqueBuyers: { size: 12 } };
+  assert.ok(checkDisqualifiers(dumping, dump).flags.includes("COORDINATED_DUMP"));
+  assert.ok(!checkDisqualifiers(dumping, dump, AGGRESSION[2]).flags.includes("COORDINATED_DUMP"), "a 0.6 burst is not a dump on normal");
+  assert.ok(checkDisqualifiers(dumping, { rg_coordDumpScore: 0.9, rg_sellWaveDetect: 0.9 }, AGGRESSION[3]).flags.includes("COORDINATED_DUMP"), "a 0.9 burst is a dump even on degen");
+  const late = { ...token, vSolInBondingCurve: 85 * 0.85, uniqueBuyers: { size: 12 } };
+  assert.ok(checkDisqualifiers(late, {}).flags.includes("TOO_LATE"));
+  assert.ok(!checkDisqualifiers(late, {}, AGGRESSION[2]).flags.includes("TOO_LATE"));
+  // Gate 2: 4 buyers at 3 minutes is dead on arrival as designed, alive on normal; no dynamics is only fine on degen.
+  const quiet = { ...token, uniqueBuyers: { size: 4 } };
+  assert.ok(checkViability(quiet, {}, { apeScore: 60 }, dyn).checks.includes("DEAD_ON_ARRIVAL"));
+  assert.ok(!checkViability(quiet, {}, { apeScore: 60 }, dyn, AGGRESSION[2]).checks.includes("DEAD_ON_ARRIVAL"));
+  assert.ok(checkViability(token, {}, { apeScore: 60 }, null, AGGRESSION[2]).checks.includes("INSUFFICIENT_DATA"));
+  assert.ok(!checkViability(token, {}, { apeScore: 60 }, null, AGGRESSION[3]).checks.includes("INSUFFICIENT_DATA"));
+  // Gate 3: a watchlist token becomes a speculative entry on normal and degen, never on careful.
+  const edge1 = makePumpfunEdge({ aggression: 1 }), edge2 = makePumpfunEdge({ aggression: 2 });
+  const conf1 = edge1.gates.find(g => g.name === "confidence"), conf2 = edge2.gates.find(g => g.name === "confidence");
+  const wl = { token: { ...token, _apeScore: 41 }, qf: { _rg_sybilScore: 0.1 }, scores: { apeScore: 41 }, dynamics: { scores: 4, velocity: 0, acceleration: 0, trend: "flat" } };
+  const r1 = conf1.check({ ...wl }); assert.equal(r1.pass, false); assert.ok(r1.reasons.includes("WATCHLIST"));
+  const c2 = { ...wl }; const r2 = conf2.check(c2); assert.equal(r2.pass, true); assert.equal(c2.tier, 3); assert.equal(c2.tierLabel, "WATCHLIST_AS_SPEC");
 });

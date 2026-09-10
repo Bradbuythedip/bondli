@@ -33,11 +33,19 @@ export const PUMPFUN_PRIORS = Object.freeze({
 /** One knob for how far past the designed floors gates 2 and 3 let a token in. Gate 1 (the rug
  *  disqualifiers) never moves: aggression is about how early and how speculative, not how unsafe.
  *    0 cautious  1 as designed  2 aggressive  3 degen */
+// The risk dial. Every knob a gate reads, per level. 0 = only the designed rules at their strictest,
+// 3 = as loose as still makes sense. Calibrated on gate-stats (30 min, 786 tokens): at level 1 the
+// binding rules were COORDINATED_DUMP (+51 tokens), STALE (+15), TOO_LATE (+12), EXTREME_CONCENTRATION
+// (+11) in gate 1; DEAD_ON_ARRIVAL (63%) and INSUFFICIENT_DATA (22%) in gate 2; WATCHLIST in gate 3.
 export const AGGRESSION = Object.freeze({
-  0: Object.freeze({ scoreFloor: 50, tier3Floor: 55, sybilMax: 0.35, freshWalletMax: 0.70, curveMax: 0.50, curveMaxSpec: 0.30, spikeSlope: 0.10, blockDecel: true,  requireStable: true }),
-  1: Object.freeze({ scoreFloor: 45, tier3Floor: 50, sybilMax: 0.40, freshWalletMax: 0.80, curveMax: 0.60, curveMaxSpec: 0.40, spikeSlope: 0.15, blockDecel: true,  requireStable: true }),
-  2: Object.freeze({ scoreFloor: 38, tier3Floor: 42, sybilMax: 0.50, freshWalletMax: 0.90, curveMax: 0.70, curveMaxSpec: 0.55, spikeSlope: 0.25, blockDecel: false, requireStable: false }),
-  3: Object.freeze({ scoreFloor: 32, tier3Floor: 35, sybilMax: 0.60, freshWalletMax: 1.00, curveMax: 0.80, curveMaxSpec: 0.65, spikeSlope: 0.40, blockDecel: false, requireStable: false }),
+  0: Object.freeze({ scoreFloor: 50, tier3Floor: 55, sybilMax: 0.35, freshWalletMax: 0.70, curveMax: 0.50, curveMaxSpec: 0.30, spikeSlope: 0.10, blockDecel: true,  requireStable: true,
+                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false }),
+  1: Object.freeze({ scoreFloor: 45, tier3Floor: 50, sybilMax: 0.40, freshWalletMax: 0.80, curveMax: 0.60, curveMaxSpec: 0.40, spikeSlope: 0.15, blockDecel: true,  requireStable: true,
+                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false }),
+  2: Object.freeze({ scoreFloor: 38, tier3Floor: 42, sybilMax: 0.50, freshWalletMax: 0.90, curveMax: 0.70, curveMaxSpec: 0.55, spikeSlope: 0.25, blockDecel: false, requireStable: false,
+                     coordDump: 0.7, staleMin: 30, tooLateCurve: 0.90, concentrationMax: 0.80, doaBuyers: 4, minScores: 1, enterWatchlist: true }),
+  3: Object.freeze({ scoreFloor: 32, tier3Floor: 35, sybilMax: 0.60, freshWalletMax: 1.00, curveMax: 0.80, curveMaxSpec: 0.65, spikeSlope: 0.40, blockDecel: false, requireStable: false,
+                     coordDump: 0.85, staleMin: 60, tooLateCurve: 0.95, concentrationMax: 0.90, doaBuyers: 3, minScores: 0, enterWatchlist: true }),
 });
 
 export function makePumpfunEdge({
@@ -73,12 +81,14 @@ export function makePumpfunEdge({
     },
 
     gates: [
-      { name: "disqualifiers", check: c => { const r = checkDisqualifiers(c.token, c.qf, { freezeAuthority: !!c.token.freezeAuthority }); return { pass: r.pass, reasons: r.flags }; } },
+      { name: "disqualifiers", check: c => { const r = checkDisqualifiers(c.token, c.qf, { ...gateOpts, freezeAuthority: !!c.token.freezeAuthority }); return { pass: r.pass, reasons: r.flags }; } },
       { name: "viability", check: c => { const r = checkViability(c.token, c.qf, c.scores, c.dynamics, gateOpts); return { pass: r.pass, reasons: r.checks }; } },
       { name: "confidence", check: c => {
           const r = classifyConfidence(c.token, c.qf, c.scores, c.dynamics, gateOpts);
           c.tier = r.tier; c.tierLabel = r.label; c.tierReasons = r.reasons;
           if (r.tier >= 1 && r.tier <= 3) return { pass: true };
+          // On the loose settings a watchlist token is a speculative entry: tier-3 plan and sizing.
+          if (r.tier === 4 && gateOpts.enterWatchlist) { c.tier = 3; c.tierLabel = "WATCHLIST_AS_SPEC"; return { pass: true }; }
           return { pass: false, reasons: [r.tier === 4 ? "WATCHLIST" : "BELOW_THRESHOLD", ...r.reasons] };
         } },
       { name: "execution_window", check: c => { const r = checkExecutionWindow(c.token, c.tier, c.scores.scoreTimestamp, gateOpts); return { pass: r.pass, reasons: r.checks }; } },

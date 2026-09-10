@@ -7,7 +7,13 @@ import { M, S } from "./lib/constants.js";
 import a from "./lib/api-client.js";
 
 const FEE_PCT = 5;
-const AGG = [{ v: 1, l: "Careful" }, { v: 2, l: "Normal" }, { v: 3, l: "Degen" }];
+// The risk dial. Each stop is a full profile in the engine (AGGRESSION in the pumpfun edge).
+const AGG = [
+  { v: 0, l: "Safe", d: "Only the cleanest launches. Few trades." },
+  { v: 1, l: "Careful", d: "The designed rules. Skips anything that looks like a dump." },
+  { v: 2, l: "Normal", d: "Takes watchlist tokens and later entries. More trades, more losers." },
+  { v: 3, l: "Degen", d: "Almost anything with buyers. Expect a lot of small losses for the big wins." },
+];
 const SIZES = [5, 10, 25, 50];
 const fmt = n => (n < 0 ? "-$" : "$") + Math.abs(Number(n) || 0).toFixed(2);
 const phantom = () => (window?.phantom?.solana?.isPhantom ? window.phantom.solana : window?.solana?.isPhantom ? window.solana : null);
@@ -68,7 +74,7 @@ export default function Simple() {
   const [st, sSt] = useState(null);        // velocity status
   const [busy, sBusy] = useState(null);    // what is in flight, for the button label
   const [msg, sMsg] = useState(null);
-  const [agg, sAgg] = useState(() => { try { return Number(localStorage.getItem("bondli_agg")) || 2; } catch { return 2; } });
+  const [agg, sAgg] = useState(() => { try { const v = localStorage.getItem("bondli_agg"); return v == null ? 2 : Math.max(0, Math.min(3, Number(v) || 0)); } catch { return 2; } });
   const [size, sSize] = useState(() => { try { return Number(localStorage.getItem("bondli_size")) || 10; } catch { return 10; } });
   const [showKey, sShowKey] = useState(null);
   const [copied, sCopied] = useState(false);
@@ -142,8 +148,10 @@ export default function Simple() {
 
         {/* 3. Two choices, then start */}
         {funded && <>
-          <div style={{ marginTop: 18, ...muted, marginBottom: 6 }}>How hard</div>
-          <div style={{ display: "flex", gap: 6 }}>{AGG.map(o => <button key={o.v} onClick={() => sAgg(o.v)} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1px solid ${agg === o.v ? T.gn : T.bd}`, background: agg === o.v ? T.gn + "22" : "transparent", color: agg === o.v ? T.gn : T.dm, fontWeight: 800, cursor: "pointer" }}>{o.l}</button>)}</div>
+          <div style={{ marginTop: 18, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><span style={muted}>Risk</span><span style={{ fontWeight: 800, color: agg >= 3 ? T.rd : agg >= 2 ? T.yl : T.gn }}>{AGG[agg]?.l}</span></div>
+          <input type="range" min="0" max="3" step="1" value={agg} onChange={e => sAgg(Number(e.target.value))} style={{ width: "100%", accentColor: agg >= 3 ? T.rd : agg >= 2 ? T.yl : T.gn, margin: "8px 0 4px" }} />
+          <div style={{ display: "flex", justifyContent: "space-between", ...muted, fontSize: 11 }}>{AGG.map(o => <span key={o.v} onClick={() => sAgg(o.v)} style={{ cursor: "pointer", color: agg === o.v ? T.tx : T.ft }}>{o.l}</span>)}</div>
+          <div style={{ ...muted, marginTop: 6 }}>{AGG[agg]?.d}</div>
           <div style={{ marginTop: 14, ...muted, marginBottom: 6 }}>Per trade</div>
           <div style={{ display: "flex", gap: 6 }}>{SIZES.map(v => <button key={v} onClick={() => sSize(v)} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1px solid ${size === v ? T.gn : T.bd}`, background: size === v ? T.gn + "22" : "transparent", color: size === v ? T.gn : T.dm, fontFamily: M, fontWeight: 800, cursor: "pointer" }}>${v}</button>)}</div>
           <div style={{ ...muted, marginTop: 10 }}>Up to 4 tokens at once. Stops for the day after ${Math.max(15, size * 3)} of losses.</div>
