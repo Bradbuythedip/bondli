@@ -1,0 +1,126 @@
+#!/usr/bin/env node
+// gate-stats: offline calibration for GATE 1 (src/autoape/gates/disqualifiers.js) on the velocity path.
+// Live:    node tools/gate-stats.mjs --minutes 30 [--out snap.jsonl] [--url http://127.0.0.1:3001]
+// Offline: node tools/gate-stats.mjs --file snap.jsonl
+// Polls /api/radar/scored?min=0&limit=200 every 60s, appends each response as one JSONL line, then reports.
+import { appendFileSync, readFileSync } from "node:fs";
+
+const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
+const FILE = arg("--file"), OUT = arg("--out", "gate-snapshots.jsonl"), MIN = +arg("--minutes", 10);
+const URL = (arg("--url", "http://127.0.0.1:3001")).replace(/\/$/, "") + "/api/radar/scored?min=0&limit=200";
+const MIN_BUYS = +arg("--min-buys", 10), MIN_AGE = +arg("--min-age", 2);
+
+// ── Rule table: one entry per flag in checkDisqualifiers(), same expressions, same order. ──
+// c = { age (min, from snapshot ts), vy (isVeryYoung), moderate, minSignals, volLeg }
+const RULES = {
+  SERIAL_LAUNCHER:      (t, q) => q?._devLaunchCount > 8,
+  SERIAL_RUGGER:        (t, q) => q?._namePrevRugged && q._devLaunchCount > 3,
+  DEV_SELLING:          (t, q) => q?.rg_devSellSpeed > 0.6,
+  DEV_SELF_SNIPE:       (t, q) => q?._rg_devSelfSnipe > 0,
+  FREEZE_AUTHORITY:     (t) => !!t.freezeAuthority,                         // velocity edge.mjs passes opts.freezeAuthority = !!token.freezeAuthority
+  EXTREME_CONCENTRATION:(t, q) => q?.rg_holderConcentration > 0.7 && (t.buys || 0) > 5 && !(q?._whaleBullish > 0.3),
+  DEV_SELF_PUMP:        (t, q) => q?._rg_devSelfPumpScore >= 0.7,
+  DEV_PUMP_NO_SELLS:    (t, q) => q?._rg_devSelfPumpScore >= 0.5 && q?._rg_zeroSellFlag >= 0.5,
+  LINEAR_PUMP:          (t, q) => q?._rg_velocityLinearity > 0.9 && q?._rg_buySellImbalance > 0.7,
+  BOT_PUMP:             (t, q) => q?._rg_buyTimingRegularity > 0.6 && q?._rg_singleWalletDominance > 0.4,
+  "MULTI_RUG_SIGNAL_*": (t, q, c) => c.moderate >= c.minSignals,             // code emits MULTI_RUG_SIGNAL_<n>; collapsed here
+  COORDINATED_DUMP:     (t, q) => q?.rg_coordDumpScore > 0.5,
+  PUMP_DUMP:            (t, q, c) => q?._rg_pumpDump > 0.6 && !c.vy,
+  SYBIL_ATTACK:         (t, q) => q?._rg_sybilScore > 0.5,
+  EARLY_DUMP:           (t, q, c) => q?._rg_earlyDump > 0.6 && c.age < 5,
+  QUICK_FLIP:           (t, q) => q?._rg_quickFlipRate > 0.35,
+  LIQ_REMOVAL:          (t, q, c) => q?.rg_liqRemovalSpeed > 0.65 && !c.vy,
+  SMOOTH_GRIND:         (t, q, c) => q?.ch_smoothGrind > 0.6 && !c.vy,
+  NO_DIPS_GRIND:        (t, q, c) => q?.ch_smoothGrind > 0.4 && q?.ch_dipRatio < 0.1 && !c.vy,
+  MCAP_CRASHING:        (t, q, c) => q?.rg_mcapDropRate > 0.5 && !c.vy,
+  STAIRCASE_CHART:      (t, q, c) => q?.ch_staircaseScore > 0.6 && !c.vy,
+  STAIRCASE_FRESH:      (t, q, c) => q?.ch_staircaseScore > 0.4 && q?._rg_freshWalletRatio > 0.6 && !c.vy,
+  FRESH_WALLET_RUG:     (t, q, c) => q?._rg_freshWalletRatio > 0.8 && q?._rg_zeroSellFlag > 0.4 && !c.vy,
+  FLATLINE_SPIKE:       (t, q, c) => q?.ch_flatlineSpike > 0.5 && !c.vy,
+  FLATLINE_NO_SELLS:    (t, q, c) => q?.ch_flatlineSpike > 0.3 && q?._rg_zeroSellFlag > 0.3 && !c.vy,
+  FLATLINE_FRESH:       (t, q, c) => q?.ch_flatlineSpike > 0.3 && q?._rg_freshWalletRatio > 0.5 && !c.vy,
+  ZERO_SELLS:           (t, q, c) => q?._rg_zeroSellFlag >= 0.8 && !c.vy,
+  ZERO_SELLS_FAKE_CHART:(t, q, c) => q?._rg_zeroSellFlag >= 0.5 && (q?.ch_smoothGrind > 0.3 || q?.ch_staircaseScore > 0.3) && !c.vy,
+  ALL_BUYS_NO_SELLS:    (t, q, c) => q?._rg_buySellImbalance >= 0.8 && (t.buys || 0) >= 15 && !c.vy,
+  BOTTED_VOLUME:        (t, q, c) => !!c.volLeg && c.volLeg.botDetection?.botScore >= 70 && (t.buys || 0) >= 10,
+  FAKE_VOLUME_HIGH_SOL: (t, q, c) => !!c.volLeg && c.volLeg.legitimacy === "LIKELY_BOTTED" && (t.volumeSol || 0) > 5,
+  BOT_FARM_VOLUME:      (t, q, c) => { const s = c.volLeg?.botDetection?.signals || []; return !!c.volLeg && s.includes("METRONOMIC_TIMING") && s.includes("UNIFORM_TRADE_SIZES"); },
+  STOLEN_ART:           (t) => !!t._artworkFlags?.includes("EXACT_DUPLICATE"),
+  TOO_LATE:             (t) => !!t.vSolInBondingCurve && t.vSolInBondingCurve / 85 > 0.80,
+  STALE:                (t, q, c) => c.age > 15,                              // velocity never passes opts.isRecoveryPlay
+  TOO_FEW_BUYERS:       (t) => (t.uniqueBuyers?.size || 0) < 3,
+  TOO_YOUNG:            (t, q, c) => c.age < 0.5,
+};
+const MODERATE = (t, q) => [
+  q?.rg_devSellSpeed > 0.35, q?.rg_coordDumpScore > 0.3, q?._rg_sybilScore > 0.3, q?._rg_quickFlipRate > 0.2,
+  q?.rg_holderConcentration > 0.65, q?._rg_earlyDump > 0.3, q?.rg_mcapDropRate > 0.3, q?._rg_pumpDump > 0.35,
+  q?.ch_smoothGrind > 0.4, q?.ch_dipRatio < 0.08, q?._rg_zeroSellFlag > 0.5, q?._rg_buySellImbalance > 0.6,
+  q?.ch_staircaseScore > 0.4, q?._rg_freshWalletRatio > 0.7, q?.ch_flatlineSpike > 0.3, t._artworkOriginal === false,
+  q?._rg_velocityLinearity > 0.8, q?._rg_buyTimingRegularity > 0.5, q?._rg_singleWalletDominance > 0.5,
+].filter(Boolean).length;
+
+function evalRules(t, q, ts) {
+  const age = (ts - (t.createdAt || ts)) / 60000, vy = age < 2 && (t.sells || 0) >= 1;
+  const moderate = MODERATE(t, q);
+  const c = { age, vy, moderate, minSignals: vy ? 5 : 4, volLeg: t._volumeLegitimacy || q?._volumeLegitimacy };
+  return { age, flags: Object.keys(RULES).filter(k => !!RULES[k](t, q, c)) };
+}
+// Mirror src/velocity/venues/pumpfun/feed.mjs hydrateToken(): gates read token.uniqueBuyers.size.
+const hydrate = r => ({ ...r, uniqueBuyers: { size: typeof r.uniqueBuyers === "number" ? r.uniqueBuyers : r.uniqueBuyers?.size || 0 }, trades: r.trades || [], spark: r.spark || [] });
+const pct = (a, p) => a.length ? +a.slice().sort((x, y) => x - y)[Math.min(a.length - 1, Math.floor(p * (a.length - 1) + 0.5))].toFixed(3) : NaN;
+const fmt = (n, d) => (n / Math.max(1, d) * 100).toFixed(1).padStart(5) + "%";
+
+async function collect() {
+  const end = Date.now() + MIN * 60000; let n = 0;
+  while (Date.now() < end) {
+    try { const r = await fetch(URL, { signal: AbortSignal.timeout(15000) }); const j = await r.json(); appendFileSync(OUT, JSON.stringify(j) + "\n"); n++;
+      console.error(`[${new Date().toISOString()}] snapshot ${n}: ${j.count} tokens -> ${OUT}`); }
+    catch (e) { console.error("poll failed:", e.message); }
+    if (Date.now() < end) await new Promise(r => setTimeout(r, 60000));
+  }
+  return OUT;
+}
+
+async function report(file) {
+  let gate = null; // real gates for cross-check + gate-2 pass count (only when run inside the repo)
+  try { gate = { d: await import("../src/autoape/gates/disqualifiers.js"), v: await import("../src/autoape/gates/viability.js") }; } catch {}
+  const snaps = readFileSync(file, "utf8").split("\n").filter(Boolean).map(l => JSON.parse(l));
+  const fire = Object.fromEntries(Object.keys(RULES).map(k => [k, 0])), dist = {}, pass1 = new Set(), pass2 = new Set(), seen = new Set();
+  const FIELDS = ["rg_holderConcentration", "rg_coordDumpScore", "rg_devSellSpeed", "_rg_freshWalletRatio", "_rg_sybilScore", "ch_healthScore", "apeScore"];
+  const CW = ["_whaleBullish", "_devLaunchCount", "_namePrevRugged", "_devCredScore", "_walletAgeFresh"], TK = ["_volumeLegitimacy", "_artworkOriginal", "_artworkFlags", "_rugFlags", "_survivorMatch", "_bullishSignals", "_devTier"];
+  const missing = {}, rows = { n: 0, snaps: snaps.length, hubTrades: 0, trades: 0, mismatch: 0, mmEx: [] };
+  for (const f of FIELDS) dist[f] = [];
+  for (const s of snaps) for (const r of s.tokens || []) {
+    const t = hydrate(r.token), q = r.qf, ts = s.ts || Date.now(), { age, flags } = evalRules(t, q, ts);
+    seen.add(t.ca);
+    if ((t.buys || 0) < MIN_BUYS || age < MIN_AGE) continue;
+    rows.n++;
+    for (const f of flags) fire[f]++;
+    for (const f of FIELDS) { const v = f === "apeScore" ? r.scores?.apeScore : q?.[f]; if (typeof v === "number") dist[f].push(v); }
+    for (const f of CW) if (q?.[f] == null || q[f] === 0 || q[f] === -1 || q[f] === false || (f === "_devCredScore" && q[f] === 0.5)) missing["qf." + f] = (missing["qf." + f] || 0) + 1;
+    for (const f of TK) if (t[f] == null || (Array.isArray(t[f]) && !t[f].length)) missing["token." + f] = (missing["token." + f] || 0) + 1;
+    for (const tr of t.trades) { rows.trades++; if (tr.hub) rows.hubTrades++; }
+    if (gate) { // run the real gates with Date.now pinned to the snapshot time so offline replay ages correctly
+      const now = Date.now; Date.now = () => ts;
+      try {
+        const g1 = gate.d.checkDisqualifiers(t, q, { freezeAuthority: !!t.freezeAuthority });
+        const real = g1.flags.map(f => f.startsWith("MULTI_RUG_SIGNAL_") ? "MULTI_RUG_SIGNAL_*" : f).sort().join(",");
+        if (real !== flags.slice().sort().join(",")) { rows.mismatch++; if (rows.mmEx.length < 5) rows.mmEx.push(`${t.ca?.slice(0, 8)} real=[${real}] replica=[${flags}]`); }
+        if (g1.pass) { pass1.add(t.ca); if (gate.v.checkViability(t, q, r.scores || {}, r.dynamics).pass) pass2.add(t.ca); }
+      } finally { Date.now = now; }
+    } else if (!flags.length) pass1.add(t.ca);
+  }
+  const N = rows.n, P = s => s.padEnd(24);
+  console.log(`\n${file}: ${rows.snaps} snapshots, ${seen.size} distinct tokens, ${N} token-snapshots with buys>=${MIN_BUYS} & age>=${MIN_AGE}min\n`);
+  console.log("GATE 1 rule fire rate (fraction of qualifying token-snapshots):");
+  for (const [k, v] of Object.entries(fire).sort((a, b) => b[1] - a[1])) console.log(`  ${P(k)} ${fmt(v, N)}  (${v})`);
+  console.log("\nFeature percentiles              p10     p50     p90    (n)");
+  for (const f of FIELDS) console.log(`  ${P(f)} ${String(pct(dist[f], .1)).padStart(7)} ${String(pct(dist[f], .5)).padStart(7)} ${String(pct(dist[f], .9)).padStart(7)}  (${dist[f].length})`);
+  console.log(`\nHub-flagged trades: ${fmt(rows.hubTrades, rows.trades)} of ${rows.trades} trades (last 60 per token-snapshot)`);
+  console.log("Counterweight / enrichment fields absent or at their fallback value (startAutoTrader-only enrichment):");
+  for (const [k, v] of Object.entries(missing).sort((a, b) => b[1] - a[1])) console.log(`  ${P(k)} ${fmt(v, N)}`);
+  console.log(`\nTokens passing gate 1 (any qualifying snapshot): ${pass1.size}   passing gate 1 AND gate 2: ${gate ? pass2.size : "n/a (gates not importable)"}`);
+  if (gate) { console.log(`Replica vs real checkDisqualifiers mismatches: ${rows.mismatch}/${N}`); rows.mmEx.forEach(x => console.log("  " + x)); }
+}
+
+report(FILE || await collect()).catch(e => { console.error(e); process.exit(1); });
