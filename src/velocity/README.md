@@ -83,7 +83,10 @@ reconciliation. `weights/` every learner version. `heartbeat`, `HALT`.
 }
 ```
 
-pump.fun needs bondli's server running (it exposes `GET /api/radar/scored`).
+pump.fun needs bondli's server running (it exposes `GET /api/radar/scored`),
+and bondli needs `PUMPPORTAL_API_KEY` in `.env`: PumpPortal only delivers trade
+events to a connection with an API key whose wallet holds at least 0.02 SOL.
+Without trades no token can score. Get the key at https://pumpportal.fun.
 Polymarket facts come from sources you name; a file source is a JSON array of
 `{ "conditionId", "outcome", "source", "confidence", "t_fact" }`. The edge only
 acts when the market's own rules name the same source.

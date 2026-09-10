@@ -114,7 +114,13 @@ async function fastSend(connection, tx, signers) {
 const REDIS_URL = process.env.REDIS_URL || null;
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
 const DEFAULT_REFERRAL_CODE = "ilikethetech"; // owner's referral code — applied to all new users unless they have another referrer
-const PUMPPORTAL_WS_URL = "wss://pumpportal.fun/api/data";
+// PumpPortal requires an API key (its wallet funded with >= 0.02 SOL) for
+// subscribeTokenTrade since 2025. Without it the radar sees creates but no trades.
+// Get one at https://pumpportal.fun (Generate API key), fund it, set PUMPPORTAL_API_KEY.
+const PUMPPORTAL_API_KEY = (process.env.PUMPPORTAL_API_KEY || "").trim();
+const PUMPPORTAL_WS_URL = PUMPPORTAL_API_KEY
+  ? `wss://pumpportal.fun/api/data?api-key=${encodeURIComponent(PUMPPORTAL_API_KEY)}`
+  : "wss://pumpportal.fun/api/data";
 
 // ═══════════════════════════════════════
 // CRASH PROTECTION — keep server alive
@@ -877,7 +883,7 @@ async function fetchTokenImage(ca, uri) {
 
 function connectPumpPortal() {
   try {
-    radar.ws = new WebSocket("wss://pumpportal.fun/api/data");
+    radar.ws = new WebSocket(PUMPPORTAL_WS_URL);
 
     radar.ws.on("open", () => {
       console.log("[RADAR] PumpPortal WS connected");
@@ -903,8 +909,15 @@ function connectPumpPortal() {
           if (st.tradeSamples < 3) { st.tradeSamples++; console.log(`[RADAR] trade sample:`, JSON.stringify(data).slice(0, 400)); }
         } else {
           st.other++;
-          if (data.txType !== "migrate" && (st.otherSamples = (st.otherSamples || 0) + 1) <= 5)
+          const msg = typeof data.message === "string" ? data.message : "";
+          if (/only available when connecting with an API key/i.test(msg)) {
+            if (!radar._tradeSubsRefused) {
+              radar._tradeSubsRefused = true;
+              console.error(`\n[RADAR] ══════════════════════════════════════════════════════════════════\n[RADAR] PumpPortal refused trade subscriptions: ${msg}\n[RADAR] Without trades no token can score and nothing will ever be bought.\n[RADAR] Fix: 1) https://pumpportal.fun -> Generate API key  2) send that key's wallet >= 0.02 SOL\n[RADAR]      3) add PUMPPORTAL_API_KEY=<key> to .env  4) restart this server\n[RADAR] ${PUMPPORTAL_API_KEY ? "A key IS set: check that its wallet holds >= 0.02 SOL." : "No PUMPPORTAL_API_KEY is set right now."}\n[RADAR] ══════════════════════════════════════════════════════════════════\n`);
+            }
+          } else if (data.txType !== "migrate" && (st.otherSamples = (st.otherSamples || 0) + 1) <= 5) {
             console.log(`[RADAR] server reply:`, JSON.stringify(data).slice(0, 300));
+          }
         }
         if (Date.now() - st.since >= 60000) {
           console.log(`[RADAR] stats/min: creates ${st.create} trades ${st.trade} other ${st.other} | subscribed ${radar.subscribedTokens.size} | tokens ${radar.tokens.size} | scored>0 ${[...radar.tokens.values()].filter(t => (t._apeScore || 0) > 0).length}`);
@@ -972,6 +985,7 @@ function sendSubscribeKeys(keys, why) {
 
 function flushSubscriptions() {
   if (!radar.ws || radar.ws.readyState !== 1) return;
+  if (radar._tradeSubsRefused) return; // PumpPortal refused without an API key; retried after reconnect
   const now = Date.now();
   if (radar._pendingSubs.size > 0) {
     const keys = [...radar._pendingSubs];
@@ -988,6 +1002,7 @@ setInterval(flushSubscriptions, SUB_FLUSH_MS);
 
 // After (re)connect, every token still on the radar must be subscribed again.
 function resubscribeAllTokens() {
+  radar._tradeSubsRefused = false;
   radar.subscribedTokens.clear();
   radar._pendingSubs.clear();
   for (const mint of radar.tokens.keys()) radar._pendingSubs.add(mint);
@@ -10586,7 +10601,7 @@ server.listen(PORT, async () => {
   console.log(`  RPC: ${RPC_URL.slice(0, 40)}...`);
   console.log(`  Redis: ${redis ? "connected" : "in-memory"}`);
   console.log(`  SOL: $${solUsdPrice}`);
-  console.log(`  Radar: PumpPortal WS connecting...`);
+  console.log(`  Radar: PumpPortal WS connecting... (API key ${PUMPPORTAL_API_KEY ? "set" : "MISSING: trades will be refused, set PUMPPORTAL_API_KEY"})`);
 
   // LoRA GPU scorer: check if local inference server is running
   loraClient.checkHealth().then(ok => {
