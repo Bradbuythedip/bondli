@@ -17,7 +17,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   port: 3210,
   alerts: { webhook: null },
   venues: {
-    pumpfun: { mode: "paper", bondliUrl: "http://127.0.0.1:3001", minScore: 25, pollMs: 2000, tickMs: 1000, pumpportal: false },
+    pumpfun: { mode: "paper", bondliUrl: "http://127.0.0.1:3001", minScore: 25, pollMs: 2000, tickMs: 1000, pumpportal: false, aggression: 1 },
     polymarket: { mode: "paper", maxMarkets: 150, minLiquidity: 1000, factSources: [{ type: "file", path: "./data/velocity/facts.json", source: "manual", confidence: 0.95 }] },
     perps: { mode: "off" },
   },
@@ -35,7 +35,7 @@ export function buildEngine(config, { clock } = {}) {
     venues.pumpfun = {
       mode: pf.mode,
       feed: new PumpfunFeed({ bondliUrl: pf.bondliUrl, minScore: pf.minScore, pollMs: pf.pollMs, tickMs: pf.tickMs, pumpportal: !!pf.pumpportal, clock, latencyBoundMs: envelope.venues.pumpfun.latency_budget_ms.observe }),
-      edge: makePumpfunEdge(),
+      edge: makePumpfunEdge({ aggression: pf.aggression ?? 1 }),
       router: new PumpfunPaperRouter({ bookFile: path.join(dataDir, "paper-book-pumpfun.json"), clock }),
       liveRouter: new PumpfunLiveRouter({ clock }),
     };

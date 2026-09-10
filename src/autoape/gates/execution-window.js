@@ -1,7 +1,9 @@
 // ═══ GATE 5: EXECUTION WINDOW — Is There Still Time? (<5ms) ═══
 // By the time we've scored and decided, the opportunity may have passed.
 
-export function checkExecutionWindow(token, tier, scoreTimestamp) {
+// opts: the aggression profile (src/velocity/venues/pumpfun/edge.mjs AGGRESSION); defaults are the designed window.
+export function checkExecutionWindow(token, tier, scoreTimestamp, opts = {}) {
+  const { curveMax = 0.60, curveMaxSpec = 0.40, spikeSlope = 0.15, blockDecel = true, requireStable = true } = opts;
   const checks = [];
   const mc = token.mcapUsd || 0;
   const spark = token.spark || [];
@@ -16,7 +18,7 @@ export function checkExecutionWindow(token, tier, scoreTimestamp) {
     const recentSlope = recent.length >= 2 ? (recent[recent.length - 1] - recent[0]) / Math.max(1, recent[0]) : 0;
 
     // If price spiking hard (>15% recent slope at peak), we're buying the top
-    if (recentSlope > 0.15 && cur >= peak * 0.95) {
+    if (recentSlope > spikeSlope && cur >= peak * 0.95) {
       // Tier 1 can override spike if score > 70
       if (tier > 1 || (token._apeScore || 0) < 70) {
         checks.push("PRICE_SPIKING");
@@ -32,9 +34,9 @@ export function checkExecutionWindow(token, tier, scoreTimestamp) {
   // === BONDING CURVE POSITION ===
   const curvePct = token.vSolInBondingCurve ? token.vSolInBondingCurve / 85 : 0;
   // Tier 1-2: Enter up to 60% of curve
-  if (tier <= 2 && curvePct > 0.60) checks.push("CURVE_TOO_ADVANCED");
+  if (tier <= 2 && curvePct > curveMax) checks.push("CURVE_TOO_ADVANCED");
   // Tier 3: Enter up to 40% only
-  if (tier === 3 && curvePct > 0.40) checks.push("CURVE_TOO_ADVANCED_SPEC");
+  if (tier === 3 && curvePct > curveMaxSpec) checks.push("CURVE_TOO_ADVANCED_SPEC");
   // >90% = graduation play — only Tier 1
   if (curvePct > 0.90 && tier > 1) checks.push("GRADUATION_ONLY_TIER1");
 
@@ -50,7 +52,7 @@ export function checkExecutionWindow(token, tier, scoreTimestamp) {
 
     if (secondBuys / secondSpan < (firstBuys / firstSpan) * 0.5) {
       // Buy rate decelerating — only block for lower tiers
-      if (tier >= 3 || (token._apeScore || 0) < 65) {
+      if (blockDecel && (tier >= 3 || (token._apeScore || 0) < 65)) {
         checks.push("BUY_VELOCITY_DECELERATING");
       }
     }
@@ -65,7 +67,7 @@ export function checkExecutionWindow(token, tier, scoreTimestamp) {
   // Require score above threshold for 2+ cycles (except early movers)
   const ageMin = (Date.now() - (token.createdAt || Date.now())) / 60000;
   const isEarlyMover = ageMin < 2 && mc <= 30000;
-  if (token._stabilityCount != null && token._stabilityCount < 2 && !isEarlyMover) {
+  if (requireStable && token._stabilityCount != null && token._stabilityCount < 2 && !isEarlyMover) {
     checks.push("SCORE_NOT_STABLE");
   }
 
