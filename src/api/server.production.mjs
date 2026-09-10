@@ -887,6 +887,7 @@ function connectPumpPortal() {
       // Subscribe to graduation/migration events
       radar.ws.send(JSON.stringify({ method: "subscribeMigration" }));
       console.log("[RADAR] Subscribed to newToken + migration");
+      resubscribeAllTokens();
     });
 
     radar.ws.on("message", (raw) => {
@@ -900,7 +901,11 @@ function connectPumpPortal() {
         else if (data.txType === "buy" || data.txType === "sell") {
           st.trade++;
           if (st.tradeSamples < 3) { st.tradeSamples++; console.log(`[RADAR] trade sample:`, JSON.stringify(data).slice(0, 400)); }
-        } else st.other++;
+        } else {
+          st.other++;
+          if (data.txType !== "migrate" && (st.otherSamples = (st.otherSamples || 0) + 1) <= 5)
+            console.log(`[RADAR] server reply:`, JSON.stringify(data).slice(0, 300));
+        }
         if (Date.now() - st.since >= 60000) {
           console.log(`[RADAR] stats/min: creates ${st.create} trades ${st.trade} other ${st.other} | subscribed ${radar.subscribedTokens.size} | tokens ${radar.tokens.size} | scored>0 ${[...radar.tokens.values()].filter(t => (t._apeScore || 0) > 0).length}`);
           if (st.trade === 0 && radar.subscribedTokens.size > 0) console.warn(`[RADAR] WARNING: ${radar.subscribedTokens.size} tokens subscribed but zero trade messages in the last minute`);
@@ -926,10 +931,22 @@ function connectPumpPortal() {
   }
 }
 
-// Subscribe to trades for a specific token
+// ═══ Trade subscriptions: batched, not one message per token ═══
+// Sending one subscribeTokenTrade per create (hundreds a minute) produced zero
+// trade messages in production: PumpPortal answered every message but delivered
+// no trades. Whether its server replaces the key set on each message or throttles
+// chatty clients, the cure is the same: queue mints, flush them in ONE message
+// every few seconds, and periodically re-send the FULL key list (also after a
+// reconnect, which used to drop every existing subscription silently).
+const SUB_FLUSH_MS = 2000;        // queued mints go out together at most this often
+const SUB_RESYNC_MS = 20000;      // full key list re-sent this often
+const SUB_CHUNK = 200;            // keys per message
+radar._pendingSubs = new Set();
+radar._lastResync = 0;
+
 function subscribeToToken(mint) {
-  if (radar.subscribedTokens.has(mint) || !radar.ws || radar.ws.readyState !== 1) return;
-  if (radar.subscribedTokens.size >= 4500) {
+  if (!mint || radar.subscribedTokens.has(mint) || radar._pendingSubs.has(mint)) return;
+  if (radar.subscribedTokens.size >= 4500 && radar.ws && radar.ws.readyState === 1) {
     // Unsub oldest tokens to stay under 5000 limit
     const oldest = [...radar.subscribedTokens].slice(0, 500);
     if (oldest.length > 0) {
@@ -937,8 +954,45 @@ function subscribeToToken(mint) {
       for (const k of oldest) radar.subscribedTokens.delete(k);
     }
   }
-  radar.ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: [mint] }));
-  radar.subscribedTokens.add(mint);
+  radar._pendingSubs.add(mint);
+}
+
+function sendSubscribeKeys(keys, why) {
+  if (!radar.ws || radar.ws.readyState !== 1 || !keys.length) return 0;
+  let sent = 0;
+  for (let i = 0; i < keys.length; i += SUB_CHUNK) {
+    const chunk = keys.slice(i, i + SUB_CHUNK);
+    radar.ws.send(JSON.stringify({ method: "subscribeTokenTrade", keys: chunk }));
+    sent += chunk.length;
+  }
+  radar._subLog = (radar._subLog || 0) + 1;
+  if (radar._subLog <= 5 || radar._subLog % 30 === 0) console.log(`[RADAR] subscribeTokenTrade ${why}: ${sent} keys in ${Math.ceil(keys.length / SUB_CHUNK)} message(s)`);
+  return sent;
+}
+
+function flushSubscriptions() {
+  if (!radar.ws || radar.ws.readyState !== 1) return;
+  const now = Date.now();
+  if (radar._pendingSubs.size > 0) {
+    const keys = [...radar._pendingSubs];
+    radar._pendingSubs.clear();
+    for (const k of keys) radar.subscribedTokens.add(k);
+    sendSubscribeKeys(keys, "batch");
+  }
+  if (now - radar._lastResync >= SUB_RESYNC_MS && radar.subscribedTokens.size > 0) {
+    radar._lastResync = now;
+    sendSubscribeKeys([...radar.subscribedTokens], "resync");
+  }
+}
+setInterval(flushSubscriptions, SUB_FLUSH_MS);
+
+// After (re)connect, every token still on the radar must be subscribed again.
+function resubscribeAllTokens() {
+  radar.subscribedTokens.clear();
+  radar._pendingSubs.clear();
+  for (const mint of radar.tokens.keys()) radar._pendingSubs.add(mint);
+  radar._lastResync = Date.now();
+  flushSubscriptions();
 }
 
 function processRadarMessage(data) {
