@@ -30,16 +30,30 @@ export const PUMPFUN_PRIORS = Object.freeze({
   3: Object.freeze({ p_win: 0.25, payoff: 3.0 }),
 });
 
+/** One knob for how far past the designed floors gates 2 and 3 let a token in. Gate 1 (the rug
+ *  disqualifiers) never moves: aggression is about how early and how speculative, not how unsafe.
+ *    0 cautious  1 as designed  2 aggressive  3 degen */
+export const AGGRESSION = Object.freeze({
+  0: Object.freeze({ scoreFloor: 50, tier3Floor: 55, sybilMax: 0.35, freshWalletMax: 0.70, curveMax: 0.50, curveMaxSpec: 0.30, spikeSlope: 0.10, blockDecel: true,  requireStable: true }),
+  1: Object.freeze({ scoreFloor: 45, tier3Floor: 50, sybilMax: 0.40, freshWalletMax: 0.80, curveMax: 0.60, curveMaxSpec: 0.40, spikeSlope: 0.15, blockDecel: true,  requireStable: true }),
+  2: Object.freeze({ scoreFloor: 38, tier3Floor: 42, sybilMax: 0.50, freshWalletMax: 0.90, curveMax: 0.70, curveMaxSpec: 0.55, spikeSlope: 0.25, blockDecel: false, requireStable: false }),
+  3: Object.freeze({ scoreFloor: 32, tier3Floor: 35, sybilMax: 0.60, freshWalletMax: 1.00, curveMax: 0.80, curveMaxSpec: 0.65, spikeSlope: 0.40, blockDecel: false, requireStable: false }),
+});
+
 export function makePumpfunEdge({
+  aggression = 1,
   priors = PUMPFUN_PRIORS,
   minOutcomesForStats = 30,
   feeFractionRoundTrip = 0.02,     // pump.fun 1% in + 1% out
   fixedCostSol = 0.0015,           // priority fee + Jito tip per side, rough
   nominalStakeUsd = 25,
 } = {}) {
+  const gateOpts = AGGRESSION[Math.max(0, Math.min(3, Math.round(Number(aggression) || 0)))] || AGGRESSION[1];
   return {
     venue: "pumpfun",
     name: "bondli_gates",
+    aggression: Number(aggression),
+    gateOpts,
 
     /** Only candidate events carry a scorable token; ticks belong to exits. */
     ingest(event) {
@@ -58,14 +72,14 @@ export function makePumpfunEdge({
 
     gates: [
       { name: "disqualifiers", check: c => { const r = checkDisqualifiers(c.token, c.qf, { freezeAuthority: !!c.token.freezeAuthority }); return { pass: r.pass, reasons: r.flags }; } },
-      { name: "viability", check: c => { const r = checkViability(c.token, c.qf, c.scores, c.dynamics); return { pass: r.pass, reasons: r.checks }; } },
+      { name: "viability", check: c => { const r = checkViability(c.token, c.qf, c.scores, c.dynamics, gateOpts); return { pass: r.pass, reasons: r.checks }; } },
       { name: "confidence", check: c => {
-          const r = classifyConfidence(c.token, c.qf, c.scores, c.dynamics);
+          const r = classifyConfidence(c.token, c.qf, c.scores, c.dynamics, gateOpts);
           c.tier = r.tier; c.tierLabel = r.label; c.tierReasons = r.reasons;
           if (r.tier >= 1 && r.tier <= 3) return { pass: true };
           return { pass: false, reasons: [r.tier === 4 ? "WATCHLIST" : "BELOW_THRESHOLD", ...r.reasons] };
         } },
-      { name: "execution_window", check: c => { const r = checkExecutionWindow(c.token, c.tier, c.scores.scoreTimestamp); return { pass: r.pass, reasons: r.checks }; } },
+      { name: "execution_window", check: c => { const r = checkExecutionWindow(c.token, c.tier, c.scores.scoreTimestamp, gateOpts); return { pass: r.pass, reasons: r.checks }; } },
     ],
 
     estimate(c, ctx = {}) {

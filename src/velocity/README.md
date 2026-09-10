@@ -75,7 +75,7 @@ reconciliation. `weights/` every learner version. `heartbeat`, `HALT`.
   "host": "127.0.0.1", "port": 3210,
   "alerts": { "webhook": null },
   "venues": {
-    "pumpfun":    { "mode": "paper", "bondliUrl": "http://127.0.0.1:3001", "minScore": 25, "pollMs": 2000, "tickMs": 1000, "pumpportal": false },
+    "pumpfun":    { "mode": "paper", "bondliUrl": "http://127.0.0.1:3001", "minScore": 25, "pollMs": 2000, "tickMs": 1000, "pumpportal": false, "aggression": 1 },
     "polymarket": { "mode": "paper", "maxMarkets": 150, "minLiquidity": 1000,
                     "factSources": [{ "type": "file", "path": "./data/velocity/facts.json", "source": "manual", "confidence": 0.95 }] },
     "perps":      { "mode": "off" }
@@ -98,6 +98,14 @@ Live pump.fun needs `MASTER_SEED` and an RPC. Live Polymarket needs
 `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER` and the packages
 `@polymarket/clob-client` and `ethers`. On-chain redemption of resolved
 Polymarket positions is not automated in live mode; paper mode models it.
+
+### Aggression
+
+`venues.pumpfun.aggression` is one knob for gates 2 and 3: 0 cautious, 1 as designed, 2 aggressive,
+3 degen. It moves the score floor, the speculative-tier floor, the sybil and fresh-wallet limits, how far
+along the bonding curve an entry is allowed, the price-spike rule, and whether decelerating buys or an
+unstable score block an entry (`AGGRESSION` in venues/pumpfun/edge.mjs). Gate 1, the rug disqualifiers,
+never moves with it. Read at start; restart after changing it.
 
 ### Bankroll from the wallet
 

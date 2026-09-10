@@ -582,3 +582,32 @@ test("T10: velocity watch narrates the ledger one line per event and follows app
   assert.equal(seen.length, 1, "the old halt was before the watch; the heartbeat is noise");
   assert.match(seen[0], /P&L     N \$1.00 \(20.0%\) held 3s TP2/);
 });
+
+test("T10: aggression moves gates 2 and 3 together and never touches gate 1", async () => {
+  const { AGGRESSION, makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const { checkViability } = await import("../../src/autoape/gates/viability.js");
+  const { checkExecutionWindow } = await import("../../src/autoape/gates/execution-window.js");
+  const { classifyConfidence } = await import("../../src/autoape/gates/confidence.js");
+  const now = Date.now();
+  const token = { ca: "M", createdAt: now - 3 * 60000, buys: 20, sells: 6, uniqueBuyers: { size: 12 }, mcapUsd: 9000, volumeSol: 8, vSolInBondingCurve: 55, spark: [5000, 6000, 7000, 8000, 8500, 9000], _apeScore: 40 };
+  const qf = { _rg_sybilScore: 0.45, _rg_freshWalletRatio: 0.5, ch_healthScore: 0.6 };
+  const dyn = { scores: 4, velocity: 0.1, acceleration: 0.01, trend: "rising" };
+  // Score 40 with sybil 0.45: refused as designed, admitted at aggression 2.
+  assert.deepEqual(checkViability(token, qf, { apeScore: 40 }, dyn, AGGRESSION[1]).checks, ["SCORE_BELOW_FLOOR", "HIGH_SYBIL_RISK"]);
+  assert.equal(checkViability(token, qf, { apeScore: 40 }, dyn, AGGRESSION[2]).pass, true);
+  assert.equal(checkViability(token, qf, { apeScore: 40 }, dyn).pass, false, "no opts means the designed floors");
+  // 65% along the curve: too advanced for tier 2 as designed, inside the window at aggression 2.
+  assert.ok(checkExecutionWindow(token, 2, now, AGGRESSION[1]).checks.includes("CURVE_TOO_ADVANCED"));
+  assert.ok(!checkExecutionWindow(token, 2, now, AGGRESSION[2]).checks.includes("CURVE_TOO_ADVANCED"));
+  assert.ok(checkExecutionWindow(token, 2, now, AGGRESSION[3]).pass, "degen takes it up to 80%");
+  // Score 44 with a rising trend: watchlist as designed, a SPECULATIVE entry at aggression 2.
+  assert.equal(classifyConfidence(token, qf, { apeScore: 44 }, dyn, AGGRESSION[1]).tier, 4);
+  assert.equal(classifyConfidence(token, qf, { apeScore: 44 }, dyn, AGGRESSION[2]).tier, 3);
+  // The edge wires the profile through; an out-of-range value clamps.
+  assert.equal(makePumpfunEdge({ aggression: 2 }).gateOpts, AGGRESSION[2]);
+  assert.equal(makePumpfunEdge({ aggression: 9 }).gateOpts, AGGRESSION[3]);
+  assert.equal(makePumpfunEdge().gateOpts, AGGRESSION[1]);
+  // Gate 1 has no aggression input at all.
+  const src = fs.readFileSync(path.resolve("src/autoape/gates/disqualifiers.js"), "utf8");
+  assert.ok(!/aggression|gateOpts|opts\.scoreFloor/.test(src), "the rug disqualifiers do not read the aggression profile");
+});

@@ -2,7 +2,9 @@
 // Tokens passing Gate 1 aren't dangerous, but might be noise.
 // Every floor must be met (AND conditions).
 
-export function checkViability(token, qf, scores, dynamics) {
+// opts: the aggression profile (src/velocity/venues/pumpfun/edge.mjs AGGRESSION); defaults are the designed floors.
+export function checkViability(token, qf, scores, dynamics, opts = {}) {
+  const { scoreFloor = 45, sybilMax = 0.40, freshWalletMax = 0.80 } = opts;
   const checks = [];
   const buys = token.buys || 0;
   const ub = token.uniqueBuyers?.size || 0;
@@ -14,7 +16,7 @@ export function checkViability(token, qf, scores, dynamics) {
   // === COMPOSITE SCORE FLOOR ===
   // The token must have passed base scoring. Score is 0-99 (our system).
   // Map: 55/100 composite ≈ score 45 in our 0-99 system
-  if ((scores.apeScore || 0) < 45) checks.push("SCORE_BELOW_FLOOR");
+  if ((scores.apeScore || 0) < scoreFloor) checks.push("SCORE_BELOW_FLOOR");
 
   // === ON-CHAIN ACTIVITY MINIMUM ===
   // Must have at least 5 unique buyers (was 10 in spec, relaxed for pump.fun reality)
@@ -28,7 +30,7 @@ export function checkViability(token, qf, scores, dynamics) {
   if (mc < 4000) checks.push("INSUFFICIENT_LIQUIDITY");
 
   // === SYBIL CHECK ===
-  if (qf?._rg_sybilScore > 0.40) checks.push("HIGH_SYBIL_RISK");
+  if (qf?._rg_sybilScore > sybilMax) checks.push("HIGH_SYBIL_RISK");
 
   // === VOLUME LEGITIMACY FLOOR ===
   // Token must have some organic volume activity — fee accrual rate matters
@@ -51,7 +53,7 @@ export function checkViability(token, qf, scores, dynamics) {
 
   // === STRUCTURAL DIVERSITY ===
   // Fresh wallets dominating = sybil/dev-buy setup
-  if (qf?._rg_freshWalletRatio > 0.80 && !isEarlyMover) checks.push("SINGLE_CLUSTER_BUYERS");
+  if (qf?._rg_freshWalletRatio > freshWalletMax && !isEarlyMover) checks.push("SINGLE_CLUSTER_BUYERS");
 
   return {
     pass: checks.length === 0,

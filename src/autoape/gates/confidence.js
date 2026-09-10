@@ -2,7 +2,9 @@
 // Classify HOW confident we are. Determines position size, execution, fleet role.
 // Four tiers: GOD_CANDLE (1), STRONG (2), SPECULATIVE (3), WATCHLIST (4).
 
-export function classifyConfidence(token, qf, scores, dynamics) {
+// opts.tier3Floor: the score a SPECULATIVE entry needs (aggression profile); 50 as designed.
+export function classifyConfidence(token, qf, scores, dynamics, opts = {}) {
+  const { tier3Floor = 50 } = opts;
   const apeScore = scores.apeScore || 0;
   const dyn = dynamics;
   const mc = token.mcapUsd || 0;
@@ -86,7 +88,7 @@ export function classifyConfidence(token, qf, scores, dynamics) {
   }
 
   // ═══ TIER 3: SPECULATIVE — top ~15% ═══
-  if (apeScore >= 50
+  if (apeScore >= tier3Floor
     && vel >= -0.05
     && trend !== "crashing"
     && (
