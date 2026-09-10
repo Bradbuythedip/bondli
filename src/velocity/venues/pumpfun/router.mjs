@@ -269,8 +269,11 @@ export class PumpfunLiveRouter extends Router {
     if (est.reject) return failure(order, est.reject, est.reason);
     if (Number.isFinite(order.max_slippage_bps) && est.slippage_bps > order.max_slippage_bps)
       return failure(order, "SLIPPAGE_CAP", `curve slippage ${est.slippage_bps.toFixed(1)}bps > cap ${order.max_slippage_bps}bps`);
+    // The stake is converted to SOL at the radar's price: without a fresh fetch stamp that price
+    // may be bondli's hard-coded default, and the order would be the wrong size.
     const priceAt = Number(order.reference?.solPriceAt) || 0;
-    if (priceAt > 0 && this.clock() - priceAt > SOL_PRICE_MAX_AGE_MS) return failure(order, "STALE_SOL_PRICE", `SOL price is ${Math.round((this.clock() - priceAt) / 60000)} min old; sizing in SOL would be wrong`);
+    if (!(priceAt > 0)) return failure(order, "STALE_SOL_PRICE", "bondli has not fetched a SOL price yet (no solPriceAt); refusing to size in SOL");
+    if (this.clock() - priceAt > SOL_PRICE_MAX_AGE_MS) return failure(order, "STALE_SOL_PRICE", `SOL price is ${Math.round((this.clock() - priceAt) / 60000)} min old; sizing in SOL would be wrong`);
     const solAmount = +(Number(order.stake_usd) / solPrice).toFixed(6);
     let sig = null;
     try {

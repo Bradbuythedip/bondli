@@ -167,7 +167,7 @@ function liveRouter(conn, over = {}) {
 }
 const meta = (solDelta, tokenDelta, mint = "M", { err = null } = {}) => ({ meta: { err, preBalances: [1e9], postBalances: [1e9 + Math.round(solDelta * 1e9)], preTokenBalances: tokenDelta < 0 ? [{ mint, owner: "PK", uiTokenAmount: { uiAmount: -tokenDelta } }] : [], postTokenBalances: tokenDelta > 0 ? [{ mint, owner: "PK", uiTokenAmount: { uiAmount: tokenDelta } }] : [] } });
 const confirmed = { confirmationStatus: "confirmed", err: null };
-const buyOrder = (over = {}) => ({ id: "o1", decisionId: "d1", instrument: "M", stake_usd: 5, max_slippage_bps: 300, reference: { vSolInBondingCurve: 30, mcapUsd: 4500, solPrice: 200 }, ...over });
+const buyOrder = (over = {}) => ({ id: "o1", decisionId: "d1", instrument: "M", stake_usd: 5, max_slippage_bps: 300, reference: { vSolInBondingCurve: 30, mcapUsd: 4500, solPrice: 200, solPriceAt: 1_000_000 - 30_000 }, ...over });
 
 test("T10: the SOL a buy needs counts fees and rent, and the fill is read from the confirmed transaction", async () => {
   assert.ok(Math.abs(solNeededForBuy(0.025, { priorityFeeSol: 0.0005 }) - (0.025 * 1.015 + 0.0005 + 0.000005 + RENT_ATA_SOL + 0.00089088)) < 1e-12);
@@ -245,10 +245,13 @@ test("T10: sells settle from the transaction, a pending sell is never sent twice
   const fresh = await r4.close(p3, 100, { reference: { solPrice: 200 } });
   assert.equal(fresh.ok, true); assert.equal(fresh.fill.venue_ref, "SIG1"); assert.equal(expired.sent, 1);
 
-  // A stale SOL price refuses to size an order in SOL.
+  // A stale SOL price refuses to size an order in SOL; so does one bondli never fetched.
   const stale = liveRouter(fakeConn({ sol: 0.5 }));
   const s = await stale.submit(buyOrder({ reference: { vSolInBondingCurve: 30, mcapUsd: 4500, solPrice: 200, solPriceAt: 1_000_000 - 11 * 60_000 } }));
   assert.equal(s.failure.code, "STALE_SOL_PRICE");
+  const never = await stale.submit(buyOrder({ reference: { vSolInBondingCurve: 30, mcapUsd: 4500, solPrice: 200 } }));
+  assert.equal(never.failure.code, "STALE_SOL_PRICE"); assert.match(never.failure.reason, /not fetched/);
+  assert.equal(stale.connection.sent, 0);
 });
 
 test("T10: the engine finalizes a live position the wallet no longer holds, and remembers a pending sell", async () => {

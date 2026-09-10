@@ -102,7 +102,7 @@ test("T4: live pump.fun router builds the PumpPortal request bondli itself uses,
   const r = new PumpfunLiveRouter({ secret: "x", fetchImpl: async (url, opts) => { calls.push(JSON.parse(opts.body)); return { ok: false, status: 400, text: async () => "bad mint" }; } });
   r.ready = true; r.publicKey = "PK"; r.keypair = { publicKey: "PK" }; r.web3 = { PublicKey: class { constructor(v) { this.v = v; } }, VersionedTransaction: { deserialize() { throw new Error("should not reach") } } };
   r.connection = { getBalance: async () => 5e9, getParsedTokenAccountsByOwner: async () => ({ value: [] }) };
-  const res = await r.submit({ id: "o1", instrument: "MintZ", stake_usd: 5, max_slippage_bps: 300, reference: { vSolInBondingCurve: 30, mcapUsd: 4500, solPrice: 100 } });
+  const res = await r.submit({ id: "o1", instrument: "MintZ", stake_usd: 5, max_slippage_bps: 300, reference: { vSolInBondingCurve: 30, mcapUsd: 4500, solPrice: 100, solPriceAt: Date.now() } });
   assert.equal(res.ok, false);
   assert.equal(res.failure.code, "SEND_FAILED");
   assert.match(res.failure.reason, /trade builder 400/);
@@ -112,7 +112,7 @@ test("T4: live pump.fun router builds the PumpPortal request bondli itself uses,
   const poor = new PumpfunLiveRouter({ secret: "x", fetchImpl: async () => { throw new Error("must not be called"); } });
   poor.ready = true; poor.publicKey = "PK"; poor.keypair = { publicKey: "PK" }; poor.web3 = { PublicKey: class { constructor(v) { this.v = v; } } };
   poor.connection = { getBalance: async () => 1e6, getParsedTokenAccountsByOwner: async () => ({ value: [] }) };
-  const p = await poor.submit({ id: "o2", instrument: "MintZ", stake_usd: 5, max_slippage_bps: 300, reference: { vSolInBondingCurve: 30, mcapUsd: 4500, solPrice: 100 } });
+  const p = await poor.submit({ id: "o2", instrument: "MintZ", stake_usd: 5, max_slippage_bps: 300, reference: { vSolInBondingCurve: 30, mcapUsd: 4500, solPrice: 100, solPriceAt: Date.now() } });
   assert.equal(p.failure.code, "INSUFFICIENT_SOL");
 });
 

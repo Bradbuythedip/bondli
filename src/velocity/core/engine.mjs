@@ -95,6 +95,7 @@ export class Engine extends EventEmitter {
         this._clearStartupFreeze(venue, /^(live router not ready|reconcile)/);
       } catch (err) {
         const reason = `live router not ready: ${err.message}`;
+        this.log("error", `${venue}: ${reason}; entries frozen`);
         this.store.setHalt("freeze", reason, venue);
         this.ledger.append({ kind: "halt", mode: "freeze", reason, by: "restart", venue });
         this.alerter?.send("error", `${venue} is live but its router failed to initialize: ${err.message}. Entries frozen; fix .env and restart, or: velocity venue ${venue} paper`);
@@ -477,7 +478,7 @@ export class Engine extends EventEmitter {
       this.store.rollDay();
       this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4);
       this.store.state.day.trades++;
-      this.ledger.append({ kind: "outcome", venue, instrument: p.instrument, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: held, reason, features: p.features, paper: !!f.paper, flat_at_venue: flat || undefined });
+      this.ledger.append({ kind: "outcome", venue, instrument: p.instrument, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: held, reason, features: p.features, paper: !!f.paper, by, flat_at_venue: flat || undefined });
       this.cooldown.set(p.instrument, this.clock() + this.cfg.reentryCooldownMs);
       this.venues[venue].feed?.unwatch(p.instrument);
       for (const l of p.legs || []) this.venues[venue].feed?.unwatch(l.instrument);

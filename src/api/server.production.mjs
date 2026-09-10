@@ -597,12 +597,28 @@ async function pollSolPrice() {
     const r = await fetch("https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112", { signal: AbortSignal.timeout(5000) });
     if (r.ok) { const d = await r.json(); const sp = d?.data?.["So11111111111111111111111111111111111111112"]?.price; if (sp > 0) { solUsdPrice = +sp; solUsdPriceAt = Date.now(); return; } }
   } catch {}
+  // Jupiter's current price API (v2 above is legacy and may answer nothing)
+  try {
+    const r = await fetch("https://lite-api.jup.ag/price/v3?ids=So11111111111111111111111111111111111111112", { signal: AbortSignal.timeout(5000) });
+    if (r.ok) { const d = await r.json(); const sp = d?.["So11111111111111111111111111111111111111112"]?.usdPrice; if (sp > 0) { solUsdPrice = +sp; solUsdPriceAt = Date.now(); return; } }
+  } catch {}
   // Fallback: CoinGecko (rate-limited on free tier)
   try {
     const r2 = await fetch("https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
       { signal: AbortSignal.timeout(5000) });
-    if (r2.ok) { const d2 = await r2.json(); if (d2?.solana?.usd > 0) { solUsdPrice = d2.solana.usd; solUsdPriceAt = Date.now(); } }
+    if (r2.ok) { const d2 = await r2.json(); if (d2?.solana?.usd > 0) { solUsdPrice = d2.solana.usd; solUsdPriceAt = Date.now(); return; } }
   } catch {}
+  // Exchange spot prices: the trader refuses to size an order in SOL without a fresh stamp,
+  // so a price must come from somewhere.
+  try {
+    const r3 = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT", { signal: AbortSignal.timeout(5000) });
+    if (r3.ok) { const d3 = await r3.json(); if (+d3?.price > 0) { solUsdPrice = +d3.price; solUsdPriceAt = Date.now(); return; } }
+  } catch {}
+  try {
+    const r4 = await fetch("https://api.coinbase.com/v2/prices/SOL-USD/spot", { signal: AbortSignal.timeout(5000) });
+    if (r4.ok) { const d4 = await r4.json(); if (+d4?.data?.amount > 0) { solUsdPrice = +d4.data.amount; solUsdPriceAt = Date.now(); return; } }
+  } catch {}
+  console.warn(`[sol-price] every source failed; serving ${solUsdPrice} from ${solUsdPriceAt ? new Date(solUsdPriceAt).toISOString() : "the default"}`);
 }
 pollSolPrice();
 setInterval(pollSolPrice, 60000); // 60s — SOL price doesn't move fast enough to justify 30s
