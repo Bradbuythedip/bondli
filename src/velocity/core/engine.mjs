@@ -25,7 +25,7 @@ export class Engine extends EventEmitter {
     this.dataDir = dataDir;
     this.env = envelope;
     this.clock = clock;
-    this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000, failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, ...config };
+    this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000, failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, ...config };
     this.ledger = new Ledger(path.join(dataDir, "ledger.jsonl"), { now: clock });
     this.store = new Store(path.join(dataDir, "state.json"), { now: clock });
     this.weights = new WeightStore(path.join(dataDir, "weights"));
@@ -46,6 +46,7 @@ export class Engine extends EventEmitter {
     this.cooldown = new Map();  // instrument -> until
     this.disqualified = new Map(); // instrument -> until; a fatal gate-1 reject is not re-judged every poll
     this.pendingBuys = new Map();  // instrument -> { sig, decision, orderId, stake, sizing, at }: sent, not yet confirmed
+    this.wallet = { sol: null, usd: null, solPrice: null, at: 0, venue: null }; // last live wallet reading (bankroll_source: wallet)
     this._lastSweepTry = new Map();
     this.stats = statsFromOutcomes(this.ledger.query({ kind: "outcome", limit: 5000 }));
     this.checksums = checksumFiles();
@@ -93,6 +94,7 @@ export class Engine extends EventEmitter {
         this.ledger.append({ kind: "venue", venue, mode: "live", by: "restart", preflight: pre });
         this.log("info", `${venue}: live router ready${pre?.wallet ? ` (wallet ${pre.wallet}, ${Number(pre.balanceSol).toFixed(4)} SOL)` : ""}`);
         this._clearStartupFreeze(venue, /^(live router not ready|reconcile)/);
+        this.noteWallet(venue, pre);
       } catch (err) {
         const reason = `live router not ready: ${err.message}`;
         this.log("error", `${venue}: ${reason}; entries frozen`);
@@ -113,12 +115,33 @@ export class Engine extends EventEmitter {
     this.log("info", `${venue}: earlier freeze lifted (${h.reason})`);
   }
 
+  // ── wallet as bankroll (bankroll_source: wallet) ──
+  walletMode() { return this.env.bankroll_source === "wallet"; }
+
+  /** Record a wallet reading (from a router preflight) in USD at the freshest SOL price known. */
+  noteWallet(venue, pre) {
+    if (!pre || !(pre.balanceSol >= 0)) return;
+    const solPrice = this.solPriceHint || this.venues[venue]?.feed?.solPrice || 0;
+    this.wallet = { sol: pre.balanceSol, usd: solPrice > 0 ? +(pre.balanceSol * solPrice).toFixed(2) : null, solPrice: solPrice || null, at: this.clock(), venue };
+    this.store.state.wallet = this.wallet;
+  }
+
+  /** Re-read the live wallet; called after every live fill and periodically by the sweep. */
+  async refreshWallet() {
+    for (const [venue, v] of Object.entries(this.venues)) {
+      if (this.store.venueMode(venue) !== "live" || !v.liveRouter?.ready || !v.liveRouter.preflight) continue;
+      try { this.noteWallet(venue, await v.liveRouter.preflight()); } catch (err) { this.log("warn", `${venue}: wallet read failed: ${err.message}`); }
+      return;
+    }
+  }
+
   /** Clock-driven safety net, independent of ticks: settles buys that confirmed after their
    *  timeout, retries a flatten that failed, and sells a position past its max hold whose
    *  instrument has gone quiet (left the radar, zero mcap). */
   async sweep() {
     const now = this.clock();
     const due = key => { if (now - (this._lastSweepTry.get(key) || 0) < this.cfg.sweepRetryMs) return false; this._lastSweepTry.set(key, now); return true; };
+    if (this.walletMode() && now - (this.wallet.at || 0) >= this.cfg.walletRefreshMs) await this.refreshWallet();
     for (const [inst, pb] of [...this.pendingBuys]) {
       const router = this.routerFor(pb.venue);
       if (!router?.resolvePending || !due(`buy:${inst}`)) continue;
@@ -222,6 +245,7 @@ export class Engine extends EventEmitter {
       }
       liveStartCapUsd = gate.liveStartCapUsd;
       this.venues[venue].liveStartCapUsd = liveStartCapUsd;
+      this.noteWallet(venue, preflight);
       if (!gate.ok) this.alerter?.send("warn", `${venue} switched to LIVE by operator override with the paper gate red: ${gate.items.filter(i => !i.ok).map(i => i.name).join(", ")}`);
     }
     this.store.setVenueMode(venue, mode, mode === "live" ? { liveStartCapUsd } : {});
@@ -276,10 +300,29 @@ export class Engine extends EventEmitter {
 
   portfolioSnapshot() {
     this.store.rollDay();
-    return {
-      open: this.store.openPositions().map(p => ({ venue: p.venue, group: p.group, notional_usd: p.notional_usd, worst_case_fraction: p.worst_case_fraction ?? 1 })),
+    const open = this.store.openPositions();
+    const snap = {
+      open: open.map(p => ({ venue: p.venue, group: p.group, notional_usd: p.notional_usd, worst_case_fraction: p.worst_case_fraction ?? 1 })),
       realized_today_usd: this.store.state.day.realizedUsd,
     };
+    // Wallet mode: the bankroll is what the wallet holds. Free SOL (less the fee reserve) at the
+    // current price, plus what is already open, is the equity the sizer works from. Paper venues
+    // keep the fixed bankroll. No fresh reading means no order, not a guess.
+    const anyLive = Object.keys(this.venues).some(v => this.store.venueMode(v) === "live");
+    if (this.walletMode() && anyLive) {
+      const w = this.wallet;
+      const fresh = w.at && this.clock() - w.at <= this.cfg.walletMaxAgeMs;
+      const solPrice = this.solPriceHint || w.solPrice || 0;
+      if (!fresh || !(w.sol >= 0)) { snap.equity_usd = null; snap.equity_reason = "WALLET_UNKNOWN"; }
+      else if (!(solPrice > 0)) { snap.equity_usd = null; snap.equity_reason = "NO_SOL_PRICE"; }
+      else {
+        const freeUsd = Math.max(0, w.sol - (this.env.wallet_reserve_sol ?? 0.02)) * solPrice;
+        const liveOpen = open.filter(p => !p.paper).reduce((s, p) => s + (p.notional_usd || 0), 0);
+        snap.equity_usd = +(freeUsd + liveOpen).toFixed(2);
+        snap.wallet = { sol: w.sol, solPrice, free_usd: +freeUsd.toFixed(2), at: w.at };
+      }
+    }
+    return snap;
   }
 
   // ── entry ──
@@ -356,6 +399,7 @@ export class Engine extends EventEmitter {
     this.ledger.append({ kind: "fill", venue, orderId, decisionId: decision.id, positionId: position.id, side: "BUY", instrument: inst, price: fill.price, qty: fill.qty, notional_usd: fill.notional_usd, fee_usd: fill.fee_usd || 0, slippage_bps: fill.slippage_bps, latency_ms: fill.latency_ms, venue_ref: fill.venue_ref, plan: { venue: plan.venue, key: plan.key, mode: plan.mode }, paper: !!fill.paper });
     this.ledger.append({ kind: "order", venue, orderId, decisionId: decision.id, stage: "filled", positionId: position.id });
     this.store.upsertPosition(position);
+    if (!fill.paper && this.walletMode()) this.refreshWallet().catch(() => {});
     v.feed?.watch(inst);
     for (const l of position.legs || []) v.feed?.watch(l.instrument);
     this.store.save();
@@ -488,6 +532,7 @@ export class Engine extends EventEmitter {
       this.evaluateGovernor();
       if (++this._outcomesSinceRetrain >= this.cfg.retrainEvery) { this._outcomesSinceRetrain = 0; this.retrain(); }
     }
+    if (!f.paper && this.walletMode()) this.refreshWallet().catch(() => {});
     this.store.save();
     return r;
   }
@@ -630,6 +675,7 @@ export class Engine extends EventEmitter {
       running: this.running, startedAt: s.startedAt, now: this.clock(), heartbeatAt: s.heartbeatAt, reconciledAt: s.reconciledAt,
       halt: s.halt, throttle: s.throttle, governor: s.governor, regime: s.regime,
       day: { ...s.day, limit_usd: this.env.daily_loss_limit_usd, used_pct: +((Math.max(0, -s.day.realizedUsd) / this.env.daily_loss_limit_usd) * 100).toFixed(1) },
+      bankroll: { source: this.walletMode() ? "wallet" : "fixed", fixed_usd: this.env.bankroll_usd, equity_usd: this.portfolioSnapshot().equity_usd ?? null, wallet: this.wallet.at ? this.wallet : null },
       positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, tier: p.tier, model: p.model, notional_usd: p.notional_usd, mark: p.mark, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode }, entryTime: p.entryTime, adopted: !!p.adopted })),
       venues, weightsVersion: this.weights.current().version, lastDecisions: s.lastDecisions, alerts: s.alerts.slice(0, 10),
     };

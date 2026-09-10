@@ -39,6 +39,7 @@ class FakeLive {
   }
   async init() { this.calls.push("init"); if (this.failInit) throw new Error("MASTER_SEED missing"); this.ready = true; return { wallet: "WALLET", balanceSol: this.balanceSol, rpc: "fake" }; }
   async health() { return { ok: true, latencyMs: 1, detail: "fake" }; }
+  async preflight() { this.calls.push("preflight"); return { wallet: "WALLET", balanceSol: this.balanceSol, rpc: "fake" }; }
   async positions() { this.calls.push("positions"); return this.ready ? Object.entries(this.wallet).filter(([, q]) => q > 0).map(([instrument, qty]) => ({ instrument, qty })) : []; }
   async submit(order) {
     this.calls.push(`submit:${order.instrument}`);
@@ -475,5 +476,52 @@ test("T10: a tick-less paper sell is priced at the last mark, not the entry", as
     const out = engine.ledger.query({ kind: "outcome", limit: 1 })[0];
     assert.equal(out.reason, "MAX_HOLD");
     assert.ok(out.pnl_pct < -30, `booked at the last mark (-40%), got ${out.pnl_pct}%`);
+  } finally { await engine.stop(); }
+});
+
+test("T10: with bankroll_source wallet the live wallet is the bankroll; no reading means no order", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir, { bankroll_source: "wallet", wallet_reserve_sol: 0.02 });
+  assert.equal(env.bankroll_source, "wallet");
+  // Sizer: a measured equity replaces bankroll + realized; null equity sizes nothing.
+  const sizer = new Sizer(env);
+  const d = { venue: "pumpfun", p_win: 0.45, payoff: 3, stop_fraction: 1 };
+  const w = sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: -5, equity_usd: 120 } });
+  assert.equal(w.stake_usd, 8, "0.2667 x 0.25 x $120 = $8, realized is not subtracted twice (the wallet already fell by it)");
+  assert.match(w.reasons[0], /\(wallet\)/);
+  const unknown = sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: 0, equity_usd: null, equity_reason: "WALLET_UNKNOWN" } });
+  assert.equal(unknown.stake_usd, 0); assert.equal(unknown.reasons[0], "WALLET_UNKNOWN");
+  const fixed = sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: 0 } });
+  assert.equal(fixed.stake_usd, 5, "a snapshot without equity_usd (paper) uses the fixed bankroll");
+
+  // Engine: the go-live preflight and every live fill refresh the reading; the snapshot carries it.
+  const live = new FakeLive({ balanceSol: 0.1495 });
+  const engine = mkEngine(dir, { envelope: env, mode: "paper", live, config: { reentryCooldownMs: 0 } });
+  let now = Date.now(); engine.clock = () => now;
+  try {
+    await engine.start({ reconcile: false });
+    assert.equal(engine.portfolioSnapshot().equity_usd, undefined, "paper venue: fixed bankroll");
+    engine.solPriceHint = 200;
+    const r = await engine.setVenueMode("pumpfun", "live", { override: true });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const snap = engine.portfolioSnapshot();
+    assert.equal(snap.equity_usd, +((0.1495 - 0.02) * 200).toFixed(2), "free SOL at the current price");
+    assert.equal(engine.status().bankroll.source, "wallet");
+    assert.equal(engine.status().bankroll.wallet.sol, 0.1495);
+    // A live buy: equity is free SOL plus what is open, and the wallet is re-read after the fill.
+    const before = live.calls.filter(c => c === "preflight").length;
+    await engine.enqueue(() => engine.onEvent(cand("MintW", now)));
+    const pos = engine.store.openPositions("pumpfun")[0];
+    assert.ok(pos && !pos.paper, "live position opened from the wallet bankroll");
+    assert.equal(pos.stake_usd, 5, "Kelly on $25.9 is $1.73, floored to the $5 minimum");
+    assert.ok(live.calls.filter(c => c === "preflight").length > before, "wallet re-read after the fill");
+    const withOpen = engine.portfolioSnapshot();
+    // The candidate carried the feed's SOL price (150), which is fresher than the 200 seeded above.
+    assert.equal(withOpen.equity_usd, +(((0.1495 - 0.02) * 150) + pos.notional_usd).toFixed(2));
+    // Stale reading: nothing is sized, and the sweep refreshes it.
+    now += 6 * 60_000;
+    assert.equal(engine.portfolioSnapshot().equity_reason, "WALLET_UNKNOWN");
+    await engine.sweep();
+    assert.equal(engine.portfolioSnapshot().equity_reason, undefined, "the sweep re-read the wallet");
+    assert.ok(engine.portfolioSnapshot().equity_usd > 0);
   } finally { await engine.stop(); }
 });

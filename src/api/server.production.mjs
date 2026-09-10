@@ -1572,7 +1572,10 @@ function extractQuickFeatures(t) {
   }
 
   // ── Mcap drop from peak ──
-  const peakMc = t.spark?.length > 0 ? Math.max(...t.spark) : t.mcapUsd;
+  // The sparkline prints one point per trade, so a single bot buy prints a spike nobody could have
+  // sold into. The peak is the second-highest print: a real top is printed more than once.
+  const sparkDesc = (t.spark || []).slice().sort((a, b) => b - a);
+  const peakMc = sparkDesc.length >= 3 ? sparkDesc[1] : (sparkDesc[0] || t.mcapUsd);
   const mcapDropRate = peakMc > 0 ? Math.max(0, (peakMc - (t.mcapUsd || 0)) / peakMc) : 0;
 
   // ── Holder concentration from trade data ──
@@ -1608,8 +1611,15 @@ function extractQuickFeatures(t) {
     (buys > 5 ? sameSizeBuys / buys : 0) * 0.5           // identical-size buy ratio
   );
 
-  // ── Volume manipulation: sell volume vs buy volume ratio ──
-  const sellBuyRatio = vol > 0 ? Math.min(1, sellVol / vol) : 0;
+  // ── Distribution: organic sell volume against organic buy volume ──
+  // t.volumeSol / t.sellVolumeSol include hub bots, which round-trip the curve within seconds and
+  // add equal buy and sell volume; that ratio sat near 1 for any token the bots touched and
+  // disqualified 86% of everything as "liquidity removal". Organic trades only, with the
+  // all-volume ratio kept for reference.
+  const orgBuySol = buyTrades.reduce((s, tr) => s + (tr.sol || 0), 0);
+  const orgSellSol = trades.filter(tr => tr.side === "sell").reduce((s, tr) => s + (tr.sol || 0), 0);
+  const sellBuyRatioAll = vol > 0 ? Math.min(1, sellVol / vol) : 0;
+  const sellBuyRatio = orgBuySol >= 0.5 ? Math.min(1, orgSellSol / orgBuySol) : sellBuyRatioAll;
 
   // ── Early dump: sells happening within first 2 minutes ──
   const earlyWindow = t.createdAt + 120000; // 2 minutes
@@ -1628,7 +1638,9 @@ function extractQuickFeatures(t) {
       if (firstBuy && (tr.time - firstBuy) < 60000) quickFlips++; // sold within 60s of buying
     }
   }
-  const quickFlipRate = buys > 3 ? Math.min(1, quickFlips / Math.max(1, ub) * 2) : 0;
+  // Share of organic buyer wallets that sold within 60s of their first buy. (The old form doubled
+  // flips over all unique buyers, hubs included, and fired on half of every token-snapshot.)
+  const quickFlipRate = buys > 3 ? Math.min(1, quickFlips / Math.max(1, walletBuys.size)) : 0;
 
   // ── Sparkline crash pattern: sharp spike then dump ──
   const spark = t.spark || [];
@@ -1900,6 +1912,7 @@ function extractQuickFeatures(t) {
     _rg_organicBuyers: walletBuys.size, // distinct non-hub buyer wallets behind the concentration figure
     rg_coordDumpScore: Math.min(1, coordDumps / 5),
     rg_liqRemovalSpeed: sellBuyRatio,
+    _rg_liqRemovalAll: sellBuyRatioAll, // hubs included, for calibration only
     // Wallet age: use cached on-chain age data if available, else fall back to sybil heuristic
     rg_walletAgeScore: t._walletAgeData ? t._walletAgeData.walletAgeScore : (1 - sybilScore),
     rg_sellWaveDetect: Math.min(1, maxSellBurst / 8),
