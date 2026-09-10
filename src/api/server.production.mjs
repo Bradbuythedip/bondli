@@ -849,7 +849,8 @@ async function fetchPumpFunMetadata(ca) {
       }
     });
     if (!r.ok) {
-      console.log(`[META] pump.fun API ${r.status} for ${ca.slice(0,8)}`);
+      // 404 is the normal answer for a mint pump.fun has not indexed yet; only other statuses matter.
+      if (r.status !== 404) console.log(`[META] pump.fun API ${r.status} for ${ca.slice(0,8)}`);
       return null;
     }
     const d = await r.json();
@@ -1253,7 +1254,7 @@ function processRadarMessage(data) {
       fetchTokenImage(mint, data.uri).catch(() => {});
     }
 
-    // Delayed image fallback: if token still has no image after 5s, try pump.fun API
+    // Delayed image fallback: if the on-chain uri gave no image, ask pump.fun once it has indexed the mint
     setTimeout(() => {
       const t2 = radar.tokens.get(mint);
       if (t2 && !t2.image) {
@@ -1263,7 +1264,7 @@ function processRadarMessage(data) {
           if (t3 && !t3.image) t3.image = meta.image;
         }).catch(() => {});
       }
-    }, 5000);
+    }, 30000);
 
     // Fallback: if WS didn't send name, try pump.fun API (may be blocked)
     if (!data.name) {
