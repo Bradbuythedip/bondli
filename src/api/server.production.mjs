@@ -1611,15 +1611,18 @@ function extractQuickFeatures(t) {
     (buys > 5 ? sameSizeBuys / buys : 0) * 0.5           // identical-size buy ratio
   );
 
-  // ── Distribution: organic sell volume against organic buy volume ──
-  // t.volumeSol / t.sellVolumeSol include hub bots, which round-trip the curve within seconds and
-  // add equal buy and sell volume; that ratio sat near 1 for any token the bots touched and
-  // disqualified 86% of everything as "liquidity removal". Organic trades only, with the
-  // all-volume ratio kept for reference.
+  // ── Distribution: the share of organic flow that is selling ──
+  // Two corrections to what this measured before. (1) t.volumeSol / t.sellVolumeSol include hub
+  // bots, which round-trip the curve within seconds and add equal buy and sell volume, so the
+  // figure sat near its ceiling for any token they touched. (2) It divided sell volume by BUY
+  // volume (t.volumeSol counts buys only), so the 0.65 threshold fired once sells reached 65% of
+  // buys, which is ordinary two-way flow. As a share of total flow, 0.65 means sells are nearly
+  // twice buys: someone is distributing. The old ratio is kept as _rg_liqRemovalAll.
   const orgBuySol = buyTrades.reduce((s, tr) => s + (tr.sol || 0), 0);
   const orgSellSol = trades.filter(tr => tr.side === "sell").reduce((s, tr) => s + (tr.sol || 0), 0);
   const sellBuyRatioAll = vol > 0 ? Math.min(1, sellVol / vol) : 0;
-  const sellBuyRatio = orgBuySol >= 0.5 ? Math.min(1, orgSellSol / orgBuySol) : sellBuyRatioAll;
+  const orgFlow = orgBuySol + orgSellSol;
+  const sellBuyRatio = orgFlow >= 0.5 ? orgSellSol / orgFlow : (vol + sellVol > 0 ? sellVol / (vol + sellVol) : 0);
 
   // ── Early dump: sells happening within first 2 minutes ──
   const earlyWindow = t.createdAt + 120000; // 2 minutes

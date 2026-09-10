@@ -7,6 +7,8 @@
 //   - the same with the three features recomputed the way the server computes them now
 //     (organic distribution ratio, organic quick-flip share, spike-immune mcap peak)
 //   - which single rule, if dropped, would let the most tokens through ("binding" rules)
+// Both columns are judged by the CURRENT rule table, so a rule change moves both; only the three
+// recomputed features differ between them.
 import { appendFileSync, readFileSync } from "node:fs";
 
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
@@ -56,8 +58,8 @@ const RULES = {
   TOO_YOUNG:            (t, q, c) => c.age < 0.5,
 };
 const MODERATE = (t, q) => [
-  q?.rg_devSellSpeed > 0.35, q?.rg_coordDumpScore > 0.3, q?._rg_sybilScore > 0.3, q?._rg_quickFlipRate > 0.2,
-  q?.rg_holderConcentration > 0.65, q?._rg_earlyDump > 0.3, q?.rg_mcapDropRate > 0.3, q?._rg_pumpDump > 0.35,
+  q?.rg_devSellSpeed > 0.35, q?.rg_coordDumpScore > 0.3 && q?.rg_sellWaveDetect > 0.3, q?._rg_sybilScore > 0.3, q?._rg_quickFlipRate > 0.2,
+  q?.rg_holderConcentration > 0.65 && (q?._rg_organicBuyers ?? 99) >= 8, q?._rg_earlyDump > 0.3, q?.rg_mcapDropRate > 0.3, q?._rg_pumpDump > 0.35,
   q?.ch_smoothGrind > 0.4, q?.ch_dipRatio < 0.08, q?._rg_zeroSellFlag > 0.5, q?._rg_buySellImbalance > 0.6,
   q?.ch_staircaseScore > 0.4, q?._rg_freshWalletRatio > 0.7, q?.ch_flatlineSpike > 0.3, t._artworkOriginal === false,
   q?._rg_velocityLinearity > 0.8, q?._rg_buyTimingRegularity > 0.5, q?._rg_singleWalletDominance > 0.5,
@@ -79,7 +81,8 @@ function recompute(t, q) {
   const buysT = trades.filter(tr => tr.side === "buy"), sellsT = trades.filter(tr => tr.side === "sell");
   const orgBuySol = buysT.reduce((s, tr) => s + (tr.sol || 0), 0), orgSellSol = sellsT.reduce((s, tr) => s + (tr.sol || 0), 0);
   const all = (t.volumeSol || 0) > 0 ? Math.min(1, (t.sellVolumeSol || 0) / t.volumeSol) : 0;
-  const liq = orgBuySol >= 0.5 ? Math.min(1, orgSellSol / orgBuySol) : all;
+  const flow = orgBuySol + orgSellSol, totalFlow = (t.volumeSol || 0) + (t.sellVolumeSol || 0);
+  const liq = flow >= 0.5 ? orgSellSol / flow : (totalFlow > 0 ? (t.sellVolumeSol || 0) / totalFlow : 0);
   const walletBuys = new Set(buysT.map(tr => tr.wallet).filter(Boolean));
   let quickFlips = 0; const firstBuy = new Map();
   for (const tr of trades) {
