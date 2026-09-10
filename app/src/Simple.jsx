@@ -21,38 +21,40 @@ const ago = ms => ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))}s` : ms < 
 const kfmt = n => n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(n >= 1e5 ? 0 : 1)}k` : `$${Math.round(n)}`;
 function Spark({ v, T, w = 72, h = 22 }) {
   const pts = (v || []).filter(x => x > 0);
-  if (pts.length < 2) return <svg width={w} height={h} />;
+  if (pts.length < 2) return <svg width={w} height={h} style={{ display: "block" }}><line x1="0" y1={h / 2} x2={w} y2={h / 2} stroke={T.bd} strokeWidth="1.5" /></svg>;
   const mn = Math.min(...pts), mx = Math.max(...pts), r = mx - mn || 1;
   const d = pts.map((y, i) => `${(i / (pts.length - 1)) * w},${h - 2 - ((y - mn) / r) * (h - 4)}`).join(" ");
   const up = pts[pts.length - 1] >= pts[0];
   return <svg width={w} height={h} style={{ display: "block" }}><polyline points={d} fill="none" stroke={up ? T.gn : T.rd} strokeWidth="1.5" strokeLinejoin="round" /></svg>;
 }
-const TAG = { hot: ["BUY ZONE", "gn"], live: ["scoring", "tx"], watching: ["watching", "ft"], rug: ["rug", "rd"], mayhem: ["mayhem, skipped", "ft"], copy: ["copy, skipped", "ft"] };
+// The bot's one reason per token, in plain words.
+const TAG = { hot: ["BUY ZONE", "gn"], close: ["almost", "yl"], weak: ["weak", "ft"], new: ["too new", "ft"], nobuyers: ["no buyers", "ft"], fewbuyers: ["few buyers", "ft"], small: ["too small", "ft"], rug: ["rug", "rd"], mayhem: ["mayhem", "ft"], copy: ["copy", "ft"] };
+const HUE = s => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
 function Live({ T }) {
   const [d, sD] = useState(null);
   useEffect(() => { let on = true; const poll = async () => { try { const r = await a.live(); if (on) sD(r); } catch {} }; poll(); const id = setInterval(poll, 3000); return () => { on = false; clearInterval(id); }; }, []);
   if (!d) return null;
   const now = d.ts || Date.now();
   const muted = { color: T.ft, fontSize: 12 };
-  return <div style={{ width: "100%", maxWidth: 440, marginTop: 28 }}>
+  return <div style={{ width: "100%", maxWidth: 560, marginTop: 32 }}>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
-      <span style={{ fontWeight: 800, display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: d.online ? T.gn : T.rd, animation: d.online ? "gp 2s infinite" : "none" }} />What the bot sees</span>
+      <span style={{ fontWeight: 800, fontSize: 17, display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: d.online ? T.gn : T.rd, animation: d.online ? "gp 2s infinite" : "none" }} />What the bot sees</span>
       <span style={muted}>{d.bots != null ? `${d.bots} bot${d.bots === 1 ? "" : "s"} trading` : ""}</span>
     </div>
     <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-      {[["launched", d.hour.launches, "tx"], ["buy zone", d.hour.hot, "gn"], ["mayhem", d.hour.mayhem, "ft"], ["copies", d.hour.copies, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 18, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
+      {[["launched", d.hour.launches, "tx"], ["buy zone", d.hour.hot, "gn"], ["mayhem", d.hour.mayhem, "ft"], ["copies", d.hour.copies, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 22, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
     </div>
-    <div style={{ ...muted, marginBottom: 6 }}>last hour · newest first</div>
+    <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between" }}><span>last hour · newest first</span><span>tap a token to open it on pump.fun</span></div>
     <div style={{ background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
-      {d.tokens.slice(0, 20).map(t => { const [label, c] = TAG[t.tag] || TAG.watching; const dim = t.tag === "mayhem" || t.tag === "copy"; return <div key={t.ca} style={{ display: "grid", gridTemplateColumns: "28px 1fr 72px 52px", gap: 10, alignItems: "center", padding: "7px 10px", borderTop: `1px solid ${T.bd}`, opacity: dim ? .45 : 1 }}>
-        <div style={{ width: 28, height: 28, borderRadius: 8, background: T.bg, overflow: "hidden" }}>{t.image && <img src={t.image} alt="" loading="lazy" style={{ width: 28, height: 28, objectFit: "cover" }} onError={e => { e.currentTarget.style.display = "none"; }} />}</div>
+      {d.tokens.slice(0, 25).map(t => { const [label, c] = TAG[t.tag] || TAG.weak; const dim = t.tag === "mayhem" || t.tag === "copy"; const initial = (t.ticker || t.name || "?").slice(0, 2).toUpperCase(); return <a key={t.ca} href={`https://pump.fun/coin/${t.ca}`} target="_blank" rel="noopener" style={{ display: "grid", gridTemplateColumns: "40px 1fr 100px 68px", gap: 12, alignItems: "center", padding: "10px 12px", borderTop: `1px solid ${T.bd}`, opacity: dim ? .45 : 1, color: "inherit", textDecoration: "none" }}>
+        <div style={{ width: 40, height: 40, borderRadius: 10, background: `hsl(${HUE(t.ca)} 30% 22%)`, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: M, fontWeight: 900, fontSize: 13, color: T.dm }}>{t.image ? <img src={t.image} alt="" loading="lazy" style={{ width: 40, height: 40, objectFit: "cover" }} onError={e => { e.currentTarget.replaceWith(document.createTextNode(initial)); }} /> : initial}</div>
         <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", gap: 6, alignItems: "baseline", minWidth: 0 }}><span style={{ fontWeight: 800, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name || t.ca.slice(0, 6)}</span><span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{t.ticker}</span></div>
-          <div style={{ ...muted, fontFamily: M, fontSize: 11 }}>{ago(now - t.createdAt)} · {kfmt(t.mcapUsd)} · {t.buyers} buyers{t.copies ? ` · ${t.copies} copies` : ""}</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}><span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name || t.ca.slice(0, 6)}</span><span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{t.ticker}</span></div>
+          <div style={{ ...muted, fontFamily: M, fontSize: 12, marginTop: 2 }}>{ago(now - t.createdAt)} · {kfmt(t.mcapUsd)} · {t.buyers} buyers{t.copies ? ` · ${t.copies} copies` : ""}</div>
         </div>
-        <Spark v={t.spark} T={T} />
-        <div style={{ textAlign: "right" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 15, color: t.score >= 60 ? T.gn : t.score >= 40 ? T.tx : T.ft }}>{dim ? "" : t.score}</div><div style={{ fontSize: 9, textTransform: "uppercase", letterSpacing: ".05em", color: T[c], whiteSpace: "nowrap" }}>{label}</div></div>
-      </div>; })}
+        <Spark v={t.spark} T={T} w={100} h={30} />
+        <div style={{ textAlign: "right" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 18, color: t.score >= 60 ? T.gn : t.score >= 40 ? T.tx : T.ft }}>{dim || !t.score ? "" : t.score}</div><div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: T[c], whiteSpace: "nowrap" }}>{label}</div></div>
+      </a>; })}
       {!d.tokens.length && <div style={{ ...muted, padding: 14, textAlign: "center" }}>waiting for the next launch…</div>}
     </div>
   </div>;
