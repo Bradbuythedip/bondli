@@ -3,7 +3,7 @@
 // does is shown in its own words; nothing is explained in prose that the narration already shows.
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { TC, D, L, css } from "./lib/theme.js";
-import { M, S } from "./lib/constants.js";
+import { M, S, imgUrl } from "./lib/constants.js";
 import a from "./lib/api-client.js";
 
 const FEE_PCT = 5;
@@ -36,6 +36,14 @@ function Spark({ v, T, w = 72, h = 22 }) {
 // The bot's one reason per token, in plain words.
 const TAG = { hot: ["BUY ZONE", "gn"], close: ["almost", "yl"], weak: ["weak", "ft"], new: ["too new", "ft"], nobuyers: ["no buyers", "ft"], fewbuyers: ["few buyers", "ft"], small: ["too small", "ft"], rug: ["rug", "rd"], mayhem: ["mayhem", "ft"], copy: ["copy", "ft"] };
 const HUE = s => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+// A token picture through the proxy: lettered tile until it lands, blur-in, three retries, then the tile stays.
+function TokenImg({ src, ca, label, size, T }) {
+  const [tries, sTries] = useState(0); const [ok, sOk] = useState(true); const [loaded, sLoaded] = useState(false);
+  useEffect(() => { sTries(0); sOk(true); sLoaded(false); }, [src]);
+  const tile = { width: size, height: size, borderRadius: Math.round(size / 4), background: `hsl(${HUE(ca)} 30% 22%)`, overflow: "hidden", position: "relative", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: M, fontWeight: 900, fontSize: Math.round(size / 3), color: T.dm };
+  if (!src || !ok) return <div style={tile}>{label}</div>;
+  return <div style={tile}>{!loaded && label}<img key={tries} src={imgUrl(src) + (tries ? `&r=${tries}` : "")} alt="" loading="lazy" style={{ position: "absolute", inset: 0, width: size, height: size, objectFit: "cover", filter: loaded ? "blur(0)" : "blur(10px)", opacity: loaded ? 1 : 0, transition: "filter .3s, opacity .3s" }} onLoad={() => sLoaded(true)} onError={() => { if (tries < 3) setTimeout(() => sTries(t => t + 1), 1500 * (tries + 1)); else sOk(false); }} /></div>;
+}
 function Live({ T }) {
   const [d, sD] = useState(null);
   useEffect(() => { let on = true; const poll = async () => { try { const r = await a.live(); if (on) sD(r); } catch {} }; poll(); const id = setInterval(poll, 3000); return () => { on = false; clearInterval(id); }; }, []);
@@ -52,8 +60,8 @@ function Live({ T }) {
     </div>
     <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between" }}><span>last hour · newest first</span><span>tap a token to open it on pump.fun</span></div>
     <div style={{ background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
-      {d.tokens.slice(0, 25).map(t => { const [label, c] = TAG[t.tag] || TAG.weak; const dim = t.tag === "mayhem" || t.tag === "copy"; const initial = (t.ticker || t.name || "?").slice(0, 2).toUpperCase(); return <a key={t.ca} href={`https://pump.fun/coin/${t.ca}`} target="_blank" rel="noopener" style={{ display: "grid", gridTemplateColumns: "40px 1fr 100px 68px", gap: 12, alignItems: "center", padding: "10px 12px", borderTop: `1px solid ${T.bd}`, opacity: dim ? .45 : 1, color: "inherit", textDecoration: "none" }}>
-        <div style={{ width: 40, height: 40, borderRadius: 10, background: `hsl(${HUE(t.ca)} 30% 22%)`, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: M, fontWeight: 900, fontSize: 13, color: T.dm }}>{t.image ? <img src={t.image} alt="" loading="lazy" style={{ width: 40, height: 40, objectFit: "cover" }} onError={e => { e.currentTarget.replaceWith(document.createTextNode(initial)); }} /> : initial}</div>
+      {d.tokens.slice(0, 25).map(t => { const [label, c] = TAG[t.tag] || TAG.weak; const dim = t.tag === "mayhem" || t.tag === "copy"; const initial = (t.ticker || t.name || "?").slice(0, 2).toUpperCase(); return <a key={t.ca} href={`https://pump.fun/coin/${t.ca}`} target="_blank" rel="noopener" style={{ display: "grid", gridTemplateColumns: "56px 1fr 100px 68px", gap: 12, alignItems: "center", padding: "9px 12px", borderTop: `1px solid ${T.bd}`, opacity: dim ? .45 : 1, color: "inherit", textDecoration: "none" }}>
+        <TokenImg src={t.image} ca={t.ca} label={initial} size={56} T={T} />
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}><span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name || t.ca.slice(0, 6)}</span><span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{t.ticker}</span></div>
           <div style={{ ...muted, fontFamily: M, fontSize: 12, marginTop: 2 }}>{ago(now - t.createdAt)} · {kfmt(t.mcapUsd)} · {t.buyers} buyers{t.copies ? ` · ${t.copies} copies` : ""}</div>
