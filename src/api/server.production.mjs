@@ -7545,6 +7545,49 @@ app.get("/api/radar", (req, res) => {
   res.json({ tabs: radar.tabs, poolSize: radar.poolSize, online: radar.online, solPrice: solUsdPrice, gradMc: gradMcUsd() });
 });
 
+// ═══ VELOCITY — scored radar for external decision engines ═══
+// Returns token + quick features + scores + dynamics: exactly the four objects
+// the auto-ape gates consume, so an external pipeline reuses this scorer as-is.
+// ?min=40 score floor, ?limit=60, ?ca=a,b,c to fetch specific tokens regardless of score.
+app.get("/api/radar/scored", (req, res) => {
+  const min = Math.max(0, parseInt(req.query.min || "40") || 0);
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || "60") || 60));
+  const only = req.query.ca ? String(req.query.ca).split(",").map(s => s.trim()).filter(Boolean) : null;
+  const now = Date.now();
+  const source = only ? only.map(ca => radar.tokens.get(ca)).filter(Boolean) : [...radar.tokens.values()];
+  const rows = [];
+  for (const t of source) {
+    if (!only && (t._apeScore || 0) < min) continue;
+    let qf = null, dyn = null;
+    try { qf = extractQuickFeatures(t); } catch {}
+    try { dyn = scoreDynamics.get(t.ca) || null; } catch {}
+    const { uniqueBuyers, trades, spark, _bradEval, ...rest } = t;
+    const lastTrade = trades?.length ? trades[trades.length - 1] : null;
+    rows.push({
+      token: {
+        ...rest,
+        uniqueBuyers: uniqueBuyers?.size || 0,
+        trades: (trades || []).slice(-60),
+        spark: (spark || []).slice(-40),
+        _bradEval: _bradEval ? { action: _bradEval.action, confidence: _bradEval.confidence } : undefined,
+      },
+      qf,
+      dynamics: dyn,
+      scores: {
+        apeScore: t._apeScore || 0,
+        scoreTimestamp: now,
+        pricePhase: t._pricePhase,
+        buyVelTrend: t._buyVelTrend,
+        rugFlagCount: t._rugFlags?.length || 0,
+        bradConfidence: _bradEval?.confidence,
+      },
+      t_venue: lastTrade?.time || t.createdAt || now,
+    });
+  }
+  rows.sort((a, b) => (b.scores.apeScore || 0) - (a.scores.apeScore || 0));
+  res.json({ ts: now, solPrice: solUsdPrice, gradMc: gradMcUsd(), count: rows.length, tokens: rows.slice(0, limit) });
+});
+
 app.get("/api/radar/token/:ca", (req, res) => {
   const token = radar.tokens.get(req.params.ca);
   if (!token) return res.status(404).json({ error: "Token not in radar" });
