@@ -67,7 +67,7 @@ export class PumpfunFeed extends Feed {
     wsFactory = url => new globalThis.WebSocket(url),
     ...rest
   } = {}) {
-    super({ venue: "pumpfun", name: "pumpfun-feed", staleAfterMs: rest.staleAfterMs ?? 6_000, latencyBoundMs: rest.latencyBoundMs ?? 500, clock: rest.clock });
+    super({ venue: "pumpfun", name: "pumpfun-feed", staleAfterMs: rest.staleAfterMs ?? Math.max(6_000, 3 * pollMs), latencyBoundMs: rest.latencyBoundMs ?? 500, clock: rest.clock });
     this.bondliUrl = bondliUrl.replace(/\/$/, "");
     this.minScore = minScore;
     this.pollMs = pollMs;
@@ -94,7 +94,8 @@ export class PumpfunFeed extends Feed {
     this.solPrice = Number(json.solPrice) || this.solPrice;
     const rows = parseScoredResponse(json);
     for (const r of rows) this.emitEvent({ kind: "candidate", id: r.id, payload: r.payload, t_venue: r.t_venue });
-    this.markHealth(true, `poll ok (${rows.length})`);
+    this.touch();
+    this.markHealth(true, `poll ok (${rows.length} of ${json.count ?? "?"} scored)`);
     return rows.length;
   }
 

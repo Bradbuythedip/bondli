@@ -133,7 +133,7 @@ export class PolymarketFeed extends Feed {
     wsFactory = url => new globalThis.WebSocket(url),
     ...rest
   } = {}) {
-    super({ venue: "polymarket", name: "polymarket-feed", staleAfterMs: rest.staleAfterMs ?? 5_000, latencyBoundMs: rest.latencyBoundMs ?? 250, clock: rest.clock });
+    super({ venue: "polymarket", name: "polymarket-feed", staleAfterMs: rest.staleAfterMs ?? Math.max(15_000, 2 * marketPollMs), latencyBoundMs: rest.latencyBoundMs ?? 250, clock: rest.clock });
     this.gammaUrl = gammaUrl.replace(/\/$/, "");
     this.clobWsUrl = clobWsUrl;
     this.marketPollMs = marketPollMs;
@@ -168,6 +168,7 @@ export class PolymarketFeed extends Feed {
     }
     await this.pollGroups();
     this._subscribeAll();
+    this.touch();
     this.markHealth(true, `markets ${n}`);
     return n;
   }
@@ -202,6 +203,7 @@ export class PolymarketFeed extends Feed {
 
   async pollFacts() {
     let n = 0;
+    if (this.factSources.length) this.touch();
     for (const src of this.factSources) {
       const facts = await src.read();
       for (const f of facts) {
@@ -235,9 +237,14 @@ export class PolymarketFeed extends Feed {
     try {
       const ws = this.wsFactory(this.clobWsUrl);
       this._ws = ws;
-      ws.onopen = () => { this._subscribed.clear(); this._subscribeAll(); this.markHealth(true, "clob ws open"); };
-      ws.onmessage = ev => this.handleWsMessage(ev.data);
-      ws.onclose = () => { this._ws = null; this.markHealth(false, "clob ws closed"); if (this.running) this._timers.push(setTimeout(() => this._connect(), 3_000)); };
+      ws.onopen = () => {
+        this._subscribed.clear(); this._subscribeAll(); this.markHealth(true, "clob ws open");
+        // The CLOB server drops idle sockets; it expects a PING text frame about every 10s.
+        this._ping = setInterval(() => { try { if (ws.readyState === 1) ws.send("PING"); } catch {} }, 10_000);
+        this._ping.unref?.();
+      };
+      ws.onmessage = ev => { if (ev.data === "PONG") { this.touch(); return; } this.handleWsMessage(ev.data); };
+      ws.onclose = () => { clearInterval(this._ping); this._ws = null; this.markHealth(false, "clob ws closed"); if (this.running) this._timers.push(setTimeout(() => this._connect(), 3_000)); };
       ws.onerror = () => {};
     } catch {
       this._timers.push(setTimeout(() => this._connect(), 10_000));
@@ -263,6 +270,7 @@ export class PolymarketFeed extends Feed {
     this.running = false;
     for (const t of this._timers) clearTimeout(t);
     this._timers = [];
+    clearInterval(this._ping);
     try { this._ws?.close(); } catch {}
     this._ws = null;
     this.markHealth(false, "stopped");
