@@ -43,7 +43,7 @@ export function generateChallenge(wallet) {
   const message = `Sign this message to verify your wallet on BONDLI.\n\nNonce: ${nonce}\nWallet: ${wallet}\nTimestamp: ${Date.now()}`;
   // Store nonce with 5-minute expiry
   nonces.set(wallet, { nonce, message, createdAt: Date.now() });
-  setTimeout(() => nonces.delete(wallet), 5 * 60 * 1000);
+  setTimeout(() => nonces.delete(wallet), 5 * 60 * 1000).unref?.();
   return { message, nonce };
 }
 
@@ -106,6 +106,22 @@ export function requireStrictAuth(req, res, next) {
 
   req.user = payload;
   next();
+}
+
+// ── Middleware: the caller must have signed in as the wallet the request acts on ──
+// For routes that read a key, move money, or start a trader. No X-Wallet fallback: a header
+// anyone can type is not ownership. An operator with ADMIN_SECRET may act for support.
+export function makeRequireOwner({ adminSecret = process.env.ADMIN_SECRET || null } = {}) {
+  return function requireOwner(req, res, next) {
+    const target = req.body?.wallet || req.query?.wallet || req.params?.wallet || null;
+    if (adminSecret && req.headers["x-admin-secret"] === adminSecret) { req.user = { wallet: target, admin: true, verified: true }; return next(); }
+    const auth = req.headers.authorization;
+    const payload = auth && auth.startsWith("Bearer ") ? verifyJWT(auth.slice(7)) : null;
+    if (!payload || !payload.verified || !payload.wallet) return res.status(401).json({ error: "Sign in with your wallet first", auth_required: true });
+    if (target && payload.wallet !== target) return res.status(403).json({ error: "That wallet is not the one you signed in with" });
+    req.user = payload;
+    next();
+  };
 }
 
 export { nonces, signJWT, verifyJWT, JWT_SECRET };

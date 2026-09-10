@@ -23,7 +23,7 @@
     "deploy:logs": "./deploy/deploy.sh logs",
     "generate:secrets": "node -e \"const c=require('crypto');console.log('JWT_SECRET='+c.randomBytes(32).toString('hex'));console.log('API_SECRET='+c.randomBytes(32).toString('hex'));console.log('FEE_SALT='+c.randomBytes(8).toString('hex'));console.log('REDIS_PASSWORD='+c.randomBytes(24).toString('hex'))\"",
     "velocity": "node src/velocity/index.mjs",
-    "test": "node --test --test-timeout=60000 tests/velocity/*.test.mjs tests/radar/*.test.mjs"
+    "test": "node --test --test-timeout=60000 tests/velocity/*.test.mjs tests/radar/*.test.mjs tests/api/*.test.mjs"
   },
   "dependencies": {
     "alchemy-sdk": "^3.4.0",
