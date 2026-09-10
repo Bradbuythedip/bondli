@@ -8,6 +8,7 @@
 //   velocity venue <name> off|paper|live set a venue mode (live goes through the gate)
 //   velocity promote <venue>             show the paper-to-live checklist, promote if green
 //   velocity why <id|last|venue last>    the full trail of one decision
+import "dotenv/config"; // the trader reads the same .env as the bondli server (MASTER_SEED, RPC_URL, PUMPPORTAL_API_KEY)
 import fs from "node:fs";
 import path from "node:path";
 import { validateRisk } from "./core/risk.mjs";

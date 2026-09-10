@@ -65,6 +65,8 @@ export class PolymarketLiveRouter extends Router {
   }
 
   async init() {
+    if (this.privateKey == null) this.privateKey = process.env.POLYMARKET_PRIVATE_KEY;
+    if (this.funder == null) this.funder = process.env.POLYMARKET_FUNDER;
     if (!this.privateKey) throw new Error("polymarket live router needs POLYMARKET_PRIVATE_KEY");
     let clob, ethers;
     try { clob = await import("@polymarket/clob-client"); } catch { throw new Error("polymarket live router needs the @polymarket/clob-client package: npm install @polymarket/clob-client ethers"); }

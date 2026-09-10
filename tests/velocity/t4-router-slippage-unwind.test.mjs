@@ -115,3 +115,17 @@ test("T4: live pump.fun router builds the PumpPortal request bondli itself uses,
   const p = await poor.submit({ id: "o2", instrument: "MintZ", stake_usd: 5, max_slippage_bps: 300, reference: { vSolInBondingCurve: 30, mcapUsd: 4500, solPrice: 100 } });
   assert.equal(p.failure.code, "INSUFFICIENT_SOL");
 });
+
+test("T4: live routers resolve keys at init, so a key loaded after construction is still found", async () => {
+  const had = process.env.MASTER_SEED;
+  delete process.env.MASTER_SEED;
+  try {
+    const r = new PumpfunLiveRouter({});
+    process.env.MASTER_SEED = "x"; // arrives after construction, as with dotenv loaded by the entrypoint
+    await assert.rejects(() => r.init(), (err) => !/MASTER_SEED/.test(err.message), "the key was seen; only the fake value fails");
+    const explicit = new PumpfunLiveRouter({ secret: "" });
+    await assert.rejects(() => explicit.init(), /MASTER_SEED/, "an explicit empty key is not silently replaced");
+  } finally {
+    if (had == null) delete process.env.MASTER_SEED; else process.env.MASTER_SEED = had;
+  }
+});
