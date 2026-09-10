@@ -83,10 +83,13 @@ reconciliation. `weights/` every learner version. `heartbeat`, `HALT`.
 }
 ```
 
-pump.fun needs bondli's server running (it exposes `GET /api/radar/scored`),
-and bondli needs `PUMPPORTAL_API_KEY` in `.env`: PumpPortal only delivers trade
-events to a connection with an API key whose wallet holds at least 0.02 SOL.
-Without trades no token can score. Get the key at https://pumpportal.fun.
+pump.fun needs bondli's server running (it exposes `GET /api/radar/scored`).
+Trades reach bondli's radar in one of two ways, set by `RADAR_TRADE_SOURCE` in
+`.env`: `onchain` decodes pump.fun trades from the Solana program logs for free
+(default when no key is set, recommended), or PumpPortal's keyed stream, which
+is metered at about 0.01 SOL per 10,000 events and refuses without a funded key.
+Leave the feed's `pumpportal` option off: bondli's scored endpoint already carries
+the trades, and a second keyed connection would be billed too.
 Polymarket facts come from sources you name; a file source is a JSON array of
 `{ "conditionId", "outcome", "source", "confidence", "t_fact" }`. The edge only
 acts when the market's own rules name the same source.

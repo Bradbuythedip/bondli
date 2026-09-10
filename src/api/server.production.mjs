@@ -39,6 +39,7 @@ import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculate
 import CONFIG from "../engine/config.mjs";
 import { smartSend, getOptimalPriorityFee } from "../engine/rpc-enhanced.mjs";
 import { MemeIntelligence, ScoreDynamics, loraClient } from "../engine/meme-intelligence.mjs";
+import { startOnchainTrades } from "./radar-onchain.mjs";
 import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
 import { XSocialIntel } from "../engine/x-social-intel.mjs";
 import { MetaTracker } from "../engine/meta-engine.mjs";
@@ -921,6 +922,7 @@ function connectPumpPortal() {
     radar.ws.on("open", () => {
       console.log("[RADAR] PumpPortal WS connected");
       radar.reconnects = 0;
+      radar._connectedAt = Date.now();
       // Subscribe to new token creations (streams every create event)
       radar.ws.send(JSON.stringify({ method: "subscribeNewToken" }));
       // Subscribe to graduation/migration events
@@ -939,11 +941,13 @@ function connectPumpPortal() {
         if (data.txType === "create") st.create++;
         else if (data.txType === "buy" || data.txType === "sell") {
           st.trade++;
+          radar._lastPortalTradeAt = Date.now();
           if (st.tradeSamples < 3) { st.tradeSamples++; console.log(`[RADAR] trade sample:`, JSON.stringify(data).slice(0, 400)); }
         } else {
           st.other++;
-          const msg = typeof data.message === "string" ? data.message : "";
-          if (/only available when connecting with an API key/i.test(msg)) {
+          const msg = String(data.message || data.errors || "");
+          if (/only available when connecting with an API key|Minimum balance not met/i.test(msg)) {
+            radar._refusedAt = Date.now();
             if (!radar._tradeSubsRefused) {
               radar._tradeSubsRefused = true;
               console.error(`\n[RADAR] ══════════════════════════════════════════════════════════════════\n[RADAR] PumpPortal refused trade subscriptions: ${msg}\n[RADAR] Without trades no token can score and nothing will ever be bought.\n[RADAR] Fix: 1) https://pumpportal.fun -> Generate API key  2) send that key's wallet >= 0.02 SOL\n[RADAR]      3) add PUMPPORTAL_API_KEY=<key> to .env  4) restart this server\n[RADAR] ${PUMPPORTAL_API_KEY ? "A key IS set: check that its wallet holds >= 0.02 SOL." : "No PUMPPORTAL_API_KEY is set right now."}\n[RADAR] ══════════════════════════════════════════════════════════════════\n`);
@@ -953,12 +957,17 @@ function connectPumpPortal() {
           }
         }
         if (Date.now() - st.since >= 60000) {
-          console.log(`[RADAR] stats/min: creates ${st.create} trades ${st.trade} other ${st.other} | subscribed ${radar.subscribedTokens.size} | tokens ${radar.tokens.size} | scored>0 ${[...radar.tokens.values()].filter(t => (t._apeScore || 0) > 0).length} | hubs ${radar.hubs.size}`);
+          console.log(`[RADAR] stats/min: creates ${st.create} trades ${st.trade} other ${st.other} | subscribed ${radar.subscribedTokens.size} | tokens ${radar.tokens.size} | scored>0 ${[...radar.tokens.values()].filter(t => (t._apeScore || 0) > 0).length} | hubs ${radar.hubs.size} | dup ${st.dup || 0} | src ${radar._tradeSource}${st.onchain ? " (onchain " + st.onchain + ")" : ""} | pumpportal est ${(((st.trade - (st.onchain || 0)) * 1440) / 10000 * 0.01).toFixed(2)} SOL/day`);
           if (st.trade === 0 && radar.subscribedTokens.size > 0) console.warn(`[RADAR] WARNING: ${radar.subscribedTokens.size} tokens subscribed but zero trade messages in the last minute`);
-          st.create = 0; st.trade = 0; st.other = 0; st.since = Date.now();
+          st.create = 0; st.trade = 0; st.other = 0; st.dup = 0; st.onchain = 0; st.since = Date.now();
         }
         processRadarMessage(data);
-      } catch {}
+      } catch (e) {
+        if (!radar._lastHandlerErr || Date.now() - radar._lastHandlerErr > 60000) {
+          radar._lastHandlerErr = Date.now();
+          console.error("[RADAR] message handler error:", e.message);
+        }
+      }
     });
 
     radar.ws.on("close", () => {
@@ -988,7 +997,12 @@ const SUB_FLUSH_MS = 2000;        // queued mints go out together at most this o
 const SUB_RESYNC_MS = 20000;      // full key list re-sent this often
 const SUB_CHUNK = 200;            // keys per message
 radar._pendingSubs = new Set();
+radar._pendingUnsubs = new Set();
 radar._lastResync = 0;
+function forgetTokenSubscription(mint) {
+  if (radar.subscribedTokens.delete(mint)) radar._pendingUnsubs.add(mint);
+  radar._pendingSubs.delete(mint);
+}
 
 function subscribeToToken(mint) {
   if (!mint || radar.subscribedTokens.has(mint) || radar._pendingSubs.has(mint)) return;
@@ -1018,8 +1032,20 @@ function sendSubscribeKeys(keys, why) {
 
 function flushSubscriptions() {
   if (!radar.ws || radar.ws.readyState !== 1) return;
-  if (radar._tradeSubsRefused) return; // PumpPortal refused without an API key; retried after reconnect
+  if (tradeSourceMode() === "onchain") return; // forced on-chain: never pay PumpPortal for trades
+  if (radar._tradeSubsRefused) {
+    // Refused (no key, or the key's wallet ran dry). Retry every 5 minutes so a top-up recovers without a restart.
+    if (Date.now() - (radar._refusedAt || 0) < 5 * 60_000) return;
+    console.log("[RADAR] retrying PumpPortal trade subscriptions");
+    resubscribeAllTokens();
+    return;
+  }
   const now = Date.now();
+  if (radar._pendingUnsubs.size > 0) {
+    const keys = [...radar._pendingUnsubs];
+    radar._pendingUnsubs.clear();
+    for (let i = 0; i < keys.length; i += SUB_CHUNK) radar.ws.send(JSON.stringify({ method: "unsubscribeTokenTrade", keys: keys.slice(i, i + SUB_CHUNK) }));
+  }
   if (radar._pendingSubs.size > 0) {
     const keys = [...radar._pendingSubs];
     radar._pendingSubs.clear();
@@ -1028,10 +1054,46 @@ function flushSubscriptions() {
   }
   if (now - radar._lastResync >= SUB_RESYNC_MS && radar.subscribedTokens.size > 0) {
     radar._lastResync = now;
-    sendSubscribeKeys([...radar.subscribedTokens], "resync");
+    sendSubscribeKeys([...radar.subscribedTokens].filter(k => radar.tokens.has(k)), "resync");
   }
 }
 setInterval(flushSubscriptions, SUB_FLUSH_MS);
+
+// ═══ TRADE SOURCE — PumpPortal (keyed, metered) or on-chain logsSubscribe (free) ═══
+// PumpPortal meters its trade stream (about 0.01 SOL per 10,000 events) and refuses
+// without a funded key. The on-chain stream decodes the same trades from the
+// pump.fun program logs on any Solana RPC for free. Modes (RADAR_TRADE_SOURCE):
+//   onchain    — never subscribe to PumpPortal trades (default when no API key is set)
+//   pumpportal — PumpPortal only
+//   auto       — PumpPortal, falling back to on-chain when refused or silent for 90s (default with a key)
+function tradeSourceMode() {
+  return (process.env.RADAR_TRADE_SOURCE || (PUMPPORTAL_API_KEY ? "auto" : "onchain")).toLowerCase();
+}
+radar._tradeSource = "pumpportal";
+radar._lastPortalTradeAt = 0;
+radar._onchain = null;
+function onchainForward(msg) {
+  if (radar._tradeSource !== "onchain" || !radar.tokens.has(msg.mint)) return; // radar.tokens IS the subscription filter
+  const st = radar._msgStats;
+  if (st) { st.trade++; st.onchain = (st.onchain || 0) + 1; }
+  processRadarMessage(msg);
+}
+function chooseTradeSource() {
+  const forced = tradeSourceMode();
+  const lastSignal = Math.max(radar._lastPortalTradeAt || 0, radar._connectedAt || 0);
+  const portalDead = radar._tradeSubsRefused || (radar.subscribedTokens.size > 0 && Date.now() - lastSignal > 90_000);
+  const want = forced === "onchain" ? "onchain" : forced === "pumpportal" ? "pumpportal" : portalDead ? "onchain" : "pumpportal";
+  if (want === radar._tradeSource && (want !== "onchain" || radar._onchain)) return;
+  radar._tradeSource = want;
+  console.warn(`[RADAR] trade source -> ${want}${forced === "auto" ? (radar._tradeSubsRefused ? " (PumpPortal refused trade subscriptions)" : portalDead ? " (no PumpPortal trade for 90s)" : " (PumpPortal trades resumed)") : " (" + forced + ")"}`);
+  if (want === "onchain" && !radar._onchain) {
+    try { radar._onchain = startOnchainTrades({ rpcUrl: process.env.RADAR_STREAM_RPC_URL || "https://api.mainnet-beta.solana.com", onTrade: onchainForward }); }
+    catch (e) { console.error("[RADAR] onchain stream failed to start:", e.message); }
+  }
+  if (want === "pumpportal" && radar._onchain) { radar._onchain.stop().catch(() => {}); radar._onchain = null; }
+}
+setInterval(chooseTradeSource, 15_000);
+setTimeout(chooseTradeSource, 3_000);
 
 // After (re)connect, every token still on the radar must be subscribed again.
 function resubscribeAllTokens() {
@@ -1174,7 +1236,7 @@ function processRadarMessage(data) {
       const entries = [...radar.tokens.entries()].sort((a, b) => a[1].createdAt - b[1].createdAt);
       const toRemove = entries.slice(0, 50);
       for (const [ca] of toRemove) {
-        radar.tokens.delete(ca);
+        radar.tokens.delete(ca); forgetTokenSubscription(ca);
         // Don't bother unsubscribing — they'll be cleaned up on reconnect
       }
     }
@@ -1195,6 +1257,14 @@ function processRadarMessage(data) {
 
   // ═══ TRADE EVENT (buy/sell) ═══
   if (data.txType === "buy" || data.txType === "sell") {
+    // Dedup by signature+mint: the 20s resync and a source switch can both deliver a trade twice.
+    if (data.signature) {
+      radar._seenSigs = radar._seenSigs || new Set();
+      const key = data.signature + mint;
+      if (radar._seenSigs.has(key)) { if (radar._msgStats) radar._msgStats.dup = (radar._msgStats.dup || 0) + 1; return; }
+      radar._seenSigs.add(key);
+      if (radar._seenSigs.size > 20000) { let n = 0; for (const k of radar._seenSigs) { radar._seenSigs.delete(k); if (++n >= 10000) break; } }
+    }
     let token = radar.tokens.get(mint);
 
     // Auto-create if we missed the create event
@@ -2168,7 +2238,7 @@ setInterval(() => {
           redis.lTrim("rug:patterns", 0, 999).catch(() => {});
         }
       } catch {}
-      radar.tokens.delete(ca);
+      radar.tokens.delete(ca); forgetTokenSubscription(ca);
     }
   }
 
@@ -10638,7 +10708,7 @@ server.listen(PORT, async () => {
   console.log(`  RPC: ${RPC_URL.slice(0, 40)}...`);
   console.log(`  Redis: ${redis ? "connected" : "in-memory"}`);
   console.log(`  SOL: $${solUsdPrice}`);
-  console.log(`  Radar: PumpPortal WS connecting... (API key ${PUMPPORTAL_API_KEY ? "set" : "MISSING: trades will be refused, set PUMPPORTAL_API_KEY"})`);
+  console.log(`  Radar: PumpPortal WS connecting... (API key ${PUMPPORTAL_API_KEY ? "set" : "not set"}; trade source ${tradeSourceMode()})`);
 
   // LoRA GPU scorer: check if local inference server is running
   loraClient.checkHealth().then(ok => {
