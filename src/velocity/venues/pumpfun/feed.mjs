@@ -62,7 +62,7 @@ export class PumpfunFeed extends Feed {
     pollMs = 2_000,
     tickMs = 1_000,
     pumpportal = false,
-    pumpportalUrl = "wss://pumpportal.fun/api/data",
+    pumpportalUrl = process.env.PUMPPORTAL_API_KEY ? `wss://pumpportal.fun/api/data?api-key=${encodeURIComponent(process.env.PUMPPORTAL_API_KEY.trim())}` : "wss://pumpportal.fun/api/data",
     fetchImpl = globalThis.fetch,
     wsFactory = url => new globalThis.WebSocket(url),
     ...rest
