@@ -39,6 +39,7 @@ import { createToken } from "../engine/token-creator.mjs";
 import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateFee, calculateReferralSplit, getEffectiveFeeRate, recordTradeOutcome, generateWinCard, getTraderStats, addShareCredit, restoreTraderStats, PLATFORM_WALLET, NETWORK_FEE_PCT, PROFIT_LADDER } from "../engine/fee-engine.mjs";
 import { makeVault } from "../middleware/keyvault.mjs";
 import { detectMayhem, PUMP_PROGRAM as PUMP_PROGRAM_ID } from "./mayhem.mjs";
+import { CopycatIndex } from "./copycat.mjs";
 import { VelocityHub, mountVelocityRoutes } from "../velocity/hub.mjs";
 import { PumpfunFeed } from "../velocity/venues/pumpfun/feed.mjs";
 import { generateChallenge, verifySolanaSignature, issueAuthToken, makeRequireOwner, nonces as authNonces } from "../middleware/wallet-auth.mjs";
@@ -984,7 +985,7 @@ function connectPumpPortal() {
           }
         }
         if (Date.now() - st.since >= 60000) {
-          console.log(`[RADAR] stats/min: creates ${st.create} trades ${st.trade} other ${st.other} | subscribed ${radar.subscribedTokens.size} | tokens ${radar.tokens.size} | scored>0 ${[...radar.tokens.values()].filter(t => (t._apeScore || 0) > 0).length} | mayhem ${[...radar.tokens.values()].filter(t => t._mayhem).length} | hubs ${radar.hubs.size} | dup ${st.dup || 0} | src ${radar._tradeSource}${st.onchain ? " (onchain " + st.onchain + ")" : ""} | pumpportal est ${(((st.trade - (st.onchain || 0)) * 1440) / 10000 * 0.01).toFixed(2)} SOL/day`);
+          console.log(`[RADAR] stats/min: creates ${st.create} trades ${st.trade} other ${st.other} | subscribed ${radar.subscribedTokens.size} | tokens ${radar.tokens.size} | scored>0 ${[...radar.tokens.values()].filter(t => (t._apeScore || 0) > 0).length} | mayhem ${[...radar.tokens.values()].filter(t => t._mayhem).length} | copycats ${[...radar.tokens.values()].filter(t => t._copyOf).length} | hubs ${radar.hubs.size} | dup ${st.dup || 0} | src ${radar._tradeSource}${st.onchain ? " (onchain " + st.onchain + ")" : ""} | pumpportal est ${(((st.trade - (st.onchain || 0)) * 1440) / 10000 * 0.01).toFixed(2)} SOL/day`);
           if (st.trade === 0 && radar.subscribedTokens.size > 0) console.warn(`[RADAR] WARNING: ${radar.subscribedTokens.size} tokens subscribed but zero trade messages in the last minute`);
           st.create = 0; st.trade = 0; st.other = 0; st.dup = 0; st.onchain = 0; st.since = Date.now();
         }
@@ -1034,6 +1035,18 @@ function forgetTokenSubscription(mint) {
 // ═══ Mayhem: mark and forget. A marked token is filtered out of the base filter, the scored feed
 // and the velocity edge, so nothing downstream ever spends a cycle on it. ═══
 radar._mayhemProbed = new Set();
+// ═══ Copycat launches: a same-name launch minutes after another is a billboard for the first.
+// The copy is never a candidate (_copyOf); the original carries _copies for the scorer. ═══
+radar._copycats = new CopycatIndex({ windowMs: (parseInt(process.env.COPYCAT_WINDOW_MIN || "60") || 60) * 60_000 });
+radar._copycatLogged = 0;
+function noteCopycat(token) {
+  const hit = radar._copycats.note({ ca: token.ca, name: token.name, ticker: token.ticker, createdAt: token.createdAt });
+  if (!hit) return;
+  token._copyOf = hit.copyOf; token._apeScore = 0;
+  const orig = radar.tokens.get(hit.copyOf);
+  if (orig) { orig._copies = hit.copies; orig._lastCopyAt = token.createdAt || Date.now(); }
+  if (radar._copycatLogged++ < 20) console.log(`[RADAR] copycat: ${(token.name || token.ca).slice(0, 16)} ${token.ca.slice(0, 8)} is copy #${hit.copies} of ${hit.copyOf.slice(0, 8)} -> excluded, original marked promoted`);
+}
 radar._mayhemLogged = 0;
 function markMayhem(mint, source) {
   const t = radar.tokens.get(mint);
@@ -1220,6 +1233,7 @@ function processRadarMessage(data) {
 
     radar.tokens.set(mint, token);
     { const v = detectMayhem({ create: data }); if (v.mayhem) markMayhem(mint, v.source); }
+    if (!token._mayhem) noteCopycat(token);
     subscribeToToken(mint);
 
     // Register dev wallet for balance tracking & profiling
@@ -7854,7 +7868,7 @@ app.get("/api/radar", (req, res) => {
 function passesTraderBaseFilter(t, now = Date.now()) {
   const ub = t.uniqueBuyers?.size || 0, buys = t.buys || 0, sells = t.sells || 0, mc = t.mcapUsd || 0;
   const ageMin = (now - (t.createdAt || now)) / 60000;
-  if (t._mayhem) return false;
+  if (t._mayhem || t._copyOf) return false;
   const boosted = !!radar.dexBoosted?.get?.(t.ca);
   return ub >= 3 && sells >= 1 && buys >= (boosted ? 3 : 5) && ageMin >= 0.5 && mc >= 4000;
 }
@@ -7869,7 +7883,7 @@ function buildScoredResponse(query = {}) {
   const source = only ? only.map(ca => radar.tokens.get(ca)).filter(Boolean) : [...radar.tokens.values()];
   const rows = [];
   for (const t of source) {
-    if (t._mayhem && !all) continue;
+    if ((t._mayhem || t._copyOf) && !all) continue;
     if (!only && (t._apeScore || 0) < min) continue;
     // A score the background scorer has not refreshed within 10s is stale: the scorer skipped
     // the token (rug gate or base filter) and its old score must not be served as current.
@@ -10970,9 +10984,12 @@ server.listen(PORT, async () => {
         rugPenalty += qf._rg_sybilScore > 0.3 ? 6 : 0;
       }
 
+      // Somebody is spamming same-name launches to advertise this token: a paid-for reason it pumps,
+      // worth a little while the copies are fresh (last one within 10 minutes).
+      const promoScore = (t._copies || 0) > 0 && Date.now() - (t._lastCopyAt || 0) < 10 * 60_000 ? Math.min(10, 3 * t._copies) : 0;
       let total = Math.max(0, Math.min(99, Math.round(
         buyScore + ubScore + volScore + mcScore + greenScore +
-        pressureScore + velocityScore - sellPenalty - rugPenalty
+        pressureScore + velocityScore + promoScore - sellPenalty - rugPenalty
       )));
 
       // Survivorship adjustment
