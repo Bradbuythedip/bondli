@@ -1,7 +1,10 @@
 // ═══ GATE 1: HARD DISQUALIFIERS — Instant Reject (<5ms) ═══
 // Absolute deal-breakers. No score overrides them. Token blacklisted on fail.
 
+// opts: freezeAuthority, isRecoveryPlay, and the aggression profile's gate-1 knobs
+// (src/velocity/venues/pumpfun/edge.mjs AGGRESSION); defaults are the designed rules.
 export function checkDisqualifiers(token, qf, opts = {}) {
+  const { coordDump = 0.5, staleMin = 15, tooLateCurve = 0.80, concentrationMax = 0.7 } = opts;
   const flags = [];
 
   // === RUG SIGNALS (on-chain) ===
@@ -21,7 +24,7 @@ export function checkDisqualifiers(token, qf, opts = {}) {
   // Top holders extremely concentrated (excluding bonding curve).
   // Top-3 share is meaningless with fewer than 8 distinct organic buyers (3 of 5 wallets
   // is always "concentrated"); the rule only speaks once there are enough holders to rank.
-  if (qf?.rg_holderConcentration > 0.7 && (token.buys || 0) > 5 && (qf?._rg_organicBuyers ?? 99) >= 8 && !(qf?._whaleBullish > 0.3))
+  if (qf?.rg_holderConcentration > concentrationMax && (token.buys || 0) > 5 && (qf?._rg_organicBuyers ?? 99) >= 8 && !(qf?._whaleBullish > 0.3))
     flags.push("EXTREME_CONCENTRATION");
 
   // === DEV SELF-PUMP DETECTION (highest priority — catches "Whale Guru" pattern) ===
@@ -69,7 +72,7 @@ export function checkDisqualifiers(token, qf, opts = {}) {
   // === CHART FORENSICS ===
   // rg_coordDumpScore is a raw count (3 clustered sells = 0.6), which any active token
   // produces. A coordinated dump is a BURST of sells while sells are heavy against buys.
-  if (qf?.rg_coordDumpScore > 0.5 && qf?.rg_sellWaveDetect > 0.5 && (token.sells || 0) > (token.buys || 0) * 0.5)
+  if (qf?.rg_coordDumpScore > coordDump && qf?.rg_sellWaveDetect > coordDump && (token.sells || 0) > (token.buys || 0) * 0.5)
     flags.push("COORDINATED_DUMP");
   if (qf?._rg_pumpDump > 0.6 && !isVeryYoung) flags.push("PUMP_DUMP");
   if (qf?._rg_sybilScore > 0.5) flags.push("SYBIL_ATTACK");
@@ -114,9 +117,9 @@ export function checkDisqualifiers(token, qf, opts = {}) {
 
   // === AGE / TIMING ===
   // Bonding curve >80% = too late
-  if (token.vSolInBondingCurve && token.vSolInBondingCurve / 85 > 0.80) flags.push("TOO_LATE");
+  if (token.vSolInBondingCurve && token.vSolInBondingCurve / 85 > tooLateCurve) flags.push("TOO_LATE");
   // Token >15 min old and score just now appearing = missed it
-  if (ageMin > 15 && !opts.isRecoveryPlay) flags.push("STALE");
+  if (ageMin > staleMin && !opts.isRecoveryPlay) flags.push("STALE");
 
   // === HARD MINIMUMS ===
   const ub = token.uniqueBuyers?.size || 0;

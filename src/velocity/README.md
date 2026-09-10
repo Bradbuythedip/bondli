@@ -101,11 +101,15 @@ Polymarket positions is not automated in live mode; paper mode models it.
 
 ### Aggression
 
-`venues.pumpfun.aggression` is one knob for gates 2 and 3: 0 cautious, 1 as designed, 2 aggressive,
-3 degen. It moves the score floor, the speculative-tier floor, the sybil and fresh-wallet limits, how far
-along the bonding curve an entry is allowed, the price-spike rule, and whether decelerating buys or an
-unstable score block an entry (`AGGRESSION` in venues/pumpfun/edge.mjs). Gate 1, the rug disqualifiers,
-never moves with it. Read at start; restart after changing it.
+`venues.pumpfun.aggression` is the risk dial, one knob for all three gates: 0 safe, 1 as designed,
+2 normal, 3 degen (`AGGRESSION` in venues/pumpfun/edge.mjs). Gate 2/3: the score floor, the
+speculative-tier floor, the sybil and fresh-wallet limits, how far along the bonding curve an entry is
+allowed, the price-spike rule, whether decelerating buys or an unstable score block an entry, and
+whether a watchlist token is taken as a speculative entry (2 and 3). Gate 1, from 2 up: the coordinated
+dump threshold, how old a token can be (15 / 30 / 60 min), how far along the curve is too late
+(80 / 90 / 95%), and the holder-concentration limit (70 / 80 / 90%). The hard rug rules (dev selling,
+self-snipe, sybil, pump-and-dump, freeze authority, serial ruggers) never move. Read at start; restart
+after changing it.
 
 ### Bankroll from the wallet
 

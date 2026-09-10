@@ -4,7 +4,7 @@
 
 // opts: the aggression profile (src/velocity/venues/pumpfun/edge.mjs AGGRESSION); defaults are the designed floors.
 export function checkViability(token, qf, scores, dynamics, opts = {}) {
-  const { scoreFloor = 45, sybilMax = 0.40, freshWalletMax = 0.80 } = opts;
+  const { scoreFloor = 45, sybilMax = 0.40, freshWalletMax = 0.80, doaBuyers = 5, minScores = 2 } = opts;
   const checks = [];
   const buys = token.buys || 0;
   const ub = token.uniqueBuyers?.size || 0;
@@ -20,7 +20,7 @@ export function checkViability(token, qf, scores, dynamics, opts = {}) {
 
   // === ON-CHAIN ACTIVITY MINIMUM ===
   // Must have at least 5 unique buyers (was 10 in spec, relaxed for pump.fun reality)
-  if (ub < 5 && ageMin >= 2) checks.push("DEAD_ON_ARRIVAL");
+  if (ub < doaBuyers && ageMin >= 2) checks.push("DEAD_ON_ARRIVAL");
 
   // Buy/sell ratio must show demand
   if (buys > 5 && sells > buys * 1.2) checks.push("WEAK_DEMAND");
@@ -46,7 +46,7 @@ export function checkViability(token, qf, scores, dynamics, opts = {}) {
   // Must have at least 1 score observation
   const dyn = dynamics;
   const isEarlyMover = ageMin < 2 && mc >= 4000 && mc <= 30000 && ub >= 2;
-  if (!dyn || (dyn.scores < 2 && !isEarlyMover)) checks.push("INSUFFICIENT_DATA");
+  if (minScores > 0 && (!dyn || (dyn.scores < minScores && !isEarlyMover))) checks.push("INSUFFICIENT_DATA");
 
   // Actively crashing = dead
   if (dyn?.trend === "crashing") checks.push("CRASHING_SCORE");
