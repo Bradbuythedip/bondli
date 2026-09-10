@@ -54,6 +54,11 @@ arf(w,c){return this.f("/api/referral/apply",{method:"POST",body:{wallet:w,refCo
 dr(d){return this.f("/api/dry-run",{method:"POST",body:d})}
 gm(tf){return this.f(`/api/movers${tf?`?timeframe=${tf}`:""}`)}
 gmt(c){return this.f(`/api/movers/token/${c}`)}
+vst(w,s){return this.f("/api/velocity/start",{method:"POST",body:{wallet:w,settings:s},timeout:90000})}
+vsp(w){return this.f("/api/velocity/stop",{method:"POST",body:{wallet:w},timeout:90000})}
+vhl(w,m){return this.f("/api/velocity/halt",{method:"POST",body:{wallet:w,mode:m||"flatten"},timeout:90000})}
+vstat(w){return this.f(`/api/velocity/status?wallet=${w}`)}
+vhealth(){return this.f("/api/velocity/health",{noauth:true})}
 ats(w,s){return this.f("/api/auto-trade/start",{method:"POST",body:{wallet:w,settings:s}})}
 atp(w){return this.f("/api/auto-trade/stop",{method:"POST",body:{wallet:w}})}
 atc(w){return this.f("/api/auto-trade/close",{method:"POST",body:{wallet:w}})}
