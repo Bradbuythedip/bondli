@@ -22,6 +22,27 @@ function Btn({ children, onClick, disabled, danger, ghost, T, big }) {
   return <button onClick={disabled ? undefined : onClick} style={{ width: "100%", padding: big ? "18px 20px" : "12px 16px", borderRadius: 12, border: ghost || danger ? `1px solid ${danger ? T.rd : T.bd}` : "none", background: ghost || danger ? "transparent" : T.gn, color: danger ? T.rd : ghost ? T.tx : "#000", fontFamily: S, fontWeight: 900, fontSize: big ? 20 : 15, letterSpacing: ".01em", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? .45 : 1 }}>{children}</button>;
 }
 
+// Proof of life between decisions: the engine only writes a line when it judges a token, so this row
+// re-reads the heartbeat, the feed age and the judged count on every poll and says what it is doing now.
+function Pulse({ st, T }) {
+  const [, tick] = useState(0);
+  useEffect(() => { const id = setInterval(() => tick(x => x + 1), 1000); return () => clearInterval(id); }, []);
+  const s = st?.status; if (!s) return null;
+  const now = Date.now();
+  const v = s.venues?.pumpfun || {};
+  const hb = s.heartbeatAt ? (now - s.heartbeatAt) / 1000 : null;
+  const feedAge = v.feed?.ageMs != null ? v.feed.ageMs / 1000 : null;
+  const judged = v.evaluated || 0, gos = v.gos || 0;
+  const last = st.narration?.length ? (now - st.narration[st.narration.length - 1].ts) / 1000 : null;
+  const dead = hb != null && hb > 45, stale = v.feed?.stale || (feedAge != null && feedAge > 30);
+  const c = dead ? T.rd : stale ? T.yl : T.gn;
+  const what = dead ? "engine not responding" : stale ? "market feed stale" : s.halt?.mode ? "paused" : judged === 0 ? "waiting for the first token to qualify" : "watching for the next token";
+  const dots = ".".repeat(1 + (Math.floor(now / 500) % 3));
+  return <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, fontFamily: M, fontSize: 11, color: T.ft }}>
+    <span style={{ display: "flex", alignItems: "center", gap: 6, color: c }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: c, animation: dead ? "none" : "gp 1.5s infinite" }} />{what}{dead || stale ? "" : dots}</span>
+    <span>{judged} judged · {gos} taken{last != null ? ` · last ${last < 60 ? Math.round(last) + "s" : Math.round(last / 60) + "m"} ago` : ""}</span>
+  </div>;
+}
 // The market as the bot sees it: newest launches, a sparkline, the score, and the bot's one-word verdict.
 const ago = ms => ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))}s` : ms < 3600_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 3600_000)}h`;
 const kfmt = n => n >= 1e6 ? `$${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `$${(n / 1e3).toFixed(n >= 1e5 ? 0 : 1)}k` : `$${Math.round(n)}`;
@@ -198,6 +219,7 @@ export default function Simple() {
           {(st.narration || []).map((n, i) => <div key={i} style={{ color: /FILLED|SOLD|P&L/.test(n.line) ? T.tx : /fee/.test(n.line) ? T.yl : T.ft, whiteSpace: "pre-wrap" }}>{n.line}</div>)}
           {!(st.narration || []).length && <div>watching every new token…</div>}
         </div>
+        <Pulse st={st} T={T} />
         <div style={{ marginTop: 14 }}><Btn danger T={T} onClick={stop} disabled={busy === "stop"}>{busy === "stop" ? "Selling…" : "Sell everything and stop"}</Btn></div>
       </>}
       {msg && <div style={{ marginTop: 12, fontSize: 13, color: msg.kind === "error" ? T.rd : T.gn }}>{msg.m}</div>}
