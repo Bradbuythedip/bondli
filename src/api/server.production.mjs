@@ -652,6 +652,39 @@ const radar = {
   dexBoosted: new Map(), // ca → { amount, updatedAt } — DexScreener paid/boosted
 };
 
+// ═══ HUB WALLETS — bots and routers that trade many mints at once ═══
+// One automated wallet (BwWK17cb…: ~54k SOL, a trade every second across hundreds
+// of mints, 154 funded sub-accounts) shows up as the top buyer on almost every
+// active token. Counted as a holder, it made every token look like a three-wallet
+// rug and the first gate rejected 100% of a live market. A wallet that trades
+// HUB_MIN_TOKENS distinct mints inside HUB_WINDOW_MS is a router, not a holder:
+// its trades still count toward volume and buy pressure, never toward identity
+// (concentration, dominance, dev-sell, coordinated-dump, quick-flip, timing).
+const HUB_MIN_TOKENS = 5;
+const HUB_WINDOW_MS = 15 * 60_000;
+const HUB_SEED = ["BwWK17cb"]; // known routers, 8-char prefix as stored on trades
+radar.walletTokens = new Map(); // wallet8 → { tokens: Set(ca), first, last }
+radar.hubs = new Set(HUB_SEED);
+function noteWalletTrade(wallet8, ca, now) {
+  if (!wallet8) return false;
+  if (radar.hubs.has(wallet8)) return true;
+  let w = radar.walletTokens.get(wallet8);
+  if (!w || now - w.first > HUB_WINDOW_MS) { w = { tokens: new Set(), first: now, last: now }; radar.walletTokens.set(wallet8, w); }
+  w.tokens.add(ca);
+  w.last = now;
+  if (w.tokens.size >= HUB_MIN_TOKENS) {
+    radar.hubs.add(wallet8);
+    if (radar.hubs.size <= 25 || radar.hubs.size % 50 === 0)
+      console.log(`[RADAR] hub wallet ${wallet8}… traded ${w.tokens.size} mints in ${Math.round((now - w.first) / 1000)}s: excluded from holder features (${radar.hubs.size} hubs)`);
+    return true;
+  }
+  return false;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, w] of radar.walletTokens) if (now - w.last > HUB_WINDOW_MS) radar.walletTokens.delete(k);
+}, 60_000);
+
 // ═══ SMART WALLET LABELING ═══
 // Track which wallets historically pick winners, weight their buys 3-5x in scoring
 // Uses in-memory LRU + Redis persistence for wallet performance history
@@ -920,7 +953,7 @@ function connectPumpPortal() {
           }
         }
         if (Date.now() - st.since >= 60000) {
-          console.log(`[RADAR] stats/min: creates ${st.create} trades ${st.trade} other ${st.other} | subscribed ${radar.subscribedTokens.size} | tokens ${radar.tokens.size} | scored>0 ${[...radar.tokens.values()].filter(t => (t._apeScore || 0) > 0).length}`);
+          console.log(`[RADAR] stats/min: creates ${st.create} trades ${st.trade} other ${st.other} | subscribed ${radar.subscribedTokens.size} | tokens ${radar.tokens.size} | scored>0 ${[...radar.tokens.values()].filter(t => (t._apeScore || 0) > 0).length} | hubs ${radar.hubs.size}`);
           if (st.trade === 0 && radar.subscribedTokens.size > 0) console.warn(`[RADAR] WARNING: ${radar.subscribedTokens.size} tokens subscribed but zero trade messages in the last minute`);
           st.create = 0; st.trade = 0; st.other = 0; st.since = Date.now();
         }
@@ -1231,8 +1264,9 @@ function processRadarMessage(data) {
       if (token.spark.length > 60) token.spark = token.spark.slice(-60);
     }
 
-    // Track trade
-    token.trades.push({ side: data.txType, sol: +sol.toFixed(4), wallet: trader.slice(0, 8), time: now });
+    // Track trade (hub = bot/router wallet: counts for volume, not for identity)
+    const hub = noteWalletTrade(trader.slice(0, 8), mint, now);
+    token.trades.push({ side: data.txType, sol: +sol.toFixed(4), wallet: trader.slice(0, 8), time: now, hub });
     if (token.trades.length > 100) token.trades = token.trades.slice(-100);
 
     // h1 change
@@ -1416,7 +1450,10 @@ function extractQuickFeatures(t) {
   const sells = t.sells || 0;
   const vol = t.volumeSol || 0;
   const sellVol = t.sellVolumeSol || 0;
-  const trades = t.trades || [];
+  // Identity and timing features read ORGANIC trades only. Hub wallets (bots and
+  // routers trading many mints at once, see noteWalletTrade) are excluded here;
+  // their volume still lives in t.buys / t.volumeSol / t.sellVolumeSol above.
+  const trades = (t.trades || []).filter(tr => !tr.hub);
 
   // ── Dev sell detection (improved: match full wallet when available) ──
   const devW = (t.devWallet || "").slice(0, 8);
