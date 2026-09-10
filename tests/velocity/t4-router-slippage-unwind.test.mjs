@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PumpfunPaperRouter, PumpfunLiveRouter, curveBuy, curveSell, reservesFromReference } from "../../src/velocity/venues/pumpfun/router.mjs";
+import { PumpfunPaperRouter, PumpfunLiveRouter, curveBuy, curveSell, reservesFromReference, tradeLocalBody } from "../../src/velocity/venues/pumpfun/router.mjs";
 import { PolymarketPaperRouter, PolymarketLiveRouter, walkBook } from "../../src/velocity/venues/polymarket/router.mjs";
 import { PerpsRouter } from "../../src/velocity/venues/perps/stub.mjs";
 
@@ -89,4 +89,29 @@ test("T4: live routers refuse without keys or packages; perps stub refuses alway
   await assert.rejects(() => new PolymarketLiveRouter({ privateKey: "" }).init(), /POLYMARKET_PRIVATE_KEY/);
   await assert.rejects(() => new PolymarketLiveRouter({ privateKey: "0x" + "1".repeat(64) }).init(), /clob-client|ethers/);
   await assert.rejects(() => new PerpsRouter().submit({}), /disabled/);
+});
+
+test("T4: live pump.fun router builds the PumpPortal request bondli itself uses, and maps failures", async () => {
+  const buy = tradeLocalBody({ publicKey: "PK", action: "buy", mint: "M", amount: 0.05, denominatedInSol: true, slippagePct: 3, priorityFeeSol: 0.0005 });
+  assert.deepEqual(buy, { publicKey: "PK", action: "buy", mint: "M", amount: 0.05, denominatedInSol: "true", slippage: 3, priorityFee: 0.0005, pool: "auto" });
+  const sell = tradeLocalBody({ publicKey: "PK", action: "sell", mint: "M", amount: "100%", denominatedInSol: false, slippagePct: 15, priorityFeeSol: 0.0005 });
+  assert.equal(sell.amount, "100%"); assert.equal(sell.denominatedInSol, "false");
+
+  // A router with a fake wallet and a builder that answers 400: nothing is sent, failure is explicit.
+  const calls = [];
+  const r = new PumpfunLiveRouter({ secret: "x", fetchImpl: async (url, opts) => { calls.push(JSON.parse(opts.body)); return { ok: false, status: 400, text: async () => "bad mint" }; } });
+  r.ready = true; r.publicKey = "PK"; r.keypair = { publicKey: "PK" }; r.web3 = { PublicKey: class { constructor(v) { this.v = v; } }, VersionedTransaction: { deserialize() { throw new Error("should not reach") } } };
+  r.connection = { getBalance: async () => 5e9, getParsedTokenAccountsByOwner: async () => ({ value: [] }) };
+  const res = await r.submit({ id: "o1", instrument: "MintZ", stake_usd: 5, max_slippage_bps: 300, reference: { vSolInBondingCurve: 30, mcapUsd: 4500, solPrice: 100 } });
+  assert.equal(res.ok, false);
+  assert.equal(res.failure.code, "SEND_FAILED");
+  assert.match(res.failure.reason, /trade builder 400/);
+  assert.equal(calls[0].action, "buy"); assert.equal(calls[0].amount, 0.05); assert.equal(calls[0].denominatedInSol, "true");
+
+  // Not enough SOL: refused before any network call.
+  const poor = new PumpfunLiveRouter({ secret: "x", fetchImpl: async () => { throw new Error("must not be called"); } });
+  poor.ready = true; poor.publicKey = "PK"; poor.keypair = { publicKey: "PK" }; poor.web3 = { PublicKey: class { constructor(v) { this.v = v; } } };
+  poor.connection = { getBalance: async () => 1e6, getParsedTokenAccountsByOwner: async () => ({ value: [] }) };
+  const p = await poor.submit({ id: "o2", instrument: "MintZ", stake_usd: 5, max_slippage_bps: 300, reference: { vSolInBondingCurve: 30, mcapUsd: 4500, solPrice: 100 } });
+  assert.equal(p.failure.code, "INSUFFICIENT_SOL");
 });

@@ -96,10 +96,18 @@ async function main() {
     case "venue": {
       const [, venue, mode] = args;
       if (!venue || !["off", "paper", "live"].includes(mode)) { out("usage: velocity venue <pumpfun|polymarket|perps> off|paper|live"); process.exit(2); }
-      const r = await api("/venue", "POST", { venue, mode });
+      const override = args.includes("--i-accept-the-risk");
+      const r = await api("/venue", "POST", { venue, mode, override });
       if (!r.ok) { out("engine not reachable; edit velocity.config.json and restart"); process.exit(1); }
-      if (r.json.ok) out(`${venue} -> ${mode}${r.json.liveStartCapUsd ? ` (live start cap $${r.json.liveStartCapUsd})` : ""}`);
-      else { out(`${venue} stays ${r.json.mode}:`); for (const i of r.json.gate?.items || []) out(`  ${i.ok ? "ok " : "RED"} ${i.name}: ${i.detail}`); if (r.json.error) out(`  ${r.json.error}`); }
+      if (r.json.ok) {
+        out(`${venue} -> ${mode}${r.json.liveStartCapUsd ? ` (live start cap $${r.json.liveStartCapUsd} per trade)` : ""}${r.json.override ? " [paper gate overridden by operator]" : ""}`);
+        if (r.json.preflight) out(`  wallet ${r.json.preflight.wallet}  balance ${r.json.preflight.balanceSol.toFixed(4)} SOL  rpc ${r.json.preflight.rpc}`);
+      } else {
+        out(`${venue} stays ${r.json.mode}:`);
+        for (const i of r.json.gate?.items || []) out(`  ${i.ok ? "ok " : "RED"} ${i.name}: ${i.detail}`);
+        if (r.json.error) out(`  ${r.json.error}`);
+        if (r.json.gate && !r.json.error) out(`  to go live anyway: velocity venue ${venue} live --i-accept-the-risk`);
+      }
       return;
     }
     case "promote": {

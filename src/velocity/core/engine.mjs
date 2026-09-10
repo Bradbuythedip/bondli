@@ -117,19 +117,28 @@ export class Engine extends EventEmitter {
     return this.store.state.halt;
   }
 
-  setVenueMode(venue, mode) {
+  async setVenueMode(venue, mode, { override = false, by = "operator" } = {}) {
     if (!this.venues[venue]) throw new Error(`unknown venue ${venue}`);
+    let preflight = null;
     if (mode === "live") {
       const gate = this.promotion(venue);
-      if (!gate.ok) return { ok: false, gate, mode: this.store.venueMode(venue) };
+      if (!gate.ok && !override) return { ok: false, gate, mode: this.store.venueMode(venue) };
       const router = this.venues[venue].liveRouter;
       if (!router) return { ok: false, mode: this.store.venueMode(venue), error: "no live router configured for this venue" };
+      try { preflight = await router.init(); }
+      catch (err) { return { ok: false, mode: this.store.venueMode(venue), error: `live router not ready: ${err.message}` }; }
+      const h = await router.health();
+      if (!h.ok) return { ok: false, mode: this.store.venueMode(venue), error: `live venue unreachable: ${h.detail}` };
+      const minSol = this.env.venues[venue].min_stake_usd / Math.max(1, this.solPriceHint || 100);
+      if (preflight && preflight.balanceSol != null && preflight.balanceSol < minSol + 0.01)
+        return { ok: false, mode: this.store.venueMode(venue), error: `wallet ${preflight.wallet} holds ${preflight.balanceSol.toFixed(4)} SOL, below one minimum stake plus fees`, preflight };
       this.venues[venue].liveStartCapUsd = gate.liveStartCapUsd;
+      if (!gate.ok) this.alerter?.send("warn", `${venue} switched to LIVE by operator override with the paper gate red: ${gate.items.filter(i => !i.ok).map(i => i.name).join(", ")}`);
     }
     this.store.setVenueMode(venue, mode);
-    this.ledger.append({ kind: "venue", venue, mode });
+    this.ledger.append({ kind: "venue", venue, mode, by, override: !!override, gateOk: mode === "live" ? this.promotion(venue).ok : null, preflight });
     this.store.save();
-    return { ok: true, mode, liveStartCapUsd: this.venues[venue].liveStartCapUsd || null };
+    return { ok: true, mode, liveStartCapUsd: this.venues[venue].liveStartCapUsd || null, override: !!override, preflight };
   }
 
   routerFor(venue) {
@@ -148,6 +157,7 @@ export class Engine extends EventEmitter {
     // Exits first: a held instrument's tick is worth more than a new candidate.
     await this.checkExits(event);
 
+    if (event.payload?.solPrice > 0) this.solPriceHint = event.payload.solPrice;
     if (!v.runner) return;
     const gov = this.governorContext(venue);
     const t0 = performance.now();

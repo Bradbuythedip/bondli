@@ -61,42 +61,68 @@ export class PumpfunPaperRouter extends PaperRouter {
   }
 }
 
+/** Request body for PumpPortal's free local transaction builder (the same path bondli's
+ *  own trader uses). The returned transaction is signed locally; keys never leave the box. */
+export function tradeLocalBody({ publicKey, action, mint, amount, denominatedInSol, slippagePct, priorityFeeSol, pool = "auto" }) {
+  return { publicKey, action, mint, amount, denominatedInSol: denominatedInSol ? "true" : "false", slippage: slippagePct, priorityFee: priorityFeeSol, pool };
+}
+
 export class PumpfunLiveRouter extends Router {
-  constructor({ secret = process.env.MASTER_SEED, rpcUrl = process.env.RPC_URL, slippageBps = 300, confirmTimeoutMs = 20_000, clock } = {}) {
+  constructor({
+    secret = process.env.MASTER_SEED, rpcUrl = process.env.RPC_URL, slippageBps = 300, sellSlippagePct = 15,
+    priorityFeeSol = Number(process.env.PRIORITY_FEE_SOL || 0.0005), confirmTimeoutMs = 25_000,
+    tradeLocalUrl = "https://pumpportal.fun/api/trade-local", fetchImpl = globalThis.fetch, clock,
+  } = {}) {
     super({ venue: "pumpfun", mode: "live", clock });
-    this.secret = secret;
-    this.rpcUrl = rpcUrl;
-    this.slippageBps = slippageBps;
-    this.confirmTimeoutMs = confirmTimeoutMs;
-    this.ready = false;
+    this.secret = secret; this.rpcUrl = rpcUrl; this.slippageBps = slippageBps; this.sellSlippagePct = sellSlippagePct;
+    this.priorityFeeSol = priorityFeeSol; this.confirmTimeoutMs = confirmTimeoutMs; this.tradeLocalUrl = tradeLocalUrl; this.fetch = fetchImpl;
+    this.ready = false; this.publicKey = null;
   }
 
   async init() {
-    if (!this.secret) throw new Error("pumpfun live router needs MASTER_SEED (base58 secret key)");
-    const [web3, bs58, clientMod, rpc] = await Promise.all([
-      import("@solana/web3.js"),
-      import("bs58"),
-      import("../../../engine/pumpfun-client.mjs"),
-      import("../../../engine/rpc-enhanced.mjs"),
-    ]);
+    if (!this.secret) throw new Error("pumpfun live router needs MASTER_SEED (base58 secret key of a dedicated wallet) in .env");
+    const [web3, bs58, cfg] = await Promise.all([import("@solana/web3.js"), import("bs58"), import("../../../engine/config.mjs")]);
     this.web3 = web3;
-    this.keypair = web3.Keypair.fromSecretKey((bs58.default || bs58).decode(this.secret));
-    this.connection = new web3.Connection(this.rpcUrl || (await import("../../../engine/config.mjs")).default.RPC_URL, "confirmed");
-    this.client = new clientMod.PumpFunClient(this.connection);
-    this.client.dryRun = false;
-    this.smartSend = rpc.smartSend;
+    this.keypair = web3.Keypair.fromSecretKey((bs58.default || bs58).decode(this.secret.trim()));
+    this.publicKey = this.keypair.publicKey.toBase58();
+    this.connection = new web3.Connection(this.rpcUrl || cfg.default.RPC_URL, "confirmed");
     this.ready = true;
+    return this.preflight();
   }
 
-  async _sendAndConfirm(tx) {
+  /** What the operator sees before the first real order: wallet, balance, RPC. */
+  async preflight() {
+    if (!this.ready) throw new Error("call init() first");
+    const t0 = Date.now();
+    const lamports = await this.connection.getBalance(this.keypair.publicKey, "confirmed");
+    return { wallet: this.publicKey, balanceSol: lamports / 1e9, rpc: String(this.rpcUrl || "").split("?")[0] || "default", rpcLatencyMs: Date.now() - t0 };
+  }
+
+  async _solBalance() { return (await this.connection.getBalance(this.keypair.publicKey, "confirmed")) / 1e9; }
+
+  async _tokenBalance(mint) {
+    const { TOKEN_PROGRAM_ID } = await import("@solana/spl-token");
+    const res = await this.connection.getParsedTokenAccountsByOwner(this.keypair.publicKey, { mint: new this.web3.PublicKey(mint) });
+    let qty = 0;
+    for (const a of res?.value || []) qty += Number(a.account.data.parsed.info.tokenAmount.uiAmount) || 0;
+    return qty;
+  }
+
+  async _buildSignSend(body) {
+    const res = await this.fetch(this.tradeLocalUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(8_000) });
+    if (!res.ok) throw new Error(`trade builder ${res.status}: ${(await res.text().catch(() => "")).slice(0, 120)}`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.byteLength < 100) throw new Error("trade builder returned an empty transaction");
+    const tx = this.web3.VersionedTransaction.deserialize(bytes);
+    tx.sign([this.keypair]);
     const t_sent = this.clock();
-    const sig = await this.smartSend(this.connection, tx.serialize());
+    const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true, maxRetries: 3 });
     const deadline = Date.now() + this.confirmTimeoutMs;
     while (Date.now() < deadline) {
       const st = await this.connection.getSignatureStatuses([sig]);
-      const s = st?.value?.[0];
-      if (s?.err) throw new Error(`tx ${sig} failed: ${JSON.stringify(s.err)}`);
-      if (s && (s.confirmationStatus === "confirmed" || s.confirmationStatus === "finalized")) return { sig, t_sent, t_filled: this.clock() };
+      const v = st?.value?.[0];
+      if (v?.err) throw new Error(`tx ${sig} failed on chain: ${JSON.stringify(v.err)}`);
+      if (v && (v.confirmationStatus === "confirmed" || v.confirmationStatus === "finalized")) return { sig, t_sent, t_filled: this.clock() };
       await new Promise(r => setTimeout(r, 400));
     }
     throw new Error(`tx ${sig} not confirmed within ${this.confirmTimeoutMs}ms`);
@@ -107,20 +133,21 @@ export class PumpfunLiveRouter extends Router {
     if (order.legs?.length) return failure(order, "UNSUPPORTED", "pump.fun has no multi-leg orders");
     const solPrice = Number(order.reference?.solPrice) || 0;
     if (!(solPrice > 0)) return failure(order, "NO_SOL_PRICE", "reference has no solPrice");
+    const est = pumpfunFillModel({ ...order, side: "BUY" }); // entries are always buys
+    if (est.reject) return failure(order, est.reject, est.reason);
+    if (Number.isFinite(order.max_slippage_bps) && est.slippage_bps > order.max_slippage_bps)
+      return failure(order, "SLIPPAGE_CAP", `curve slippage ${est.slippage_bps.toFixed(1)}bps > cap ${order.max_slippage_bps}bps`);
+    const solAmount = +(Number(order.stake_usd) / solPrice).toFixed(6);
     try {
-      const state = await this.client.getCurveState(order.instrument);
-      if (!state) return failure(order, "NO_CURVE", "bonding curve not found");
-      if (state.graduated) return failure(order, "GRADUATED", "token graduated; Raydium path not enabled for entries");
-      const est = pumpfunFillModel({ ...order, reference: { ...order.reference, vSolInBondingCurve: state.virtualSolReserves / 1e9, vTokensInBondingCurve: state.virtualTokenReserves / 1e6 } });
-      if (est.reject) return failure(order, est.reject, est.reason);
-      if (Number.isFinite(order.max_slippage_bps) && est.slippage_bps > order.max_slippage_bps)
-        return failure(order, "SLIPPAGE_CAP", `curve slippage ${est.slippage_bps.toFixed(1)}bps > cap ${order.max_slippage_bps}bps`);
-      const solAmount = Number(order.stake_usd) / solPrice;
-      const tokensOut = this.client.estimateBuy(state, solAmount);
-      const minTokens = Math.floor(tokensOut * (1 - this.slippageBps / 10_000));
-      const tx = await this.client.buildPumpTx(this.keypair, order.instrument, "buy", solAmount, minTokens);
-      const { sig, t_sent, t_filled } = await this._sendAndConfirm(tx);
-      return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "pumpfun", instrument: order.instrument, side: "BUY", price: est.price, qty: tokensOut / 1e6, notional_usd: Number(order.stake_usd), slippage_bps: +est.slippage_bps.toFixed(2), fee_usd: est.fee_usd, t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: sig, estimated_qty: true } };
+      const solBefore = await this._solBalance();
+      if (solBefore < solAmount + this.priorityFeeSol + 0.003) return failure(order, "INSUFFICIENT_SOL", `wallet has ${solBefore.toFixed(4)} SOL, order needs ${(solAmount + 0.004).toFixed(4)}`);
+      const qtyBefore = await this._tokenBalance(order.instrument).catch(() => 0);
+      const body = tradeLocalBody({ publicKey: this.publicKey, action: "buy", mint: order.instrument, amount: solAmount, denominatedInSol: true, slippagePct: Math.max(1, Math.round(this.slippageBps / 100)), priorityFeeSol: this.priorityFeeSol });
+      const { sig, t_sent, t_filled } = await this._buildSignSend(body);
+      const [solAfter, qtyAfter] = await Promise.all([this._solBalance(), this._tokenBalance(order.instrument).catch(() => qtyBefore)]);
+      const costSol = Math.max(0, solBefore - solAfter);
+      const qty = Math.max(0, qtyAfter - qtyBefore) || est.qty;
+      return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "pumpfun", instrument: order.instrument, side: "BUY", price: qty > 0 ? (costSol * solPrice) / qty : est.price, qty, notional_usd: +(costSol * solPrice).toFixed(4) || Number(order.stake_usd), slippage_bps: +est.slippage_bps.toFixed(2), fee_usd: +(Math.max(0, costSol - solAmount) * solPrice).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: sig, sol_spent: costSol } };
     } catch (err) {
       return failure(order, "SEND_FAILED", err.message);
     }
@@ -128,22 +155,18 @@ export class PumpfunLiveRouter extends Router {
 
   async close(position, pct = 100, ctx = {}) {
     if (!this.ready) return failure({ id: position.id }, "NOT_READY", "call init() first");
+    const solPrice = Number(ctx.reference?.solPrice || position.reference?.solPrice) || 0;
     try {
-      const { PublicKey } = this.web3;
-      const { getAssociatedTokenAddressSync, getAccount } = await import("@solana/spl-token");
-      const ata = getAssociatedTokenAddressSync(new PublicKey(position.instrument), this.keypair.publicKey, true);
-      const acct = await getAccount(this.connection, ata);
-      const raw = Number(acct.amount);
-      const sellRaw = Math.floor(raw * Math.min(100, Math.max(0, pct)) / 100);
-      if (sellRaw <= 0) return failure({ id: position.id }, "NO_POSITION", "no token balance to sell");
-      const state = await this.client.getCurveState(position.instrument);
-      if (!state) return failure({ id: position.id }, "NO_CURVE", "bonding curve not found");
-      const solOut = this.client.estimateSell(state, sellRaw);
-      const minSol = Math.floor(solOut * (1 - this.slippageBps / 10_000));
-      const tx = await this.client.buildPumpTx(this.keypair, position.instrument, "sell", sellRaw, minSol);
-      const { sig, t_sent, t_filled } = await this._sendAndConfirm(tx);
-      const solPrice = Number(ctx.reference?.solPrice || position.reference?.solPrice) || 0;
-      return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "pumpfun", instrument: position.instrument, side: "SELL", price: (solOut / 1e9 / (sellRaw / 1e6)) * solPrice, qty: sellRaw / 1e6, notional_usd: (solOut / 1e9) * solPrice * (1 - PUMP_FEE_BPS / 1e4), slippage_bps: null, fee_usd: (solOut / 1e9) * solPrice * (PUMP_FEE_BPS / 1e4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: sig } };
+      const qtyBefore = await this._tokenBalance(position.instrument);
+      if (!(qtyBefore > 0)) return failure({ id: position.id }, "NO_POSITION", "no token balance to sell");
+      const solBefore = await this._solBalance();
+      const p = Math.min(100, Math.max(1, Math.round(pct)));
+      const body = tradeLocalBody({ publicKey: this.publicKey, action: "sell", mint: position.instrument, amount: `${p}%`, denominatedInSol: false, slippagePct: this.sellSlippagePct, priorityFeeSol: this.priorityFeeSol });
+      const { sig, t_sent, t_filled } = await this._buildSignSend(body);
+      const [solAfter, qtyAfter] = await Promise.all([this._solBalance(), this._tokenBalance(position.instrument).catch(() => 0)]);
+      const proceedsSol = Math.max(0, solAfter - solBefore);
+      const qty = Math.max(0, qtyBefore - qtyAfter) || qtyBefore * p / 100;
+      return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "pumpfun", instrument: position.instrument, side: "SELL", price: qty > 0 ? (proceedsSol * solPrice) / qty : 0, qty, notional_usd: +(proceedsSol * solPrice).toFixed(4), slippage_bps: null, fee_usd: 0, t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: sig, sol_received: proceedsSol } };
     } catch (err) {
       return failure({ id: position.id }, "SEND_FAILED", err.message);
     }

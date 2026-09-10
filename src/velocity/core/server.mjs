@@ -46,8 +46,8 @@ export function startControlServer({ engine, host = "127.0.0.1", port = 3210 }) 
         return json(res, 200, r);
       }
       if (req.method === "POST" && url.pathname === "/resume") { const body = await readBody(req); return json(res, 200, engine.resume(body.venue, { by: "http" })); }
-      if (req.method === "POST" && url.pathname === "/venue") { const body = await readBody(req); return json(res, 200, engine.setVenueMode(body.venue, body.mode)); }
-      if (req.method === "POST" && url.pathname.startsWith("/promote/")) return json(res, 200, engine.setVenueMode(url.pathname.slice(9), "live"));
+      if (req.method === "POST" && url.pathname === "/venue") { const body = await readBody(req); return json(res, 200, await engine.setVenueMode(body.venue, body.mode, { override: !!body.override, by: "http" })); }
+      if (req.method === "POST" && url.pathname.startsWith("/promote/")) return json(res, 200, await engine.setVenueMode(url.pathname.slice(9), "live", { by: "http" }));
       json(res, 404, { error: "not found" });
     } catch (err) {
       json(res, 500, { error: err.message });
