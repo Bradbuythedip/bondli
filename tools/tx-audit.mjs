@@ -2,6 +2,7 @@
 // tx-audit: reconcile the velocity ledger against the chain, one signature at a time.
 //
 //   node tools/tx-audit.mjs [--data ./data/velocity] [--limit 40] [--since <ms>]
+//   node tools/tx-audit.mjs --chain [--limit 60]      every transaction on the wallet, ledger or not
 //
 // Every live fill and exit records a venue_ref (the transaction signature) and a USD figure the
 // router measured. This fetches each transaction and reports the wallet's TRUE lamport change,
@@ -15,6 +16,7 @@ const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? proces
 const DATA = arg("--data", "./data/velocity");
 const LIMIT = +arg("--limit", 40);
 const SINCE = +arg("--since", 0);
+const CHAIN = process.argv.includes("--chain");
 
 const usd = n => (n < 0 ? "-" : "+") + "$" + Math.abs(n).toFixed(4);
 const sol = n => (n < 0 ? "-" : "+") + Math.abs(n).toFixed(6);
@@ -45,6 +47,30 @@ export function walletDelta(tx, { owner, mint }) {
   };
 }
 
+/** Every transaction the chain has for this wallet, marked against what the ledger knows.
+ *  The ledger can only report what the bot did; this reports what happened. */
+async function chainHistory(conn, web3, owner, known) {
+  const sigs = await conn.getSignaturesForAddress(new web3.PublicKey(owner), { limit: LIMIT });
+  console.log(`chain history: ${sigs.length} transaction(s), newest first\n`);
+  console.log("time                  sol_change     fee  status    source   note");
+  let bot = 0, other = 0, otherSol = 0;
+  for (const s of sigs) {
+    let tx = null;
+    try { tx = await conn.getTransaction(s.signature, { commitment: "confirmed", maxSupportedTransactionVersion: 0 }); } catch {}
+    await new Promise(r => setTimeout(r, 120)); // a free RPC tier will rate-limit a tight loop
+    const d = tx ? walletDelta(tx, { owner }) : null;
+    const when = s.blockTime ? new Date(s.blockTime * 1000).toISOString().replace("T", " ").slice(0, 19) : "(no block time)";
+    const rec = known.get(s.signature);
+    const src = rec ? "bot" : "NOT-BOT";
+    if (rec) bot++; else { other++; otherSol += d?.solDelta ?? 0; }
+    const note = rec ? `${rec.kind} ${String(rec.instrument || "").slice(0, 8)}` : (s.err ? "failed" : "") + " " + s.signature.slice(0, 16) + "…";
+    console.log(`${when}  ${sol(d?.solDelta ?? 0).padStart(11)}  ${(d?.feeSol ?? 0).toFixed(6)}  ${(s.err ? "failed" : "ok").padEnd(8)}  ${src.padEnd(7)}  ${note}`);
+  }
+  console.log(`\n${bot} transaction(s) the velocity ledger knows about, ${other} it does not.`);
+  if (other) console.log(`Those ${other} moved ${sol(otherSol)} SOL. Anything here the bot did not send came from somewhere else with this key: another process, a wallet app, or a person.`);
+  if (sigs.length === LIMIT) console.log(`Showing the newest ${LIMIT}; raise --limit to see further back.`);
+}
+
 async function main() {
   const secret = process.env.MASTER_SEED;
   if (!secret) { console.error("tx-audit needs MASTER_SEED in .env (read-only: it only derives the public key)"); process.exit(2); }
@@ -64,6 +90,11 @@ async function main() {
   console.log(`ledger ${file}: ${traded.length} live fills/exits with a signature${fees.length ? `, ${fees.length} fee records` : ""}\n`);
   const bal = await conn.getBalance(kp.publicKey, "confirmed");
   console.log(`wallet balance now: ${(bal / 1e9).toFixed(6)} SOL\n`);
+
+  if (CHAIN) {
+    const known = new Map(recs.filter(r => r.venue_ref).map(r => [r.venue_ref, r]));
+    return chainHistory(conn, web3, owner, known);
+  }
 
   console.log("time      side  instrument  booked_usd   true_sol     tx_fee  idx  on-chain");
   let bookedUsd = 0, trueSol = 0, feeSol = 0, missing = 0, mismatchIdx = 0;
