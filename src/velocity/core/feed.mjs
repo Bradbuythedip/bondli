@@ -38,6 +38,9 @@ export class Feed extends EventEmitter {
     return e;
   }
 
+  /** A successful poll with nothing to report still proves the feed is alive. */
+  touch() { this.lastEventAt = this.clock(); }
+
   markHealth(healthy, detail = "") {
     const changed = healthy !== this.healthy;
     this.healthy = healthy;
