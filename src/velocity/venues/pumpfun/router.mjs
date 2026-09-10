@@ -343,6 +343,22 @@ export class PumpfunLiveRouter extends Router {
     }
   }
 
+  /** Plain SOL transfer from the trading wallet (the platform's performance fee). Returns the signature. */
+  async transferSol(toPubkey, sol) {
+    if (!this.ready) throw new Error("call init() first");
+    const lamports = Math.floor(Number(sol) * 1e9);
+    if (!(lamports > 0)) throw new Error("transfer amount must be positive");
+    const { SystemProgram, Transaction, PublicKey } = this.web3;
+    const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: this.keypair.publicKey, toPubkey: new PublicKey(toPubkey), lamports }));
+    tx.feePayer = this.keypair.publicKey;
+    tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
+    tx.sign(this.keypair);
+    const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+    const st = await this._awaitStatus(sig, this.confirmTimeoutMs);
+    if (st.err) throw this._chainError(sig, st.err);
+    return sig;
+  }
+
   async health() {
     if (!this.ready) return { ok: false, latencyMs: null, detail: "not initialized" };
     const t0 = Date.now();

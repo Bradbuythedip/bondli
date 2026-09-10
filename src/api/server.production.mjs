@@ -22,6 +22,7 @@
  * ═══════════════════════════════════════════════════════════════
  */
 
+import path from "node:path";
 import express from "express";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -37,6 +38,8 @@ import { FleetTrader, skimSweep } from "../engine/fleet-trader.mjs";
 import { createToken } from "../engine/token-creator.mjs";
 import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateFee, calculateReferralSplit, getEffectiveFeeRate, recordTradeOutcome, generateWinCard, getTraderStats, addShareCredit, restoreTraderStats, PLATFORM_WALLET, NETWORK_FEE_PCT, PROFIT_LADDER } from "../engine/fee-engine.mjs";
 import { makeVault } from "../middleware/keyvault.mjs";
+import { VelocityHub, mountVelocityRoutes } from "../velocity/hub.mjs";
+import { PumpfunFeed } from "../velocity/venues/pumpfun/feed.mjs";
 import { generateChallenge, verifySolanaSignature, issueAuthToken, makeRequireOwner, nonces as authNonces } from "../middleware/wallet-auth.mjs";
 import CONFIG from "../engine/config.mjs";
 import { smartSend, getOptimalPriorityFee } from "../engine/rpc-enhanced.mjs";
@@ -7807,11 +7810,12 @@ function passesTraderBaseFilter(t, now = Date.now()) {
   return ub >= 3 && sells >= 1 && buys >= (boosted ? 3 : 5) && ageMin >= 0.5 && mc >= 4000;
 }
 
-app.get("/api/radar/scored", (req, res) => {
-  const min = Math.max(0, parseInt(req.query.min || "40") || 0);
-  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit || "60") || 60));
-  const only = req.query.ca ? String(req.query.ca).split(",").map(s => s.trim()).filter(Boolean) : null;
-  const all = !!req.query.all; // ?all=1: everything, for calibration tools and the frontend
+/** The scored radar as one object; the HTTP route and the in-process velocity hub both read it. */
+function buildScoredResponse(query = {}) {
+  const min = Math.max(0, parseInt(query.min || "40") || 0);
+  const limit = Math.min(200, Math.max(1, parseInt(query.limit || "60") || 60));
+  const only = query.ca ? String(query.ca).split(",").map(s => s.trim()).filter(Boolean) : null;
+  const all = !!query.all; // ?all=1: everything, for calibration tools and the frontend
   const now = Date.now();
   const source = only ? only.map(ca => radar.tokens.get(ca)).filter(Boolean) : [...radar.tokens.values()];
   const rows = [];
@@ -7848,8 +7852,9 @@ app.get("/api/radar/scored", (req, res) => {
     });
   }
   rows.sort((a, b) => (b.scores.apeScore || 0) - (a.scores.apeScore || 0));
-  res.json({ ts: now, solPrice: solUsdPrice, solPriceAt: solUsdPriceAt || null, gradMc: gradMcUsd(), count: rows.length, tokens: rows.slice(0, limit) });
-});
+  return { ts: now, solPrice: solUsdPrice, solPriceAt: solUsdPriceAt || null, gradMc: gradMcUsd(), count: rows.length, tokens: rows.slice(0, limit) };
+}
+app.get("/api/radar/scored", (req, res) => res.json(buildScoredResponse(req.query)));
 
 app.get("/api/radar/token/:ca", (req, res) => {
   const token = radar.tokens.get(req.params.ca);
@@ -10760,6 +10765,23 @@ premiumCompute.mountRoutes(app, { getUser, resolveTier, isOwnerWallet });
 // GROK AI CHAT — GPU support & help
 // ═══════════════════════════════════════
 mountChatRoutes(app, { redis, getUser, resolveTier });
+
+// ═══════════════════════════════════════
+// HOSTED VELOCITY — one radar, one engine per user, fee on realized profit (src/velocity/HOSTED_DESIGN.md)
+// ═══════════════════════════════════════
+let velocityHub = null;
+if (process.env.VELOCITY_HOSTED === "1") {
+  // The hub's feed reads the radar in-process: same shape as GET /api/radar/scored, no HTTP hop.
+  const inProcessFetch = async (url) => { const q = Object.fromEntries(new URL(url, "http://x").searchParams); return { ok: true, status: 200, json: async () => buildScoredResponse(q) }; };
+  const hubFeed = new PumpfunFeed({ bondliUrl: "http://in-process", minScore: parseInt(process.env.VELOCITY_MIN_SCORE || "25") || 25, pollMs: 2000, tickMs: 1000, pumpportal: false, fetchImpl: inProcessFetch });
+  velocityHub = new VelocityHub({
+    feed: hubFeed, rootDir: path.resolve(process.env.VELOCITY_DATA_DIR || "data/velocity/users"), platformWallet: process.env.PLATFORM_WALLET || null, rpcUrl: RPC_URL,
+    fee: { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser },
+  });
+  hubFeed.start().then(() => console.log(`[VELOCITY-HUB] radar feed started; fee wallet ${velocityHub.feeOk ? "configured" : "NOT configured"}`)).catch(e => console.error("[VELOCITY-HUB] feed failed to start:", e.message));
+  mountVelocityRoutes(app, { hub: velocityHub, requireOwner, getTradingWallet, getUser, resolveTier });
+  for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { velocityHub.stopAll().finally(() => process.exit(0)); });
+}
 
 // ═══════════════════════════════════════
 // GLOBAL ERROR HANDLER — catch route errors, keep server alive
