@@ -69,7 +69,7 @@ through `calculateFee` unchanged so the site's existing economics carry over.
 - Fee rates: the existing fee engine's, i.e. `FREE_PROFIT_CUT` (25%, ladder down to 2%) for free
   tier and `NETWORK_FEE_PCT` (2%) for Pro/VIP. The velocity fee is shown, not hidden, whatever the
   tier.
-- Who may run velocity: Pro, VIP, or whitelisted, like the existing auto-trader.
+- Who may run velocity: anyone with a trading wallet. The 5% fee on profit is the only price of admission; there is no tier gate.
 - Minimum stake $5, per-trade cap and daily-loss cap from the risk template, bankroll from the
   wallet's free SOL.
 

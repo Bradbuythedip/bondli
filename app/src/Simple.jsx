@@ -3,7 +3,7 @@
 // does is shown in its own words; nothing is explained in prose that the narration already shows.
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { TC, D, L, css } from "./lib/theme.js";
-import { M, S } from "./lib/constants.js";
+import { M, S, imgUrl } from "./lib/constants.js";
 import a from "./lib/api-client.js";
 
 const FEE_PCT = 5;
@@ -35,7 +35,24 @@ function Spark({ v, T, w = 72, h = 22 }) {
 }
 // The bot's one reason per token, in plain words.
 const TAG = { hot: ["BUY ZONE", "gn"], close: ["almost", "yl"], weak: ["weak", "ft"], new: ["too new", "ft"], nobuyers: ["no buyers", "ft"], fewbuyers: ["few buyers", "ft"], small: ["too small", "ft"], rug: ["rug", "rd"], mayhem: ["mayhem", "ft"], copy: ["copy", "ft"] };
+// Risk reads green → yellow → red, the same three colours the rest of the page uses for gain, caution, loss.
+const RISK_C = (v, T) => v >= 3 ? T.rd : v >= 2 ? T.yl : T.gn;
+function Dial({ value, onChange, T }) {
+  const n = AGG.length, c = RISK_C(value, T);
+  return <div style={{ marginTop: 8 }}>
+    <div style={{ display: "flex", gap: 4 }}>{AGG.map(o => <div key={o.v} onClick={() => onChange(o.v)} style={{ flex: 1, height: 10, borderRadius: 5, cursor: "pointer", background: o.v <= value ? RISK_C(o.v, T) : T.bg, border: `1px solid ${o.v <= value ? RISK_C(o.v, T) : T.bd}`, opacity: o.v <= value ? (o.v === value ? 1 : .55) : 1, transition: "background .15s, opacity .15s" }} />)}</div>
+    <div style={{ display: "grid", gridTemplateColumns: `repeat(${n}, 1fr)`, marginTop: 6 }}>{AGG.map(o => <button key={o.v} onClick={() => onChange(o.v)} style={{ background: "none", border: "none", padding: "2px 0", fontSize: 12, fontWeight: 800, cursor: "pointer", color: o.v === value ? c : T.ft, textAlign: o.v === 0 ? "left" : o.v === n - 1 ? "right" : "center" }}>{o.l}</button>)}</div>
+  </div>;
+}
 const HUE = s => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+// A token picture through the proxy: lettered tile until it lands, blur-in, three retries, then the tile stays.
+function TokenImg({ src, ca, label, size, T }) {
+  const [tries, sTries] = useState(0); const [ok, sOk] = useState(true); const [loaded, sLoaded] = useState(false);
+  useEffect(() => { sTries(0); sOk(true); sLoaded(false); }, [src]);
+  const tile = { width: size, height: size, borderRadius: Math.round(size / 4), background: `hsl(${HUE(ca)} 30% 22%)`, overflow: "hidden", position: "relative", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: M, fontWeight: 900, fontSize: Math.round(size / 3), color: T.dm };
+  if (!src || !ok) return <div style={tile}>{label}</div>;
+  return <div style={tile}>{!loaded && label}<img key={tries} src={imgUrl(src) + (tries ? `&r=${tries}` : "")} alt="" loading="lazy" style={{ position: "absolute", inset: 0, width: size, height: size, objectFit: "cover", filter: loaded ? "blur(0)" : "blur(10px)", opacity: loaded ? 1 : 0, transition: "filter .3s, opacity .3s" }} onLoad={() => sLoaded(true)} onError={() => { if (tries < 3) setTimeout(() => sTries(t => t + 1), 1500 * (tries + 1)); else sOk(false); }} /></div>;
+}
 function Live({ T }) {
   const [d, sD] = useState(null);
   useEffect(() => { let on = true; const poll = async () => { try { const r = await a.live(); if (on) sD(r); } catch {} }; poll(); const id = setInterval(poll, 3000); return () => { on = false; clearInterval(id); }; }, []);
@@ -52,8 +69,8 @@ function Live({ T }) {
     </div>
     <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between" }}><span>last hour · newest first</span><span>tap a token to open it on pump.fun</span></div>
     <div style={{ background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
-      {d.tokens.slice(0, 25).map(t => { const [label, c] = TAG[t.tag] || TAG.weak; const dim = t.tag === "mayhem" || t.tag === "copy"; const initial = (t.ticker || t.name || "?").slice(0, 2).toUpperCase(); return <a key={t.ca} href={`https://pump.fun/coin/${t.ca}`} target="_blank" rel="noopener" style={{ display: "grid", gridTemplateColumns: "40px 1fr 100px 68px", gap: 12, alignItems: "center", padding: "10px 12px", borderTop: `1px solid ${T.bd}`, opacity: dim ? .45 : 1, color: "inherit", textDecoration: "none" }}>
-        <div style={{ width: 40, height: 40, borderRadius: 10, background: `hsl(${HUE(t.ca)} 30% 22%)`, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: M, fontWeight: 900, fontSize: 13, color: T.dm }}>{t.image ? <img src={t.image} alt="" loading="lazy" style={{ width: 40, height: 40, objectFit: "cover" }} onError={e => { e.currentTarget.replaceWith(document.createTextNode(initial)); }} /> : initial}</div>
+      {d.tokens.slice(0, 25).map(t => { const [label, c] = TAG[t.tag] || TAG.weak; const dim = t.tag === "mayhem" || t.tag === "copy"; const initial = (t.ticker || t.name || "?").slice(0, 2).toUpperCase(); return <a key={t.ca} href={`https://pump.fun/coin/${t.ca}`} target="_blank" rel="noopener" style={{ display: "grid", gridTemplateColumns: "56px 1fr 100px 68px", gap: 12, alignItems: "center", padding: "9px 12px", borderTop: `1px solid ${T.bd}`, opacity: dim ? .45 : 1, color: "inherit", textDecoration: "none" }}>
+        <TokenImg src={t.image} ca={t.ca} label={initial} size={56} T={T} />
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}><span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name || t.ca.slice(0, 6)}</span><span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{t.ticker}</span></div>
           <div style={{ ...muted, fontFamily: M, fontSize: 12, marginTop: 2 }}>{ago(now - t.createdAt)} · {kfmt(t.mcapUsd)} · {t.buyers} buyers{t.copies ? ` · ${t.copies} copies` : ""}</div>
@@ -148,10 +165,9 @@ export default function Simple() {
 
         {/* 3. Two choices, then start */}
         {funded && <>
-          <div style={{ marginTop: 18, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><span style={muted}>Risk</span><span style={{ fontWeight: 800, color: agg >= 3 ? T.rd : agg >= 2 ? T.yl : T.gn }}>{AGG[agg]?.l}</span></div>
-          <input type="range" min="0" max="3" step="1" value={agg} onChange={e => sAgg(Number(e.target.value))} style={{ width: "100%", accentColor: agg >= 3 ? T.rd : agg >= 2 ? T.yl : T.gn, margin: "8px 0 4px" }} />
-          <div style={{ display: "flex", justifyContent: "space-between", ...muted, fontSize: 11 }}>{AGG.map(o => <span key={o.v} onClick={() => sAgg(o.v)} style={{ cursor: "pointer", color: agg === o.v ? T.tx : T.ft }}>{o.l}</span>)}</div>
-          <div style={{ ...muted, marginTop: 6 }}>{AGG[agg]?.d}</div>
+          <div style={{ marginTop: 18, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><span style={muted}>Risk</span><span style={{ fontWeight: 800, color: RISK_C(agg, T) }}>{AGG[agg]?.l}</span></div>
+          <Dial value={agg} onChange={sAgg} T={T} />
+          <div style={{ ...muted, marginTop: 8 }}>{AGG[agg]?.d}</div>
           <div style={{ marginTop: 14, ...muted, marginBottom: 6 }}>Per trade</div>
           <div style={{ display: "flex", gap: 6 }}>{SIZES.map(v => <button key={v} onClick={() => sSize(v)} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1px solid ${size === v ? T.gn : T.bd}`, background: size === v ? T.gn + "22" : "transparent", color: size === v ? T.gn : T.dm, fontFamily: M, fontWeight: 800, cursor: "pointer" }}>${v}</button>)}</div>
           <div style={{ ...muted, marginTop: 10 }}>Up to 4 tokens at once. Stops for the day after ${Math.max(15, size * 3)} of losses.</div>
@@ -180,14 +196,14 @@ export default function Simple() {
     {/* Footer: the two ways out, and the one line about money */}
     {pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 14, display: "flex", gap: 8 }}>
       <Btn ghost T={T} onClick={withdraw} disabled={busy === "withdraw" || running}>{busy === "withdraw" ? "Sending…" : "Withdraw"}</Btn>
-      <Btn ghost T={T} onClick={exportKey} disabled={busy === "key"}>Export key</Btn>
+      <Btn ghost T={T} onClick={exportKey} disabled={busy === "key"}>{busy === "key" ? "Signing…" : "Export key"}</Btn>
     </div>}
-    <Live T={T} />
     {showKey && <div style={{ width: "100%", maxWidth: 440, marginTop: 10, background: T.sf, border: `1px solid ${T.yl}`, borderRadius: 12, padding: 14 }}>
       <div style={{ ...muted, color: T.yl, marginBottom: 6 }}>Your bot wallet's private key. Anyone with it owns the wallet. Import it into Phantom to control the wallet directly.</div>
-      <div onClick={() => copy(showKey)} style={{ fontFamily: M, fontSize: 11, wordBreak: "break-all", cursor: "pointer", color: T.tx }}>{showKey}{copied ? "  copied" : ""}</div>
-      <div style={{ marginTop: 8 }}><Btn ghost T={T} onClick={() => sShowKey(null)}>Hide</Btn></div>
+      <div onClick={() => copy(showKey)} title="tap to copy" style={{ fontFamily: M, fontSize: 12, wordBreak: "break-all", cursor: "pointer", color: T.tx, padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{showKey}</div>
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}><Btn ghost T={T} onClick={() => copy(showKey)}>{copied ? "Copied" : "Copy"}</Btn><Btn ghost T={T} onClick={() => sShowKey(null)}>Hide</Btn></div>
     </div>}
+    <Live T={T} />
     <div style={{ ...muted, fontSize: 12, marginTop: 28, textAlign: "center", maxWidth: 440 }}>Bondli keeps {FEE_PCT}% of each profitable trade, taken from the profit. Losing trades cost nothing. Memecoins can go to zero; only trade what you can lose.</div>
   </div></TC.Provider>;
 }
