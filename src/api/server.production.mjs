@@ -7650,7 +7650,10 @@ const IMG_CACHE_TTL = 7200000; // 2 hours
 const imgFailing = new Map(); // url → timestamp of last failure (negative cache)
 
 app.get("/api/img", async (req, res) => {
-  const url = req.query.url;
+  // ?url= the image we know about (may be empty), ?mint= the token: DexScreener keeps its own copy of
+  // every pump.fun token's picture by mint, which is the one source that needs no metadata from us.
+  const mint = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(req.query.mint || "") ? req.query.mint : null;
+  const url = req.query.url || (mint ? `https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png?size=lg` : "");
   if (!url) return res.status(400).end();
 
   // Check cache first
@@ -7746,6 +7749,7 @@ app.get("/api/img", async (req, res) => {
       return { buf, ct: isImageBuf(buf) && ct.includes("octet") ? "image/png" : ct };
     };
 
+    if (mint) { const dx = `https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png?size=lg`; if (!urls.includes(dx)) urls.splice(Math.min(2, urls.length), 0, dx); }
     // Race strategy: fire first 3 gateways concurrently (5s timeout),
     // fallback to remaining sequentially (4s each) if all fail
     let result = null;
