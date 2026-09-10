@@ -80,6 +80,9 @@ export class PumpfunLiveRouter extends Router {
   }
 
   async init() {
+    // Resolved here, not in the constructor: the engine builds routers before an operator may have loaded .env.
+    if (this.secret == null) this.secret = process.env.MASTER_SEED;
+    if (this.rpcUrl == null) this.rpcUrl = process.env.RPC_URL;
     if (!this.secret) throw new Error("pumpfun live router needs MASTER_SEED (base58 secret key of a dedicated wallet) in .env");
     const [web3, bs58, cfg] = await Promise.all([import("@solana/web3.js"), import("bs58"), import("../../../engine/config.mjs")]);
     this.web3 = web3;
