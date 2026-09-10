@@ -35,6 +35,15 @@ function Spark({ v, T, w = 72, h = 22 }) {
 }
 // The bot's one reason per token, in plain words.
 const TAG = { hot: ["BUY ZONE", "gn"], close: ["almost", "yl"], weak: ["weak", "ft"], new: ["too new", "ft"], nobuyers: ["no buyers", "ft"], fewbuyers: ["few buyers", "ft"], small: ["too small", "ft"], rug: ["rug", "rd"], mayhem: ["mayhem", "ft"], copy: ["copy", "ft"] };
+// Risk reads green → yellow → red, the same three colours the rest of the page uses for gain, caution, loss.
+const RISK_C = (v, T) => v >= 3 ? T.rd : v >= 2 ? T.yl : T.gn;
+function Dial({ value, onChange, T }) {
+  const n = AGG.length, c = RISK_C(value, T);
+  return <div style={{ marginTop: 8 }}>
+    <div style={{ display: "flex", gap: 4 }}>{AGG.map(o => <div key={o.v} onClick={() => onChange(o.v)} style={{ flex: 1, height: 10, borderRadius: 5, cursor: "pointer", background: o.v <= value ? RISK_C(o.v, T) : T.bg, border: `1px solid ${o.v <= value ? RISK_C(o.v, T) : T.bd}`, opacity: o.v <= value ? (o.v === value ? 1 : .55) : 1, transition: "background .15s, opacity .15s" }} />)}</div>
+    <div style={{ display: "grid", gridTemplateColumns: `repeat(${n}, 1fr)`, marginTop: 6 }}>{AGG.map(o => <button key={o.v} onClick={() => onChange(o.v)} style={{ background: "none", border: "none", padding: "2px 0", fontSize: 12, fontWeight: 800, cursor: "pointer", color: o.v === value ? c : T.ft, textAlign: o.v === 0 ? "left" : o.v === n - 1 ? "right" : "center" }}>{o.l}</button>)}</div>
+  </div>;
+}
 const HUE = s => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
 // A token picture through the proxy: lettered tile until it lands, blur-in, three retries, then the tile stays.
 function TokenImg({ src, ca, label, size, T }) {
@@ -156,10 +165,9 @@ export default function Simple() {
 
         {/* 3. Two choices, then start */}
         {funded && <>
-          <div style={{ marginTop: 18, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><span style={muted}>Risk</span><span style={{ fontWeight: 800, color: agg >= 3 ? T.rd : agg >= 2 ? T.yl : T.gn }}>{AGG[agg]?.l}</span></div>
-          <input type="range" min="0" max="3" step="1" value={agg} onChange={e => sAgg(Number(e.target.value))} style={{ width: "100%", accentColor: agg >= 3 ? T.rd : agg >= 2 ? T.yl : T.gn, margin: "8px 0 4px" }} />
-          <div style={{ display: "flex", justifyContent: "space-between", ...muted, fontSize: 11 }}>{AGG.map(o => <span key={o.v} onClick={() => sAgg(o.v)} style={{ cursor: "pointer", color: agg === o.v ? T.tx : T.ft }}>{o.l}</span>)}</div>
-          <div style={{ ...muted, marginTop: 6 }}>{AGG[agg]?.d}</div>
+          <div style={{ marginTop: 18, display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><span style={muted}>Risk</span><span style={{ fontWeight: 800, color: RISK_C(agg, T) }}>{AGG[agg]?.l}</span></div>
+          <Dial value={agg} onChange={sAgg} T={T} />
+          <div style={{ ...muted, marginTop: 8 }}>{AGG[agg]?.d}</div>
           <div style={{ marginTop: 14, ...muted, marginBottom: 6 }}>Per trade</div>
           <div style={{ display: "flex", gap: 6 }}>{SIZES.map(v => <button key={v} onClick={() => sSize(v)} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1px solid ${size === v ? T.gn : T.bd}`, background: size === v ? T.gn + "22" : "transparent", color: size === v ? T.gn : T.dm, fontFamily: M, fontWeight: 800, cursor: "pointer" }}>${v}</button>)}</div>
           <div style={{ ...muted, marginTop: 10 }}>Up to 4 tokens at once. Stops for the day after ${Math.max(15, size * 3)} of losses.</div>
@@ -188,14 +196,14 @@ export default function Simple() {
     {/* Footer: the two ways out, and the one line about money */}
     {pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 14, display: "flex", gap: 8 }}>
       <Btn ghost T={T} onClick={withdraw} disabled={busy === "withdraw" || running}>{busy === "withdraw" ? "Sending…" : "Withdraw"}</Btn>
-      <Btn ghost T={T} onClick={exportKey} disabled={busy === "key"}>Export key</Btn>
+      <Btn ghost T={T} onClick={exportKey} disabled={busy === "key"}>{busy === "key" ? "Signing…" : "Export key"}</Btn>
     </div>}
-    <Live T={T} />
     {showKey && <div style={{ width: "100%", maxWidth: 440, marginTop: 10, background: T.sf, border: `1px solid ${T.yl}`, borderRadius: 12, padding: 14 }}>
       <div style={{ ...muted, color: T.yl, marginBottom: 6 }}>Your bot wallet's private key. Anyone with it owns the wallet. Import it into Phantom to control the wallet directly.</div>
-      <div onClick={() => copy(showKey)} style={{ fontFamily: M, fontSize: 11, wordBreak: "break-all", cursor: "pointer", color: T.tx }}>{showKey}{copied ? "  copied" : ""}</div>
-      <div style={{ marginTop: 8 }}><Btn ghost T={T} onClick={() => sShowKey(null)}>Hide</Btn></div>
+      <div onClick={() => copy(showKey)} title="tap to copy" style={{ fontFamily: M, fontSize: 12, wordBreak: "break-all", cursor: "pointer", color: T.tx, padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{showKey}</div>
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}><Btn ghost T={T} onClick={() => copy(showKey)}>{copied ? "Copied" : "Copy"}</Btn><Btn ghost T={T} onClick={() => sShowKey(null)}>Hide</Btn></div>
     </div>}
+    <Live T={T} />
     <div style={{ ...muted, fontSize: 12, marginTop: 28, textAlign: "center", maxWidth: 440 }}>Bondli keeps {FEE_PCT}% of each profitable trade, taken from the profit. Losing trades cost nothing. Memecoins can go to zero; only trade what you can lose.</div>
   </div></TC.Provider>;
 }
