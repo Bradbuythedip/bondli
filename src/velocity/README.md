@@ -99,6 +99,15 @@ Live pump.fun needs `MASTER_SEED` and an RPC. Live Polymarket needs
 `@polymarket/clob-client` and `ethers`. On-chain redemption of resolved
 Polymarket positions is not automated in live mode; paper mode models it.
 
+### Bankroll from the wallet
+
+`"bankroll_source": "wallet"` in risk.json makes the live wallet the bankroll: free SOL (less
+`wallet_reserve_sol`, default 0.02, kept for fees and rent) at the radar's SOL price, plus what is
+already open, is the equity fractional Kelly sizes from. The reading is refreshed after every live
+fill and every 30s; with no fresh reading (5 min) or no SOL price nothing is sized (`WALLET_UNKNOWN`,
+`NO_SOL_PRICE`), never guessed. Paper venues keep `bankroll_usd`. The absolute caps (per trade,
+portfolio, daily loss) still apply unchanged. `velocity status` shows the wallet and equity.
+
 ## Deviations from the design doc
 
 Two, both in the direction of fewer parts: the risk file is JSON, not YAML

@@ -2,6 +2,8 @@
   "_comment": "VELOCITY risk envelope. Read once at start. The process cannot write this file. All amounts in USD. Copy to risk.json and edit.",
   "base_currency": "USD",
   "bankroll_usd": 2000,
+  "bankroll_source": "fixed",
+  "wallet_reserve_sol": 0.02,
   "per_trade_max_usd": 50,
   "portfolio_max_exposure_usd": 400,
   "daily_loss_limit_usd": 100,

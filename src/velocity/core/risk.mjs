@@ -24,6 +24,9 @@ export function validateRisk(cfg) {
   if (!cfg || typeof cfg !== "object") return { ok: false, errors: ["risk file is not an object"], summary: null };
 
   req("bankroll_usd", num(cfg.bankroll_usd) && cfg.bankroll_usd > 0, "must be a positive number");
+  // "wallet": the live wallet's free SOL is the bankroll; bankroll_usd stays the paper bankroll.
+  req("bankroll_source", cfg.bankroll_source == null || ["fixed", "wallet"].includes(cfg.bankroll_source), "must be \"fixed\" or \"wallet\"");
+  req("wallet_reserve_sol", cfg.wallet_reserve_sol == null || (num(cfg.wallet_reserve_sol) && cfg.wallet_reserve_sol >= 0), "must be a number >= 0 (SOL kept back for fees and rent)");
   req("per_trade_max_usd", num(cfg.per_trade_max_usd) && cfg.per_trade_max_usd > 0, "must be a positive number");
   req("portfolio_max_exposure_usd", num(cfg.portfolio_max_exposure_usd) && cfg.portfolio_max_exposure_usd > 0, "must be a positive number");
   req("daily_loss_limit_usd", num(cfg.daily_loss_limit_usd) && cfg.daily_loss_limit_usd > 0, "must be a positive number");
@@ -71,6 +74,7 @@ export function worstDay(cfg) {
   }
   return {
     bankroll_usd: cfg.bankroll_usd,
+    bankroll_source: cfg.bankroll_source || "fixed",
     daily_loss_limit_usd: cfg.daily_loss_limit_usd,
     daily_loss_pct_of_bankroll: +((cfg.daily_loss_limit_usd / cfg.bankroll_usd) * 100).toFixed(2),
     max_open_exposure_usd: cfg.portfolio_max_exposure_usd,
@@ -102,7 +106,10 @@ export class Sizer {
 
   /**
    * @param decision  GO decision from DP2: p_win, payoff, venue, group, stop_fraction
-   * @param portfolio { open: [{venue, group, notional_usd, worst_case_fraction}], realized_today_usd }
+   * @param portfolio { open: [{venue, group, notional_usd, worst_case_fraction}], realized_today_usd,
+   *                    equity_usd?: number|null, equity_reason?: string }
+   *                  equity_usd, when present, is the measured bankroll (wallet mode): free wallet
+   *                  value plus what is open. A null with a reason means no order can be sized.
    * @param throttle  governor output in [0,1]; only ever shrinks
    */
   size({ decision, portfolio, throttle = 1, halted = false }) {
@@ -133,10 +140,14 @@ export class Sizer {
     const f_full = kellyFraction(decision.p_win, decision.payoff);
     if (f_full <= 0) return zero("NO_EDGE");
     const f_used = f_full * vc.kelly_fraction * t;
-    const equity = env.bankroll_usd + realized;
+    let equity;
+    if (portfolio && "equity_usd" in portfolio) {
+      if (!(portfolio.equity_usd > 0)) return zero(portfolio.equity_reason || "WALLET_UNKNOWN");
+      equity = portfolio.equity_usd; // measured: the wallet already reflects today's realized PnL
+    } else equity = env.bankroll_usd + realized;
     const available = Math.max(0, equity - totalOpen);
     let stake = available * f_used;
-    reasons.push(`kelly f=${f_full.toFixed(4)} x ${vc.kelly_fraction} x throttle ${t.toFixed(2)} on ${available.toFixed(2)} available`);
+    reasons.push(`kelly f=${f_full.toFixed(4)} x ${vc.kelly_fraction} x throttle ${t.toFixed(2)} on ${available.toFixed(2)} available${portfolio && "equity_usd" in portfolio ? " (wallet)" : ""}`);
 
     const cap = (name, limit) => { if (stake > limit) { stake = Math.max(0, limit); caps.push(name); } };
     cap("PER_TRADE_MAX", env.per_trade_max_usd);
