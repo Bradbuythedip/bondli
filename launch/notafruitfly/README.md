@@ -17,6 +17,11 @@ Everything here is ready to run except two decisions that are yours: the venue a
 Decision: PONS. The token shows in the live feed with a verdict, the bot's users can trade it, and the
 banner reads the curve. `launch.py` (Uniswap v2) stays here as the fallback and the site supports both.
 
+## Fleet launch
+
+A fleet of exempt wallets, the volume playbook and the auto-rug live in `../robinhood/` (README there): the
+simulator first, testnet second, then `fleet-launch.mjs launch` on mainnet with a salt mined here.
+
 ## PONS path (chosen): `pons-launch.mjs`
 
 The live deployer deploys curve then token with CREATE2 and salt `keccak256(abi.encode(launchWallet, userSalt))`.
@@ -42,6 +47,16 @@ Read `inspect` carefully once: the script fills the launch struct by field name.
 value you did not intend (an empty string, a zero where a config id belongs), set it with
 `FLY_<KEY>` or edit `fillStruct`. `mine` cannot start until the offline math matches the deployer, so a
 wrong field is caught before any hashing, and `launch` re-checks the address on the day.
+
+The deployer's `predictLaunchAddresses` takes the whole `LaunchDeployment`, which carries values only
+the factory knows: the fee policy (the meme hook) and its current policy snapshot, the fee escrow, the
+buyback vault, and the launch config's supply, curve fee, phantom reserve and graduation threshold.
+`inspect` reads them from the factory and prints them; `mine` and `launch` refuse to run while any is
+unreadable, because a zero in their place predicts the address of a launch the factory never makes.
+`launch` then simulates the real router call and refuses to send unless the `(token, curve)` it returns
+is the mined address. Both were checked against mock PONS contracts on a local node (a deployer that
+hashes the whole struct, a factory with the real getters, a router that simulates from the factory's
+values, and a second router with a different policy that must be refused).
 
 Set `LOGO` to the image URL you will upload (the fly is at https://bondli.fun/fly.png once Vercel
 deploys) and the socials before mining; changing any of them afterwards changes the address.
