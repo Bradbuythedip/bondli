@@ -10,4 +10,5 @@ input,button{font-family:inherit;-webkit-appearance:none}
 ::-webkit-scrollbar{width:2px}::-webkit-scrollbar-thumb{background:${T.bd};border-radius:4px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 @keyframes gp{0%,100%{box-shadow:0 0 0 0 ${T.gn}33}70%{box-shadow:0 0 0 5px ${T.gn}00}}
+@keyframes fly{0%,100%{transform:translateY(0) rotate(-6deg)}50%{transform:translateY(-10px) rotate(-2deg)}}
 `; }

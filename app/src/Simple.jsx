@@ -123,6 +123,47 @@ function Live({ T, agg }) {
       </a>; }
 }
 
+/** Bondli's own token, front and centre: the fly, the status, and when it is live the number, the
+ *  curve, the address and the way in. State comes from the API every 15s, pushed by tools/launch-push.mjs. */
+function Launch({ T }) {
+  const [l, sL] = useState(null); const [copied, sCopied] = useState(false);
+  useEffect(() => { let on = true; const poll = async () => { try { const r = await a.launch(); if (on) sL(r); } catch {} }; poll(); const id = setInterval(poll, 15000); return () => { on = false; clearInterval(id); }; }, []);
+  if (!l || l.status === "off") return null;
+  const live = l.status === "live" || l.status === "graduated", lv = l.live && !l.live.error ? l.live : null;
+  const copy = async () => { try { await navigator.clipboard.writeText(l.address); sCopied(true); setTimeout(() => sCopied(false), 1500); } catch {} };
+  const pill = { display: "inline-block", padding: "4px 10px", borderRadius: 999, fontFamily: M, fontSize: 11, fontWeight: 800, letterSpacing: ".08em" };
+  return <div style={{ width: "100%", maxWidth: 440, marginBottom: 18, position: "relative", overflow: "hidden", borderRadius: 18, border: `1px solid ${live ? T.gn : T.bd}`, background: `radial-gradient(120% 90% at 85% 20%, ${T.gn}2a 0%, ${T.sf} 55%)`, padding: "18px 18px 16px", boxSizing: "border-box" }}>
+    <img src={l.image || "/fly.png"} alt="Not a fruit fly" style={{ position: "absolute", right: -18, top: -6, width: 190, height: "auto", animation: "fly 5s ease-in-out infinite", filter: `drop-shadow(0 0 22px ${T.gn}88)`, pointerEvents: "none" }} />
+    <div style={{ position: "relative", zIndex: 1, maxWidth: 240 }}>
+      <span style={{ ...pill, background: live ? T.gn : T.bg, color: live ? "#000" : T.dm, border: `1px solid ${live ? T.gn : T.bd}` }}>{l.status === "graduated" ? "GRADUATED · ROBINHOOD CHAIN" : live ? "LIVE · ROBINHOOD CHAIN" : "LAUNCHING SOON · ROBINHOOD CHAIN"}</span>
+      <div style={{ fontSize: 30, fontWeight: 900, letterSpacing: "-.03em", lineHeight: 1, marginTop: 12 }}>NOT A<br />FRUIT FLY</div>
+      {l.ticker && <div style={{ fontFamily: M, fontWeight: 800, color: T.gn, marginTop: 6 }}>${l.ticker.replace(/^\$/, "")}</div>}
+      <div style={{ color: T.ft, fontSize: 13, lineHeight: 1.45, marginTop: 8 }}>{l.tagline}</div>
+    </div>
+    {live && <div style={{ position: "relative", zIndex: 1, marginTop: 14 }}>
+      {lv && <div style={{ display: "flex", gap: 14, fontFamily: M, fontSize: 13, alignItems: "baseline" }}>
+        <span><span style={{ color: T.ft, fontSize: 11 }}>mcap </span><b style={{ color: T.tx, fontSize: 18 }}>{kfmt(lv.mcapUsd || 0)}</b></span>
+        {lv.buys != null && <span><span style={{ color: T.ft, fontSize: 11 }}>buys </span><b>{lv.buys}</b></span>}
+        {lv.buyers != null && lv.buyers > 0 && <span><span style={{ color: T.ft, fontSize: 11 }}>holders </span><b>{lv.buyers}</b></span>}
+      </div>}
+      {lv && lv.curvePct != null && <div style={{ marginTop: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontFamily: M, fontSize: 11, color: T.ft }}><span>{lv.graduated ? "graduated to the pool" : "bonding curve"}</span><span>{Math.round(lv.curvePct * 100)}%</span></div>
+        <div style={{ height: 6, background: T.bg, borderRadius: 3, marginTop: 4, overflow: "hidden" }}><div style={{ width: `${Math.max(2, Math.round(lv.curvePct * 100))}%`, height: "100%", background: T.gn, transition: "width .6s" }} /></div>
+      </div>}
+      {l.address && <div onClick={copy} title="copy" style={{ fontFamily: M, fontSize: 11, color: T.dm, marginTop: 10, wordBreak: "break-all", cursor: "pointer", padding: "7px 9px", background: T.bg + "cc", borderRadius: 8, border: `1px solid ${T.bd}` }}>{l.address}{copied ? "  copied" : ""}</div>}
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        {l.url && <a href={l.url} target="_blank" rel="noopener" style={{ flex: 1, textAlign: "center", padding: "11px 12px", borderRadius: 10, background: T.gn, color: "#000", fontWeight: 900, textDecoration: "none", fontSize: 14 }}>Buy on PONS</a>}
+        {l.links?.x && <a href={l.links.x} target="_blank" rel="noopener" style={{ padding: "11px 14px", borderRadius: 10, border: `1px solid ${T.bd}`, color: T.tx, fontWeight: 800, textDecoration: "none", fontSize: 14 }}>X</a>}
+        {l.links?.telegram && <a href={l.links.telegram} target="_blank" rel="noopener" style={{ padding: "11px 14px", borderRadius: 10, border: `1px solid ${T.bd}`, color: T.tx, fontWeight: 800, textDecoration: "none", fontSize: 14 }}>Telegram</a>}
+      </div>
+    </div>}
+    {l.updates?.length > 0 && <div style={{ position: "relative", zIndex: 1, marginTop: 12, fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.6, borderTop: `1px solid ${T.bd}`, paddingTop: 8 }}>
+      {l.updates.slice(0, 3).map((u, i) => <div key={i}><span style={{ color: T.dm }}>{new Date(u.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span> {u.text}</div>)}
+    </div>}
+    <div style={{ position: "relative", zIndex: 1, marginTop: 10, fontSize: 11, color: T.dm }}>The bot judges this launch like any other. No favours, no auto-buy.</div>
+  </div>;
+}
+
 export default function Simple() {
   const [dark] = useState(() => { try { return localStorage.getItem("bondli_theme") !== "light"; } catch { return true; } });
   const T = dark ? D : L;
@@ -139,7 +180,7 @@ export default function Simple() {
   const [copied, sCopied] = useState(false);
   const narRef = useRef(null);
   const running = !!st?.running;
-  const s = st?.status; const day = s?.day; const pnl = day?.realizedUsd || 0;
+  const s = st?.status; const day = s?.day; const tp = s?.pnl || null; const pnl = tp?.since_start_usd ?? (day?.realizedUsd || 0) + (tp?.unrealized_usd || 0); const pnlKind = tp?.since_start_usd != null ? "wallet" : "trades";
   const say = (m, kind = "info") => { sMsg({ m, kind }); if (kind !== "error") setTimeout(() => sMsg(x => (x?.m === m ? null : x)), 6000); };
 
   useEffect(() => { const p = phantom(); if (p?.isConnected && p.publicKey) sPk(p.publicKey.toString()); else p?.connect?.({ onlyIfTrusted: true }).then(r => sPk(r.publicKey.toString())).catch(() => {}); }, []);
@@ -214,6 +255,8 @@ export default function Simple() {
       <div style={{ ...muted, fontSize: 16, marginTop: 10 }}>You keep the wallet. It does the trading.</div>
     </div>
 
+    <Launch T={T} />
+
     <div style={card}>
       {/* 1. Connect */}
       {!pk && <Btn big T={T} onClick={connect}>Connect wallet</Btn>}
@@ -262,7 +305,7 @@ export default function Simple() {
           <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: T.gn, animation: "gp 2s infinite" }} /><span style={{ fontWeight: 800 }}>Trading</span></span>
           <span style={{ fontFamily: M, fontWeight: 900, fontSize: 30, color: pnl >= 0 ? T.gn : T.rd }}>{pnl >= 0 ? "+" : ""}{fmt(pnl)}</span>
         </div>
-        <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span>today, {day?.trades || 0} trades</span><span>{(() => { const w = s?.bankroll?.wallets || {}; const sol = w.pumpfun?.sol ?? tw?.solBalance, eth = w.pons?.sol ?? tw?.ethBalance; const parts = []; if (sol != null) parts.push(Number(sol).toFixed(3) + " SOL"); if (eth != null) parts.push(Number(eth).toFixed(4) + " ETH"); return parts.join(" · "); })()}</span></div>
+        <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span title={pnlKind === "wallet" ? "wallet plus open positions now, against when you pressed Start" : "closed trades today plus open positions"}>{pnlKind === "wallet" ? "since start" : "today"}, {day?.trades || 0} trades{tp ? ` · closed ${(day?.realizedUsd || 0) >= 0 ? "+" : ""}${fmt(day?.realizedUsd || 0)} · open ${(tp.unrealized_usd || 0) >= 0 ? "+" : ""}${fmt(tp.unrealized_usd || 0)}` : ""}</span><span>{(() => { const w = s?.bankroll?.wallets || {}; const sol = w.pumpfun?.sol ?? tw?.solBalance, eth = w.pons?.sol ?? tw?.ethBalance; const parts = []; if (sol != null) parts.push(Number(sol).toFixed(3) + " SOL"); if (eth != null) parts.push(Number(eth).toFixed(4) + " ETH"); return parts.join(" · "); })()}</span></div>
         {paused && <div style={{ color: T.yl, fontSize: 13, marginTop: 8 }}>{/user/.test(s.halt.reason || "") ? "Paused. Open positions still get sold on their plan; nothing new is bought." : `Paused by the bot: ${s.halt.reason}`}</div>}
         {s?.positions?.length > 0 && <div style={{ marginTop: 12 }}>{s.positions.map(p => { const now = Date.now(); const tickAge = p.lastTickAt ? (now - p.lastTickAt) / 1000 : null; const stale = tickAge == null ? now - p.entryTime > 60_000 : tickAge > 60; const open = openPos === p.id; const url = p.venue === "pons" ? `https://www.ponsfamily.com/launchpad/${p.instrument}` : `https://pump.fun/coin/${p.instrument}`; const held = Math.round((now - p.entryTime) / 60000); return <div key={p.id} style={{ borderTop: `1px solid ${T.bd}` }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 8, alignItems: "center", fontFamily: M, fontSize: 13, padding: "6px 0" }}>

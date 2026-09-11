@@ -16,7 +16,8 @@ const FILE = arg("--file"), OUT = arg("--out", "gate-snapshots.jsonl"), MIN = +a
 // all=1: every token the radar holds, not only those past the base filter, so a runner the filter
 // never admitted still shows up in the audit below.
 const URL = (arg("--url", "http://127.0.0.1:3001")).replace(/\/$/, "") + "/api/radar/scored?min=0&limit=200&all=1";
-const RUN_X = +arg("--runner-x", 3); // a runner: peak mcap at least this multiple of the mcap when first seen at 2+ min
+const RUN_X = +arg("--runner-x", 3);
+const FIRST_SIGHT_MAX = +arg("--first-sight-max", 90_000); // a curve token above this at first sight was not a launch we could have judged // a runner: peak mcap at least this multiple of the mcap when first seen at 2+ min
 const MIN_BUYS = +arg("--min-buys", 10), MIN_AGE = +arg("--min-age", 2);
 
 // ── Rule table: one entry per flag in checkDisqualifiers(), same expressions, same order. ──
@@ -224,9 +225,12 @@ async function report(file) {
 // we replay the real judge at the chosen aggression on each snapshot before the peak: enterable on any
 // of them = caught; otherwise the gate that blocked it every time is what cost us the trade.
 function runnerAudit(snaps, gate) {
-  const byCa = new Map();
+  const byCa = new Map(); let skippedAgeUnknown = 0, skippedLate = 0;
   for (const s of snaps) for (const r of s.tokens || []) {
     const t = hydrate(r.token); if (t._mayhem || t._copyOf) continue;
+    // A token the radar first met through a trade carries a guessed launch time until the coin API
+    // answers; its "age" and "first sight" are fiction and it would show up as a runner that was not one.
+    if (t._ageUnknown) { skippedAgeUnknown++; continue; }
     const ts = s.ts || Date.now();
     let e = byCa.get(t.ca); if (!e) { e = { ca: t.ca, name: t.name || t.ticker || t.ca.slice(0, 8), pts: [] }; byCa.set(t.ca, e); }
     e.pts.push({ ts, t, r, age: (ts - (t.createdAt || ts)) / 60000, mc: t.mcapUsd || 0 });
@@ -235,6 +239,9 @@ function runnerAudit(snaps, gate) {
   for (const e of byCa.values()) {
     e.pts.sort((a, b) => a.ts - b.ts);
     const i0 = e.pts.findIndex(p => p.age >= 2 && p.mc >= 3000); if (i0 < 0 || i0 === e.pts.length - 1) continue;
+    // First seen already past the curve (graduated, or a wrapped/major asset the stream echoed): the
+    // bot never had a launch to judge, so a later move is not a missed runner.
+    if (e.pts[i0].mc > FIRST_SIGHT_MAX) { skippedLate++; continue; }
     const first = e.pts[i0]; let peak = first, last = e.pts[e.pts.length - 1];
     for (const p of e.pts.slice(i0 + 1)) if (p.mc > peak.mc) peak = p;
     const x = peak.mc / first.mc;
@@ -255,14 +262,17 @@ function runnerAudit(snaps, gate) {
       return { gate: null, reasons: [], tier };
     } finally { Date.now = now; }
   };
-  const base = (p) => { const t = p.t, ub = t.uniqueBuyers?.size || 0; return ub >= 3 && (t.sells || 0) >= 1 && (t.buys || 0) >= 5 && p.age >= 0.5 && p.mc >= 4000; };
+  // The same base filter the radar applies at this aggression: Degen admits a token earlier.
+  const loose = gate.level >= 3;
+  const base = (p) => { const t = p.t, ub = t.uniqueBuyers?.size || 0; return loose ? ub >= 2 && (t.buys || 0) >= 3 && p.age >= 0.33 && p.mc >= 2500 : ub >= 3 && (t.sells || 0) >= 1 && (t.buys || 0) >= 5 && p.age >= 0.5 && p.mc >= 4000; };
+  const baseWhy = (p) => { const t = p.t, ub = t.uniqueBuyers?.size || 0; return loose ? (ub < 2 ? "BUYERS<2" : (t.buys || 0) < 3 ? "BUYS<3" : p.mc < 2500 ? "MCAP<2.5k" : "AGE<20s") : (ub < 3 ? "BUYERS<3" : (t.buys || 0) < 5 ? "BUYS<5" : (t.sells || 0) < 1 ? "NO_SELL_YET" : p.mc < 4000 ? "MCAP<4k" : "AGE<30s"); };
   const caught = [], missed = [], ruleCost = {}, ruleSaved = {};
   const count = (tab, k) => { tab[k] = (tab[k] || 0) + 1; };
   for (const e of runners) {
     const before = e.pts.slice(e.i0, e.pts.indexOf(e.peak) + 1).filter(p => p !== e.peak);
     let best = null, ok = null;
     for (const p of before) {
-      if (!base(p)) { const v = { gate: "base", reasons: [(p.t.uniqueBuyers?.size || 0) < 3 ? "BUYERS<3" : (p.t.buys || 0) < 5 ? "BUYS<5" : (p.t.sells || 0) < 1 ? "NO_SELL_YET" : p.mc < 4000 ? "MCAP<4k" : "AGE<30s"] }; if (!best) best = { p, v }; continue; }
+      if (!base(p)) { const v = { gate: "base", reasons: [baseWhy(p)] }; if (!best) best = { p, v }; continue; }
       const v = judge(p);
       if (!v.gate) { ok = { p, v }; break; }
       if (!best || best.v.gate === "base" || v.reasons.length < best.v.reasons.length) best = { p, v };
@@ -272,6 +282,7 @@ function runnerAudit(snaps, gate) {
   for (const e of duds) { const p = e.first; if (!base(p)) continue; const v = judge(p); if (v.gate) for (const r of v.reasons) count(ruleSaved, `${v.gate}:${r}`); }
   console.log(`
 RUNNER AUDIT (aggression ${gate.level}): ${byCa.size} tokens followed, ${runners.length} ran ${RUN_X}x+ from first sight at 2 min, ${duds.length} duds`);
+  if (skippedAgeUnknown || skippedLate) console.log(`  left out: ${skippedAgeUnknown} first met through a trade (launch time unknown, so no honest age), ${skippedLate} first seen above $${FIRST_SIGHT_MAX / 1000}k (no launch to judge)`);
   console.log(`  caught (enterable on some snapshot before the peak): ${caught.length}   missed: ${missed.length}`);
   if (missed.length) {
     console.log(`  missed runners, the gate that blocked them on their best snapshot:`);

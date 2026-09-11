@@ -82,6 +82,7 @@ export class Engine extends EventEmitter {
   async start({ reconcile = true } = {}) {
     this.running = true;
     this.store.state.startedAt = this.clock();
+    this.store.state.baseline = null; // the header P&L restarts from the wallet as it is now
     this.store.rollDay();
     await this.initLiveRouters();
     if (reconcile) await this.reconcile();
@@ -160,6 +161,30 @@ export class Engine extends EventEmitter {
     this.wallet = { sol: pre.balanceSol, usd: solPrice > 0 ? +(pre.balanceSol * solPrice).toFixed(2) : null, solPrice: solPrice || null, at: this.clock(), venue, quote: pre.quote || "SOL" };
     this.wallets[venue] = this.wallet;
     this.store.state.wallet = this.wallet; this.store.state.wallets = this.wallets;
+    // The first full reading after a start is the baseline the header P&L is measured from.
+    if (!this.store.state.baseline) { const b = this.truePnl(); if (b.wallet_usd != null) this.store.state.baseline = { wallet_usd: b.wallet_usd, open_usd: b.open_usd, at: this.clock() }; }
+  }
+
+  /** What the user actually has, against what they had when they pressed start: every live wallet in
+   *  USD plus open positions at their current mark. Realized-today ignores open losers, gas and fees on
+   *  failed sends, and yesterday; this does not. Null wallet_usd means a live wallet has no fresh
+   *  reading or no price yet. */
+  truePnl() {
+    let walletUsd = 0, known = true;
+    for (const venue of Object.keys(this.venues)) {
+      if (this.store.venueMode(venue) !== "live") continue;
+      const w = this.wallets[venue] || (this.wallet.venue === venue ? this.wallet : null);
+      const price = (venue === "pumpfun" ? this.solPriceHint : 0) || w?.solPrice || this.venues[venue]?.feed?.solPrice || 0;
+      if (!w || !(w.sol >= 0) || !(price > 0)) { known = false; break; }
+      walletUsd += w.sol * price;
+    }
+    const open = this.store.openPositions().filter(p => !p.paper);
+    const openUsd = open.reduce((s, p) => s + (p.notional_usd || 0) * (1 + (p.changePct || 0) / 100), 0);
+    const unrealized = open.reduce((s, p) => s + (p.unrealized_usd || 0), 0);
+    const b = this.store.state.baseline || null;
+    const out = { wallet_usd: known ? +walletUsd.toFixed(2) : null, open_usd: +openUsd.toFixed(2), unrealized_usd: +unrealized.toFixed(2), realized_today_usd: this.store.state.day.realizedUsd, baseline: b, since_start_usd: null };
+    if (b && known) out.since_start_usd = +((walletUsd + openUsd) - (b.wallet_usd + b.open_usd)).toFixed(2);
+    return out;
   }
 
   /** Re-read the live wallet; called after every live fill and periodically by the sweep. */
@@ -754,6 +779,7 @@ export class Engine extends EventEmitter {
     return {
       running: this.running, startedAt: s.startedAt, now: this.clock(), heartbeatAt: s.heartbeatAt, reconciledAt: s.reconciledAt,
       halt: s.halt, throttle: s.throttle, governor: s.governor, regime: s.regime,
+      pnl: this.truePnl(),
       day: { ...s.day, limit_usd: this.env.daily_loss_limit_usd, used_pct: +((Math.max(0, -s.day.realizedUsd) / this.env.daily_loss_limit_usd) * 100).toFixed(1) },
       bankroll: { source: this.walletMode() ? "wallet" : "fixed", fixed_usd: this.env.bankroll_usd, equity_usd: this.portfolioSnapshot().equity_usd ?? null, wallet: this.wallet.at ? this.wallet : null, wallets: this.wallets },
       positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, name: p.reference?.name || "", ticker: p.reference?.ticker || "", tier: p.tier, model: p.model, notional_usd: p.notional_usd, stake_usd: p.stake_usd, mark: p.mark, entryMark: p.entryMark, peak: p.peak, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode, stall_ms: p.plan?.stall_ms ?? null, max_hold_ms: p.plan?.max_hold_ms ?? null }, tpHit: p._bondli?.tpHit ?? 0, entryTime: p.entryTime, lastTickAt: p.lastTickAt || null, curve: p.reference?.curve?.address || null, adopted: !!p.adopted, sizing: p.sizing || null })),

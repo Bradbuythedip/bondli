@@ -249,9 +249,11 @@ export class VelocityHub {
         if (!ethRouter.ready) await ethRouter.init();
         const rpc = this.ponsFeed?.rpc || explorer;
         const ethPrice = this.ponsFeed?.solPrice || 0;
-        let held = [];
-        try { held = rpc?.walletTokens ? await rpc.walletTokens(ethRouter.address) : []; } catch (err) { report.push({ venue: "pons", instrument: null, ok: false, error: `explorer: ${err.message}` }); }
-        if (u) { u.engine.seedRouterKnowledge("pons"); for (const p of await ethRouter.positions()) if (!held.some(h => h.instrument === p.instrument)) held.push(p); }
+        let held = [], listed = false;
+        try { if (rpc?.walletTokens) { held = await rpc.walletTokens(ethRouter.address); listed = true; } } catch (err) { report.push({ venue: "pons", instrument: null, ok: false, error: `could not list the wallet (${err.message}); checking every token this wallet ever bought instead` }); }
+        // Whatever the listing said, every token this wallet ever bought is checked for a balance too.
+        if (u) u.engine.seedRouterKnowledge("pons"); else for (const inst of this._instrumentsFromDisk(wallet, "pons")) ethRouter.track?.(inst);
+        for (const p of await ethRouter.positions()) if (!held.some(h => h.instrument === p.instrument)) held.push(p);
         for (const h of held) {
           if (!(h.qty >= 1)) continue;
           let info = null; try { info = rpc?.launchInfo ? await rpc.launchInfo(h.instrument) : null; } catch {}
@@ -266,6 +268,20 @@ export class VelocityHub {
     }
     if (u) { try { await u.engine.refreshWallet(); } catch {} }
     return { ok: true, sold: report.filter(r => r.ok).length, failed: report.filter(r => !r.ok).length, report };
+  }
+
+  /** Every instrument a stopped user's ledger says this wallet bought on a venue, read from disk. */
+  _instrumentsFromDisk(wallet, venue) {
+    const out = new Set();
+    try {
+      const file = path.join(this.rootDir, wallet, "ledger.jsonl");
+      if (!fs.existsSync(file)) return [];
+      for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+        if (!line.includes(`"${venue}"`)) continue;
+        try { const r = JSON.parse(line); if (r.venue === venue && r.instrument && (r.kind === "fill" || (r.kind === "order" && r.stage === "sent"))) out.add(String(r.instrument).toLowerCase()); } catch {}
+      }
+    } catch {}
+    return [...out];
   }
 
   async stopAll() { for (const w of this.list()) { try { await this.stop(w, { flatten: false }); } catch {} } }
