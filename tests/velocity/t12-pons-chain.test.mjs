@@ -96,3 +96,12 @@ test("T12: the edge on pons refuses the snipe-tax window and reads the curve's o
   assert.ok(edge.gates[0].check(c3).reasons.includes("TOO_LATE"));
   assert.equal(edge.estimate(c2, {}).plan_key, c2.tier);
 });
+
+test("T12: a launch quoted in an ERC-20 is never tracked; the router could not trade it", async () => {
+  const { PonsFeed } = await import("../../src/velocity/venues/pons/feed.mjs");
+  const feed = new PonsFeed({ rpc: { blockNumber: async () => 1, logs: async () => [], curveInfo: async () => ({}), tokenMeta: async () => ({}) }, ethPrice: 2000 });
+  assert.equal(feed.apply({ kind: "launch", token: addr(0x51), curve: addr(0x52), deployer: addr(0x53), pairToken: addr(0x77), graduationThreshold: 4, block: 1, tx: "0x" }), undefined);
+  assert.equal(feed.tokens.size, 0); assert.equal(feed.skippedQuote, 1);
+  assert.ok(feed.apply({ kind: "launch", token: addr(0x61), curve: addr(0x62), deployer: addr(0x63), pairToken: addr(0), graduationThreshold: 4, block: 1, tx: "0x" }));
+  assert.equal(feed.tokens.size, 1);
+});

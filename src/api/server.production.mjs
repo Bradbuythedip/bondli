@@ -8053,7 +8053,7 @@ app.get("/api/radar/live", (req, res) => {
     else {
       let qf = null; try { qf = extractQuickFeatures(t); } catch {}
       verdict = judgeToken(t, qf, scoreDynamics.get(t.ca) || null, aggression);
-      tag = verdict.enter ? "hot" : verdict.gate === "rug" ? "rug" : verdict.gate === "viability" && verdict.reasons.includes("SCORE_BELOW_FLOOR") ? "weak" : verdict.gate === "window" ? "close" : verdict.gate === "confidence" ? "close" : "weak";
+      tag = verdict.enter ? "hot" : verdict.gate === "rug" ? "rug" : verdict.gate === "viability" && verdict.reasons.includes("MCAP_BELOW_FLOOR") ? "small" : verdict.gate === "viability" && verdict.reasons.includes("SCORE_BELOW_FLOOR") ? "weak" : verdict.gate === "window" ? "close" : verdict.gate === "confidence" ? "close" : "weak";
     }
     return { ca: t.ca, chain: pons ? "robinhood" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, revival: t._revival || null, graduated: !!t.graduated };
   };

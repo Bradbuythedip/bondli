@@ -24,6 +24,15 @@ import { promotionGate } from "./promote.mjs";
  *  (the quote asset), and reference.solPrice is that quote asset's USD price. */
 export const CURVE_VENUES = new Set(["pumpfun", "pons"]);
 
+/** The market cap a curve position is marked from at entry. On PONS the fill is exact (quote spent
+ *  and tokens received from the receipt), so the mark is what was actually paid per token times the
+ *  fixed supply: the feed's estimate drifts from the chain by the fees and phantom reserve, which
+ *  showed as a +20% "gain" the moment a position opened. pump.fun keeps the radar's market cap. */
+export function curveEntryMark(venue, fill, decision) {
+  if (venue === "pons" && fill?.qty > 0 && fill?.price > 0) return +(fill.price * 1_000_000_000).toFixed(2);
+  return CURVE_VENUES.has(venue) ? (decision.reference?.mcapUsd || 0) : fill.price;
+}
+
 /** Gate-1 flags that describe the token, not the last minute: a reject on these stands. */
 export const FATAL_FLAGS = new Set(["SERIAL_LAUNCHER", "SERIAL_RUGGER", "DEV_SELF_SNIPE", "FREEZE_AUTHORITY", "STOLEN_ART", "TOO_LATE"]);
 
@@ -420,7 +429,7 @@ export class Engine extends EventEmitter {
       decisionId: decision.id, orderId, entryTime: fill.t_filled, entryPrice: fill.price, qty: fill.qty, notional_usd: fill.notional_usd, stake_usd: stake,
       // notional_usd is what left the wallet, fees included, for paper and live alike; fee_usd is informational.
       cost_usd: fill.notional_usd, proceeds_usd: 0, remaining_qty: fill.qty,
-      entryMark: CURVE_VENUES.has(venue) ? (decision.reference?.mcapUsd || 0) : fill.price, mark: null, peak: null, changePct: 0,
+      entryMark: curveEntryMark(venue, fill, decision), mark: null, peak: null, changePct: 0,
       entryScore: decision.features ? Math.round((decision.features.apeScore || 0) * 100) : 0,
       worst_case_fraction: sizing.stop_fraction ?? decision.stop_fraction ?? 1, plan, status: "open",
       p_win: decision.p_win, confidence: decision.confidence, features: decision.features || null,
