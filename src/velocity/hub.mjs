@@ -16,6 +16,8 @@ import { formatRecord } from "./core/watch.mjs";
 import { makePumpfunEdge } from "./venues/pumpfun/edge.mjs";
 import { PumpfunPaperRouter, PumpfunLiveRouter } from "./venues/pumpfun/router.mjs";
 import { PonsLiveRouter, PonsPaperRouter } from "./venues/pons/router.mjs";
+import { HolderWaiver } from "./core/holder-waiver.mjs";
+import { Wallet as EvmWallet } from "ethers";
 
 /** The original platform wallet. Its key was pasted into a chat once; the operator chose to keep it,
  *  so it is accepted with a loud warning at boot rather than refused. Sweep it often. */
@@ -88,6 +90,18 @@ export class VelocityHub {
     this.users = new Map(); // wallet -> { engine, sup, view, settings, startedAt }
     this._sweeps = new Map(); // wallet -> running or finished sweep job
     this._holdingsCache = new Map();
+    // Hold the house token and the fee is zero, on both venues. Inert until the token is launched and
+    // NOTAFLY_TOKEN is set; until then every fee is charged exactly as before.
+    this.waiver = new HolderWaiver({
+      token: process.env.NOTAFLY_TOKEN || null,
+      minTokens: Number(process.env.NOTAFLY_MIN_TOKENS || 1),
+      symbol: process.env.NOTAFLY_SYMBOL || "NOTAFLY",
+      provider: ponsFeed?.rpc?.provider || null,
+      rpcUrl: process.env.PONS_RPC_URL || null,
+      clock, log,
+    });
+    if (this.waiver.enabled) log.log?.(`[VELOCITY-HUB] fee waiver on: holders of ${this.waiver.minTokens}+ ${this.waiver.symbol} (${this.waiver.token}) pay nothing`);
+    else if (this.waiver.configuredButInvalid) log.error?.(`[VELOCITY-HUB] NOTAFLY_TOKEN is not an address; the holder fee waiver is OFF`);
     this.feeOk = !!this.platformWallet;
     if (!this.feeOk) log.error?.(`[VELOCITY-HUB] PLATFORM_WALLET is unset: SOL performance fees will NOT be collected`);
     else if (this.platformWallet === EXPOSED_DEFAULT_PLATFORM_WALLET) log.warn?.(`[VELOCITY-HUB] PLATFORM_WALLET is the original wallet whose key was once exposed in a chat: fees go there by the operator's choice; sweep it often`);
@@ -122,7 +136,11 @@ export class VelocityHub {
     if (!live.ok) { await engine.stop(); return { ok: false, error: live.error || "could not go live", preflight: live.preflight || null }; }
     if (pons) { const l2 = await engine.setVenueMode("pons", "live", { override: true, by: "user" }); if (!l2.ok) engine.log("warn", `pons stays paper: ${l2.error || "could not go live"}`); }
     sup.start();
-    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, pons }, startedAt: this.clock() });
+    // The Robinhood Chain address the fee waiver reads, known whether or not the user trades PONS:
+    // they may hold the house token without opting into that venue.
+    let evmAddress = null;
+    if (evmSecret) { try { evmAddress = new EvmWallet(String(evmSecret).trim()).address; } catch { evmAddress = null; } }
+    this.users.set(wallet, { engine, sup, view, evmAddress, settings: { ...settings, aggression, pons }, startedAt: this.clock() });
     // Once a minute, the funnel in the server log: what the candidates hit. The first place to look when nothing fills.
     const fun = setInterval(() => { try { const f = engine.funnel(); this.log.log?.(`[velocity ${wallet.slice(0, 8)}] funnel 10m: judged ${f.judged} (${f.distinct} tokens) go ${f.gos} filled ${f.filled} | ${Object.entries(f.gates).map(([g, n]) => `${g} ${n}`).join(", ") || "no rejects"} | top: ${f.top.map(x => `${x.k} ${x.n}`).join("; ")}${f.sized0 ? ` | no size: ${JSON.stringify(f.sized0)}` : ""}${f.failed ? ` | failed: ${JSON.stringify(f.failed)}` : ""}`); } catch {} }, 60_000);
     fun.unref?.(); this.users.get(wallet).fun = fun;
@@ -176,7 +194,10 @@ export class VelocityHub {
     const u = this.users.get(wallet);
     if (!u) return { running: false, sweep: this._sweepView(this._sweeps.get(wallet)) };
     const s = u.engine.status();
-    return { running: true, startedAt: u.startedAt, settings: u.settings, status: s, funnel: u.engine.funnel(), feeWallet: this.feeOk ? this.platformWallet : null, sweep: this._sweepView(this._sweeps.get(wallet)) };
+    // The waiver as last read; status must not block on an RPC, so this never triggers a fresh read.
+    const cached = this.waiver.enabled ? this.waiver.cached(this.evmAddressOf(wallet)) : null;
+    const fee = { pct: this.feePct, waiver: this.waiver.enabled ? { symbol: this.waiver.symbol, token: this.waiver.token, minTokens: this.waiver.minTokens, holds: cached ? cached.holds : null } : null };
+    return { running: true, startedAt: u.startedAt, settings: u.settings, status: s, funnel: u.engine.funnel(), feeWallet: this.feeOk ? this.platformWallet : null, fee, sweep: this._sweepView(this._sweeps.get(wallet)) };
   }
 
   /** The narration, newest last, from the user's own ledger. */
@@ -196,6 +217,14 @@ export class VelocityHub {
     const f = this.feePct != null ? this.flatFee(solIn, solOut, wallet) : this.fee.calculateFee(solIn, solOut, wallet, tier.tier);
     this.fee.recordTradeOutcome?.(wallet, f.net);
     if (!(f.fee > 0.0005)) return { fee: 0, net: f.net };
+    // Holders trade free. Checked after the fee is computed so the ledger can say what was waived.
+    if (await this.holderWaived(wallet)) {
+      const venue0 = position.venue || "pumpfun", quote0 = venue0 === "pons" ? "ETH" : "SOL";
+      u.engine.ledger.append({ kind: "fee", venue: venue0, instrument: position.instrument, positionId: position.id, scope: "platform", sol: 0, usd: 0, rate: 0, net_sol: f.net, waived_sol: +f.fee.toFixed(6), note: `fee waived: holds ${this.waiver.symbol}` });
+      u.engine.store.save();
+      u.engine.log("info", `platform fee waived (${f.fee.toFixed(6)} ${quote0}): this wallet holds ${this.waiver.symbol}`);
+      return { fee: 0, net: f.net, waived: +f.fee.toFixed(6), reason: `holds ${this.waiver.symbol}` };
+    }
     const venue = position.venue || "pumpfun", quote = venue === "pons" ? "ETH" : "SOL";
     const feeWallet = venue === "pons" ? this.platformEvmWallet : (this.feeOk ? this.platformWallet : null);
     if (!feeWallet) { u.engine.log("warn", `platform fee ${f.fee.toFixed(6)} ${quote} not collected: ${venue === "pons" ? "PLATFORM_EVM_WALLET" : "PLATFORM_WALLET"} not set`); return { fee: f.fee, net: f.net, collected: false }; }
@@ -206,6 +235,20 @@ export class VelocityHub {
     this.fee.recordGlobalFee?.(f.fee);
     u.engine.log("info", `platform fee ${f.fee.toFixed(6)} ${quote} (${f.rate ?? "?"}% of ${f.net.toFixed(4)} profit) tx ${String(sig).slice(0, 10)}`);
     return { fee: f.fee, net: f.net, collected: true, sig };
+  }
+
+  /** The EVM address this user's fees would be waived against: their Robinhood Chain bot wallet. */
+  evmAddressOf(wallet) {
+    const u = this.users.get(wallet);
+    return u?.evmAddress || u?.engine?.venues?.pons?.liveRouter?.address || null;
+  }
+
+  /** Does this user hold enough of the house token to trade free? Never throws. */
+  async holderWaived(wallet) {
+    if (!this.waiver.enabled) return false;
+    const addr = this.evmAddressOf(wallet);
+    if (!addr) return false; // no Robinhood Chain wallet on file: nothing to hold it in
+    try { return await this.waiver.holds(addr); } catch { return false; }
   }
 
   /** feePct of realized profit; nothing on a loss or dust; the owner pays nothing. */
