@@ -44,6 +44,7 @@ import { RevivalTracker, revivalFilter } from "./revival.mjs";
 import { AGGRESSION as VELOCITY_AGGRESSION } from "../velocity/venues/pumpfun/edge.mjs";
 import { PonsFeed, ethersRpc as ponsRpc } from "../velocity/venues/pons/feed.mjs";
 import { LaunchStore } from "./launch.mjs";
+import { LaunchTrend } from "./launch-trend.mjs";
 import { DEFAULT_RPC_URL as PONS_DEFAULT_RPC, CHAIN_ID as PONS_CHAIN_ID } from "../velocity/venues/pons/chain.mjs";
 import { Wallet as EvmWallet, JsonRpcProvider as EvmProvider, formatEther, parseEther } from "ethers";
 // Robinhood Chain: one provider for balances and withdrawals; the PONS feed and routers have their own.
@@ -8076,6 +8077,8 @@ app.get("/api/radar/live", (req, res) => {
 // ── Bondli's own token: the banner on the site. Pushed by tools/launch-push.mjs, read by everyone. ──
 const launchStore = new LaunchStore(path.resolve(process.env.LAUNCH_FILE || path.join(process.env.VELOCITY_DATA_DIR || "data/velocity/users", "..", "launch.json")));
 let launchLive = { at: 0, data: null, key: "" };
+// The mcap history behind the banner's number (src/api/launch-trend.mjs).
+const launchHistory = new LaunchTrend();
 /** The chain's view of the token (mcap, curve progress, buys, graduated), fresh within 15 seconds. */
 const UNIV2_PAIR_ABI = ["function getReserves() view returns (uint112, uint112, uint32)", "function token0() view returns (address)", "function totalSupply() view returns (uint256)", "function balanceOf(address) view returns (uint256)"];
 const UNIV2_FACTORY = "0x8bcEaA40B9AcdfAedF85AdF4FF01F5Ad6517937f", UNIV2_WETH = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", DEAD_ADDR = "0x000000000000000000000000000000000000dEaD";
@@ -8100,6 +8103,7 @@ async function launchOnChain(st) {
         data = { venue: "uniswap-v2", pair, mcapUsd: Math.round(priceEth * sup * (eth || 0)), fdvEth: +(priceEth * sup).toFixed(4), liquidityEth: +ethRes.toFixed(4), liquidityUsd: Math.round(ethRes * 2 * (eth || 0)), lpBurnedPct: Number(lpTotal) > 0 ? +((Number(lpDead) / Number(lpTotal)) * 100).toFixed(2) : null, curvePct: null, buys: null, sells: null, buyers: null, graduated: false, source: "pool" };
       } else data = { venue: "uniswap-v2", pair: null, error: "no pool yet" };
     } catch (err) { data = { error: err.message.slice(0, 120) }; }
+    launchHistory.record(st.address, data, now);
     launchLive = { at: now, data, key: st.address };
     return data;
   }
@@ -8116,9 +8120,13 @@ async function launchOnChain(st) {
       }
     }
   } catch (err) { data = { error: err.message.slice(0, 120) }; }
+  launchHistory.record(st.address, data, now);
   launchLive = { at: now, data, key: st.address };
   return data;
 }
+// The chart must not depend on someone having the page open: while the token is live, read the chain
+// on our own clock so the history fills at a steady rate. launchOnChain returns at once when it is not.
+setInterval(() => { launchOnChain(launchStore.state).catch(() => {}); }, 30_000).unref?.();
 app.get("/api/launch", async (req, res) => {
   const st = launchStore.state;
   const ponsUrl = (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}");
@@ -8126,10 +8134,10 @@ app.get("/api/launch", async (req, res) => {
   const swap = st.venue === "uniswap-v2" ? `https://app.uniswap.org/swap?chain=robinhood&outputCurrency=${st.address}` : ponsUrl.replace("{ca}", st.address);
   const url = st.address ? (st.links.launchpad || swap) : (st.links.launchpad || "");
   const pair = st.pair || live?.pair || null;
-  res.json({ ...st, url, chart: pair ? `https://dexscreener.com/robinhood/${pair}` : (st.venue === "pons" && st.address ? ponsUrl.replace("{ca}", st.address) : ""), explorer: st.address ? `https://robinhoodchain.blockscout.com/token/${st.address}` : "", live, ts: Date.now() });
+  res.json({ ...st, url, buy: st.address && st.status !== "soon" && st.status !== "off" ? swap : "", chart: pair ? `https://dexscreener.com/robinhood/${pair}` : (st.venue === "pons" && st.address ? ponsUrl.replace("{ca}", st.address) : ""), explorer: st.address ? `https://robinhoodchain.blockscout.com/token/${st.address}` : "", live, trend: launchHistory.read(st.address), ts: Date.now() });
 });
 app.post("/api/launch", requireAdmin, (req, res) => {
-  try { const st = launchStore.push(req.body || {}); launchLive = { at: 0, data: null, key: "" }; console.log(`[LAUNCH] ${st.status} ${st.ticker || st.name} ${st.address || "(no address)"}${req.body?.update ? ` · update: ${req.body.update}` : ""}`); res.json({ ok: true, launch: st }); }
+  try { const st = launchStore.push(req.body || {}); launchLive = { at: 0, data: null, key: "" }; if (launchHistory.key !== st.address) launchHistory.reset(st.address); console.log(`[LAUNCH] ${st.status} ${st.ticker || st.name} ${st.address || "(no address)"}${req.body?.update ? ` · update: ${req.body.update}` : ""}`); res.json({ ok: true, launch: st }); }
   catch (err) { res.status(400).json({ ok: false, error: err.message }); }
 });
 

@@ -7,6 +7,8 @@
 //
 //   --venue uniswap-v2|pons   where it trades (default uniswap-v2: launch.py's pool)   --pair 0xPAIR (the v2 pair; found from the factory if left out)
 //   --from-state launch_state.json   read token and pair from launch.py's state file and push them (goes live)
+//   --from-state launch/robinhood/fleet-state.json   same, for a PONS fleet launch (venue pons, the
+//                         site then links straight to the PONS buy page). Only the address is read.
 //   --status soon|live|graduated|off   --tagline "..."   --telegram URL   --launchpad URL (override the buy link)
 //   --update "text"       one line, newest shown on the site (last 20 kept)
 //   --clear-updates       drop every update line
@@ -48,9 +50,15 @@ function bodyFromArgs() {
   for (const [flag, key] of [["--name", "name"], ["--ticker", "ticker"], ["--venue", "venue"], ["--address", "address"], ["--curve", "curve"], ["--pair", "pair"], ["--status", "status"], ["--tagline", "tagline"], ["--image", "image"], ["--update", "update"]]) { const v = arg(flag); if (v !== undefined && v !== true) b[key] = v; }
   const stateFile = arg("--from-state");
   if (stateFile && stateFile !== true) {
+    // Two state files can land here and only the token address ever leaves them. launch.py writes
+    // { token, pair } for the v2 pool; the PONS fleet launcher writes { launches: [ { token, … } ] },
+    // and that file also holds the fleet's private keys — read the address, nothing else, ever.
     const st = JSON.parse(readFileSync(stateFile, "utf8"));
-    if (!st.token) throw new Error(`${stateFile} has no token yet; run launch.py first`);
-    b.address = st.token; b.venue = b.venue || "uniswap-v2"; if (st.pair) b.pair = st.pair;
+    const fleet = Array.isArray(st.launches) ? [...st.launches].reverse().find(l => /^0x[0-9a-fA-F]{40}$/.test(l.token || "")) : null;
+    const token = st.token || fleet?.token;
+    if (!token) throw new Error(`${stateFile} has no token yet; run the launcher first`);
+    b.address = token; b.venue = b.venue || (fleet ? "pons" : "uniswap-v2");
+    if (!fleet && st.pair) b.pair = st.pair;
     if (!b.status) b.status = "live";
   }
   for (const [flag, key] of [["--x", "x"], ["--telegram", "telegram"], ["--launchpad", "launchpad"], ["--website", "website"]]) { const v = arg(flag); if (v !== undefined) links[key] = v === true ? "" : v; }
