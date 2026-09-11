@@ -4,7 +4,7 @@
 // opts: freezeAuthority, isRecoveryPlay, and the aggression profile's gate-1 knobs
 // (src/velocity/venues/pumpfun/edge.mjs AGGRESSION); defaults are the designed rules.
 export function checkDisqualifiers(token, qf, opts = {}) {
-  const { coordDump = 0.5, staleMin = 15, tooLateCurve = 0.80, concentrationMax = 0.7, minAgeMin = 0.5 } = opts;
+  const { coordDump = 0.5, staleMin = 15, tooLateCurve = 0.80, concentrationMax = 0.7, minAgeMin = 0.5, momentum = null } = opts;
   const flags = [];
 
   // === RUG SIGNALS (on-chain) ===
@@ -127,9 +127,37 @@ export function checkDisqualifiers(token, qf, opts = {}) {
   if (ub < 3) flags.push("TOO_FEW_BUYERS");
   if (ageMin < minAgeMin) flags.push("TOO_YOUNG");
 
+  // === MOMENTUM OVERRIDE (aggression 2+) ===
+  // The tokens that run hardest have a crowd out of the gate, and a crowd trips the pattern rules:
+  // quick flips, sell clusters, top-3 share, "too many signals". Those rules are readings of
+  // behaviour that a real crowd also produces. When many distinct buyers are still arriving, price
+  // is at its high and sellers are a minority of the flow, the pattern rules are waived and only the
+  // rules about WHO is selling and WHETHER it is collapsing can still refuse the token.
+  let waived = [];
+  if (momentum && flags.length) {
+    const organic = qf?._rg_organicBuyers ?? ub;
+    const crowd = organic >= momentum.buyers && ageMin <= momentum.ageMaxMin
+      && (qf?.rg_mcapDropRate ?? 0) < 0.2                      // at or near its high
+      && (qf?.rg_liqRemovalSpeed ?? 0) < momentum.sellShareMax  // sellers a minority of the flow
+      && sells <= (token.buys || 0) * 0.6;
+    if (crowd) {
+      const keep = flags.filter(f => FATAL_DISQUALIFIERS.has(f) || f.startsWith("SERIAL_"));
+      waived = flags.filter(f => !keep.includes(f));
+      flags.length = 0; flags.push(...keep);
+    }
+  }
+
   return {
     pass: flags.length === 0,
     flags,
+    waived,
     fatal: true,
   };
 }
+
+/** Never waived by momentum: who is selling, and whether it is already collapsing. */
+export const FATAL_DISQUALIFIERS = new Set([
+  "DEV_SELLING", "DEV_SELF_SNIPE", "DEV_SELF_PUMP", "DEV_PUMP_NO_SELLS", "FREEZE_AUTHORITY", "STOLEN_ART",
+  "SYBIL_ATTACK", "PUMP_DUMP", "MCAP_CRASHING", "EARLY_DUMP", "BOT_FARM_VOLUME", "BOTTED_VOLUME", "FAKE_VOLUME_HIGH_SOL",
+  "TOO_LATE", "STALE", "TOO_FEW_BUYERS", "TOO_YOUNG",
+]);

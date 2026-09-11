@@ -68,12 +68,12 @@ export class Governor {
     else if (realizedLoss + openRisk >= limit) flag("daily_limit", (realizedLoss + openRisk) / limit, `realized ${realizedLoss.toFixed(2)} + open risk ${openRisk.toFixed(2)} reaches the limit; entries throttled to zero`, 0);
     else if (realizedLoss >= limit * 0.5) flag("daily_limit", realizedLoss / limit, `realized loss at ${Math.round((realizedLoss / limit) * 100)}% of the daily limit`, 0.5);
 
-    // Losing streak (most recent first).
+    // Losing streak: counted and shown, never a brake. On a curve venue the base rate is a 25-35%
+    // win rate, so five losses in a row is an ordinary week of Tuesdays; a halt here with no
+    // cooldown froze the bot for good after six trades. The daily loss limit is the only money brake.
     let streak = 0;
     for (let i = outcomes.length - 1; i >= 0; i--) { if (outcomes[i].pnl_usd < 0) streak++; else break; }
-    if (streak >= this.cfg.maxConsecutiveLosses) stop("losing_streak", `${streak} consecutive losses`);
-    else if (streak >= 4) flag("losing_streak", 0.8, `${streak} consecutive losses`, this.cfg.streakThrottle[4]);
-    else if (streak >= 3) flag("losing_streak", 0.6, `${streak} consecutive losses`, this.cfg.streakThrottle[3]);
+    if (streak >= 3) spots.losing_streak = { triggered: false, severity: Math.min(1, streak / 8), detail: `${streak} consecutive losses (informational)` };
 
     // Overconfidence: stated p_win vs realized win rate.
     if (outcomes.length >= this.cfg.minOutcomesForCalibration) {
@@ -116,7 +116,8 @@ export class Governor {
 
     // Tilt (bondli): level 3 halves size, level 4 halts.
     const tilt = this.tilt.getStatus();
-    if (tilt.tiltLevel >= 4) stop("tilt", `tilt level 4: ${tilt.intervention?.message || ""}`);
+    // Tilt shrinks size, never stops the bot: the daily limit is the stop.
+    if (tilt.tiltLevel >= 4) flag("tilt", 1, `tilt level 4: sizes halved (${tilt.intervention?.message || ""})`, 0.5);
     else if (tilt.tiltLevel === 3) flag("tilt", 0.75, "tilt level 3: sizes halved", 0.5);
     else if (tilt.tiltLevel > 0) spots.tilt = { triggered: false, severity: tilt.tiltLevel / 4, detail: `tilt level ${tilt.tiltLevel}` };
 
