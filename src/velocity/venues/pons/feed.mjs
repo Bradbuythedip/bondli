@@ -6,7 +6,7 @@
 // The quote asset is ETH: every "solPrice" field on this venue is the ETH price in USD.
 import { JsonRpcProvider, Contract } from "ethers";
 import { Feed } from "../../core/feed.mjs";
-import { FACTORY, FACTORY_ABI, TOPICS, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, SNIPE_TAX_WINDOW_MS, decodeLog, mcapQuote, curveProgress, toEth, toTokens } from "./chain.mjs";
+import { FACTORY, FACTORY_ABI, TOPICS, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, EXPLORER, SNIPE_TAX_WINDOW_MS, decodeLog, mcapQuote, curveProgress, toEth, toTokens } from "./chain.mjs";
 
 /** The chain, behind four calls, so a test can fake it. */
 export function ethersRpc(rpcUrl = process.env.PONS_RPC_URL || DEFAULT_RPC_URL) {
@@ -24,6 +24,13 @@ export function ethersRpc(rpcUrl = process.env.PONS_RPC_URL || DEFAULT_RPC_URL) 
       const c = new Contract(token, ERC20_ABI, provider);
       const [name, symbol] = await Promise.all([c.name().catch(() => ""), c.symbol().catch(() => "")]);
       return { name, symbol };
+    },
+    /** Every ERC-20 an address holds, from the chain's explorer (an EVM node cannot list them). */
+    async walletTokens(address) {
+      const r = await fetch(`${EXPLORER}/api/v2/addresses/${address}/tokens?type=ERC-20`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
+      if (!r.ok) throw new Error(`explorer ${r.status}`);
+      const d = await r.json();
+      return (d.items || []).map(i => ({ instrument: String(i.token?.address || "").toLowerCase(), qty: toTokens(BigInt(i.value || "0"), Number(i.token?.decimals ?? 18)), symbol: i.token?.symbol || "" })).filter(x => x.instrument && x.qty > 0);
     },
     /** A launch the feed did not see (it happened before this process started): ask the factory. */
     async launchInfo(token) {

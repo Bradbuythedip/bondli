@@ -177,6 +177,13 @@ export default function Simple() {
   const pause = async () => { sBusy("pause"); try { const r = await a.vpause(pk); if (r.ok) sSt(x => ({ ...x, ...r })); else say(r.error, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
   const resume = async () => { sBusy("pause"); try { const r = await a.vresume(pk); if (r.ok) sSt(x => ({ ...x, ...r })); else say(r.error, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
   const sellPos = async (p, pct) => { sBusy("sell:" + p.id); try { const r = await a.vclose(pk, p.id, pct); if (r.ok) { say(`Sold ${pct}% of ${p.name || p.ticker || p.instrument.slice(0, 6)}${r.proceeds_usd != null ? ` for ${fmt(r.proceeds_usd)}` : ""}`, "ok"); sSt(x => ({ ...x, ...r })); } else say(r.error || "Sell failed", "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
+  const [sweep, sSweep] = useState(null);
+  const sweepAll = async () => {
+    if (!confirm("Sell every token in both bot wallets to SOL and ETH, one by one?")) return;
+    sBusy("sweep"); sSweep(null);
+    try { const r = await a.vsweep(pk, "all"); sSweep(r); say(`Sold ${r.sold}, ${r.failed} could not be sold`, r.failed ? "error" : "ok"); await loadWallet(); }
+    catch (e) { say(e.message, "error"); } finally { sBusy(null); }
+  };
   const withdraw = async () => {
     if (running) { say("Stop the bot first", "error"); return; }
     if (!confirm(`Send all SOL from the bot wallet back to ${pk.slice(0, 6)}…?`)) return;
@@ -293,6 +300,10 @@ export default function Simple() {
       <Btn ghost T={T} onClick={withdraw} disabled={busy === "withdraw" || running}>{busy === "withdraw" ? "Sending…" : "Withdraw SOL"}</Btn>
       {tw.ethBalance > 0 && <Btn ghost T={T} onClick={withdrawEth} disabled={busy === "withdraw" || running}>Withdraw ETH</Btn>}
       <Btn ghost T={T} onClick={exportKey} disabled={busy === "key"}>{busy === "key" ? "Signing…" : "Export key"}</Btn>
+    </div>}
+    {pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 8 }}>
+      <Btn ghost T={T} onClick={sweepAll} disabled={busy === "sweep"}>{busy === "sweep" ? "Selling everything…" : "Sell every token in the wallets"}</Btn>
+      {sweep?.report?.length > 0 && <div style={{ marginTop: 8, fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.6 }}>{sweep.report.map((r, i) => <div key={i} style={{ color: r.ok ? T.gn : T.yl }}>{r.venue === "pons" ? "RH" : "SOL"} {r.instrument ? r.instrument.slice(0, 10) + "…" : ""} {r.ok ? `sold${r.received != null ? ` for ${Number(r.received).toFixed(r.venue === "pons" ? 5 : 4)} ${r.venue === "pons" ? "ETH" : "SOL"}` : ""}` : r.error}</div>)}</div>}
     </div>}
     {msg && !running && pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 8, fontSize: 13, color: msg.kind === "error" ? T.rd : T.gn }}>{msg.m}</div>}
     {showKey && <div style={{ width: "100%", maxWidth: 440, marginTop: 10, background: T.sf, border: `1px solid ${T.yl}`, borderRadius: 12, padding: 14 }}>
