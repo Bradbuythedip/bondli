@@ -181,7 +181,8 @@ export default function Simple() {
   const narRef = useRef(null);
   const running = !!st?.running;
   const s = st?.status; const day = s?.day; const tp = s?.pnl || null; const pnl = tp?.since_start_usd ?? (day?.realizedUsd || 0) + (tp?.unrealized_usd || 0); const pnlKind = tp?.since_start_usd != null ? "wallet" : "trades";
-  const say = (m, kind = "info") => { sMsg({ m, kind }); if (kind !== "error") setTimeout(() => sMsg(x => (x?.m === m ? null : x)), 6000); };
+  // A message clears itself (errors get longer) and on a tap.
+  const say = (m, kind = "info") => { sMsg({ m, kind }); setTimeout(() => sMsg(x => (x?.m === m ? null : x)), kind === "error" ? 15000 : 6000); };
 
   useEffect(() => { const p = phantom(); if (p?.isConnected && p.publicKey) sPk(p.publicKey.toString()); else p?.connect?.({ onlyIfTrusted: true }).then(r => sPk(r.publicKey.toString())).catch(() => {}); }, []);
   useEffect(() => { a.sw(pk); }, [pk]);
@@ -233,7 +234,7 @@ export default function Simple() {
     const id = setInterval(poll, 2500); poll();
     return () => { on = false; clearInterval(id); };
   }, [pk, sweep?.done, sweep?.startedAt]);
-  useEffect(() => { if (st?.sweep && !sweep) sSweep(st.sweep); }, [st?.sweep?.startedAt]);
+  useEffect(() => { if (st?.sweep && !st.sweep.done && !sweep) sSweep(st.sweep); }, [st?.sweep?.startedAt]);
   // Every token in both wallets, with what a sell would fetch, whether or not the bot is running.
   const [hold, sHold] = useState(null); const [holdOpen, sHoldOpen] = useState(false);
   const loadHold = useCallback(async () => { if (!pk || !tw) return; try { const r = await a.vholdings(pk); if (r.holdings) sHold(r.holdings); } catch {} }, [pk, tw?.pubkey]);
@@ -355,7 +356,7 @@ export default function Simple() {
           <Btn danger T={T} onClick={stop} disabled={busy === "stop"}>{busy === "stop" ? "Selling…" : "Sell all & stop"}</Btn>
         </div>
       </>}
-      {msg && <div style={{ marginTop: 12, fontSize: 13, color: msg.kind === "error" ? T.rd : T.gn }}>{msg.m}</div>}
+      {msg && <div onClick={() => sMsg(null)} title="tap to dismiss" style={{ marginTop: 12, fontSize: 13, cursor: "pointer", color: msg.kind === "error" ? T.rd : T.gn }}>{msg.m} <span style={{ color: T.dm }}>×</span></div>}
     </div>
 
     {/* Footer: the two ways out, and the one line about money */}
@@ -372,23 +373,24 @@ export default function Simple() {
         {hold && [...hold.sol, ...hold.eth].map(h => { const sellable = h.state === "curve" || h.state === "unknown" && h.venue === "pumpfun"; const k = h.venue + h.instrument; return <div key={k} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, alignItems: "center", padding: "6px 0", borderTop: `1px solid ${T.bd}` }}>
           <span style={{ minWidth: 0 }}>
             <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><a href={h.url} target="_blank" rel="noopener" style={{ color: T.tx, fontWeight: 800, textDecoration: "none" }}>{h.name || h.ticker || h.instrument.slice(0, 10) + "…"}</a> <span style={{ color: T.ft }}>{h.venue === "pons" ? "RH" : "SOL"}{h.tracked ? " · open" : ""}</span></div>
-            <div style={{ color: h.state === "curve" ? T.ft : T.yl }}>{Number(h.qty).toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens · {h.state}{h.curvePct != null ? ` ${Math.round(h.curvePct * 100)}%` : ""}{h.mcapUsd ? ` · mcap ${kfmt(h.mcapUsd)}` : ""}{h.state === "graduated" ? " · sell on the pool by hand" : h.state === "not a PONS launch" ? " · not a curve token; see explorer" : ""}</div>
+            <div style={{ color: h.state === "curve" ? T.ft : T.yl }}>{Number(h.qty).toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens · {h.state}{h.curvePct != null ? ` ${Math.round(h.curvePct * 100)}%` : ""}{h.mcapUsd ? ` · mcap ${kfmt(h.mcapUsd)}` : ""}{h.via === "transfer" ? " (found by its transfer)" : ""}{h.state === "graduated" ? " · sell on the pool by hand" : h.state === "not a curve token" ? " · no curve sells it; see explorer" : ""}</div>
             {h.result && <div style={{ color: h.result.ok ? T.gn : T.rd }}>{h.result.ok ? `sold for ${Number(h.result.received || 0).toFixed(5)}` : h.result.error}</div>}
             {h.explorer && h.state !== "curve" && <a href={h.explorer} target="_blank" rel="noopener" style={{ color: T.dm }}>explorer</a>}
           </span>
           <span style={{ textAlign: "right", color: T.tx }}>{h.valueUsd != null ? fmt(h.valueUsd) : "—"}</span>
           <button onClick={() => sellHolding(h.venue, h.instrument)} disabled={!sellable || selling === k} style={{ background: "transparent", border: `1px solid ${sellable ? T.rd : T.bd}`, color: sellable ? T.rd : T.dm, borderRadius: 8, padding: "5px 9px", fontFamily: S, fontWeight: 800, fontSize: 11, cursor: sellable ? "pointer" : "default" }}>{selling === k ? "…" : "Sell"}</button>
         </div>; })}
+        {hold?.scan && !hold.scan.done && <div style={{ color: T.dm, marginTop: 6 }}>still reading the chain's history for tokens no index lists; the list grows on each refresh</div>}
         {hold?.errors?.length > 0 && <div style={{ color: T.yl, marginTop: 6 }}>{hold.errors.join(" · ")}</div>}
       </div>}
       <div style={{ height: 8 }} />
       <Btn ghost T={T} onClick={sweepAll} disabled={busy === "sweep" || (sweep && !sweep.done)}>{sweep && !sweep.done ? `Selling one by one… ${sweep.sold + sweep.failed} done${sweep.current ? ` · now ${sweep.current.venue === "pons" ? "RH" : "SOL"} ${sweep.current.instrument.slice(0, 8)}…` : ""}` : "Sell every token in the wallets"}</Btn>
       {sweep && (sweep.report?.length > 0 || sweep.error) && <div style={{ marginTop: 8, fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.6 }}>
-        <div style={{ color: T.dm }}>{sweep.done ? `finished: ${sweep.sold} sold, ${sweep.failed} not sold` : `running: ${sweep.sold} sold, ${sweep.failed} not sold so far`}{sweep.error ? ` · ${sweep.error}` : ""}</div>
-        {sweep.report.map((r, i) => <div key={i} style={{ color: r.ok ? T.gn : T.yl }}>{r.venue === "pons" ? "RH" : "SOL"} {r.instrument ? r.instrument.slice(0, 10) + "…" : ""} {r.ok ? `sold${r.received != null ? ` for ${Number(r.received).toFixed(r.venue === "pons" ? 5 : 4)} ${r.venue === "pons" ? "ETH" : "SOL"}` : ""}` : `${r.code ? r.code + ": " : ""}${r.error}`}</div>)}
+        <div style={{ color: T.dm, display: "flex", justifyContent: "space-between" }}><span>{sweep.done ? `finished: ${sweep.sold} sold, ${sweep.failed} not sold` : `running: ${sweep.sold} sold, ${sweep.failed} not sold so far`}{sweep.error ? ` · ${sweep.error}` : ""}</span>{sweep.done && <span onClick={() => sSweep(null)} style={{ cursor: "pointer", padding: "0 4px" }}>clear ×</span>}</div>
+        {sweep.report.map((r, i) => <div key={i} style={{ color: r.ok ? T.gn : r.note ? T.dm : T.yl }}>{r.instrument ? `${r.venue === "pons" ? "RH" : "SOL"} ${r.instrument.slice(0, 10)}… ` : ""}{r.ok ? `sold${r.received != null ? ` for ${Number(r.received).toFixed(r.venue === "pons" ? 5 : 4)} ${r.venue === "pons" ? "ETH" : "SOL"}` : ""}` : `${r.code ? r.code + ": " : ""}${r.error}`}</div>)}
       </div>}
     </div>}
-    {msg && !running && pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 8, fontSize: 13, color: msg.kind === "error" ? T.rd : T.gn }}>{msg.m}</div>}
+    {msg && !running && pk && tw && <div onClick={() => sMsg(null)} title="tap to dismiss" style={{ width: "100%", maxWidth: 440, marginTop: 8, fontSize: 13, cursor: "pointer", color: msg.kind === "error" ? T.rd : T.gn }}>{msg.m} <span style={{ color: T.dm }}>×</span></div>}
     {showKey && <div style={{ width: "100%", maxWidth: 440, marginTop: 10, background: T.sf, border: `1px solid ${T.yl}`, borderRadius: 12, padding: 14 }}>
       <div style={{ ...muted, color: T.yl, marginBottom: 6 }}>Your bot wallet's private keys. Anyone with them owns the wallets. Solana key into Phantom; Robinhood Chain key into MetaMask or Rabby.</div>
       <div style={{ ...muted, fontSize: 11, marginTop: 6 }}>Solana</div>

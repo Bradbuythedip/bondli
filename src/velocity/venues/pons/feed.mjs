@@ -4,7 +4,8 @@
 // distinct buyers, trades, spark, mcap, curve progress), scores it with the same composite, and
 // emits candidates with the same payload shape, so the same gates, sizer and exits judge it.
 // The quote asset is ETH: every "solPrice" field on this venue is the ETH price in USD.
-import { JsonRpcProvider, Contract } from "ethers";
+import { JsonRpcProvider, Contract, zeroPadValue } from "ethers";
+const zeroPad = (a) => zeroPadValue(String(a).toLowerCase(), 32);
 import { Feed } from "../../core/feed.mjs";
 import { FACTORY, FACTORY_ABI, TOPICS, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, EXPLORER, SNIPE_TAX_WINDOW_MS, decodeLog, mcapQuote, curveProgress, toEth, toTokens } from "./chain.mjs";
 
@@ -30,19 +31,67 @@ export function ethersRpc(rpcUrl = process.env.PONS_RPC_URL || DEFAULT_RPC_URL) 
     async walletTokens(address) {
       const errors = [];
       try {
-        const res = await provider.send("alchemy_getTokenBalances", [address, "erc20"]);
-        const rows = (res?.tokenBalances || []).filter(b => b.tokenBalance && b.tokenBalance !== "0x" && BigInt(b.tokenBalance) > 0n);
+        // Paged: a wallet that traded a hundred launches has more than one page.
+        const rows = []; let pageKey = undefined;
+        for (let i = 0; i < 20; i++) {
+          const res = await provider.send("alchemy_getTokenBalances", pageKey ? [address, "erc20", { pageKey }] : [address, "erc20"]);
+          rows.push(...(res?.tokenBalances || []).filter(b => b.tokenBalance && b.tokenBalance !== "0x" && BigInt(b.tokenBalance) > 0n));
+          pageKey = res?.pageKey; if (!pageKey) break;
+        }
         const out = [];
         for (const b of rows) { let dec = 18; try { dec = Number(await new Contract(b.contractAddress, ERC20_ABI, provider).decimals()); } catch {} out.push({ instrument: String(b.contractAddress).toLowerCase(), qty: toTokens(BigInt(b.tokenBalance), dec) }); }
         return out.filter(x => x.qty > 0);
       } catch (err) { errors.push(`rpc: ${err.shortMessage || err.message}`); }
       try {
-        const r = await fetch(`${EXPLORER}/api/v2/addresses/${address}/tokens?type=ERC-20`, { headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) bondli/1.0" }, signal: AbortSignal.timeout(10_000) });
-        if (!r.ok) throw new Error(`explorer ${r.status}`);
-        const d = await r.json();
-        return (d.items || []).map(i => ({ instrument: String(i.token?.address || "").toLowerCase(), qty: toTokens(BigInt(i.value || "0"), Number(i.token?.decimals ?? 18)), symbol: i.token?.symbol || "" })).filter(x => x.instrument && x.qty > 0);
+        const items = []; let params = "";
+        for (let i = 0; i < 20; i++) {
+          const r = await fetch(`${EXPLORER}/api/v2/addresses/${address}/tokens?type=ERC-20${params}`, { headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) bondli/1.0" }, signal: AbortSignal.timeout(10_000) });
+          if (!r.ok) throw new Error(`explorer ${r.status}`);
+          const d = await r.json(); items.push(...(d.items || []));
+          const np = d.next_page_params; if (!np) break;
+          params = "&" + Object.entries(np).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+        }
+        return items.map(i => ({ instrument: String(i.token?.address || "").toLowerCase(), qty: toTokens(BigInt(i.value || "0"), Number(i.token?.decimals ?? 18)), symbol: i.token?.symbol || "" })).filter(x => x.instrument && x.qty > 0);
       } catch (err) { errors.push(err.message); }
       throw new Error(errors.join("; "));
+    },
+    /** Every ERC-20 Transfer into an address, read from the chain's logs, so nothing depends on a
+     *  provider's index or the explorer: the token, and who sent it (a curve, when it was a buy).
+     *  Scans [fromBlock, toBlock] in chunks the node accepts, within a time budget; returns how far it got. */
+    async transfersTo(address, { fromBlock, toBlock = null, budgetMs = 20_000, chunk = 50_000 } = {}) {
+      const head = toBlock ?? await provider.getBlockNumber();
+      const topic = "0x" + "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"; // Transfer(address,address,uint256)
+      const me = zeroPad(address);
+      const tokens = new Map(); const t0 = Date.now(); let at = Math.max(0, fromBlock), size = chunk;
+      while (at <= head && Date.now() - t0 < budgetMs) {
+        const to = Math.min(head, at + size - 1);
+        let logs;
+        try { logs = await provider.getLogs({ fromBlock: at, toBlock: to, topics: [topic, null, me] }); }
+        catch (err) { if (size > 500) { size = Math.floor(size / 4); continue; } throw err; }
+        for (const l of logs) {
+          if (!l.topics || l.topics.length !== 3) continue; // ERC-721 transfers carry a 4th topic
+          const token = String(l.address).toLowerCase(), from = "0x" + String(l.topics[1]).slice(26).toLowerCase();
+          if (!tokens.has(token)) tokens.set(token, new Set()); tokens.get(token).add(from);
+        }
+        at = to + 1;
+        if (logs.length < 2000 && size < chunk) size = Math.min(chunk, size * 2);
+      }
+      return { tokens, scannedTo: at - 1, head, done: at > head };
+    },
+    /** The curve that sells a token: the factory's answer, or else whichever address that ever sent us
+     *  the token answers token() with it (a curve from another factory version). Null when neither. */
+    async curveFor(token, senders = []) {
+      try { const info = await this.launchInfo(token); if (info?.curve) return { curve: info.curve, graduated: !!info.graduated, via: "factory" }; } catch {}
+      for (const from of senders) {
+        if (!/^0x[0-9a-f]{40}$/.test(from) || /^0x0+$/.test(from)) continue;
+        try {
+          const c = new Contract(from, CURVE_ABI, provider);
+          const t = String(await c.token()).toLowerCase(); if (t !== String(token).toLowerCase()) continue;
+          const graduated = await c.graduated().catch(() => false);
+          return { curve: from, graduated: !!graduated, via: "transfer" };
+        } catch {}
+      }
+      return null;
     },
     /** A launch the feed did not see (it happened before this process started): ask the factory. */
     async launchInfo(token) {

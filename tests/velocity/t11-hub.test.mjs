@@ -178,6 +178,10 @@ test("T11: the sweep sells every token in both wallets: open positions through t
     walletTokens: async () => [{ instrument: "0xheld", qty: 500 }, { instrument: "0xgrad", qty: 300 }, { instrument: "0xdust", qty: 0.2 }, { instrument: "0xrandom", qty: 10 }],
     launchInfo: async (t) => t === "0xheld" ? { curve: "0xcurve1", graduated: false } : t === "0xgrad" ? { curve: "0xcurve2", graduated: true } : null,
     curveInfo: async () => ({ quoteReserve: 3, tokenReserve: 9e8, feeBps: 100, creatorTaxBps: 0 }),
+    blockNumber: async () => 5000,
+    // the chain's logs: 0xrandom came from 0xcurve9, a curve the factory never mentioned; 0xair from nobody useful
+    transfersTo: async (addr, { fromBlock, toBlock }) => ({ tokens: new Map([["0xrandom", new Set(["0xcurve9"])], ["0xair", new Set(["0xsomeone"])]]), scannedTo: toBlock, head: toBlock, done: true }),
+    curveFor: async function (t, senders) { const i = await this.launchInfo(t); if (i) return { curve: i.curve, graduated: i.graduated, via: "factory" }; return senders.includes("0xcurve9") ? { curve: "0xcurve9", graduated: false, via: "transfer" } : null; },
   };
   const routers = {};
   class FakeEvm { constructor() { this.ready = false; this.address = "0xme"; this.known = new Set(); this.tokens = { "0xheld": 500, "0xgrad": 300 }; this.closed = []; }
@@ -203,7 +207,8 @@ test("T11: the sweep sells every token in both wallets: open positions through t
     assert.ok(r.report.some(x => x.venue === "pumpfun" && x.instrument === "MintOrphan" && x.ok), "the orphan was sold straight through the router");
     assert.ok(routers.evm.closed.some(c => c.instrument === "0xheld" && c.curve === "0xcurve1"), "the RH holding was sold on its curve");
     assert.ok(r.report.some(x => x.instrument === "0xgrad" && x.code === "GRADUATED"), "a graduated curve is reported, not attempted");
-    assert.ok(r.report.some(x => x.instrument === "0xrandom" && /not a PONS launch/.test(x.error)));
+    assert.ok(routers.evm.closed.some(c => c.instrument === "0xrandom" && c.curve === "0xcurve9"), "a token the factory never mentioned is sold on the curve that sent it to us");
+    assert.ok(fs.existsSync(path.join(root, "UserS", "rh-scan.json")), "the scan is kept on disk");
     assert.ok(!r.report.some(x => x.instrument === "0xdust"), "dust is ignored");
     assert.equal(hub.users.get("UserS").engine.ledger.query({ kind: "exit", limit: 5 }).some(e => e.reason === "USER_SWEEP"), true);
     // The same sweep as a background job: the call returns at once, status follows it, a second call while it runs joins it.
@@ -218,7 +223,7 @@ test("T11: the sweep sells every token in both wallets: open positions through t
     routers.evm.tokens["0xheld"] = 900; routers.UserS.tokens.MintOrphan3 = 50;
     const hl = await hub.listHoldings("UserS", { secret: "sS", evmSecret: "0xkey" });
     const heldRow = hl.eth.find(x => x.instrument === "0xheld"), gradRow = hl.eth.find(x => x.instrument === "0xgrad"), randRow = hl.eth.find(x => x.instrument === "0xrandom");
-    assert.equal(heldRow.state, "curve"); assert.ok(heldRow.sellEth > 0); assert.equal(gradRow.state, "graduated"); assert.equal(randRow.state, "not a PONS launch");
+    assert.equal(heldRow.state, "curve"); assert.ok(heldRow.sellEth > 0); assert.equal(gradRow.state, "graduated"); assert.equal(randRow.state, "curve"); assert.equal(randRow.via, "transfer");
     assert.ok(hl.sol.some(x => x.instrument === "MintOrphan3" && x.qty === 50));
     // One holding by itself, tracked or not, through the router
     routers.evm.tokens["0xheld"] = 900;

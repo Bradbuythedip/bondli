@@ -231,7 +231,52 @@ export class VelocityHub {
     this.sweepWallet(wallet, { ...opts, job }).then(r => { job.total = r.report.length; }).catch(err => { job.error = err.message; }).finally(() => { job.done = true; job.finishedAt = Date.now(); });
     return { ok: true, started: true, sweep: this._sweepView(job) };
   }
-  _sweepView(j) { return j ? { startedAt: j.startedAt, done: j.done, finishedAt: j.finishedAt, chain: j.chain, sold: j.report.filter(r => r.ok).length, failed: j.report.filter(r => !r.ok).length, report: j.report, error: j.error, current: j.current || null } : null; }
+  _sweepView(j) { return j ? { startedAt: j.startedAt, done: j.done, finishedAt: j.finishedAt, chain: j.chain, sold: j.report.filter(r => r.ok).length, failed: j.report.filter(r => !r.ok && !r.note).length, report: j.report, error: j.error, current: j.current || null } : null; }
+
+  /** Every token the Robinhood Chain wallet holds and the curve each sells on, from three sources
+   *  merged: the provider's balance index, the explorer, and the chain's own Transfer logs into the
+   *  wallet (scanned in slices across calls, progress kept on disk, so a token no index lists and a
+   *  curve no factory we know launched are still found: whoever sent us the token and answers token()
+   *  with it is its curve). Rows: { instrument, qty, curve, graduated, via, state }. */
+  async _rhInventory(wallet, ethRouter, rpc, { budgetMs = 15_000 } = {}) {
+    const file = path.join(this.rootDir, wallet, "rh-scan.json");
+    let scan = { scannedTo: null, tokens: {}, curves: {} };
+    try { scan = { ...scan, ...JSON.parse(fs.readFileSync(file, "utf8")) }; } catch {}
+    const notes = [];
+    // 1. the chain's logs, a slice at a time
+    if (rpc?.transfersTo) {
+      try {
+        const head = await rpc.blockNumber();
+        const back = Math.max(10_000, parseInt(process.env.PONS_SCAN_BLOCKS || "1500000") || 1_500_000);
+        const from = scan.scannedTo == null ? Math.max(0, head - back) : scan.scannedTo + 1;
+        if (from <= head) {
+          const r = await rpc.transfersTo(ethRouter.address, { fromBlock: from, toBlock: head, budgetMs });
+          for (const [t, senders] of r.tokens) scan.tokens[t] = [...new Set([...(scan.tokens[t] || []), ...senders])].slice(0, 12);
+          scan.scannedTo = r.scannedTo; scan.head = head; scan.done = r.done;
+          if (!r.done) notes.push(`chain history ${Math.round(((r.scannedTo - from) / Math.max(1, head - from)) * 100)}% scanned; more on the next refresh`);
+        } else scan.done = true;
+      } catch (err) { notes.push(`chain scan: ${err.message.slice(0, 80)}`); }
+    }
+    // 2. the indexes
+    const held = new Map();
+    try { for (const h of await rpc.walletTokens(ethRouter.address)) held.set(h.instrument.toLowerCase(), { ...h, instrument: h.instrument.toLowerCase() }); } catch (err) { notes.push(`listing: ${err.message.slice(0, 80)}`); }
+    // 3. everything else we know of: the ledger, the scan
+    const u = this.users.get(wallet);
+    if (u) u.engine.seedRouterKnowledge("pons"); else for (const inst of this._instrumentsFromDisk(wallet, "pons")) ethRouter.track?.(inst);
+    for (const t of Object.keys(scan.tokens)) ethRouter.track?.(t);
+    for (const p of await ethRouter.positions()) if (!held.has(p.instrument.toLowerCase())) held.set(p.instrument.toLowerCase(), { instrument: p.instrument.toLowerCase(), qty: p.qty });
+    // the curve for each, remembered
+    const rows = [];
+    for (const h of held.values()) {
+      if (!(h.qty >= 1)) continue;
+      let c = scan.curves[h.instrument] || null;
+      if (!c || c.graduated === false) { try { const f = await rpc.curveFor(h.instrument, scan.tokens[h.instrument] || []); if (f) c = f; } catch {} }
+      if (c) scan.curves[h.instrument] = c;
+      rows.push({ ...h, curve: c?.curve || null, graduated: !!c?.graduated, via: c?.via || null, state: !c ? "not a curve token" : c.graduated ? "graduated" : "curve" });
+    }
+    try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(scan)); } catch {}
+    return { rows, notes, scan: { done: !!scan.done, scannedTo: scan.scannedTo, head: scan.head ?? null } };
+  }
 
   /** Every token both wallets hold, with what is known about each: name, curve state, what a sell
    *  would fetch. Works with the bot stopped (routers built from the keys). Cached 20 seconds. */
@@ -260,23 +305,16 @@ export class VelocityHub {
       try {
         if (!ethRouter.ready) await ethRouter.init();
         const ethPrice = this.ponsFeed?.solPrice || 0;
-        let held = [];
-        try { held = await rpc.walletTokens(ethRouter.address); } catch (err) { out.errors.push(`robinhood listing: ${err.message}`); }
-        if (u) u.engine.seedRouterKnowledge("pons"); else for (const inst of this._instrumentsFromDisk(wallet, "pons")) ethRouter.track?.(inst);
-        for (const p of await ethRouter.positions()) if (!held.some(h => h.instrument.toLowerCase() === p.instrument.toLowerCase())) held.push(p);
+        const inv = await this._rhInventory(wallet, ethRouter, rpc);
+        out.errors.push(...inv.notes); out.scan = inv.scan;
         const { curveSellQuote, mcapQuote, curveProgress } = await import("./venues/pons/chain.mjs");
-        for (const h of held) {
-          if (!(h.qty >= 1)) continue;
-          const inst = h.instrument.toLowerCase(), p = open.get("pons:" + inst), feedTok = this.ponsFeed?.tokens?.get(inst);
-          const row = { venue: "pons", instrument: inst, qty: h.qty, name: feedTok?.name || p?.reference?.name || h.name || "", ticker: feedTok?.ticker || p?.reference?.ticker || h.symbol || "", state: "unknown", valueUsd: null, tracked: !!p, positionId: p?.id || null, url: (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}").replace("{ca}", inst), explorer: `https://robinhoodchain.blockscout.com/token/${inst}` };
+        for (const h of inv.rows) {
+          const inst = h.instrument, p = open.get("pons:" + inst), feedTok = this.ponsFeed?.tokens?.get(inst);
+          const row = { venue: "pons", instrument: inst, qty: h.qty, name: feedTok?.name || p?.reference?.name || h.name || "", ticker: feedTok?.ticker || p?.reference?.ticker || h.symbol || "", state: h.state, curve: h.curve, via: h.via, valueUsd: null, tracked: !!p, positionId: p?.id || null, url: (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}").replace("{ca}", inst), explorer: `https://robinhoodchain.blockscout.com/token/${inst}` };
           try {
             if (!row.name && rpc.tokenMeta) { const m = await rpc.tokenMeta(inst); row.name = m.name || ""; row.ticker = m.symbol || ""; }
-            const info = await rpc.launchInfo(inst);
-            if (!info) row.state = "not a PONS launch";
-            else if (info.graduated) { row.state = "graduated"; row.curve = info.curve; }
-            else {
-              row.state = "curve"; row.curve = info.curve;
-              const ci = await rpc.curveInfo(info.curve);
+            if (h.state === "curve") {
+              const ci = await rpc.curveInfo(h.curve);
               row.curvePct = +curveProgress(ci.realQuoteReserve, ci.graduationThreshold).toFixed(3);
               row.mcapUsd = Math.round(mcapQuote(ci) * ethPrice);
               const q = curveSellQuote(ci, h.qty, ci.feeBps + ci.creatorTaxBps);
@@ -301,7 +339,9 @@ export class VelocityHub {
     if (!router) return { ok: false, error: venue === "pons" ? "no Robinhood Chain wallet" : "no Solana wallet" };
     if (!router.ready) await router.init();
     const price = venue === "pons" ? (this.ponsFeed?.solPrice || 0) : (this.feed?.solPrice || 0);
-    const r = await router.close({ id: `sell:${inst}`, instrument: inst }, pct, { reference: { solPrice: price } });
+    let curve = null;
+    if (venue === "pons") { try { const scan = JSON.parse(fs.readFileSync(path.join(this.rootDir, wallet, "rh-scan.json"), "utf8")); const c = scan.curves?.[inst]; if (c?.curve && !c.graduated) curve = c.curve; if (!curve && this.ponsFeed?.rpc?.curveFor) { const f = await this.ponsFeed.rpc.curveFor(inst, scan.tokens?.[inst] || []); if (f && !f.graduated) curve = f.curve; } } catch {} }
+    const r = await router.close({ id: `sell:${inst}`, instrument: inst, curve }, pct, { reference: { solPrice: price, curve: curve ? { address: curve } : undefined } });
     u?.engine.log("info", `sell ${inst.slice(0, 10)} (${venue}): ${r?.ok ? `sold for ${(r.fill.sol_received ?? 0).toFixed(venue === "pons" ? 5 : 4)} ${venue === "pons" ? "ETH" : "SOL"}` : `${r?.failure?.code || ""} ${r?.failure?.reason || "failed"}`}`);
     this._holdingsCache.delete(wallet);
     if (u) { try { await u.engine.refreshWallet(); } catch {} }
@@ -341,20 +381,16 @@ export class VelocityHub {
         if (!ethRouter.ready) await ethRouter.init();
         const rpc = this.ponsFeed?.rpc || explorer;
         const ethPrice = this.ponsFeed?.solPrice || 0;
-        let held = [], listed = false;
-        try { if (rpc?.walletTokens) { held = await rpc.walletTokens(ethRouter.address); listed = true; } } catch (err) { report.push({ venue: "pons", instrument: null, ok: false, error: `could not list the wallet (${err.message}); checking every token this wallet ever bought instead` }); }
-        // Whatever the listing said, every token this wallet ever bought is checked for a balance too.
-        if (u) u.engine.seedRouterKnowledge("pons"); else for (const inst of this._instrumentsFromDisk(wallet, "pons")) ethRouter.track?.(inst);
-        for (const p of await ethRouter.positions()) if (!held.some(h => h.instrument === p.instrument)) held.push(p);
-        for (const h of held) {
+        const inv = await this._rhInventory(wallet, ethRouter, rpc, { budgetMs: 30_000 });
+        for (const n of inv.notes) report.push({ venue: "pons", instrument: null, ok: false, error: n, note: true });
+        for (const h of inv.rows) {
           if (!(h.qty >= 1)) continue;
           if (report.some(x => x.instrument === h.instrument && x.ok)) continue; // sold above as an open position
           at("pons", h.instrument);
-          let info = null; try { info = rpc?.launchInfo ? await rpc.launchInfo(h.instrument) : null; } catch {}
-          if (!info) { report.push({ venue: "pons", instrument: h.instrument, ok: false, qty: h.qty, error: "not a PONS launch; sell by hand" }); continue; }
-          if (info.graduated) { report.push({ venue: "pons", instrument: h.instrument, ok: false, qty: h.qty, code: "GRADUATED", error: "curve graduated to Uniswap; sell by hand on PONS" }); continue; }
-          let ci = {}; try { ci = rpc?.curveInfo ? await rpc.curveInfo(info.curve) : {}; } catch {}
-          const r = await ethRouter.close({ id: `sweep:${h.instrument}`, instrument: h.instrument, curve: info.curve }, 100, { reference: { solPrice: ethPrice, curve: { address: info.curve, ...ci } } });
+          if (!h.curve) { report.push({ venue: "pons", instrument: h.instrument, ok: false, qty: h.qty, error: "no curve found for it (not a launch, or an airdrop); see the explorer" }); continue; }
+          if (h.graduated) { report.push({ venue: "pons", instrument: h.instrument, ok: false, qty: h.qty, code: "GRADUATED", error: "curve graduated to the pool; sell by hand on PONS" }); continue; }
+          let ci = {}; try { ci = rpc?.curveInfo ? await rpc.curveInfo(h.curve) : {}; } catch {}
+          const r = await ethRouter.close({ id: `sweep:${h.instrument}`, instrument: h.instrument, curve: h.curve }, 100, { reference: { solPrice: ethPrice, curve: { address: h.curve, ...ci } } });
           note("pons", h.instrument, r, { qty: h.qty });
           u?.engine.log("info", `sweep ${h.instrument.slice(0, 10)}: ${r?.ok ? `sold ${h.qty} tokens for ${(r.fill.sol_received ?? 0).toFixed(5)} ETH` : r?.failure?.reason}`);
         }
@@ -363,7 +399,7 @@ export class VelocityHub {
     if (job) job.current = null;
     this._holdingsCache.delete(wallet);
     if (u) { try { await u.engine.refreshWallet(); } catch {} }
-    return { ok: true, sold: report.filter(r => r.ok).length, failed: report.filter(r => !r.ok).length, report };
+    return { ok: true, sold: report.filter(r => r.ok).length, failed: report.filter(r => !r.ok && !r.note).length, report };
   }
 
   /** Every instrument a stopped user's ledger says this wallet bought on a venue, read from disk. */
