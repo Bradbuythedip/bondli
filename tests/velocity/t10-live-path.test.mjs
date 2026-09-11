@@ -774,3 +774,19 @@ test("T10: the dial scales the Kelly fraction: Degen sizes twice Careful, capped
   assert.equal(userEnvelope({ bankrollUsd: 100, aggression: 2 }).venues.pumpfun.kelly_fraction, Math.min(0.5, base * 1.5));
   assert.equal(userEnvelope({ bankrollUsd: 100, aggression: 3 }).venues.pumpfun.kelly_fraction, Math.min(0.5, base * 2));
 });
+
+test("T10: the market-cap floor follows the dial and is named for what it is; a PONS entry is marked at what was paid", async () => {
+  const { checkViability } = await import("../../src/autoape/gates/viability.js");
+  const { AGGRESSION } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const { curveEntryMark } = await import("../../src/velocity/core/engine.mjs");
+  const t = { ca: "S", createdAt: Date.now() - 3 * 60_000, buys: 20, sells: 5, uniqueBuyers: { size: 9 }, mcapUsd: 2_800, volumeSol: 3 };
+  const dyn = { scores: 4, velocity: 0.1, acceleration: 0, trend: "rising" };
+  assert.ok(checkViability(t, {}, { apeScore: 60 }, dyn).checks.includes("MCAP_BELOW_FLOOR"), "designed floor $4k");
+  assert.ok(checkViability(t, {}, { apeScore: 60 }, dyn, AGGRESSION[2]).checks.includes("MCAP_BELOW_FLOOR"), "normal floor $3k");
+  assert.ok(!checkViability(t, {}, { apeScore: 60 }, dyn, AGGRESSION[3]).checks.includes("MCAP_BELOW_FLOOR"), "degen floor $2.5k admits $2.8k");
+  assert.ok(!checkViability(t, {}, { apeScore: 60 }, dyn).checks.includes("INSUFFICIENT_LIQUIDITY"), "the old name is gone");
+  // PONS: paid 0.004 ETH at $3000 for 12,000,000 tokens => $0.000001 per token => $1,000 mcap at entry.
+  assert.equal(curveEntryMark("pons", { qty: 12_000_000, price: 12 / 12_000_000 }, { reference: { mcapUsd: 1_500 } }), 1000);
+  assert.equal(curveEntryMark("pumpfun", { qty: 1, price: 5 }, { reference: { mcapUsd: 9_000 } }), 9_000);
+  assert.equal(curveEntryMark("polymarket", { qty: 1, price: 0.6 }, { reference: {} }), 0.6);
+});

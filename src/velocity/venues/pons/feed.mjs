@@ -106,6 +106,9 @@ export class PonsFeed extends Feed {
     if (!rec) return;
     if (rec.kind === "launch") {
       if (this.tokens.has(rec.token)) return;
+      // Only launches quoted in native ETH are tradeable by the router; an ERC-20-quoted launch
+      // (pairToken set) is skipped here rather than judged and refused as UNSUPPORTED later.
+      if (rec.pairToken && rec.pairToken !== "0x0000000000000000000000000000000000000000") { this.skippedQuote = (this.skippedQuote || 0) + 1; return; }
       const t = { ca: rec.token, curve: rec.curve, name: "", ticker: "", devWallet: rec.deployer, createdAt: now, block: rec.block, graduationThreshold: rec.graduationThreshold, pairToken: rec.pairToken,
         buys: 0, sells: 0, uniqueBuyers: new Set(), trades: [], spark: [], volumeQuote: 0, volumeUsd: 0, devInitialQuote: 0,
         quoteReserve: 0, tokenReserve: 0, realQuoteReserve: 0, feeBps: 100, creatorTaxBps: 0, mcapQuote: 0, mcapUsd: 0, progress: 0, graduated: false, _curvePct: 0, _source: "pons", _apeScore: 0, _scoredAt: 0, _pending: true };
@@ -193,6 +196,7 @@ export class PonsFeed extends Feed {
     for (const t of this.tokens.values()) {
       const held = this.watched.has(t.ca);
       if (t._pending || (touched.has(t) && now - (t._hydratedAt || 0) > 20_000) || (held && now - (t._hydratedAt || 0) > 4_000)) await this._hydrate(t);
+      if (t.native === false) continue; // the curve says its quote is an ERC-20 after all
       if (!(t.mcapUsd > 0) || !(this.solPrice > 0)) continue;
       const payload = this.payloadFor(t, now);
       if (this.watched.has(t.ca)) this.emitEvent({ kind: "tick", id: t.ca, payload: { ...payload, source: "pons" }, t_venue: now });

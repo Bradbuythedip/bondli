@@ -4,7 +4,7 @@
 
 // opts: the aggression profile (src/velocity/venues/pumpfun/edge.mjs AGGRESSION); defaults are the designed floors.
 export function checkViability(token, qf, scores, dynamics, opts = {}) {
-  const { scoreFloor = 45, sybilMax = 0.40, freshWalletMax = 0.80, doaBuyers = 5, minScores = 2 } = opts;
+  const { scoreFloor = 45, sybilMax = 0.40, freshWalletMax = 0.80, doaBuyers = 5, minScores = 2, mcapFloor = 4000 } = opts;
   const checks = [];
   const buys = token.buys || 0;
   const ub = token.uniqueBuyers?.size || 0;
@@ -27,7 +27,8 @@ export function checkViability(token, qf, scores, dynamics, opts = {}) {
 
   // === LIQUIDITY FLOOR ===
   // Bonding curve must have meaningful SOL
-  if (mc < 4000) checks.push("INSUFFICIENT_LIQUIDITY");
+  // Below this market cap one order moves the curve too much to get out of; the dial lowers it.
+  if (mc < mcapFloor) checks.push("MCAP_BELOW_FLOOR");
 
   // === SYBIL CHECK ===
   if (qf?._rg_sybilScore > sybilMax) checks.push("HIGH_SYBIL_RISK");
