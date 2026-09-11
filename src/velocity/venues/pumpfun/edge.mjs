@@ -43,15 +43,15 @@ export const PUMPFUN_PRIORS = Object.freeze({
 // (+11) in gate 1; DEAD_ON_ARRIVAL (63%) and INSUFFICIENT_DATA (22%) in gate 2; WATCHLIST in gate 3.
 export const AGGRESSION = Object.freeze({
   0: Object.freeze({ scoreFloor: 50, tier3Floor: 55, sybilMax: 0.35, freshWalletMax: 0.70, curveMax: 0.50, curveMaxSpec: 0.30, spikeSlope: 0.10, blockDecel: true,  requireStable: true,
-                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.55, momentum: null, kellyMult: 0.75, mcapFloor: 4000, devHoldMax: 0.08 }),
+                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.55, momentum: null, kellyMult: 0.75, mcapFloor: 4000, devHoldMax: 0.08, requireSocials: true }),
   1: Object.freeze({ scoreFloor: 45, tier3Floor: 50, sybilMax: 0.40, freshWalletMax: 0.80, curveMax: 0.60, curveMaxSpec: 0.40, spikeSlope: 0.15, blockDecel: true,  requireStable: true,
-                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.50, momentum: null, kellyMult: 1, mcapFloor: 4000, devHoldMax: 0.10 }),
+                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.50, momentum: null, kellyMult: 1, mcapFloor: 4000, devHoldMax: 0.10, requireSocials: true }),
   2: Object.freeze({ scoreFloor: 38, tier3Floor: 42, sybilMax: 0.50, freshWalletMax: 0.90, curveMax: 0.70, curveMaxSpec: 0.55, spikeSlope: 0.25, blockDecel: false, requireStable: false,
                      coordDump: 0.7, staleMin: 30, tooLateCurve: 0.90, concentrationMax: 0.80, doaBuyers: 4, minScores: 1, enterWatchlist: true, minConfidence: 0.40,
-                     momentum: { buyers: 15, ageMaxMin: 3, sellShareMax: 0.40 }, kellyMult: 1.5, mcapFloor: 3000, devHoldMax: 0.12 }),
+                     momentum: { buyers: 15, ageMaxMin: 3, sellShareMax: 0.40 }, kellyMult: 1.5, mcapFloor: 3000, devHoldMax: 0.12, requireSocials: true }),
   3: Object.freeze({ scoreFloor: 32, tier3Floor: 35, sybilMax: 0.60, freshWalletMax: 1.00, curveMax: 0.80, curveMaxSpec: 0.65, spikeSlope: 0.40, blockDecel: false, requireStable: false,
                      coordDump: 0.85, staleMin: 60, tooLateCurve: 0.95, concentrationMax: 0.90, doaBuyers: 3, minScores: 0, enterWatchlist: true, minConfidence: 0.30,
-                     momentum: { buyers: 10, ageMaxMin: 5, sellShareMax: 0.45 }, kellyMult: 2, mcapFloor: 2500, devHoldMax: 0.15 }),
+                     momentum: { buyers: 10, ageMaxMin: 5, sellShareMax: 0.45 }, kellyMult: 2, mcapFloor: 2500, devHoldMax: 0.15, requireSocials: true }),
 });
 
 export function makePumpfunEdge({
@@ -70,7 +70,13 @@ export function makePumpfunEdge({
   nominalStakeUsd = 25,
 } = {}) {
   const level = AGGRESSION[Math.max(0, Math.min(3, Math.round(Number(aggression) || 0)))] || AGGRESSION[1];
-  const gateOpts = venue === "pons" ? { ...level, minAgeMin: 1.1 } : level; // PONS: up to 99% snipe tax in the first 60s
+  // A launch with no twitter, telegram or website is refused at every risk level. Set
+  // VELOCITY_REQUIRE_SOCIALS=0 to turn it off. On PONS the gate is inert rather than disabled: the
+  // socials are on chain in TokenParams but the feed does not read them yet, so _socialsKnown is never
+  // set there and the rule cannot fire. Reading them is the fix, not switching this off.
+  const socialsOff = process.env.VELOCITY_REQUIRE_SOCIALS === "0";
+  const base = socialsOff ? { ...level, requireSocials: false } : level;
+  const gateOpts = venue === "pons" ? { ...base, minAgeMin: 1.1 } : base; // PONS: up to 99% snipe tax in the first 60s
   return {
     venue,
     name: "bondli_gates",

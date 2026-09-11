@@ -892,3 +892,19 @@ test("T10: the token account's rent comes back when a position leaves for good, 
     assert.equal(rent.sol, 0.002034); assert.equal(rent.instrument, "MintR"); assert.equal(rent.venue_ref, "SIGRENT");
   } finally { await engine.stop(); }
 });
+
+test("T10: a launch that lists no socials is refused, but only once its metadata has actually been read", async () => {
+  const { checkDisqualifiers } = await import("../../src/autoape/gates/disqualifiers.js");
+  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const token = { ca: "M", createdAt: Date.now() - 120_000, buys: 20, sells: 4, uniqueBuyers: { size: 12 }, mcapUsd: 12_000, trades: [] };
+  const opts = { requireSocials: true };
+  // metadata not fetched yet: absence of socials says nothing, so the rule stays silent
+  assert.ok(!checkDisqualifiers(token, { _socialsKnown: 0, _hasAnySocial: 0 }, opts).flags.includes("NO_SOCIALS"));
+  // metadata read, nothing listed: refused
+  assert.ok(checkDisqualifiers(token, { _socialsKnown: 1, _hasAnySocial: 0 }, opts).flags.includes("NO_SOCIALS"));
+  // any one link is enough
+  assert.ok(!checkDisqualifiers(token, { _socialsKnown: 1, _hasAnySocial: 1 }, opts).flags.includes("NO_SOCIALS"));
+  // off by default in the raw gate, on at every risk level of the real edge
+  assert.ok(!checkDisqualifiers(token, { _socialsKnown: 1, _hasAnySocial: 0 }, {}).flags.includes("NO_SOCIALS"));
+  for (const aggression of [0, 1, 2, 3]) assert.equal(makePumpfunEdge({ aggression }).gateOpts?.requireSocials ?? "unset", true, `level ${aggression}`);
+});
