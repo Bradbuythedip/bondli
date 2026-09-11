@@ -145,6 +145,9 @@ export class SimVenue extends EventEmitter {
   async stop() { this.running = false; }
 
   async sweepReserveWei() { return this.gasWei("transfer"); }
+  /** The simulator charges exactly what it estimates, so a send costs its own gas. */
+  async sendCostWei(kind) { return this.gasWei(kind); }
+  async sendCostEth(kind) { return toEth(await this.sendCostWei(kind)); }
   /** Everything minus the transfer's own gas: the same call the chain venue answers. */
   async sweepAll(from, to) { const bal = this.balanceOf(from.address); const reserve = this.gasWei("transfer"); if (bal <= reserve) return { ok: false, error: "dust", swept: 0n }; const r = await this.transfer(from, to, bal - reserve); return { ...r, swept: r.ok ? bal - reserve : 0n }; }
   async transfer(from, to, wei) {

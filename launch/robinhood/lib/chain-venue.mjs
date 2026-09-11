@@ -107,6 +107,11 @@ export class ChainVenue extends EventEmitter {
   }
   /** What a sweep must leave behind for its own gas. */
   async sweepReserveWei() { const f = await this._fees(); return GAS_LIMITS.transfer * f.perGas; }
+  /** What the wallet must hold to SEND this kind of transaction: the node checks the gas limit against
+   *  the fee cap, not the gas it will actually use, so this is gasLimit × perGas — several times what
+   *  gasWei()'s typical-usage estimate says. Funding and the rug's reserve are sized on this. */
+  async sendCostWei(kind) { const f = await this._fees(); return (GAS_LIMITS[kind] ?? GAS_LIMITS.transfer) * f.perGas; }
+  async sendCostEth(kind) { return toEth(await this.sendCostWei(kind)); }
   async transfer(from, to, wei, { fees = null } = {}) {
     return this._locked(from, async () => {
       try {
