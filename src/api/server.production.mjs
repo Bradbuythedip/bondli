@@ -1183,7 +1183,11 @@ function chooseTradeSource() {
   radar._tradeSource = want;
   console.warn(`[RADAR] trade source -> ${want}${forced === "auto" ? (radar._tradeSubsRefused ? " (PumpPortal refused trade subscriptions)" : portalDead ? " (no PumpPortal trade for 90s)" : " (PumpPortal trades resumed)") : " (" + forced + ")"}`);
   if (want === "onchain" && !radar._onchain) {
-    try { radar._onchain = startOnchainTrades({ rpcUrl: process.env.RADAR_STREAM_RPC_URL || "https://api.mainnet-beta.solana.com", onTrade: onchainForward }); }
+    // The stream needs a WebSocket that allows logsSubscribe on the pump program. The public
+    // endpoint drops or refuses it; the paid RPC the server already has is the right default.
+    const streamRpc = process.env.RADAR_STREAM_RPC_URL || process.env.RPC_URL || "https://api.mainnet-beta.solana.com";
+    console.log(`[RADAR] onchain stream via ${String(streamRpc).split("?")[0].replace(/\/v2\/.*/, "/v2/…")}${process.env.RADAR_STREAM_RPC_URL ? "" : process.env.RPC_URL ? " (RPC_URL; set RADAR_STREAM_RPC_URL to use a different one)" : " (PUBLIC endpoint: expect drops; set RADAR_STREAM_RPC_URL)"}`);
+    try { radar._onchain = startOnchainTrades({ rpcUrl: streamRpc, onTrade: onchainForward }); }
     catch (e) { console.error("[RADAR] onchain stream failed to start:", e.message); }
   }
   if (want === "pumpportal" && radar._onchain) { radar._onchain.stop().catch(() => {}); radar._onchain = null; }
