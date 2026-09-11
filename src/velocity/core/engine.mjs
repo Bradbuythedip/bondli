@@ -383,7 +383,7 @@ export class Engine extends EventEmitter {
     const inst = decision.instrument;
     const fill = r.fill;
     this.latency[venue].confirm.record(fill.latency_ms || 0);
-    const key = venue === "pumpfun" ? decision.tier : decision.model;
+    const key = venue === "pumpfun" ? (decision.plan_key || decision.tier) : decision.model;
     const plan = createPlan({ venue, key, entry: { score: decision.features ? Math.round((decision.features.apeScore || 0) * 100) : 0, price: fill.price } });
     const position = {
       id: `${venue}:${inst}:${fill.t_filled}`, venue, instrument: inst, model: decision.model, tier: decision.tier, group: decision.group,

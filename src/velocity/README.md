@@ -111,6 +111,17 @@ dump threshold, how old a token can be (15 / 30 / 60 min), how far along the cur
 self-snipe, sybil, pump-and-dump, freeze authority, serial ruggers) never move. Read at start; restart
 after changing it.
 
+### Revivals
+
+The launch feed only sees the first hour. The radar also keeps a 72-hour window of 5-minute buckets
+per mint (distinct buyers, net SOL, curve progress) and fires a **revival** when a token older than
+an hour is flat for an hour and then gets 5-minute distinct buyers at 3x the prior hour's pace with
+SOL flowing in and the curve up 5+ points (`src/api/revival.mjs`). A firing signal still has to pass
+the filter (dev not selling into it, buyers not from one source, a graduated token needs a pool
+with real liquidity, never Mayhem or a copy). Survivors reach the same judge as model
+`bondli_revival`: every rug rule applies, the age rules do not, the tier is always speculative, the
+plan is `revival` (8% stop, 6-minute hold), and the stake is capped at half of `per_trade_max_usd`.
+
 ### Bankroll from the wallet
 
 `"bankroll_source": "wallet"` in risk.json makes the live wallet the bankroll: free SOL (less

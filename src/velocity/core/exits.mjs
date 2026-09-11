@@ -15,7 +15,7 @@ export function createPlan({ venue, key, entry = {} }) {
   if (venue === "pumpfun") {
     return {
       venue, key, mode: base.mode, worst_case_fraction: base.worst_case_fraction, max_hold_ms: base.max_hold_ms,
-      bondli: createExitPlan(Number(key), Number(entry.score) || 0, PUMPFUN_EXIT_SETTINGS),
+      bondli: { ...createExitPlan(base.tier ?? Number(key), Number(entry.score) || 0, base.stop_pct ? { ...PUMPFUN_EXIT_SETTINGS, sl2: base.stop_pct } : PUMPFUN_EXIT_SETTINGS), maxHoldMs: base.max_hold_ms },
       settings: { ...PUMPFUN_EXIT_SETTINGS },
     };
   }
