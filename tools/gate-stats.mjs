@@ -13,7 +13,10 @@ import { appendFileSync, readFileSync } from "node:fs";
 
 const arg = (k, d) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : d; };
 const FILE = arg("--file"), OUT = arg("--out", "gate-snapshots.jsonl"), MIN = +arg("--minutes", 10);
-const URL = (arg("--url", "http://127.0.0.1:3001")).replace(/\/$/, "") + "/api/radar/scored?min=0&limit=200";
+// all=1: every token the radar holds, not only those past the base filter, so a runner the filter
+// never admitted still shows up in the audit below.
+const URL = (arg("--url", "http://127.0.0.1:3001")).replace(/\/$/, "") + "/api/radar/scored?min=0&limit=200&all=1";
+const RUN_X = +arg("--runner-x", 3); // a runner: peak mcap at least this multiple of the mcap when first seen at 2+ min
 const MIN_BUYS = +arg("--min-buys", 10), MIN_AGE = +arg("--min-age", 2);
 
 // ── Rule table: one entry per flag in checkDisqualifiers(), same expressions, same order. ──
@@ -206,6 +209,77 @@ async function report(file) {
   if (!binding.length) console.log("  (none: every blocked token trips at least two rules)");
   for (const [k, n] of binding) console.log(`  ${P(k)} +${n}`);
   if (gate) { console.log(`\nReplica vs real checkDisqualifiers mismatches: recorded ${rec.mismatch}/${N}, recomputed ${fix.mismatch}/${N}`); fix.mmEx.forEach(x => console.log("  " + x)); }
+  if (gate) runnerAudit(snaps, gate);
+}
+
+// ── Runner audit: which runners did the judge miss, and which rule cost the most of them? ──
+// A runner is a token whose mcap later reached RUN_X times its mcap at the first snapshot where it was
+// 2+ minutes old (and at least $3k). A dud went on to lose half or never made 1.3x. For every runner
+// we replay the real judge at the chosen aggression on each snapshot before the peak: enterable on any
+// of them = caught; otherwise the gate that blocked it every time is what cost us the trade.
+function runnerAudit(snaps, gate) {
+  const byCa = new Map();
+  for (const s of snaps) for (const r of s.tokens || []) {
+    const t = hydrate(r.token); if (t._mayhem || t._copyOf) continue;
+    const ts = s.ts || Date.now();
+    let e = byCa.get(t.ca); if (!e) { e = { ca: t.ca, name: t.name || t.ticker || t.ca.slice(0, 8), pts: [] }; byCa.set(t.ca, e); }
+    e.pts.push({ ts, t, r, age: (ts - (t.createdAt || ts)) / 60000, mc: t.mcapUsd || 0 });
+  }
+  const runners = [], duds = [];
+  for (const e of byCa.values()) {
+    e.pts.sort((a, b) => a.ts - b.ts);
+    const i0 = e.pts.findIndex(p => p.age >= 2 && p.mc >= 3000); if (i0 < 0 || i0 === e.pts.length - 1) continue;
+    const first = e.pts[i0]; let peak = first, last = e.pts[e.pts.length - 1];
+    for (const p of e.pts.slice(i0 + 1)) if (p.mc > peak.mc) peak = p;
+    const x = peak.mc / first.mc;
+    e.first = first; e.peak = peak; e.x = x; e.i0 = i0;
+    if (x >= RUN_X) runners.push(e); else if (last.mc <= first.mc * 0.5 || x < 1.3) duds.push(e);
+  }
+  // judge one token-snapshot with the real gates, clock pinned
+  const judge = (p) => {
+    const now = Date.now; Date.now = () => p.ts;
+    try {
+      const t = p.t, q = recompute(t, p.r.qf), sc = p.r.scores || {}, dyn = p.r.dynamics;
+      const opts = { ...gate.opts, freezeAuthority: !!t.freezeAuthority };
+      const g1 = gate.d.checkDisqualifiers(t, q, opts); if (!g1.pass) return { gate: "rug", reasons: g1.flags.map(f => f.startsWith("MULTI_RUG_SIGNAL_") ? "MULTI_RUG_SIGNAL_*" : f) };
+      const vi = gate.v.checkViability(t, q, sc, dyn, gate.opts); if (!vi.pass) return { gate: "viability", reasons: vi.checks };
+      const conf = gate.c.classifyConfidence(t, q, sc, dyn, gate.opts); let tier = conf.tier; if (tier === 4 && gate.opts.enterWatchlist) tier = 3;
+      if (!(tier >= 1 && tier <= 3)) return { gate: "confidence", reasons: [tier === 4 ? "WATCHLIST" : "BELOW_THRESHOLD"] };
+      const ew = gate.e.checkExecutionWindow({ ...t, _apeScore: sc.apeScore }, tier, sc.scoreTimestamp, gate.opts); if (!ew.pass) return { gate: "window", reasons: ew.checks };
+      return { gate: null, reasons: [], tier };
+    } finally { Date.now = now; }
+  };
+  const base = (p) => { const t = p.t, ub = t.uniqueBuyers?.size || 0; return ub >= 3 && (t.sells || 0) >= 1 && (t.buys || 0) >= 5 && p.age >= 0.5 && p.mc >= 4000; };
+  const caught = [], missed = [], ruleCost = {}, ruleSaved = {};
+  const count = (tab, k) => { tab[k] = (tab[k] || 0) + 1; };
+  for (const e of runners) {
+    const before = e.pts.slice(e.i0, e.pts.indexOf(e.peak) + 1).filter(p => p !== e.peak);
+    let best = null, ok = null;
+    for (const p of before) {
+      if (!base(p)) { const v = { gate: "base", reasons: [(p.t.uniqueBuyers?.size || 0) < 3 ? "BUYERS<3" : (p.t.buys || 0) < 5 ? "BUYS<5" : (p.t.sells || 0) < 1 ? "NO_SELL_YET" : p.mc < 4000 ? "MCAP<4k" : "AGE<30s"] }; if (!best) best = { p, v }; continue; }
+      const v = judge(p);
+      if (!v.gate) { ok = { p, v }; break; }
+      if (!best || best.v.gate === "base" || v.reasons.length < best.v.reasons.length) best = { p, v };
+    }
+    if (ok) caught.push({ e, at: ok.p }); else { missed.push({ e, best }); if (best) for (const r of best.v.reasons) count(ruleCost, `${best.v.gate}:${r}`); }
+  }
+  for (const e of duds) { const p = e.first; if (!base(p)) continue; const v = judge(p); if (v.gate) for (const r of v.reasons) count(ruleSaved, `${v.gate}:${r}`); }
+  console.log(`
+RUNNER AUDIT (aggression ${gate.level}): ${byCa.size} tokens followed, ${runners.length} ran ${RUN_X}x+ from first sight at 2 min, ${duds.length} duds`);
+  console.log(`  caught (enterable on some snapshot before the peak): ${caught.length}   missed: ${missed.length}`);
+  if (missed.length) {
+    console.log(`  missed runners, the gate that blocked them on their best snapshot:`);
+    const byGate = {}; for (const m of missed) count(byGate, m.best ? m.best.v.gate : "never 2+ min before peak");
+    for (const [k, v] of Object.entries(byGate).sort((a, b) => b[1] - a[1])) console.log(`    ${P(k)} ${v}`);
+    console.log(`  what each rule cost (missed runners it blocked) vs what it saved (duds it blocked at first sight):`);
+    const keys = new Set([...Object.keys(ruleCost), ...Object.keys(ruleSaved)]);
+    const table = [...keys].map(k => [k, ruleCost[k] || 0, ruleSaved[k] || 0]).filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1] || a[2] - b[2]);
+    console.log(`    ${P("rule")} cost  saved  saved/cost`);
+    for (const [k, c, sv] of table) console.log(`    ${P(k)} ${String(c).padStart(4)}  ${String(sv).padStart(5)}  ${(sv / c).toFixed(1)}`);
+    console.log(`  the missed runners themselves (first sight -> peak):`);
+    for (const m of missed.sort((a, b) => b.e.x - a.e.x).slice(0, 15)) console.log(`    ${m.e.name.padEnd(16).slice(0, 16)} ${m.e.ca.slice(0, 8)}  $${Math.round(m.e.first.mc / 1000)}k -> $${Math.round(m.e.peak.mc / 1000)}k (${m.e.x.toFixed(1)}x) in ${Math.round((m.e.peak.ts - m.e.first.ts) / 60000)}m  ${m.best ? `${m.best.v.gate}: ${m.best.v.reasons.slice(0, 3).join(", ")}` : "no snapshot to judge"}`);
+  }
+  if (caught.length) console.log(`  caught: ${caught.slice(0, 10).map(c => `${c.e.name.slice(0, 12)} ${c.e.x.toFixed(1)}x`).join("  ")}`);
 }
 
 report(FILE || await collect()).catch(e => { console.error(e); process.exit(1); });
