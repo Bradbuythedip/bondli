@@ -127,7 +127,7 @@ export class Engine extends EventEmitter {
         const h = await v.liveRouter.health();
         if (!h.ok) throw new Error(h.detail);
         this.ledger.append({ kind: "venue", venue, mode: "live", by: "restart", preflight: pre });
-        this.log("info", `${venue}: live router ready${pre?.wallet ? ` (wallet ${pre.wallet}, ${Number(pre.balanceSol).toFixed(4)} SOL)` : ""}`);
+        this.log("info", `${venue}: live router ready${pre?.wallet ? ` (wallet ${pre.wallet}, ${Number(pre.balanceSol).toFixed(4)} ${pre.quote || "SOL"})` : ""}`);
         this._clearStartupFreeze(venue, /^(live router not ready|reconcile)/);
         this.noteWallet(venue, pre);
       } catch (err) {
@@ -288,7 +288,7 @@ export class Engine extends EventEmitter {
       const solPrice = this.solPriceHint || this.venues[venue].feed?.solPrice || 0;
       const minSol = this.env.venues[venue].min_stake_usd / (solPrice > 0 ? solPrice : 100) + (router.priorityFeeSol || 0) + 0.006;
       if (preflight && preflight.balanceSol != null && preflight.balanceSol < minSol)
-        return refuse(`wallet ${preflight.wallet} holds ${preflight.balanceSol.toFixed(4)} SOL, below one minimum stake plus fees (${minSol.toFixed(4)} SOL)`, { preflight });
+        return refuse(`wallet ${preflight.wallet} holds ${preflight.balanceSol.toFixed(4)} ${preflight.quote || "SOL"}, below one minimum stake plus fees (${minSol.toFixed(4)} ${preflight.quote || "SOL"})`, { preflight });
       // Paper positions cannot be sold through the live router: close them while the paper router still serves the venue.
       for (const p of this.store.openPositions(venue).filter(p => p.paper)) {
         const r = await this.closePosition(p, 100, "VENUE_MODE_CHANGE", { by });
@@ -297,7 +297,9 @@ export class Engine extends EventEmitter {
       liveStartCapUsd = gate.liveStartCapUsd;
       this.venues[venue].liveStartCapUsd = liveStartCapUsd;
       this.noteWallet(venue, preflight);
-      if (!gate.ok) this.alerter?.send("warn", `${venue} switched to LIVE by operator override with the paper gate red: ${gate.items.filter(i => !i.ok).map(i => i.name).join(", ")}`);
+      // A hosted user's Start is always an override of the paper gate: log it, do not alert them about it.
+      if (!gate.ok && by !== "user") this.alerter?.send("warn", `${venue} switched to LIVE by operator override with the paper gate red: ${gate.items.filter(i => !i.ok).map(i => i.name).join(", ")}`);
+      else if (!gate.ok) this.log("info", `${venue}: live by the user's start; the paper gate would still say ${gate.items.filter(i => !i.ok).map(i => i.name).join(", ")}`);
     }
     this.store.setVenueMode(venue, mode, mode === "live" ? { liveStartCapUsd } : {});
     this.ledger.append({ kind: "venue", venue, mode, by, override: !!override, gateOk: mode === "live" ? this.promotion(venue).ok : null, preflight, liveStartCapUsd });

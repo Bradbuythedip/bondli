@@ -33,7 +33,7 @@ export function formatRecord(r) {
     case "resume": return `${at} resume  ${r.venue} (${r.by})`;
     case "governor": return r.halt ? `${at} governor FROZE entries: ${r.haltReason}` : r.throttle < 1 ? `${at} governor throttle ${r.throttle} ${(r.reasons || []).join(", ")}` : null;
     case "feed": return r.blocked ? `${at} blocked ${r.venue}: ${r.blocked}` : `${at} unblock ${r.venue}`;
-    case "venue": return `${at} venue   ${r.venue} -> ${r.mode} (${r.by})${r.preflight?.balanceSol != null ? ` wallet ${Number(r.preflight.balanceSol).toFixed(4)} SOL` : ""}`;
+    case "venue": return `${at} venue   ${r.venue} -> ${r.mode} (${r.by})${r.preflight?.balanceSol != null ? ` wallet ${Number(r.preflight.balanceSol).toFixed(4)} ${r.preflight.quote || "SOL"}` : ""}`;
     case "reconcile": { const v = r.report?.venues?.pumpfun; return v ? `${at} reconcile matched ${v.matched.length} adopted ${v.adopted.length} closed ${v.closed.length} unknown ${(v.unknown || []).length}` : null; }
     case "alert": return `${at} ALERT   ${r.level}: ${r.text}`;
     case "violation": return `${at} VIOLATION ${r.rule}`;
