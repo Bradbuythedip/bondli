@@ -141,10 +141,12 @@ function Launch({ T }) {
       <div style={{ color: T.ft, fontSize: 13, lineHeight: 1.45, marginTop: 8 }}>{l.tagline}</div>
     </div>
     {live && <div style={{ position: "relative", zIndex: 1, marginTop: 14 }}>
-      {lv && <div style={{ display: "flex", gap: 14, fontFamily: M, fontSize: 13, alignItems: "baseline" }}>
+      {lv && <div style={{ display: "flex", gap: 14, fontFamily: M, fontSize: 13, alignItems: "baseline", flexWrap: "wrap" }}>
         <span><span style={{ color: T.ft, fontSize: 11 }}>mcap </span><b style={{ color: T.tx, fontSize: 18 }}>{kfmt(lv.mcapUsd || 0)}</b></span>
         {lv.buys != null && <span><span style={{ color: T.ft, fontSize: 11 }}>buys </span><b>{lv.buys}</b></span>}
         {lv.buyers != null && lv.buyers > 0 && <span><span style={{ color: T.ft, fontSize: 11 }}>holders </span><b>{lv.buyers}</b></span>}
+        {lv.liquidityUsd != null && <span><span style={{ color: T.ft, fontSize: 11 }}>liquidity </span><b>{kfmt(lv.liquidityUsd)}</b></span>}
+        {lv.lpBurnedPct != null && <span><span style={{ color: T.ft, fontSize: 11 }}>LP burned </span><b style={{ color: T.gn }}>{lv.lpBurnedPct}%</b></span>}
       </div>}
       {lv && lv.curvePct != null && <div style={{ marginTop: 8 }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontFamily: M, fontSize: 11, color: T.ft }}><span>{lv.graduated ? "graduated to the pool" : "bonding curve"}</span><span>{Math.round(lv.curvePct * 100)}%</span></div>
@@ -152,7 +154,8 @@ function Launch({ T }) {
       </div>}
       {l.address && <div onClick={copy} title="copy" style={{ fontFamily: M, fontSize: 11, color: T.dm, marginTop: 10, wordBreak: "break-all", cursor: "pointer", padding: "7px 9px", background: T.bg + "cc", borderRadius: 8, border: `1px solid ${T.bd}` }}>{l.address}{copied ? "  copied" : ""}</div>}
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-        {l.url && <a href={l.url} target="_blank" rel="noopener" style={{ flex: 1, textAlign: "center", padding: "11px 12px", borderRadius: 10, background: T.gn, color: "#000", fontWeight: 900, textDecoration: "none", fontSize: 14 }}>Buy on PONS</a>}
+        {l.url && <a href={l.url} target="_blank" rel="noopener" style={{ flex: 1, textAlign: "center", padding: "11px 12px", borderRadius: 10, background: T.gn, color: "#000", fontWeight: 900, textDecoration: "none", fontSize: 14 }}>{l.venue === "uniswap-v2" ? "Buy on Uniswap" : "Buy on PONS"}</a>}
+        {l.chart && l.venue === "uniswap-v2" && <a href={l.chart} target="_blank" rel="noopener" style={{ padding: "11px 14px", borderRadius: 10, border: `1px solid ${T.bd}`, color: T.tx, fontWeight: 800, textDecoration: "none", fontSize: 14 }}>Chart</a>}
         {l.links?.x && <a href={l.links.x} target="_blank" rel="noopener" style={{ padding: "11px 14px", borderRadius: 10, border: `1px solid ${T.bd}`, color: T.tx, fontWeight: 800, textDecoration: "none", fontSize: 14 }}>X</a>}
         {l.links?.telegram && <a href={l.links.telegram} target="_blank" rel="noopener" style={{ padding: "11px 14px", borderRadius: 10, border: `1px solid ${T.bd}`, color: T.tx, fontWeight: 800, textDecoration: "none", fontSize: 14 }}>Telegram</a>}
       </div>
@@ -160,7 +163,7 @@ function Launch({ T }) {
     {l.updates?.length > 0 && <div style={{ position: "relative", zIndex: 1, marginTop: 12, fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.6, borderTop: `1px solid ${T.bd}`, paddingTop: 8 }}>
       {l.updates.slice(0, 3).map((u, i) => <div key={i}><span style={{ color: T.dm }}>{new Date(u.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span> {u.text}</div>)}
     </div>}
-    <div style={{ position: "relative", zIndex: 1, marginTop: 10, fontSize: 11, color: T.dm }}>The bot judges this launch like any other. No favours, no auto-buy.</div>
+    <div style={{ position: "relative", zIndex: 1, marginTop: 10, fontSize: 11, color: T.dm }}>{l.venue === "uniswap-v2" ? "Plain ERC-20, no owner, no tax, no mint. Liquidity locked by burning the LP. The bot does not buy it for anyone." : "The bot judges this launch like any other. No favours, no auto-buy."}</div>
   </div>;
 }
 
@@ -341,6 +344,7 @@ export default function Simple() {
             <div>tier {p.tier} · plan {String(p.plan?.key)} · targets hit {p.tpHit || 0}{p.plan?.stall_ms ? ` · stall check at ${Math.round(p.plan.stall_ms / 60000)}m` : ""}{p.plan?.max_hold_ms ? ` · out by ${Math.round(p.plan.max_hold_ms / 60000)}m` : ""}</div>
             <div style={{ color: stale ? T.yl : T.ft }}>price updated {tickAge == null ? "never" : tickAge < 60 ? Math.round(tickAge) + "s ago" : Math.round(tickAge / 60) + "m ago"}{stale ? " · exits cannot fire without a price" : ""}</div>
           </div>}
+          {p.lastExitError && <div style={{ fontFamily: M, fontSize: 11, color: T.rd, padding: "0 0 8px", lineHeight: 1.4 }}>sell failed ×{p.lastExitError.count} ({p.lastExitError.tried}): {p.lastExitError.code ? p.lastExitError.code + " " : ""}{p.lastExitError.reason}</div>}
         </div>; })}</div>}
         {(() => { const h = s?.holdings || {}; const rows = Object.entries(h).flatMap(([venue, x]) => (x.list || []).filter(i => !i.tracked && i.qty >= 1).map(i => ({ ...i, venue }))); if (!rows.length) return null; return <div style={{ marginTop: 10, fontFamily: M, fontSize: 11, color: T.yl, lineHeight: 1.6 }}>
           <div>in the wallet but not tracked as open (being reconciled):</div>
@@ -350,6 +354,10 @@ export default function Simple() {
           {(st.narration || []).map((n, i) => <div key={i} style={{ color: /FILLED|SOLD|P&L/.test(n.line) ? T.tx : /fee/.test(n.line) ? T.yl : T.ft, whiteSpace: "pre-wrap" }}>{n.line}</div>)}
           {!(st.narration || []).length && <div>watching every new token…</div>}
         </div>
+        {s?.review && <div style={{ marginTop: 10, fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.6 }}>
+          <div>last {s.review.n} closes: <b style={{ color: s.review.pnl_usd >= 0 ? T.gn : T.rd }}>{fmt(s.review.pnl_usd)}</b> · won {Math.round(s.review.win_rate * 100)}% · fees {fmt(s.review.fees_usd)}{Object.entries(s.review.venues || {}).map(([v, x]) => ` · ${v === "pons" ? "RH" : "SOL"} ${x.n} ${fmt(x.pnl_usd)}`)}</div>
+          <div>{s.review.reasons.slice(0, 6).map(r => <span key={r.reason} style={{ marginRight: 10, color: r.pnl_usd >= 0 ? T.gn : T.yl }}>{r.reason.toLowerCase().replace(/_/g, " ")} {r.n} {fmt(r.pnl_usd)}</span>)}</div>
+        </div>}
         <Pulse st={st} T={T} />
         <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
           <Btn ghost T={T} onClick={paused ? resume : pause} disabled={busy === "pause"}>{busy === "pause" ? "…" : paused ? "Resume" : "Pause"}</Btn>

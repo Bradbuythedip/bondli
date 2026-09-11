@@ -6,11 +6,12 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const LAUNCH_STATUSES = Object.freeze(["soon", "live", "graduated", "off"]);
-export const LAUNCH_FIELDS = Object.freeze(["name", "ticker", "chain", "address", "curve", "status", "tagline", "image", "links"]);
+export const LAUNCH_VENUES = Object.freeze(["pons", "uniswap-v2"]);
+export const LAUNCH_FIELDS = Object.freeze(["name", "ticker", "chain", "venue", "address", "curve", "pair", "status", "tagline", "image", "links"]);
 const MAX_UPDATES = 20;
 
 export function defaultLaunch() {
-  return { name: "Not a fruit fly", ticker: "", chain: "robinhood", address: "", curve: "", status: "soon", tagline: "Bondli's own token. Launching on Robinhood Chain.", image: "/fly.png", links: {}, updates: [], updatedAt: 0 };
+  return { name: "Not a fruit fly", ticker: "", chain: "robinhood", venue: "uniswap-v2", address: "", curve: "", pair: "", status: "soon", tagline: "Bondli's own token. Launching on Robinhood Chain.", image: "/fly.png", links: {}, updates: [], updatedAt: 0 };
 }
 
 const isAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(String(a || ""));
@@ -23,7 +24,8 @@ export function mergeLaunch(state, body = {}, now = Date.now()) {
     if (body[k] === undefined) continue;
     if (k === "links") { for (const [n, v] of Object.entries(body.links || {})) { if (v == null || v === "") delete next.links[n]; else next.links[n] = String(v).slice(0, 300); } continue; }
     if (k === "status") { if (!LAUNCH_STATUSES.includes(body.status)) throw new Error(`status must be one of ${LAUNCH_STATUSES.join(", ")}`); next.status = body.status; continue; }
-    if (k === "address" || k === "curve") { if (body[k] !== "" && !isAddr(body[k])) throw new Error(`${k} must be a 0x address`); next[k] = String(body[k]).toLowerCase(); continue; }
+    if (k === "venue") { if (!LAUNCH_VENUES.includes(body.venue)) throw new Error(`venue must be one of ${LAUNCH_VENUES.join(", ")}`); next.venue = body.venue; continue; }
+    if (k === "address" || k === "curve" || k === "pair") { if (body[k] !== "" && !isAddr(body[k])) throw new Error(`${k} must be a 0x address`); next[k] = String(body[k]).toLowerCase(); continue; }
     next[k] = String(body[k]).slice(0, k === "tagline" ? 200 : 120);
   }
   if (body.update) next.updates = [{ at: now, text: String(body.update).slice(0, 280) }, ...next.updates].slice(0, MAX_UPDATES);

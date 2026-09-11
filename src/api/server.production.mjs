@@ -8077,11 +8077,32 @@ app.get("/api/radar/live", (req, res) => {
 const launchStore = new LaunchStore(path.resolve(process.env.LAUNCH_FILE || path.join(process.env.VELOCITY_DATA_DIR || "data/velocity/users", "..", "launch.json")));
 let launchLive = { at: 0, data: null, key: "" };
 /** The chain's view of the token (mcap, curve progress, buys, graduated), fresh within 15 seconds. */
+const UNIV2_PAIR_ABI = ["function getReserves() view returns (uint112, uint112, uint32)", "function token0() view returns (address)", "function totalSupply() view returns (uint256)", "function balanceOf(address) view returns (uint256)"];
+const UNIV2_FACTORY = "0x8bcEaA40B9AcdfAedF85AdF4FF01F5Ad6517937f", UNIV2_WETH = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", DEAD_ADDR = "0x000000000000000000000000000000000000dEaD";
 async function launchOnChain(st) {
   if (st.chain !== "robinhood" || !st.address || st.status === "soon" || st.status === "off") return null;
   const now = Date.now();
   if (launchLive.key === st.address && now - launchLive.at < 15_000) return launchLive.data;
   let data = null;
+  if (st.venue === "uniswap-v2") {
+    // A plain ERC-20 in a v2 pool: price and FDV from the pair's reserves, liquidity, LP burned.
+    try {
+      const { JsonRpcProvider, Contract } = await import("ethers");
+      const provider = new JsonRpcProvider(process.env.PONS_RPC_URL || PONS_DEFAULT_RPC, undefined, { staticNetwork: true });
+      let pair = st.pair;
+      if (!pair) { const f = new Contract(UNIV2_FACTORY, ["function getPair(address, address) view returns (address)"], provider); pair = await f.getPair(st.address, UNIV2_WETH); if (/^0x0+$/.test(pair)) pair = null; }
+      if (pair) {
+        const p = new Contract(pair, UNIV2_PAIR_ABI, provider), t = new Contract(st.address, ["function totalSupply() view returns (uint256)"], provider);
+        const [[r0, r1], t0, lpTotal, lpDead, supply, eth] = await Promise.all([p.getReserves(), p.token0(), p.totalSupply(), p.balanceOf(DEAD_ADDR), t.totalSupply(), ethPriceUsd().catch(() => 0)]);
+        const tokenFirst = String(t0).toLowerCase() === st.address.toLowerCase();
+        const tokRes = Number(tokenFirst ? r0 : r1) / 1e18, ethRes = Number(tokenFirst ? r1 : r0) / 1e18, sup = Number(supply) / 1e18;
+        const priceEth = tokRes > 0 ? ethRes / tokRes : 0;
+        data = { venue: "uniswap-v2", pair, mcapUsd: Math.round(priceEth * sup * (eth || 0)), fdvEth: +(priceEth * sup).toFixed(4), liquidityEth: +ethRes.toFixed(4), liquidityUsd: Math.round(ethRes * 2 * (eth || 0)), lpBurnedPct: Number(lpTotal) > 0 ? +((Number(lpDead) / Number(lpTotal)) * 100).toFixed(2) : null, curvePct: null, buys: null, sells: null, buyers: null, graduated: false, source: "pool" };
+      } else data = { venue: "uniswap-v2", pair: null, error: "no pool yet" };
+    } catch (err) { data = { error: err.message.slice(0, 120) }; }
+    launchLive = { at: now, data, key: st.address };
+    return data;
+  }
   try {
     const feed = velocityHub?.ponsFeed, t = feed?.tokens?.get(st.address) || feed?.tokens?.get(st.address.toLowerCase());
     if (t && t.mcapUsd > 0) data = { mcapUsd: Math.round(t.mcapUsd), curvePct: t._curvePct ?? null, buys: t.buys || 0, sells: t.sells || 0, buyers: t.uniqueBuyers?.size || 0, graduated: !!t.graduated, source: "feed" };
@@ -8101,8 +8122,11 @@ async function launchOnChain(st) {
 app.get("/api/launch", async (req, res) => {
   const st = launchStore.state;
   const ponsUrl = (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}");
-  const url = st.address ? (st.links.launchpad || ponsUrl.replace("{ca}", st.address)) : (st.links.launchpad || "");
-  res.json({ ...st, url, live: await launchOnChain(st), ts: Date.now() });
+  const live = await launchOnChain(st);
+  const swap = st.venue === "uniswap-v2" ? `https://app.uniswap.org/swap?chain=robinhood&outputCurrency=${st.address}` : ponsUrl.replace("{ca}", st.address);
+  const url = st.address ? (st.links.launchpad || swap) : (st.links.launchpad || "");
+  const pair = st.pair || live?.pair || null;
+  res.json({ ...st, url, chart: pair ? `https://dexscreener.com/robinhood/${pair}` : (st.venue === "pons" && st.address ? ponsUrl.replace("{ca}", st.address) : ""), explorer: st.address ? `https://robinhoodchain.blockscout.com/token/${st.address}` : "", live, ts: Date.now() });
 });
 app.post("/api/launch", requireAdmin, (req, res) => {
   try { const st = launchStore.push(req.body || {}); launchLive = { at: 0, data: null, key: "" }; console.log(`[LAUNCH] ${st.status} ${st.ticker || st.name} ${st.address || "(no address)"}${req.body?.update ? ` · update: ${req.body.update}` : ""}`); res.json({ ok: true, launch: st }); }

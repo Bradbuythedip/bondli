@@ -80,7 +80,9 @@ export class Governor {
       const stated = outcomes.reduce((s, o) => s + (Number(o.p_win) || 0), 0) / outcomes.length;
       const realized = outcomes.filter(o => o.pnl_usd > 0).length / outcomes.length;
       const gap = stated - realized;
-      if (gap > this.cfg.confidenceGapMax) flag("overconfidence", Math.min(1, gap / 0.3), `stated ${stated.toFixed(2)} vs realized ${realized.toFixed(2)}`, 0.5);
+      // The wider the gap, the smaller the stake: half at the threshold, a quarter when the realized rate
+      // is under half the stated one. Size is what the gap costs; entries still happen.
+      if (gap > this.cfg.confidenceGapMax) flag("overconfidence", Math.min(1, gap / 0.3), `stated ${stated.toFixed(2)} vs realized ${realized.toFixed(2)}${realized < stated / 2 ? "; the edge is not showing up, sizes cut to a quarter" : ""}`, realized < stated / 2 ? 0.25 : 0.5);
     }
 
     // Revenge trading: a bigger entry right after a loss, repeatedly.

@@ -19,6 +19,9 @@ test("launch: a pushed address goes live on its own, ticker and links merge, upd
   assert.equal(s.links.x, undefined); assert.equal(s.status, "graduated");
   assert.throws(() => mergeLaunch(s, { status: "moon" }), /status/); assert.throws(() => mergeLaunch(s, { address: "nope" }), /address/);
   assert.equal(mergeLaunch(s, { reset: true }, 9999).address, "");
+  const v = mergeLaunch(defaultLaunch(), { venue: "pons", pair: "0x" + "ef".repeat(20) }, 1);
+  assert.equal(v.venue, "pons"); assert.equal(v.pair, "0x" + "ef".repeat(20)); assert.equal(defaultLaunch().venue, "uniswap-v2");
+  assert.throws(() => mergeLaunch(v, { venue: "raydium" }), /venue/);
 });
 
 test("launch: the store persists to disk and reads back", () => {
