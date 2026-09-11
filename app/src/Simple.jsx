@@ -3,7 +3,7 @@
 // does is shown in its own words; nothing is explained in prose that the narration already shows.
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { TC, D, L, css } from "./lib/theme.js";
-import { M, S, imgUrl } from "./lib/constants.js";
+import { M, S, imgUrl, X_URL, DISCORD_URL, NOTAFLY_SYMBOL, NOTAFLY_URL } from "./lib/constants.js";
 import a from "./lib/api-client.js";
 
 const FEE_PCT = 5;
@@ -17,6 +17,17 @@ const AGG = [
 const SIZES = [5, 10, 25, 50];
 const fmt = n => (n < 0 ? "-$" : "$") + Math.abs(Number(n) || 0).toFixed(2);
 const phantom = () => (window?.phantom?.solana?.isPhantom ? window.phantom.solana : window?.solana?.isPhantom ? window.solana : null);
+
+// The two places the project talks, as their own marks rather than words. Both open in a new tab.
+const XIcon = ({ s = 15 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" /></svg>;
+const DiscordIcon = ({ s = 16 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.317 4.369a19.79 19.79 0 0 0-4.885-1.515a.074.074 0 0 0-.079.037a13.76 13.76 0 0 0-.608 1.25a18.27 18.27 0 0 0-5.487 0a12.65 12.65 0 0 0-.617-1.25a.077.077 0 0 0-.079-.037A19.74 19.74 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057a19.9 19.9 0 0 0 5.993 3.03a.078.078 0 0 0 .084-.028a14.2 14.2 0 0 0 1.226-1.994a.076.076 0 0 0-.041-.106a13.1 13.1 0 0 1-1.872-.892a.077.077 0 0 1-.008-.128a10.2 10.2 0 0 0 .372-.292a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.009c.12.099.246.199.373.293a.077.077 0 0 1-.006.127a12.3 12.3 0 0 1-1.873.892a.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028a19.84 19.84 0 0 0 6.002-3.03a.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.331c-1.182 0-2.157-1.086-2.157-2.419c0-1.333.956-2.419 2.157-2.419c1.211 0 2.176 1.096 2.157 2.42c0 1.332-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.086-2.157-2.419c0-1.333.955-2.419 2.157-2.419c1.21 0 2.176 1.096 2.157 2.42c0 1.332-.946 2.418-2.157 2.418z" /></svg>;
+function Socials({ T }) {
+  const link = { display: "inline-flex", alignItems: "center", gap: 7, padding: "8px 13px", borderRadius: 10, border: `1px solid ${T.bd}`, color: T.dm, textDecoration: "none", fontFamily: S, fontWeight: 800, fontSize: 13 };
+  return <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 18 }}>
+    <a href={X_URL} target="_blank" rel="noopener" style={link} aria-label="Bondli on X"><XIcon /> <span>@notafruitfly</span></a>
+    <a href={DISCORD_URL} target="_blank" rel="noopener" style={link} aria-label="Bondli on Discord"><DiscordIcon /> <span>Discord</span></a>
+  </div>;
+}
 
 function Btn({ children, onClick, disabled, danger, ghost, T, big }) {
   return <button onClick={disabled ? undefined : onClick} style={{ width: "100%", padding: big ? "18px 20px" : "12px 16px", borderRadius: 12, border: ghost || danger ? `1px solid ${danger ? T.rd : T.bd}` : "none", background: ghost || danger ? "transparent" : T.gn, color: danger ? T.rd : ghost ? T.tx : "#000", fontFamily: S, fontWeight: 900, fontSize: big ? 20 : 15, letterSpacing: ".01em", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? .45 : 1 }}>{children}</button>;
@@ -184,6 +195,9 @@ export default function Simple() {
   const narRef = useRef(null);
   const running = !!st?.running;
   const s = st?.status; const day = s?.day; const tp = s?.pnl || null; const pnl = tp?.since_start_usd ?? (day?.realizedUsd || 0) + (tp?.unrealized_usd || 0); const pnlKind = tp?.since_start_usd != null ? "wallet" : "trades";
+  // Whether this wallet's fee is waived, as the server last read it. null = not known (not running, or
+  // never read); the footer then states the offer rather than the fact.
+  const waived = st?.fee?.waiver?.holds ?? null;
   // A message clears itself (errors get longer) and on a tap.
   const say = (m, kind = "info") => { sMsg({ m, kind }); setTimeout(() => sMsg(x => (x?.m === m ? null : x)), kind === "error" ? 15000 : 6000); };
 
@@ -413,6 +427,13 @@ export default function Simple() {
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}><Btn ghost T={T} onClick={() => sShowKey(null)}>Hide</Btn></div>
     </div>}
     <Live T={T} agg={agg} />
-    <div style={{ ...muted, fontSize: 12, marginTop: 28, textAlign: "center", maxWidth: 440 }}>Bondli keeps {FEE_PCT}% of each profitable trade, taken from the profit. Losing trades cost nothing. Memecoins can go to zero; only trade what you can lose.</div>
+    <div style={{ ...muted, fontSize: 12, marginTop: 28, textAlign: "center", maxWidth: 440 }}>
+      Bondli keeps {FEE_PCT}% of each profitable trade, taken from the profit. Losing trades cost nothing.{" "}
+      {waived === true
+        ? <span style={{ color: T.gn }}>You hold ${NOTAFLY_SYMBOL}, so yours is 0%.</span>
+        : <>Hold one <a href={NOTAFLY_URL} target="_blank" rel="noopener" style={{ color: T.dm, textDecoration: "underline dotted", textUnderlineOffset: 3 }}>${NOTAFLY_SYMBOL}</a> and it is 0%.</>}
+      {" "}Memecoins can go to zero; only trade what you can lose.
+    </div>
+    <Socials T={T} />
   </div></TC.Provider>;
 }
