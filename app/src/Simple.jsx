@@ -14,7 +14,14 @@ const AGG = [
   { v: 2, l: "Normal", d: "Takes watchlist tokens and later entries. More trades, more losers." },
   { v: 3, l: "Degen", d: "Almost anything with buyers. Expect a lot of small losses for the big wins." },
 ];
-const SIZES = [5, 10, 25, 50];
+// Every round trip pays the venue 1.5% each way and about $0.61 of fixed cost (two priority fees and
+// the token account's rent), so the fixed part is what decides whether a size can work at all: it is
+// 12% of a $5 trade and 1.2% of a $50 one. $5 and $10 needed a +15% and a +9% move on every single
+// trade just to break even, which is not a bet, it is a fee. They are gone.
+const SIZES = [25, 50, 100, 250];
+const SOL_USD_FALLBACK = 200;
+/** What one round trip costs at this size, as a percentage — the move needed just to get even. */
+const dragPct = (usd, solPrice) => { const p = solPrice > 0 ? solPrice : SOL_USD_FALLBACK; return ((usd * 0.03) + (0.001 + 0.00001) * p + 0.00203928 * p) / usd * 100; };
 const fmt = n => (n < 0 ? "-$" : "$") + Math.abs(Number(n) || 0).toFixed(2);
 const phantom = () => (window?.phantom?.solana?.isPhantom ? window.phantom.solana : window?.solana?.isPhantom ? window.solana : null);
 
@@ -241,7 +248,7 @@ export default function Simple() {
   const [busy, sBusy] = useState(null);    // what is in flight, for the button label
   const [msg, sMsg] = useState(null);
   const [agg, sAgg] = useState(() => { try { const v = localStorage.getItem("bondli_agg"); return v == null ? 2 : Math.max(0, Math.min(3, Number(v) || 0)); } catch { return 2; } });
-  const [size, sSize] = useState(() => { try { return Number(localStorage.getItem("bondli_size")) || 10; } catch { return 10; } });
+  const [size, sSize] = useState(() => { try { const v = Number(localStorage.getItem("bondli_size")); return SIZES.includes(v) ? v : SIZES[0]; } catch { return SIZES[0]; } });
   const [showKey, sShowKey] = useState(null);
   const [openPos, sOpenPos] = useState(null);
   const [chains, sChains] = useState(() => { try { return JSON.parse(localStorage.getItem("bondli_chains") || "null") || { pons: true }; } catch { return { pons: true }; } });
@@ -339,7 +346,11 @@ export default function Simple() {
   };
   const copy = async (text) => { try { await navigator.clipboard.writeText(text); sCopied(true); setTimeout(() => sCopied(false), 1500); } catch {} };
 
-  const funded = (tw?.solBalance || 0) >= 0.06;
+  // 1.75 SOL (~$350) is the first bankroll the arithmetic actually works at: the smallest stake that
+  // can outrun its own costs is $25, the day's loss budget has to cover more than one of those, and
+  // 15% of $350 is $52. Below this the bot either refuses every trade or gets one shot a day.
+  const MIN_BANKROLL_SOL = 1.75;
+  const funded = (tw?.solBalance || 0) >= MIN_BANKROLL_SOL;
   const wrap = { minHeight: "100vh", background: T.bg, color: T.tx, fontFamily: S, display: "flex", flexDirection: "column", alignItems: "center", padding: "48px 16px 32px", boxSizing: "border-box" };
   const card = { width: "100%", maxWidth: 440, background: T.sf, border: `1px solid ${running ? T.gn : T.bd}`, borderRadius: 16, padding: 20, boxSizing: "border-box" };
   const muted = { color: T.ft, fontSize: 13, lineHeight: 1.5 };
@@ -368,7 +379,7 @@ export default function Simple() {
           <span style={{ fontFamily: M, fontWeight: 800, fontSize: 22 }}>{tw.solBalance.toFixed(3)} SOL</span>
         </div>
         <div onClick={() => copy(tw.pubkey)} title="copy" style={{ fontFamily: M, fontSize: 12, color: T.dm, marginTop: 6, wordBreak: "break-all", cursor: "pointer", padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{tw.pubkey}{copied ? "  copied" : ""}</div>
-        {!funded && <div style={{ ...muted, marginTop: 8 }}>Send SOL to that address to begin. 0.5 SOL is a good start.</div>}
+        {!funded && <div style={{ ...muted, marginTop: 8 }}>Send SOL to that address to begin. {MIN_BANKROLL_SOL} SOL is the smallest bankroll this works at — each trade has to clear about {dragPct(SIZES[0], st?.status?.solPrice || 0).toFixed(0)}% in fees before it earns anything, so smaller stakes lose to the costs and the day's loss limit only stretches to one of them.{(tw?.solBalance || 0) > 0 ? ` You have ${(tw.solBalance).toFixed(3)}.` : ""}</div>}
         {tw.evmAddress && <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 14 }}>
             <span style={muted}>Bot wallet · Robinhood Chain</span>
@@ -386,6 +397,7 @@ export default function Simple() {
           <div style={{ marginTop: 14, ...muted, marginBottom: 6 }}>Per trade</div>
           <div style={{ display: "flex", gap: 6 }}>{SIZES.map(v => <button key={v} onClick={() => sSize(v)} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1px solid ${size === v ? T.gn : T.bd}`, background: size === v ? T.gn + "22" : "transparent", color: size === v ? T.gn : T.dm, fontFamily: M, fontWeight: 800, cursor: "pointer" }}>${v}</button>)}</div>
           <div style={{ ...muted, marginTop: 10 }}>Up to 4 tokens at once. Stops for the day after ${Math.max(15, size * 3)} of losses.</div>
+          <div style={{ ...muted, marginTop: 6, fontFamily: M, fontSize: 11 }}>A ${size} round trip costs about {dragPct(size, st?.status?.solPrice || 0).toFixed(1)}% in venue fees, priority fees and rent. The bot has to clear that before either of us makes anything.</div>
           <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
             {[["pump.fun", "Solana", true, true], ["PONS", "Robinhood Chain", !!chains.pons && (tw?.ethBalance || 0) > 0.003, (tw?.ethBalance || 0) > 0.003]].map(([l, sub, on, can]) => <div key={l} onClick={() => l === "PONS" && can && sChains(c => ({ ...c, pons: !c.pons }))} style={{ flex: 1, padding: "8px 10px", borderRadius: 10, border: `1px solid ${on ? T.gn : T.bd}`, background: on ? T.gn + "14" : "transparent", cursor: l === "PONS" && can ? "pointer" : "default", opacity: can ? 1 : .5 }}>
               <div style={{ fontWeight: 800, fontSize: 13, color: on ? T.gn : T.dm }}>{l}</div><div style={{ ...muted, fontSize: 11 }}>{sub}{l === "PONS" && !can ? " · fund with ETH" : on ? " · on" : " · off"}</div>

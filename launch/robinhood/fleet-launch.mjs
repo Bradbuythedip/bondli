@@ -62,14 +62,33 @@ function launchConfigFromEnv() {
 
 /** A vanity salt and the token it was mined for: FLEET_SALT / FLEET_EXPECTED_TOKEN, or the miner's own
  *  pons-state.json (launch/notafruitfly) when it was mined for this master wallet. The launch refuses
- *  to send if its simulation would create any other token. */
+ *  to send if its simulation would create any other token.
+ *
+ *  The miner also records the exact parameters the address was mined for, and they come back with the
+ *  salt. Every one of them — the name, the symbol, the logo URL, the description, all five socials, the
+ *  creator tax, the buyback flag — is hashed into the address, so a token launched with any other value
+ *  lands somewhere else entirely. The fleet's own defaults ("Token", "TKN", empty strings) would do
+ *  exactly that, and the mismatch would only surface as a refusal after the mining time was already
+ *  spent. So a mined salt brings its parameters with it and they win. */
 function vanityFor(masterAddress) {
-  let salt = env("SALT", null), expectedToken = env("EXPECTED_TOKEN", null), source = salt ? "FLEET_SALT" : null;
+  let salt = env("SALT", null), expectedToken = env("EXPECTED_TOKEN", null), source = salt ? "FLEET_SALT" : null, baked = null;
   if (!salt && env("USE_PONS_STATE", "1") !== "0") {
-    try { const st = JSON.parse(fs.readFileSync(path.join(here, "..", "notafruitfly", "pons-state.json"), "utf8")); if (st?.userSalt && st.wallet && masterAddress && st.wallet.toLowerCase() === masterAddress.toLowerCase()) { salt = String(st.userSalt); expectedToken = expectedToken || st.predictedToken || null; source = "launch/notafruitfly/pons-state.json"; } } catch {}
+    try { const st = JSON.parse(fs.readFileSync(path.join(here, "..", "notafruitfly", "pons-state.json"), "utf8")); if (st?.userSalt && st.wallet && masterAddress && st.wallet.toLowerCase() === masterAddress.toLowerCase()) { salt = String(st.userSalt); expectedToken = expectedToken || st.predictedToken || null; baked = st.baked || null; source = "launch/notafruitfly/pons-state.json"; } } catch {}
   }
   if (salt && !/^0x[0-9a-fA-F]{64}$/.test(salt)) { try { salt = zeroPadValue(toBeHex(BigInt(salt)), 32); } catch { die(`FLEET_SALT must be a bytes32 hex string or an integer user salt, not ${salt}`); } }
-  return { salt, expectedToken, source };
+  return { salt, expectedToken, source, baked };
+}
+
+/** The token parameters to launch with: the fleet's own, unless a mined salt brought the ones its
+ *  address was computed from, in which case those are the only ones that reach that address. */
+function paramsFor(cfgParams, vanity) {
+  if (!vanity.baked) return cfgParams;
+  const b = vanity.baked, s = b.socials || [];
+  const mined = { name: b.name, symbol: b.symbol, logo: b.logo || "", description: b.description || "", twitter: s[0] || "", telegram: s[1] || "", discord: s[2] || "", website: s[3] || "", farcaster: s[4] || "", creatorTaxBps: Number(b.creatorTaxBps || 0), buybackEnabled: b.buybackEnabled !== false };
+  const differs = Object.keys(mined).filter(k => String(cfgParams[k] ?? "") !== String(mined[k]) && String(cfgParams[k] ?? "") !== "" && cfgParams[k] !== undefined);
+  if (differs.length) console.log(`[VANITY] using the parameters ${vanity.expectedToken || "the salt"} was mined for, not the ones configured here: ${differs.map(k => `${k} ${JSON.stringify(cfgParams[k])} -> ${JSON.stringify(mined[k])}`).join(", ")}`);
+  if (!Number(mined.creatorTaxBps)) console.log(`[VANITY] creator tax is 0 bps: this token pays its creator nothing, ever. That is baked into ${vanity.expectedToken || "the mined address"}; changing it means mining again.`);
+  return mined;
 }
 
 function printReport(rep, venueStats) {
@@ -191,9 +210,9 @@ async function runOnChain(mode) {
   const cfg = launchConfigFromEnv(); const dryRun = flag("dry-run");
   const token = mode === "ape" ? String(arg("token", "")) : null; if (mode === "ape" && !/^0x[0-9a-fA-F]{40}$/.test(token)) die("ape needs --token 0x…");
   const vanity = mode === "create" ? vanityFor(master.address) : { salt: null };
-  const tokenParams = { ...cfg.tokenParams, ...(vanity.salt ? { salt: vanity.salt, expectedToken: vanity.expectedToken } : {}) };
+  const tokenParams = { ...paramsFor(cfg.tokenParams, vanity), ...(vanity.salt ? { salt: vanity.salt, expectedToken: vanity.expectedToken } : {}) };
   const bal = toEth(await v.ethBalance(master.address));
-  console.log(`chain ${init.chainId} (${init.name}) | master ${master.address} ${bal.toFixed(6)} ETH | budget ${cfg.budgetEth} ETH | ${mode === "ape" ? `APE ${token}` : `CREATE ${cfg.tokenParams.name} ($${cfg.tokenParams.symbol})${vanity.salt ? ` salt from ${vanity.source}${vanity.expectedToken ? " → " + vanity.expectedToken : ""}` : ""}`}`);
+  console.log(`chain ${init.chainId} (${init.name}) | master ${master.address} ${bal.toFixed(6)} ETH | budget ${cfg.budgetEth} ETH | ${mode === "ape" ? `APE ${token}` : `CREATE ${tokenParams.name} ($${tokenParams.symbol}) tax ${tokenParams.creatorTaxBps} bps${vanity.salt ? ` salt from ${vanity.source}${vanity.expectedToken ? " → " + vanity.expectedToken : ""}` : ""}`}`);
   if (dryRun && mode === "create") {
     const terms = await v.launchTerms(); const devBuy = cfg.devBuyEth ?? +(cfg.budgetEth * 0.10).toFixed(6);
     const r = await v.launch({ from: master, params: tokenParams, exemptions: [], devBuyWei: ethToWei(devBuy), dryRun: true });

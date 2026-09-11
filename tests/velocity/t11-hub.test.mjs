@@ -42,11 +42,24 @@ function feeDeps(tier = "pro") {
   };
 }
 
-test("T11: a user's envelope is the template with their choices, validated", () => {
-  const e = userEnvelope({ bankrollUsd: 100, perTradeMaxUsd: 10, maxPositions: 4 });
-  assert.equal(e.bankroll_source, "wallet"); assert.equal(e.per_trade_max_usd, 10); assert.equal(e.portfolio_max_exposure_usd, 40);
-  assert.equal(e.daily_loss_limit_usd, 15); assert.equal(e.venues.pumpfun.max_exposure_usd, 40); assert.equal(e.venues.polymarket.max_exposure_usd, 0);
+test("T11: a user's envelope is the template with their choices, validated", async () => {
+  const { MIN_STAKE_USD } = await import("../../src/velocity/hub.mjs");
+  assert.equal(MIN_STAKE_USD, 25);
+  const e = userEnvelope({ bankrollUsd: 400, perTradeMaxUsd: 40, maxPositions: 4 });
+  assert.equal(e.bankroll_source, "wallet"); assert.equal(e.per_trade_max_usd, 40); assert.equal(e.portfolio_max_exposure_usd, 160);
+  assert.equal(e.daily_loss_limit_usd, 60); assert.equal(e.venues.pumpfun.max_exposure_usd, 160); assert.equal(e.venues.polymarket.max_exposure_usd, 0);
   assert.ok(Object.isFrozen(e) && Object.isFrozen(e.venues.pumpfun));
+
+  // Nothing is sized below what a round trip costs to make and unmake. A per-trade cap under the
+  // floor is raised to it rather than producing a bot that runs all day and fills nothing.
+  const tiny = userEnvelope({ bankrollUsd: 100, perTradeMaxUsd: 10, maxPositions: 4 });
+  assert.equal(tiny.venues.pumpfun.min_stake_usd, MIN_STAKE_USD);
+  assert.equal(tiny.venues.pons.min_stake_usd, MIN_STAKE_USD);
+  assert.equal(tiny.per_trade_max_usd, MIN_STAKE_USD, "a $10 cap cannot pay for itself, so it is not offered");
+  // The day's loss budget caps a single stake too (a memecoin's worst case is the whole position), so
+  // it can never be less than one stake, or the first trade of the day is refused for being too small.
+  assert.ok(tiny.daily_loss_limit_usd >= MIN_STAKE_USD, `daily ${tiny.daily_loss_limit_usd}`);
+
   const small = userEnvelope({ bankrollUsd: 30, perTradeMaxUsd: 50, maxPositions: 20 });
   assert.equal(small.per_trade_max_usd, 30, "per-trade cannot exceed the bankroll"); assert.equal(small.max_concurrent_positions, 10);
 });
@@ -100,7 +113,10 @@ test("T11: one feed, two users, isolated ledgers, fee paid on the profitable clo
   const hub2 = new VelocityHub({ feed: feed2, rootDir: tmp(), platformWallet: EXPOSED_DEFAULT_PLATFORM_WALLET, fee: deps2, makeLiveRouter: ({ secret, wallet }) => (routers[wallet] = new FakeLive({ secret, wallet, sellSol: 0.03 })), log: { log() {}, error() {}, warn() {} } });
   assert.equal(hub2.feeOk, true, "the operator's choice of wallet stands");
   try {
-    assert.equal((await hub2.start({ wallet: "UserC", secret: "sC", settings: {} })).ok, true);
+    // $400: one $25 stake, and a $60 day budget that still covers a second stake after the first loses.
+    // On a $100 bankroll the day's budget is one stake, so a single loss ends the day — which is the
+    // governor working, and the reason the page no longer suggests anyone try this with pocket change.
+    assert.equal((await hub2.start({ wallet: "UserC", secret: "sC", settings: { bankrollUsd: 400 } })).ok, true);
     const now = Date.now();
     feed2.emitEvent({ kind: "candidate", id: "MintY", payload: goodCandidatePayload("MintY"), t_venue: now - 100 });
     await new Promise(r => setTimeout(r, 50)); await hub2.users.get("UserC").engine.enqueue(() => {});
