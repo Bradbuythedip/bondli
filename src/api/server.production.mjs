@@ -42,7 +42,8 @@ import { detectMayhem, PUMP_PROGRAM as PUMP_PROGRAM_ID } from "./mayhem.mjs";
 import { CopycatIndex } from "./copycat.mjs";
 import { RevivalTracker, revivalFilter } from "./revival.mjs";
 import { AGGRESSION as VELOCITY_AGGRESSION } from "../velocity/venues/pumpfun/edge.mjs";
-import { PonsFeed } from "../velocity/venues/pons/feed.mjs";
+import { PonsFeed, ethersRpc as ponsRpc } from "../velocity/venues/pons/feed.mjs";
+import { LaunchStore } from "./launch.mjs";
 import { DEFAULT_RPC_URL as PONS_DEFAULT_RPC, CHAIN_ID as PONS_CHAIN_ID } from "../velocity/venues/pons/chain.mjs";
 import { Wallet as EvmWallet, JsonRpcProvider as EvmProvider, formatEther, parseEther } from "ethers";
 // Robinhood Chain: one provider for balances and withdrawals; the PONS feed and routers have their own.
@@ -8070,6 +8071,42 @@ app.get("/api/radar/live", (req, res) => {
     bots: velocityHub ? velocityHub.list().length : null,
     tokens: rows, revivals,
   });
+});
+
+// ── Bondli's own token: the banner on the site. Pushed by tools/launch-push.mjs, read by everyone. ──
+const launchStore = new LaunchStore(path.resolve(process.env.LAUNCH_FILE || path.join(process.env.VELOCITY_DATA_DIR || "data/velocity/users", "..", "launch.json")));
+let launchLive = { at: 0, data: null, key: "" };
+/** The chain's view of the token (mcap, curve progress, buys, graduated), fresh within 15 seconds. */
+async function launchOnChain(st) {
+  if (st.chain !== "robinhood" || !st.address || st.status === "soon" || st.status === "off") return null;
+  const now = Date.now();
+  if (launchLive.key === st.address && now - launchLive.at < 15_000) return launchLive.data;
+  let data = null;
+  try {
+    const feed = velocityHub?.ponsFeed, t = feed?.tokens?.get(st.address) || feed?.tokens?.get(st.address.toLowerCase());
+    if (t && t.mcapUsd > 0) data = { mcapUsd: Math.round(t.mcapUsd), curvePct: t._curvePct ?? null, buys: t.buys || 0, sells: t.sells || 0, buyers: t.uniqueBuyers?.size || 0, graduated: !!t.graduated, source: "feed" };
+    else {
+      const rpc = ponsRpc(process.env.PONS_RPC_URL || PONS_DEFAULT_RPC);
+      const info = await rpc.launchInfo(st.address);
+      if (info) {
+        const c = await rpc.curveInfo(info.curve), eth = await ethPriceUsd().catch(() => 0);
+        const { mcapQuote, curveProgress } = await import("../velocity/venues/pons/chain.mjs");
+        data = { mcapUsd: Math.round(mcapQuote(c) * (eth || 0)), curvePct: info.graduated ? 1 : curveProgress(c.realQuoteReserve, c.graduationThreshold), buys: null, sells: null, buyers: null, graduated: info.graduated, curve: info.curve, source: "chain" };
+      }
+    }
+  } catch (err) { data = { error: err.message.slice(0, 120) }; }
+  launchLive = { at: now, data, key: st.address };
+  return data;
+}
+app.get("/api/launch", async (req, res) => {
+  const st = launchStore.state;
+  const ponsUrl = (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}");
+  const url = st.address ? (st.links.launchpad || ponsUrl.replace("{ca}", st.address)) : (st.links.launchpad || "");
+  res.json({ ...st, url, live: await launchOnChain(st), ts: Date.now() });
+});
+app.post("/api/launch", requireAdmin, (req, res) => {
+  try { const st = launchStore.push(req.body || {}); launchLive = { at: 0, data: null, key: "" }; console.log(`[LAUNCH] ${st.status} ${st.ticker || st.name} ${st.address || "(no address)"}${req.body?.update ? ` · update: ${req.body.update}` : ""}`); res.json({ ok: true, launch: st }); }
+  catch (err) { res.status(400).json({ ok: false, error: err.message }); }
 });
 
 app.get("/api/radar/token/:ca", (req, res) => {

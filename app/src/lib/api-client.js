@@ -52,6 +52,7 @@ class A {
   vsweep(w, chain) { return this.f("/api/velocity/sweep", { method: "POST", body: { wallet: w, chain: chain || "all" }, timeout: 180000 }); }
   vclose(w, positionId, pct) { return this.f("/api/velocity/close", { method: "POST", body: { wallet: w, positionId, pct }, timeout: 90000 }); }
   // What the bot sees (public)
+  launch() { return this.f("/api/launch", { noauth: true, timeout: 8000 }); }
   live(agg) { return this.f("/api/radar/live" + (agg != null ? "?aggression=" + agg : ""), { noauth: true, timeout: 8000 }); }
 }
 export const a = new A(); export default a;
