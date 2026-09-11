@@ -133,6 +133,8 @@ export class PonsLiveRouter extends Router {
       }
       const held = await this._tokenBalance(position.instrument);
       if (!(held > 0)) return failure({ id: position.id }, "NO_POSITION", "no token balance to sell");
+      const curveRead = new Contract(curveAddr, CURVE_ABI, this.provider);
+      if (await curveRead.graduated().catch(() => false)) return failure({ id: position.id }, "GRADUATED", "the curve has graduated to a Uniswap V4 pool; sell by hand on PONS (export the key into Rabby)");
       const p = Math.min(100, Math.max(1, Math.round(pct)));
       const tokensIn = held * p / 100;
       const units = BigInt(Math.floor(tokensIn * 1e6)) * 10n ** BigInt(TOKEN_DECIMALS - 6);

@@ -26,6 +26,7 @@ const RULES = {
   SERIAL_RUGGER:        (t, q) => q?._namePrevRugged && q._devLaunchCount > 3,
   DEV_SELLING:          (t, q) => q?.rg_devSellSpeed > 0.6,
   DEV_SELF_SNIPE:       (t, q) => q?._rg_devSelfSnipe > 0,
+  DEV_HOLDS_SUPPLY:     (t, q) => q?._rg_devHoldPct > 0.10,
   FREEZE_AUTHORITY:     (t) => !!t.freezeAuthority,                         // velocity edge.mjs passes opts.freezeAuthority = !!token.freezeAuthority
   EXTREME_CONCENTRATION:(t, q) => q?.rg_holderConcentration > 0.7 && (t.buys || 0) > 5 && (q?._rg_organicBuyers ?? 99) >= 8 && !(q?._whaleBullish > 0.3),
   DEV_SELF_PUMP:        (t, q) => q?._rg_devSelfPumpScore >= 0.7,

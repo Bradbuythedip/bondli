@@ -69,6 +69,7 @@ export function quickFeatures(t, now) {
   const buyQ = tr.filter(x => x.side === "buy").reduce((s, x) => s + x.quote, 0), sellQ = tr.filter(x => x.side === "sell").reduce((s, x) => s + x.quote, 0);
   const devSells = tr.filter(x => x.side === "sell" && x.wallet === t.devWallet).reduce((s, x) => s + x.quote, 0);
   const devBuys = tr.filter(x => x.side === "buy" && x.wallet === t.devWallet).reduce((s, x) => s + x.quote, 0);
+  const devTokens = tr.filter(x => x.wallet === t.devWallet).reduce((s, x) => s + (x.side === "buy" ? x.tokens : -x.tokens), t.devTokensSeed || 0);
   const byBuyer = {}; for (const x of tr) if (x.side === "buy") byBuyer[x.wallet] = (byBuyer[x.wallet] || 0) + x.quote;
   const top3 = Object.values(byBuyer).sort((a, b) => b - a).slice(0, 3).reduce((s, v) => s + v, 0);
   const firstBuy = {}; for (const x of tr) if (x.side === "buy" && firstBuy[x.wallet] == null) firstBuy[x.wallet] = x.time;
@@ -84,6 +85,7 @@ export function quickFeatures(t, now) {
     rg_liqRemovalSpeed: buyQ + sellQ > 0 ? sellQ / (buyQ + sellQ) : 0,
     rg_mcapDropRate: peak > 0 ? Math.max(0, (peak - t.mcapUsd) / peak) : 0,
     _rg_organicBuyers: t.uniqueBuyers.size,
+    _rg_devHoldPct: Math.max(0, Math.min(1, devTokens / 1_000_000_000)),
     _rg_singleWalletDominance: buyQ > 0 ? Math.max(0, ...Object.values(byBuyer)) / buyQ : 0,
     _rg_sybilScore: 0, _rg_freshWalletRatio: 0, // no wallet-age source on this chain yet: never asserted, never a false rug
   };

@@ -2002,6 +2002,8 @@ function extractQuickFeatures(t) {
     so_hasWebsite: t.website ? 1 : 0,
     // Rug detection (enhanced)
     rg_devSellSpeed: devSellSpeed,
+    // The dev's share of supply still held: what one wallet can dump in a single transaction.
+    _rg_devHoldPct: devSells.length ? Math.max(0, ((t.initialBuy || 0) / 1e9) * (devBuySol > 0 ? Math.max(0, 1 - devSellSol / devBuySol) : 0)) : (t.initialBuy || 0) / 1e9,
     rg_holderConcentration: holderConcentration,
     _rg_organicBuyers: walletBuys.size, // distinct non-hub buyer wallets behind the concentration figure
     rg_coordDumpScore: Math.min(1, coordDumps / 5),

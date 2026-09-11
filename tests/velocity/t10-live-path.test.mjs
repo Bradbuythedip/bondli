@@ -833,3 +833,15 @@ test("T10: an EVM router is told what the wallet has traded, so a restart adopts
     assert.ok(second.store.openPositions("pons").some(p => p.instrument === "0xlost" && p.adopted), "adopted from the ledger fill");
   } finally { await second.stop(); }
 });
+
+test("T10: a dev holding a rug-sized share is refused on every setting and never waived by momentum", async () => {
+  const { checkDisqualifiers } = await import("../../src/autoape/gates/disqualifiers.js");
+  const { AGGRESSION } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const now = Date.now();
+  const crowd = { ca: "D", createdAt: now - 2 * 60_000, buys: 60, sells: 10, uniqueBuyers: { size: 22 }, mcapUsd: 30_000, vSolInBondingCurve: 40 };
+  const qf = { _rg_organicBuyers: 22, rg_mcapDropRate: 0.02, rg_liqRemovalSpeed: 0.15, rg_devSellSpeed: 0, _rg_devHoldPct: 0.18, _rg_quickFlipRate: 0.5 };
+  for (const lvl of [0, 1, 2, 3]) { const r = checkDisqualifiers(crowd, qf, AGGRESSION[lvl]); assert.equal(r.pass, false, `level ${lvl}`); assert.ok(r.flags.includes("DEV_HOLDS_SUPPLY")); }
+  assert.equal(checkDisqualifiers(crowd, { ...qf, _rg_devHoldPct: 0.09, _rg_quickFlipRate: 0.1 }, AGGRESSION[1]).flags.includes("DEV_HOLDS_SUPPLY"), false, "9% is under the designed 10%");
+  assert.equal(checkDisqualifiers(crowd, { ...qf, _rg_devHoldPct: 0.14, _rg_quickFlipRate: 0.1 }, AGGRESSION[3]).flags.includes("DEV_HOLDS_SUPPLY"), false, "degen tolerates up to 15%");
+  assert.equal(checkDisqualifiers(crowd, { ...qf, _rg_devHoldPct: 0.14, _rg_quickFlipRate: 0.1 }, AGGRESSION[1]).flags.includes("DEV_HOLDS_SUPPLY"), true, "careful does not");
+});
