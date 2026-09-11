@@ -344,6 +344,7 @@ export default function Simple() {
             <div>tier {p.tier} · plan {String(p.plan?.key)} · targets hit {p.tpHit || 0}{p.plan?.stall_ms ? ` · stall check at ${Math.round(p.plan.stall_ms / 60000)}m` : ""}{p.plan?.max_hold_ms ? ` · out by ${Math.round(p.plan.max_hold_ms / 60000)}m` : ""}</div>
             <div style={{ color: stale ? T.yl : T.ft }}>price updated {tickAge == null ? "never" : tickAge < 60 ? Math.round(tickAge) + "s ago" : Math.round(tickAge / 60) + "m ago"}{stale ? " · exits cannot fire without a price" : ""}</div>
           </div>}
+          {p.lastExitError && <div style={{ fontFamily: M, fontSize: 11, color: T.rd, padding: "0 0 8px", lineHeight: 1.4 }}>sell failed ×{p.lastExitError.count} ({p.lastExitError.tried}): {p.lastExitError.code ? p.lastExitError.code + " " : ""}{p.lastExitError.reason}</div>}
         </div>; })}</div>}
         {(() => { const h = s?.holdings || {}; const rows = Object.entries(h).flatMap(([venue, x]) => (x.list || []).filter(i => !i.tracked && i.qty >= 1).map(i => ({ ...i, venue }))); if (!rows.length) return null; return <div style={{ marginTop: 10, fontFamily: M, fontSize: 11, color: T.yl, lineHeight: 1.6 }}>
           <div>in the wallet but not tracked as open (being reconciled):</div>
@@ -353,6 +354,10 @@ export default function Simple() {
           {(st.narration || []).map((n, i) => <div key={i} style={{ color: /FILLED|SOLD|P&L/.test(n.line) ? T.tx : /fee/.test(n.line) ? T.yl : T.ft, whiteSpace: "pre-wrap" }}>{n.line}</div>)}
           {!(st.narration || []).length && <div>watching every new token…</div>}
         </div>
+        {s?.review && <div style={{ marginTop: 10, fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.6 }}>
+          <div>last {s.review.n} closes: <b style={{ color: s.review.pnl_usd >= 0 ? T.gn : T.rd }}>{fmt(s.review.pnl_usd)}</b> · won {Math.round(s.review.win_rate * 100)}% · fees {fmt(s.review.fees_usd)}{Object.entries(s.review.venues || {}).map(([v, x]) => ` · ${v === "pons" ? "RH" : "SOL"} ${x.n} ${fmt(x.pnl_usd)}`)}</div>
+          <div>{s.review.reasons.slice(0, 6).map(r => <span key={r.reason} style={{ marginRight: 10, color: r.pnl_usd >= 0 ? T.gn : T.yl }}>{r.reason.toLowerCase().replace(/_/g, " ")} {r.n} {fmt(r.pnl_usd)}</span>)}</div>
+        </div>}
         <Pulse st={st} T={T} />
         <div style={{ marginTop: 14, display: "flex", gap: 8 }}>
           <Btn ghost T={T} onClick={paused ? resume : pause} disabled={busy === "pause"}>{busy === "pause" ? "…" : paused ? "Resume" : "Pause"}</Btn>

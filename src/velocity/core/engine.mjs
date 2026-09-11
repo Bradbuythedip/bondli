@@ -155,6 +155,18 @@ export class Engine extends EventEmitter {
   // ── wallet as bankroll (bankroll_source: wallet) ──
   walletMode() { return this.env.bankroll_source === "wallet"; }
 
+  /** The last hundred closes, grouped by how they ended: where the money went. */
+  review(limit = 100) {
+    const outs = this.ledger.query({ kind: "outcome", limit }).filter(o => !o.paper);
+    if (!outs.length) return null;
+    const by = {};
+    for (const o of outs) { const k = String(o.reason || "?").replace(/_\d+$/, ""); const b = by[k] || (by[k] = { n: 0, pnl: 0, wins: 0, held_ms: 0 }); b.n++; b.pnl += Number(o.pnl_usd) || 0; if (o.pnl_usd > 0) b.wins++; b.held_ms += Number(o.held_ms) || 0; }
+    const reasons = Object.entries(by).map(([reason, b]) => ({ reason, n: b.n, pnl_usd: +b.pnl.toFixed(2), win_rate: +(b.wins / b.n).toFixed(2), avg_hold_min: +(b.held_ms / b.n / 60000).toFixed(1) })).sort((a, c) => a.pnl_usd - c.pnl_usd);
+    const fees = this.ledger.query({ kind: "exit", limit: limit * 3 }).filter(e => !e.failed && e.fee_usd > 0).reduce((s, e) => s + e.fee_usd, 0) + this.ledger.query({ kind: "fill", limit }).filter(f => f.side === "BUY" && !f.paper).reduce((s, f) => s + (Number(f.fee_usd) || 0), 0);
+    const byVenue = {}; for (const o of outs) { const v = byVenue[o.venue] || (byVenue[o.venue] = { n: 0, pnl: 0, wins: 0 }); v.n++; v.pnl += Number(o.pnl_usd) || 0; if (o.pnl_usd > 0) v.wins++; }
+    return { n: outs.length, pnl_usd: +outs.reduce((s, o) => s + (Number(o.pnl_usd) || 0), 0).toFixed(2), win_rate: +(outs.filter(o => o.pnl_usd > 0).length / outs.length).toFixed(2), fees_usd: +fees.toFixed(2), reasons, venues: Object.fromEntries(Object.entries(byVenue).map(([v, x]) => [v, { n: x.n, pnl_usd: +x.pnl.toFixed(2), win_rate: +(x.wins / x.n).toFixed(2) }])) };
+  }
+
   /** The venue's quote asset in USD, freshest known: SOL for pump.fun, ETH for pons. One hint per
    *  venue; a single shared one would let the RH feed's ETH price value the SOL wallet. */
   quotePriceOf(venue) { return this.quotePrice[venue] || this.venues[venue]?.feed?.solPrice || 0; }
@@ -605,12 +617,14 @@ export class Engine extends EventEmitter {
         if (!p.flatSeenAt) p.flatSeenAt = this.clock();
       } else if (p.flatSeenAt) delete p.flatSeenAt;
       this.ledger.append({ kind: "exit", venue, positionId: p.id, instrument: p.instrument, pct, reason, failed: true, error: r.failure.reason, code, venue_ref: r.failure.venue_ref || null });
+      p.lastExitError = { code, reason: String(r.failure.reason || "").slice(0, 200), tried: reason, at: this.clock(), count: (p.lastExitError?.count || 0) + 1 };
       this.log("warn", `EXIT FAILED ${p.instrument} ${reason}: ${r.failure.reason}`);
       this.store.save();
       return r;
     }
     if (p.pendingExit) { pct = r.fill.pending_pct ?? pct; delete p.pendingExit; }
     if (p.flatSeenAt) delete p.flatSeenAt;
+    if (p.lastExitError) delete p.lastExitError;
     return this._bookExit(p, r, pct, reason, { action, layer, detail, by });
   }
 
@@ -735,6 +749,7 @@ export class Engine extends EventEmitter {
           reference: decision?.reference || null, legs: null, paper: mode === "paper", adopted: true,
         };
         this.store.upsertPosition(position);
+        this.venues[venue].feed?.watch(inst); // a position adopted mid-run needs ticks too, or it never gets a price and no exit can fire
         rep.adopted.push(inst);
       }
       for (const [inst, p] of inStore) {
@@ -796,7 +811,8 @@ export class Engine extends EventEmitter {
       pnl: this.truePnl(),
       day: { ...s.day, limit_usd: this.env.daily_loss_limit_usd, used_pct: +((Math.max(0, -s.day.realizedUsd) / this.env.daily_loss_limit_usd) * 100).toFixed(1) },
       bankroll: { source: this.walletMode() ? "wallet" : "fixed", fixed_usd: this.env.bankroll_usd, equity_usd: this.portfolioSnapshot().equity_usd ?? null, wallet: this.wallet.at ? this.wallet : null, wallets: this.wallets },
-      positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, name: p.reference?.name || "", ticker: p.reference?.ticker || "", tier: p.tier, model: p.model, notional_usd: p.notional_usd, stake_usd: p.stake_usd, mark: p.mark, entryMark: p.entryMark, peak: p.peak, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode, stall_ms: p.plan?.stall_ms ?? null, max_hold_ms: p.plan?.max_hold_ms ?? null }, tpHit: p._bondli?.tpHit ?? 0, entryTime: p.entryTime, lastTickAt: p.lastTickAt || null, curve: p.reference?.curve?.address || null, adopted: !!p.adopted, sizing: p.sizing || null })),
+      positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, name: p.reference?.name || "", ticker: p.reference?.ticker || "", tier: p.tier, model: p.model, notional_usd: p.notional_usd, stake_usd: p.stake_usd, mark: p.mark, entryMark: p.entryMark, peak: p.peak, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode, stall_ms: p.plan?.stall_ms ?? null, max_hold_ms: p.plan?.max_hold_ms ?? null }, tpHit: p._bondli?.tpHit ?? 0, entryTime: p.entryTime, lastTickAt: p.lastTickAt || null, curve: p.reference?.curve?.address || null, adopted: !!p.adopted, sizing: p.sizing || null, lastExitError: p.lastExitError || null })),
+      review: this.review(),
       venues, weightsVersion: this.weights.current().version, lastDecisions: s.lastDecisions, alerts: s.alerts.slice(0, 10),
       holdings: Object.fromEntries(Object.entries(this._holdings).map(([venue, h]) => { const open = new Set(this.store.openPositions(venue).map(p => p.instrument)); return [venue, { at: h.at, list: h.list.map(x => ({ ...x, tracked: open.has(x.instrument) })) }]; })),
     };
