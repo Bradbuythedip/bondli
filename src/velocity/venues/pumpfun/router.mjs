@@ -38,21 +38,32 @@ export function curveSell({ vSol, vTokens }, tokensIn) {
   return { solOut, avgPrice: avg, spot, slippage_bps: (1 - avg / spot) * 1e4 };
 }
 
+/** Paper has to pay what live pays, or every statistic it feeds is a lie in the same direction.
+ *  Live pays, per side: the curve's 1%, the router's 0.5%, a priority fee and a base fee. It also pays
+ *  the token account's rent on a new mint and takes it back when the position finally closes, so the
+ *  rent nets out and only the extra base fee for that close is charged here. Before this, a paper buy
+ *  booked cost_usd = stake_usd and a paper sell charged only the curve fee, which understated a round
+ *  trip by about $0.12 — small against a $25 stake and fatal against a $5 one. */
+const paperPrioritySol = () => Number(process.env.PRIORITY_FEE_SOL) > 0 ? Number(process.env.PRIORITY_FEE_SOL) : 0.0003;
 export function pumpfunFillModel(order) {
   const { vSol, vTokens, solPrice } = reservesFromReference(order.reference || {});
   if (!(solPrice > 0)) return { reject: "NO_SOL_PRICE", reason: "reference has no solPrice" };
-  const fee = PUMP_FEE_BPS / 1e4;
+  const fee = PUMP_FEE_BPS / 1e4, portal = PUMP_PORTAL_FEE_BPS / 1e4;
+  const perSendSol = paperPrioritySol() + BASE_FEE_SOL;
   if (order.side === "BUY") {
     const stakeSol = (Number(order.stake_usd) || 0) / solPrice;
     if (!(stakeSol > 0)) return { reject: "ZERO_STAKE", reason: "stake is zero" };
     const r = curveBuy({ vSol, vTokens }, stakeSol * (1 - fee));
-    return { price: r.avgPrice * solPrice, qty: r.tokensOut, notional_usd: Number(order.stake_usd), slippage_bps: r.slippage_bps, fee_usd: stakeSol * fee * solPrice };
+    // What actually leaves the wallet: the stake, the router's cut, and the send.
+    const spentSol = stakeSol * (1 + portal) + perSendSol;
+    return { price: (spentSol * solPrice) / (r.tokensOut || 1), qty: r.tokensOut, notional_usd: +(spentSol * solPrice).toFixed(4), slippage_bps: r.slippage_bps, fee_usd: +((spentSol - stakeSol) * solPrice).toFixed(4) };
   }
   const qty = Number(order.qty) || 0;
   if (!(qty > 0)) return { reject: "ZERO_QTY", reason: "nothing to sell" };
   const r = curveSell({ vSol, vTokens }, qty);
-  const gross = r.solOut * solPrice;
-  return { price: r.avgPrice * solPrice, qty, notional_usd: gross * (1 - fee), slippage_bps: r.slippage_bps, fee_usd: gross * fee };
+  // What actually arrives: the curve's proceeds less both cuts, the send, and the account close.
+  const netSol = Math.max(0, r.solOut * (1 - fee - portal) - perSendSol - BASE_FEE_SOL);
+  return { price: qty > 0 ? (netSol * solPrice) / qty : 0, qty, notional_usd: +(netSol * solPrice).toFixed(4), slippage_bps: r.slippage_bps, fee_usd: +((r.solOut - netSol) * solPrice).toFixed(4) };
 }
 
 export class PumpfunPaperRouter extends PaperRouter {

@@ -70,7 +70,7 @@ export class Engine extends EventEmitter {
     this._holdings = {}; // venue -> { at, list: [{ instrument, qty }] } as the venue last reported them
     this._lastHoldingsReconcile = 0;
     this._lastSweepTry = new Map();
-    this.stats = statsFromOutcomes(this.ledger.query({ kind: "outcome", limit: 5000 }));
+    this.stats = this.modeStats();
     this.checksums = checksumFiles();
     this.verdict = { throttle: 1, halt: false, reasons: [] };
     this.running = false;
@@ -172,6 +172,16 @@ export class Engine extends EventEmitter {
         this.refreshWallet().catch(() => {});
       })
       .catch(err => this.log("warn", `rent reclaim ${instrument.slice(0, 8)}: ${err.shortMessage || err.message}`));
+  }
+
+  /** Realized statistics, never mixed across modes. A paper fill is a model's opinion and a live fill
+   *  is a receipt; pooling them let a run of simulated wins size a real bet. Each venue learns from
+   *  outcomes booked in the mode it is in now, so paper still calibrates itself and live only ever
+   *  hears from live. */
+  modeStats() {
+    const outs = this.ledger.query({ kind: "outcome", limit: 5000 })
+      .filter(o => o && o.venue && !!o.paper === (this.store.venueMode(o.venue) === "paper"));
+    return statsFromOutcomes(outs);
   }
 
   /** The last hundred closes, grouped by how they ended: where the money went. */
@@ -400,7 +410,7 @@ export class Engine extends EventEmitter {
     const gov = this.governorContext(venue);
     const t0 = performance.now();
     if (event.kind === "candidate" && (this.disqualified.get(event.id) || 0) > event.t_observed) return;
-    const decisions = v.runner.run(event, { governor: gov, stats: this.stats, weights: { pumpfun: this.weights.current().weights } });
+    const decisions = v.runner.run(event, { governor: gov, stats: this.stats, minStakeUsd: this.env.venues[venue]?.min_stake_usd ?? null, weights: { pumpfun: this.weights.current().weights } });
     const decideMs = performance.now() - t0;
     for (const d of decisions) {
       // A rug flag that cannot change (dev self-sniped, serial rugger, frozen, stolen art) is final for
@@ -678,7 +688,7 @@ export class Engine extends EventEmitter {
       this.cooldown.set(p.instrument, this.clock() + this.cfg.reentryCooldownMs);
       this.venues[venue].feed?.unwatch(p.instrument);
       for (const l of p.legs || []) this.venues[venue].feed?.unwatch(l.instrument);
-      this.stats = statsFromOutcomes(this.ledger.query({ kind: "outcome", limit: 5000 }));
+      this.stats = this.modeStats();
       this.log("info", `EXIT ${venue} ${p.instrument} ${reason} pnl $${pnl.toFixed(2)} held ${Math.round(held / 1000)}s`);
       this.emit("outcome", { position: p, pnl });
       this.evaluateGovernor();

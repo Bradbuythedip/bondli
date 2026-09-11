@@ -37,7 +37,10 @@ test("T5: pump.fun layers fire at their triggers", () => {
   // Layer 1: crashing score
   let pos = pumpPos();
   markPosition(pos, tick(10_500));
-  let r = evaluateExit(pos, tick(10_500, { dynamics: { scores: 4, velocity: -0.5, acceleration: -0.1, trend: "crashing" } }));
+  // A crashing score with the price still up is not a crash: the score is derived off snapshots and
+  // leaving costs a full round trip, so the price has to agree before the money moves.
+  assert.equal(evaluateExit(pos, tick(10_500, { dynamics: { scores: 4, velocity: -0.5, acceleration: -0.1, trend: "crashing" } })), null, "+5% and 'crashing': held");
+  let r = evaluateExit(pos, tick(9_800, { dynamics: { scores: 4, velocity: -0.5, acceleration: -0.1, trend: "crashing" } }));
   assert.equal(r.action, "SELL"); assert.equal(r.reason, "crash-exit"); assert.equal(r.layer, 1);
   // Layer 3: ride mode takes no partial profit on the way up — +40% is held, not scalped
   pos = pumpPos();
@@ -133,8 +136,10 @@ test("T5: dead money is sold: three minutes flat with no buyers is a STALL exit 
   const quiet = { token: { trades: [{ side: "buy", time: T0 + 60_000 }, { side: "sell", time: T0 + 170_000 }] } };
   // two minutes in, flat, quiet: hold (not old enough)
   assert.equal(evaluateExit(pos, tick(10_300, quiet, T0 + 2 * 60_000)), null);
-  // three minutes in, +3%, one buy in the last minute: STALL
-  const r = evaluateExit(pos, tick(10_300, quiet, T0 + 3 * 60_000 + 1000));
+  // three minutes in and +3%: flat is not a reason to pay a round trip, so it is held
+  assert.equal(evaluateExit(pos, tick(10_300, quiet, T0 + 3 * 60_000 + 1000)), null, "flat and quiet is still held");
+  // three minutes in, drifting down, one buy in the last minute: STALL
+  const r = evaluateExit(pos, tick(9_400, quiet, T0 + 3 * 60_000 + 1000));
   assert.equal(r?.action, "SELL"); assert.equal(r.reason, "STALL"); assert.equal(r.pct, 100);
   // three minutes in but buying is alive: hold
   const busy = { token: { trades: Array.from({ length: 6 }, (_, i) => ({ side: "buy", time: T0 + 3 * 60_000 - i * 5000 })) } };

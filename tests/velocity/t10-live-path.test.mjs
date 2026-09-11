@@ -415,14 +415,16 @@ test("T10: a signature survives an RPC that drops the reply; a zero read is re-r
   assert.equal(sold.ok, true); assert.equal(sold.fill.notional_usd, 6);
 
   // Tokens gone, SOL not visible, transaction not readable: UNCONFIRMED, never a $0 sale.
-  const half = fakeConn({ sol: 0.5, tokens: { M: 1000 }, statuses: { SIG1: confirmed }, txs: {} });
+  // A real position, not dust: at 1,000 tokens the curve pays $0.009 and the send costs more than that,
+  // so the honest estimate would be zero and the test would be measuring rounding, not the code path.
+  const half = fakeConn({ sol: 0.5, tokens: { M: 200_000 }, statuses: { SIG1: confirmed }, txs: {} });
   const r5 = liveRouter(half);
   half.sendRawTransaction = async () => { half.tokens.M = 0; return "SIG1"; };
   const z = await r5.close({ id: "p", instrument: "M", decisionId: "d", reference: { solPrice: 200 } }, 100, { reference: { solPrice: 200 } });
   assert.equal(z.failure.code, "UNCONFIRMED"); assert.equal(z.failure.venue_ref, "SIG1");
   // Later, still unreadable but long confirmed: the curve model's estimate is booked, flagged.
   r5.tick(100_000);
-  const est = await r5.resolvePending({ instrument: "M", side: "SELL", sig: "SIG1", at: 1_000_000, reference: { solPrice: 200, mcapUsd: 9000, vSolInBondingCurve: 30 }, qtyHint: 1000 });
+  const est = await r5.resolvePending({ instrument: "M", side: "SELL", sig: "SIG1", at: 1_000_000, reference: { solPrice: 200, mcapUsd: 9000, vSolInBondingCurve: 30 }, qtyHint: 200_000 });
   assert.equal(est.ok, true); assert.equal(est.fill.estimated, true); assert.ok(est.fill.notional_usd > 0);
 });
 

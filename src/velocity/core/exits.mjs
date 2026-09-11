@@ -98,7 +98,10 @@ function evaluatePumpfun(position, tick, plan, now, held) {
     const band = plan.stall_band_pct, chg = position.entryMark > 0 ? ((token.mcapUsd - position.entryMark) / position.entryMark) * 100 : 0;
     const peakPct = position.entryMark > 0 ? ((pos.peakMcap - position.entryMark) / position.entryMark) * 100 : 0;
     const recentBuys = (token.trades || []).filter(t => t.side === "buy" && now - (t.time || 0) <= 60_000).length;
-    if (Math.abs(chg) <= band && peakPct < band * 1.5 && recentBuys <= 2) return { action: "SELL", pct: 100, reason: "STALL", layer: 2, detail: `${Math.round(held / 60000)}min, ${chg >= 0 ? "+" : ""}${chg.toFixed(0)}%, ${recentBuys} buys/min` };
+    // Flat is not a reason to sell. Holding a flat position costs nothing; leaving it pays the whole
+    // round trip and books that as a loss with no information in it. The stall only fires once the
+    // token is also going the wrong way, which is the difference between dead money and a mistake.
+    if (chg <= -band / 2 && Math.abs(chg) <= band && peakPct < band * 1.5 && recentBuys <= 2) return { action: "SELL", pct: 100, reason: "STALL", layer: 2, detail: `${Math.round(held / 60000)}min, ${chg.toFixed(0)}%, ${recentBuys} buys/min` };
   }
   pos.liveScore = Number(p.scores?.apeScore ?? pos.liveScore ?? pos.entryScore) || 0;
   pos.liveUB = token.uniqueBuyers?.size ?? pos.liveUB ?? 0;

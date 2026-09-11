@@ -48,9 +48,11 @@ export function checkDerivativeExit(pos, dynamics, changePct, settings) {
   const plan = pos.exitPlan || createExitPlan(pos.tier || 2, pos.entryScore || 0, settings);
   const dyn = dynamics;
 
-  // Flash decay: score peaked and freefalling
-  if (dyn.trend === "crashing" && dyn.scores >= 3) {
-    return { action: "SELL", pct: 100, reason: "crash-exit", layer: 1, detail: `v=${dyn.velocity?.toFixed(3)} a=${dyn.acceleration?.toFixed(3)} CRASHING` };
+  // Flash decay: score peaked and freefalling. The score is a derived thing computed off snapshots that
+  // can be stale or thin, so on its own it produces exits at a flat price that pay a full round trip
+  // for no information. The price has to agree before the money moves: not up on the trade.
+  if (dyn.trend === "crashing" && dyn.scores >= 3 && changePct <= 0) {
+    return { action: "SELL", pct: 100, reason: "crash-exit", layer: 1, detail: `v=${dyn.velocity?.toFixed(3)} a=${dyn.acceleration?.toFixed(3)} CRASHING at ${changePct.toFixed(0)}%` };
   }
 
   // Fading: decelerating hard while still showing positive change
@@ -64,8 +66,8 @@ export function checkDerivativeExit(pos, dynamics, changePct, settings) {
   const hasStrongFundamentals = (pos.liveUB || 0) >= 20 && (pos.liveBuys || 0) >= 30 && changePct > 0;
   const momentumExitThreshold = hasStrongFundamentals ? plan.momentumDropAbsolute + 10 : plan.momentumDropAbsolute;
 
-  if (scoreDrop >= momentumExitThreshold) {
-    return { action: "SELL", pct: 100, reason: "momentum-exit", layer: 1, detail: `score ${pos.entryScore}→${pos.liveScore} (−${scoreDrop})` };
+  if (scoreDrop >= momentumExitThreshold && changePct <= 0) {
+    return { action: "SELL", pct: 100, reason: "momentum-exit", layer: 1, detail: `score ${pos.entryScore}→${pos.liveScore} (−${scoreDrop}) at ${changePct.toFixed(0)}%` };
   }
 
   if (scoreDrop >= plan.momentumTrimDrop && changePct > 5 && (pos.tpHit || 0) === 0) {
