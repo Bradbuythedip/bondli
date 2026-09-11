@@ -86,7 +86,7 @@ export function makePumpfunEdge({
         token: p.token, qf: p.qf, scores: p.scores || {}, dynamics: p.dynamics,
         solPrice: p.solPrice || 0,
         // The router sizes and routes from this: on PONS it needs the curve contract and its reserves.
-        reference: { mcapUsd: p.mcapUsd || p.token.mcapUsd || 0, vSolInBondingCurve: p.vSolInBondingCurve || p.token.vSolInBondingCurve || 0, solPrice: p.solPrice || 0, solPriceAt: p.solPriceAt || 0, ...(p.curve ? { curve: p.curve, quote: p.quote || "ETH" } : {}) },
+        reference: { mcapUsd: p.mcapUsd || p.token.mcapUsd || 0, vSolInBondingCurve: p.vSolInBondingCurve || p.token.vSolInBondingCurve || 0, solPrice: p.solPrice || 0, solPriceAt: p.solPriceAt || 0, name: p.token.name || "", ticker: p.token.ticker || "", ...(p.curve ? { curve: p.curve, quote: p.quote || "ETH" } : {}) },
         group: p.token.devWallet || null,
       }];
     },

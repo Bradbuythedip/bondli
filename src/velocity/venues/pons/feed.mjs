@@ -191,7 +191,8 @@ export class PonsFeed extends Feed {
     this._block = to + 1;
     let emitted = 0;
     for (const t of this.tokens.values()) {
-      if (t._pending || (touched.has(t) && now - (t._hydratedAt || 0) > 20_000)) await this._hydrate(t);
+      const held = this.watched.has(t.ca);
+      if (t._pending || (touched.has(t) && now - (t._hydratedAt || 0) > 20_000) || (held && now - (t._hydratedAt || 0) > 4_000)) await this._hydrate(t);
       if (!(t.mcapUsd > 0) || !(this.solPrice > 0)) continue;
       const payload = this.payloadFor(t, now);
       if (this.watched.has(t.ca)) this.emitEvent({ kind: "tick", id: t.ca, payload: { ...payload, source: "pons" }, t_venue: now });
