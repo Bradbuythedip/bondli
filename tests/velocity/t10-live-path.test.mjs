@@ -739,7 +739,7 @@ test("T10: momentum override: a crowd waives the pattern rules on Normal and Deg
   assert.equal(normal.pass, true, JSON.stringify(normal)); assert.ok(normal.waived.includes("QUICK_FLIP")); assert.ok(normal.waived.includes("COORDINATED_DUMP"));
   // The dev selling into that crowd is still a no, on any setting.
   const devDump = checkDisqualifiers(runner, { ...qf, rg_devSellSpeed: 0.7 }, AGGRESSION[3]);
-  assert.equal(devDump.pass, false); assert.deepEqual(devDump.flags, ["DEV_SELLING"]); assert.ok(devDump.waived.includes("QUICK_FLIP"));
+  assert.equal(devDump.pass, false); assert.ok(devDump.flags.includes("DEV_SELLING")); assert.ok(devDump.flags.includes("QUICK_FLIP"), "a selling dev is no crowd: nothing is waived"); assert.deepEqual(devDump.waived, []);
   // Price 30% off its high: not a crowd on its way up, no waiver.
   const off = checkDisqualifiers(runner, { ...qf, rg_mcapDropRate: 0.3 }, AGGRESSION[2]);
   assert.equal(off.pass, false); assert.deepEqual(off.waived, []);
@@ -748,6 +748,16 @@ test("T10: momentum override: a crowd waives the pattern rules on Normal and Deg
   assert.equal(checkDisqualifiers(small, qfs, AGGRESSION[2]).pass, false);
   assert.equal(checkDisqualifiers(small, qfs, AGGRESSION[3]).pass, true);
   assert.ok(FATAL_DISQUALIFIERS.has("SYBIL_ATTACK") && FATAL_DISQUALIFIERS.has("MCAP_CRASHING"));
+  // A metronome bot pump is the purest "crowd" by the numbers; the bot-farm and no-sell rules are never waived.
+  const bot = { ...runner, sells: 4, buys: 40, uniqueBuyers: { size: 16 } };
+  const botQf = { _rg_organicBuyers: 16, _rg_buyTimingRegularity: 0.65, _rg_singleWalletDominance: 0.45, rg_mcapDropRate: 0, rg_liqRemovalSpeed: 0.1, rg_holderConcentration: 0.5 };
+  for (const lvl of [2, 3]) { const r = checkDisqualifiers(bot, botQf, AGGRESSION[lvl]); assert.equal(r.pass, false, `level ${lvl}`); assert.ok(r.flags.includes("BOT_PUMP")); }
+  const zero = checkDisqualifiers({ ...bot, sells: 0 }, { ...botQf, _rg_velocityLinearity: 0.95, _rg_buySellImbalance: 0.85, _rg_zeroSellFlag: 0.85, _rg_freshWalletRatio: 0.9, _rg_quickFlipRate: 0.5 }, AGGRESSION[3]);
+  assert.equal(zero.pass, false); for (const f of ["LINEAR_PUMP", "ZERO_SELLS", "ALL_BUYS_NO_SELLS", "FRESH_WALLET_RUG"]) assert.ok(zero.flags.includes(f), f);
+  assert.deepEqual(zero.waived.map(f => f.replace(/^MULTI_RUG_SIGNAL_\d+$/, "MULTI_RUG_SIGNAL_*")).sort(), ["MULTI_RUG_SIGNAL_*", "QUICK_FLIP"], "only the crowd-pattern rules are waived; the no-sell and bot rules stand");
+  // A dev distributing under the DEV_SELLING line is no crowd: MULTI_RUG_SIGNAL stands.
+  const devHalf = checkDisqualifiers(runner, { ...qf, rg_devSellSpeed: 0.5, _rg_freshWalletRatio: 0.75, ch_staircaseScore: 0.45 }, AGGRESSION[2]);
+  assert.equal(devHalf.pass, false); assert.deepEqual(devHalf.waived, []);
   // Through the edge, the waiver is in the decision's reasons so the narration says why it was let in.
   const edge = makePumpfunEdge({ aggression: 2 });
   const p = goodCandidatePayload("R"); p.token = { ...p.token, ...runner }; p.qf = { ...p.qf, ...qf };

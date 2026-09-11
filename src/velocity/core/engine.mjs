@@ -318,8 +318,12 @@ export class Engine extends EventEmitter {
   portfolioSnapshot() {
     this.store.rollDay();
     const open = this.store.openPositions();
+    // A buy that was sent but not confirmed may still land: until the sweep settles it, its whole
+    // stake is open risk, or every candidate inside the confirmation window is sized against the
+    // full daily budget.
+    const pending = [...this.pendingBuys.values()].map(pb => ({ venue: pb.venue, group: pb.decision?.group || null, notional_usd: pb.stake, worst_case_fraction: 1, pending: true }));
     const snap = {
-      open: open.map(p => ({ venue: p.venue, group: p.group, notional_usd: p.notional_usd, worst_case_fraction: p.worst_case_fraction ?? 1 })),
+      open: [...open.map(p => ({ venue: p.venue, group: p.group, notional_usd: p.notional_usd, worst_case_fraction: p.worst_case_fraction ?? 1 })), ...pending],
       realized_today_usd: this.store.state.day.realizedUsd,
     };
     // Wallet mode: the bankroll is what the wallet holds. Free SOL (less the fee reserve) at the

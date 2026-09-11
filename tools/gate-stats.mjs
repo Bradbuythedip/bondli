@@ -121,7 +121,7 @@ function tally(rows, gate, featuresOf) {
   const fire = Object.fromEntries(Object.keys(RULES).map(k => [k, 0]));
   const pass1 = new Set(), pass2 = new Set(), pass3 = new Set(), dropOne = Object.fromEntries(Object.keys(RULES).map(k => [k, new Set()]));
   const g2 = {}, g3 = {}, tiers = {}; let passed1 = 0, passed2 = 0, mayhem = 0, copycats = 0;
-  let mismatch = 0; const mmEx = [];
+  let mismatch = 0; const mmEx = [], waivedCount = {};
   for (const { t, r, ts } of rows) {
     if (t._mayhem) { mayhem++; continue; } // never looked at
     if (t._copyOf) { copycats++; continue; } // an advert, never a trade
@@ -134,9 +134,13 @@ function tally(rows, gate, featuresOf) {
     if (gate) { // the real gates with Date.now pinned to the snapshot time so offline replay ages correctly
       const now = Date.now; Date.now = () => ts;
       try {
-        const g1 = gate.d.checkDisqualifiers(t, q, { freezeAuthority: !!t.freezeAuthority });
-        const real = g1.flags.map(f => f.startsWith("MULTI_RUG_SIGNAL_") ? "MULTI_RUG_SIGNAL_*" : f).sort().join(",");
+        // The replica models the designed rules, so the cross-check judges at defaults; the pass counts
+        // use the judge the bot trades on at the chosen aggression (knobs and the momentum waiver).
+        const g1d = gate.d.checkDisqualifiers(t, q, { freezeAuthority: !!t.freezeAuthority });
+        const real = g1d.flags.map(f => f.startsWith("MULTI_RUG_SIGNAL_") ? "MULTI_RUG_SIGNAL_*" : f).sort().join(",");
         if (real !== flags.slice().sort().join(",")) { mismatch++; if (mmEx.length < 5) mmEx.push(`${t.ca?.slice(0, 8)} real=[${real}] replica=[${flags}]`); }
+        const g1 = gate.d.checkDisqualifiers(t, q, { ...gate.opts, freezeAuthority: !!t.freezeAuthority });
+        for (const w of g1.waived || []) waivedCount[w] = (waivedCount[w] || 0) + 1;
         if (g1.pass) {
           pass1.add(t.ca); passed1++;
           const vi = gate.v.checkViability(t, q, r.scores || {}, r.dynamics, gate.opts);
@@ -155,7 +159,7 @@ function tally(rows, gate, featuresOf) {
       } finally { Date.now = now; }
     } else if (!flags.length) pass1.add(t.ca);
   }
-  return { fire, pass1, pass2, pass3, dropOne, mismatch, mmEx, g2, g3, tiers, passed1, passed2, mayhem, copycats };
+  return { fire, pass1, pass2, pass3, dropOne, mismatch, mmEx, g2, g3, tiers, passed1, passed2, mayhem, copycats, waivedCount };
 }
 
 async function report(file) {
@@ -197,6 +201,7 @@ async function report(file) {
   console.log(`\nTokens passing gate 1 (any qualifying snapshot): recorded ${rec.pass1.size} -> recomputed ${fix.pass1.size}   passing gate 1 AND gate 2: ${gate ? `${rec.pass2.size} -> ${fix.pass2.size}` : "n/a (gates not importable)"}${gate ? `   AND gate 3 (enterable): ${fix.pass3.size}` : ""}`);
   if (fix.mayhem) console.log(`Mayhem token-snapshots skipped (never looked at): ${fix.mayhem}`);
   if (fix.copycats) console.log(`Copycat token-snapshots skipped (same-name adverts): ${fix.copycats}`);
+  if (gate && Object.keys(fix.waivedCount).length) console.log(`Momentum waived at aggression ${gate.level} (token-snapshots): ${Object.entries(fix.waivedCount).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join("  ")}`);
   if (gate) {
     console.log(`\nGATE 2 (viability) checks among token-snapshots that passed gate 1, aggression ${gate.level} (${fix.passed1} snapshots):`);
     for (const [k, v] of Object.entries(fix.g2).sort((a, b) => b[1] - a[1])) console.log(`  ${P(k)} ${fmt(v, fix.passed1)} (${v})`);

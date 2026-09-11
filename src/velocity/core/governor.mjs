@@ -117,7 +117,7 @@ export class Governor {
     // Tilt (bondli): level 3 halves size, level 4 halts.
     const tilt = this.tilt.getStatus();
     // Tilt shrinks size, never stops the bot: the daily limit is the stop.
-    if (tilt.tiltLevel >= 4) flag("tilt", 1, `tilt level 4: sizes halved (${tilt.intervention?.message || ""})`, 0.5);
+    if (tilt.tiltLevel >= 4) flag("tilt", 1, `tilt level 4: sizes halved (session pnl ${(tilt.stats?.sessionPnl ?? 0).toFixed(2)} USD)`, 0.5);
     else if (tilt.tiltLevel === 3) flag("tilt", 0.75, "tilt level 3: sizes halved", 0.5);
     else if (tilt.tiltLevel > 0) spots.tilt = { triggered: false, severity: tilt.tiltLevel / 4, detail: `tilt level ${tilt.tiltLevel}` };
 
