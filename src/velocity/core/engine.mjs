@@ -65,6 +65,7 @@ export class Engine extends EventEmitter {
     this.pendingBuys = new Map();  // instrument -> { sig, decision, orderId, stake, sizing, at }: sent, not yet confirmed
     this.wallet = { sol: null, usd: null, solPrice: null, at: 0, venue: null }; // last live wallet reading (bankroll_source: wallet)
     this.wallets = {}; // venue -> reading; a hosted user trades pump.fun from a SOL wallet and PONS from an ETH wallet
+    this.quotePrice = {}; // venue -> quote asset price in USD (SOL, ETH), from that venue's own events
     this._holdings = {}; // venue -> { at, list: [{ instrument, qty }] } as the venue last reported them
     this._lastHoldingsReconcile = 0;
     this._lastSweepTry = new Map();
@@ -154,15 +155,22 @@ export class Engine extends EventEmitter {
   // ── wallet as bankroll (bankroll_source: wallet) ──
   walletMode() { return this.env.bankroll_source === "wallet"; }
 
+  /** The venue's quote asset in USD, freshest known: SOL for pump.fun, ETH for pons. One hint per
+   *  venue; a single shared one would let the RH feed's ETH price value the SOL wallet. */
+  quotePriceOf(venue) { return this.quotePrice[venue] || this.venues[venue]?.feed?.solPrice || 0; }
+  get solPriceHint() { return this.quotePriceOf("pumpfun"); }
+  set solPriceHint(v) { this.quotePrice.pumpfun = v; }
+
   /** Record a wallet reading (from a router preflight) in USD at the freshest SOL price known. */
   noteWallet(venue, pre) {
     if (!pre || !(pre.balanceSol >= 0)) return;
-    const solPrice = this.solPriceHint || this.venues[venue]?.feed?.solPrice || 0;
+    const solPrice = this.quotePriceOf(venue);
     this.wallet = { sol: pre.balanceSol, usd: solPrice > 0 ? +(pre.balanceSol * solPrice).toFixed(2) : null, solPrice: solPrice || null, at: this.clock(), venue, quote: pre.quote || "SOL" };
     this.wallets[venue] = this.wallet;
     this.store.state.wallet = this.wallet; this.store.state.wallets = this.wallets;
-    // The first full reading after a start is the baseline the header P&L is measured from.
-    if (!this.store.state.baseline) { const b = this.truePnl(); if (b.wallet_usd != null) this.store.state.baseline = { wallet_usd: b.wallet_usd, open_usd: b.open_usd, at: this.clock() }; }
+    // The first full reading after a start (every live wallet read since Start) is the baseline the
+    // header P&L is measured from, kept in quote units so a move in SOL or ETH itself is not "P&L".
+    if (!this.store.state.baseline) { const b = this.truePnl(); if (b.wallet_usd != null && b.all_since_start) this.store.state.baseline = { wallet_usd: b.wallet_usd, open_usd: b.open_usd, quote: b.quote, at: this.clock() }; }
   }
 
   /** What the user actually has, against what they had when they pressed start: every live wallet in
@@ -170,20 +178,26 @@ export class Engine extends EventEmitter {
    *  failed sends, and yesterday; this does not. Null wallet_usd means a live wallet has no fresh
    *  reading or no price yet. */
   truePnl() {
-    let walletUsd = 0, known = true;
+    let walletUsd = 0, known = true, allSinceStart = true; const quote = {}, prices = {};
     for (const venue of Object.keys(this.venues)) {
       if (this.store.venueMode(venue) !== "live") continue;
       const w = this.wallets[venue] || (this.wallet.venue === venue ? this.wallet : null);
-      const price = (venue === "pumpfun" ? this.solPriceHint : 0) || w?.solPrice || this.venues[venue]?.feed?.solPrice || 0;
+      const price = this.quotePriceOf(venue) || w?.solPrice || 0;
       if (!w || !(w.sol >= 0) || !(price > 0)) { known = false; break; }
-      walletUsd += w.sol * price;
+      if (!(w.at >= (this.store.state.startedAt || 0))) allSinceStart = false;
+      walletUsd += w.sol * price; quote[venue] = w.sol; prices[venue] = price;
     }
     const open = this.store.openPositions().filter(p => !p.paper);
     const openUsd = open.reduce((s, p) => s + (p.notional_usd || 0) * (1 + (p.changePct || 0) / 100), 0);
     const unrealized = open.reduce((s, p) => s + (p.unrealized_usd || 0), 0);
     const b = this.store.state.baseline || null;
-    const out = { wallet_usd: known ? +walletUsd.toFixed(2) : null, open_usd: +openUsd.toFixed(2), unrealized_usd: +unrealized.toFixed(2), realized_today_usd: this.store.state.day.realizedUsd, baseline: b, since_start_usd: null };
-    if (b && known) out.since_start_usd = +((walletUsd + openUsd) - (b.wallet_usd + b.open_usd)).toFixed(2);
+    const out = { wallet_usd: known ? +walletUsd.toFixed(2) : null, open_usd: +openUsd.toFixed(2), unrealized_usd: +unrealized.toFixed(2), realized_today_usd: this.store.state.day.realizedUsd, baseline: b, since_start_usd: null, quote, all_since_start: allSinceStart };
+    if (b && known) {
+      // Each wallet's change in its own quote asset, at today's price: SOL and ETH moving is not trading.
+      let diff = 0, ok = true;
+      for (const [venue, now] of Object.entries(quote)) { const base = b.quote?.[venue]; if (base == null) { ok = false; break; } diff += (now - base) * prices[venue]; }
+      out.since_start_usd = +((ok ? diff : walletUsd - b.wallet_usd) + openUsd - b.open_usd).toFixed(2);
+    }
     return out;
   }
 
@@ -310,7 +324,7 @@ export class Engine extends EventEmitter {
       if (!h.ok) return refuse(`live venue unreachable: ${h.detail}`);
       // Before the first radar poll no SOL price is known; $100 asks for more SOL than a dearer
       // SOL needs, so an unknown price refuses rather than admits a wallet that cannot cover one order.
-      const solPrice = this.solPriceHint || this.venues[venue].feed?.solPrice || 0;
+      const solPrice = this.quotePriceOf(venue);
       const minSol = this.env.venues[venue].min_stake_usd / (solPrice > 0 ? solPrice : 100) + (router.priorityFeeSol || 0) + 0.006;
       if (preflight && preflight.balanceSol != null && preflight.balanceSol < minSol)
         return refuse(`wallet ${preflight.wallet} holds ${preflight.balanceSol.toFixed(4)} ${preflight.quote || "SOL"}, below one minimum stake plus fees (${minSol.toFixed(4)} ${preflight.quote || "SOL"})`, { preflight });
@@ -349,7 +363,7 @@ export class Engine extends EventEmitter {
     await this.checkExits(event);
     if (this.stopping) return; // queued behind a slow order at shutdown: exits ran, no new entries
 
-    if (event.payload?.solPrice > 0) this.solPriceHint = event.payload.solPrice;
+    if (event.payload?.solPrice > 0) this.quotePrice[venue] = event.payload.solPrice; // the venue's quote asset in USD: SOL here, ETH on pons
     if (!v.runner) return;
     const gov = this.governorContext(venue);
     const t0 = performance.now();
@@ -407,7 +421,7 @@ export class Engine extends EventEmitter {
       for (const venue of liveVenues) {
         const w = this.wallets[venue] || (this.wallet.venue === venue ? this.wallet : null);
         const fresh = w && w.at && this.clock() - w.at <= this.cfg.walletMaxAgeMs;
-        const price = (venue === "pumpfun" ? this.solPriceHint : 0) || w?.solPrice || this.venues[venue]?.feed?.solPrice || 0;
+        const price = this.quotePriceOf(venue) || w?.solPrice || 0;
         if (!fresh || !(w.sol >= 0)) { reason = "WALLET_UNKNOWN"; break; }
         if (!(price > 0)) { reason = "NO_SOL_PRICE"; break; }
         const reserve = venue === "pumpfun" ? (this.env.wallet_reserve_sol ?? 0.02) : (this.env.wallet_reserve_quote?.[venue] ?? 0.001);
@@ -563,7 +577,7 @@ export class Engine extends EventEmitter {
     const router = this.routerFor(venue);
     if (!router) return { ok: false, failure: { reason: "NO_ROUTER" } };
     // Proceeds are measured in SOL; the freshest known SOL price converts them.
-    const freshSol = tick?.payload?.solPrice || this.solPriceHint || p.reference?.solPrice || 0;
+    const freshSol = tick?.payload?.solPrice || this.quotePriceOf(venue) || p.reference?.solPrice || 0;
     // With no tick, a paper sell is priced at the last mark, not the entry curve: a token goes quiet
     // when it dies. (A live sell measures real proceeds; the reference only sizes the model check.)
     const lastMark = CURVE_VENUES.has(venue) && p.mark > 0 ? { mcapUsd: p.mark, mcapSol: undefined, vTokensInBondingCurve: undefined, vSolInBondingCurve: p.lastVSol || p.reference?.vSolInBondingCurve } : {};
