@@ -688,6 +688,13 @@ test("T10: a production-shaped candidate (no enrichment, tier 3) is a GO; missin
   assert.ok(ranked > 0.4 && ranked < 0.6, `renormalised over present features: ${ranked}`);
   const asZeros = scoreFeatures({ ...f, memeticQuick: 0, survivorMatch: 0, whaleBullish: 0, walletAge: 0 }, DEFAULT_WEIGHTS.pumpfun);
   assert.ok(asZeros < 0.35, `the old reading, which refused everything: ${asZeros}`);
+  // The contract the producer has to honour. Deleting a key from a hand-written qf proves nothing:
+  // extractQuickFeatures always DEFINES _whaleBullish, so the only question is what it defines it as.
+  // A literal 0 survives opt() and enters the weighted sum as a measurement of "no whale is buying".
+  assert.equal(pumpfunFeatures({ token: p.token, qf: { ...p.qf, _whaleBullish: null }, scores: p.scores }).whaleBullish, null, "unmeasured must be null");
+  assert.equal(pumpfunFeatures({ token: p.token, qf: { ...p.qf, _whaleBullish: 0 }, scores: p.scores }).whaleBullish, 0, "a real zero is still a zero");
+  const withFalseZero = scoreFeatures({ ...f, whaleBullish: 0 }, DEFAULT_WEIGHTS.pumpfun);
+  assert.ok(ranked - withFalseZero > 0.04, `a false zero costs ${(ranked - withFalseZero).toFixed(3)} of confidence against a 0.50 floor`);
   // Every tier's prior clears a 5% cost, so a tier can earn the outcomes that replace its prior.
   for (const t of [1, 2, 3]) assert.ok(expectedValue({ ...PUMPFUN_PRIORS[t], costs: 0.06 }) > 0, `tier ${t} prior EV`);
   // Through the whole runner at Normal: a GO, not a confidence or EV reject.
@@ -907,4 +914,21 @@ test("T10: a launch that lists no socials is refused, but only once its metadata
   // off by default in the raw gate, on at every risk level of the real edge
   assert.ok(!checkDisqualifiers(token, { _socialsKnown: 1, _hasAnySocial: 0 }, {}).flags.includes("NO_SOCIALS"));
   for (const aggression of [0, 1, 2, 3]) assert.equal(makePumpfunEdge({ aggression }).gateOpts?.requireSocials ?? "unset", true, `level ${aggression}`);
+});
+
+test("T10: X verification turns a dead handle into no social link, and a week-old account into a flag", async () => {
+  const { checkDisqualifiers } = await import("../../src/autoape/gates/disqualifiers.js");
+  const token = { ca: "M", createdAt: Date.now() - 120_000, buys: 20, sells: 4, uniqueBuyers: { size: 12 }, mcapUsd: 12_000, trades: [] };
+  const opts = { requireSocials: true };
+  const has = (qf, f) => checkDisqualifiers(token, qf, opts).flags.includes(f);
+  // a listed handle the API says does not exist: the producer drops _hasAnySocial, so it reads as no socials
+  assert.ok(has({ _socialsKnown: 1, _hasAnySocial: 0, _xDeadHandle: 1 }, "NO_SOCIALS"));
+  // a real handle, freshly created for this launch
+  assert.ok(has({ _socialsKnown: 1, _hasAnySocial: 1, _xFlags: ["fresh_account", "low_followers"] }, "FRESH_SOCIALS"));
+  // an established account passes both
+  const est = { _socialsKnown: 1, _hasAnySocial: 1, _xFlags: ["verified"], _xScore: 78 };
+  assert.ok(!has(est, "NO_SOCIALS") && !has(est, "FRESH_SOCIALS"));
+  // no X answer at all (no key, or not checked yet): neither rule fires
+  const unchecked = { _socialsKnown: 1, _hasAnySocial: 1, _xFlags: null, _xScore: null };
+  assert.ok(!has(unchecked, "NO_SOCIALS") && !has(unchecked, "FRESH_SOCIALS"));
 });
