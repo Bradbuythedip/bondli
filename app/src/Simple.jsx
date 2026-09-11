@@ -99,22 +99,22 @@ function Live({ T, agg }) {
       <span style={muted}>{d.bots != null ? `${d.bots} bot${d.bots === 1 ? "" : "s"} trading` : ""}</span>
     </div>
     <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-      {[["launched", d.hour.launches, "tx"], ["buy zone", d.hour.hot, "gn"], ["mayhem", d.hour.mayhem, "ft"], ["copies", d.hour.copies, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 22, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
+      {[["launched", d.hour.launches, "tx"], ["buy zone", d.hour.hot, "gn"], ["robinhood", d.hour.robinhood ?? 0, "dm"], ["mayhem", d.hour.mayhem, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 22, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
     </div>
     {d.revivals?.length > 0 && <>
       <div style={{ ...muted, marginBottom: 6 }}>waking up · launched hours or days ago, buyers back at 3x</div>
       <div style={{ background: T.sf, border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.revivals.map(t => rowOf(t, true))}</div>
     </>}
-    <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between" }}><span>last hour · newest first · judged at {AGG[d.aggression ?? agg]?.l || "Normal"}</span><span>tap to open on pump.fun</span></div>
+    <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between" }}><span>last hour · both chains · judged at {AGG[d.aggression ?? agg]?.l || "Normal"}</span><span>tap to open on its launchpad</span></div>
     <div style={{ background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
       {d.tokens.slice(0, 25).map(t => rowOf(t))}
       {!d.tokens.length && <div style={{ ...muted, padding: 14, textAlign: "center" }}>waiting for the next launch…</div>}
     </div>
   </div>;
-  function rowOf(t, revival = false) { const [label, c] = TAG[t.tag] || TAG.weak; const dim = t.tag === "mayhem" || t.tag === "copy"; const initial = (t.ticker || t.name || "?").slice(0, 2).toUpperCase(); return <a key={t.ca} href={`https://pump.fun/coin/${t.ca}`} target="_blank" rel="noopener" style={{ display: "grid", gridTemplateColumns: "56px 1fr 100px 68px", gap: 12, alignItems: "center", padding: "9px 12px", borderTop: `1px solid ${T.bd}`, opacity: dim ? .45 : 1, color: "inherit", textDecoration: "none" }}>
+  function rowOf(t, revival = false) { const [label, c] = TAG[t.tag] || TAG.weak; const dim = t.tag === "mayhem" || t.tag === "copy"; const initial = (t.ticker || t.name || "?").slice(0, 2).toUpperCase(); return <a key={t.ca} href={t.url || `https://pump.fun/coin/${t.ca}`} target="_blank" rel="noopener" style={{ display: "grid", gridTemplateColumns: "56px 1fr 100px 68px", gap: 12, alignItems: "center", padding: "9px 12px", borderTop: `1px solid ${T.bd}`, opacity: dim ? .45 : 1, color: "inherit", textDecoration: "none" }}>
         <TokenImg src={t.image} ca={t.ca} label={initial} size={56} T={T} />
         <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}><span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name || t.ca.slice(0, 6)}</span><span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{t.ticker}</span></div>
+          <div style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}><span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name || t.ca.slice(0, 6)}</span><span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{t.ticker}</span>{t.chain === "robinhood" && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".05em", color: "#e0b3ff", background: "#e0b3ff1a", padding: "1px 5px", borderRadius: 4, whiteSpace: "nowrap" }}>RH</span>}</div>
           <div style={{ ...muted, fontFamily: M, fontSize: 12, marginTop: 2 }}>{ago(now - t.createdAt)} · {kfmt(t.mcapUsd)} · {t.buyers} buyers{t.copies ? ` · ${t.copies} copies` : ""}{revival && t.revival ? ` · ${t.revival.buyers5m} in 5m vs ${t.revival.baseline5m}` : ""}{t.why ? ` · ${t.why.toLowerCase().replace(/_/g, " ")}` : ""}</div>
         </div>
         <Spark v={t.spark} T={T} w={100} h={30} />

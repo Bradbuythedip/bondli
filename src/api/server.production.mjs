@@ -8031,12 +8031,21 @@ app.get("/api/radar/live", (req, res) => {
   const hour = all.filter(t => now - (t.createdAt || 0) < 3600_000);
   const aggression = Math.max(0, Math.min(3, parseInt(req.query.aggression || "2") || 2));
   const loose = aggression >= 3;
+  // Where a row opens: the launchpad the token lives on. PONS_TOKEN_URL can override the PONS pattern.
+  const ponsUrl = (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}");
+  const linkFor = t => t._source === "pons" ? ponsUrl.replace("{ca}", t.ca) : `https://pump.fun/coin/${t.ca}`;
   const row = t => {
     const score = t._apeScore || 0;
     const buyers = t.uniqueBuyers?.size || 0, ageS = (now - (t.createdAt || now)) / 1000, mc = t.mcapUsd || 0;
+    const pons = t._source === "pons";
     // The verdict is the bot's own judge at this aggression, not a score threshold: "buy zone" means it would enter.
     let verdict = null, tag;
-    if (t._mayhem) tag = "mayhem"; else if (t._copyOf) tag = "copy";
+    if (pons) {
+      // The PONS feed judges its own tokens with the same gates; the row reads what it last decided.
+      if (ageS < 60) tag = "new"; else if (buyers === 0) tag = "nobuyers"; else if (buyers < 2 || (t.buys || 0) < 3) tag = "fewbuyers";
+      else { const qf = t._lastQf || null; verdict = judgeToken({ ...t, uniqueBuyers: { size: buyers } }, qf, t._lastDyn || null, aggression); tag = verdict.enter ? "hot" : verdict.gate === "rug" ? "rug" : verdict.gate === "viability" && verdict.reasons.includes("SCORE_BELOW_FLOOR") ? "weak" : verdict.gate === "window" || verdict.gate === "confidence" ? "close" : "weak"; }
+    }
+    else if (t._mayhem) tag = "mayhem"; else if (t._copyOf) tag = "copy";
     else if (ageS < (loose ? 20 : 30)) tag = "new";
     else if (buyers === 0) tag = "nobuyers";
     else if (!passesTraderBaseFilter(t, now, loose)) tag = buyers < (loose ? 2 : 3) ? "fewbuyers" : mc < (loose ? 2500 : 4000) ? "small" : "fewbuyers";
@@ -8045,13 +8054,16 @@ app.get("/api/radar/live", (req, res) => {
       verdict = judgeToken(t, qf, scoreDynamics.get(t.ca) || null, aggression);
       tag = verdict.enter ? "hot" : verdict.gate === "rug" ? "rug" : verdict.gate === "viability" && verdict.reasons.includes("SCORE_BELOW_FLOOR") ? "weak" : verdict.gate === "window" ? "close" : verdict.gate === "confidence" ? "close" : "weak";
     }
-    return { ca: t.ca, name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, revival: t._revival || null, graduated: !!t.graduated };
+    return { ca: t.ca, chain: pons ? "robinhood" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, revival: t._revival || null, graduated: !!t.graduated };
   };
-  const rows = all.filter(t => now - (t.createdAt || 0) < 30 * 60_000).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0)).slice(0, limit).map(row);
+  // Robinhood Chain launches sit in the same list, newest first, marked by chain.
+  const ponsTokens = velocityHub?.ponsFeed ? [...velocityHub.ponsFeed.tokens.values()] : [];
+  const both = [...all, ...ponsTokens];
+  const rows = both.filter(t => now - (t.createdAt || 0) < 30 * 60_000).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0)).slice(0, limit).map(row);
   const revivals = all.filter(t => t._revival && now - t._revival.at < 10 * 60_000).sort((x, y) => (y._revival.at || 0) - (x._revival.at || 0)).slice(0, 10).map(row);
   res.json({
     ts: now, solPrice: solUsdPrice, online: radar.online, aggression,
-    hour: { launches: hour.length, mayhem: hour.filter(t => t._mayhem).length, copies: hour.filter(t => t._copyOf).length, hot: rows.filter(r => r.tag === "hot").length },
+    hour: { launches: hour.length + ponsTokens.filter(t => now - (t.createdAt || 0) < 3600_000).length, robinhood: ponsTokens.filter(t => now - (t.createdAt || 0) < 3600_000).length, mayhem: hour.filter(t => t._mayhem).length, copies: hour.filter(t => t._copyOf).length, hot: rows.filter(r => r.tag === "hot").length },
     bots: velocityHub ? velocityHub.list().length : null,
     tokens: rows, revivals,
   });
