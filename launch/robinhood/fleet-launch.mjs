@@ -27,6 +27,16 @@ const argv = process.argv.slice(2); const cmd = argv[0] || "help";
 const arg = (k, d) => { const i = argv.indexOf(`--${k}`); if (i < 0) return d; const v = argv[i + 1]; return v == null || v.startsWith("--") ? true : v; };
 const flag = (k) => argv.includes(`--${k}`);
 const die = (m, code = 1) => { console.error(`\nSTOP: ${m}`); process.exit(code); };
+/** A number from the command line or the environment. A bare `--budget` (no value) used to read as
+ *  `true` and then as the number 1: a typo became a 1 ETH budget. It is now refused. */
+const num = (k, d) => {
+  const v = arg(k, undefined);
+  if (v === undefined) { const n = Number(d); if (!Number.isFinite(n)) die(`${k} is not a number: ${d}`); return n; }
+  if (v === true) die(`--${k} needs a value (e.g. --${k} 0.05)`);
+  const n = Number(v);
+  if (!Number.isFinite(n)) die(`--${k} must be a number, got "${v}"`);
+  return n;
+};
 
 function loadEnv() { try { for (const line of fs.readFileSync(path.join(here, ".env"), "utf8").split("\n")) { const m = line.match(/^\s*([A-Z_0-9]+)\s*=\s*(.*)$/); if (m && process.env[m[1]] == null) process.env[m[1]] = m[2].trim().replace(/^["']|["']$/g, ""); } } catch {} }
 const env = (k, d) => process.env[`FLEET_${k}`] ?? d;
@@ -40,10 +50,10 @@ const fmt = (n, d = 5) => (Number(n) >= 0 ? "+" : "") + Number(n).toFixed(d);
 function launchConfigFromEnv() {
   return {
     tokenParams: { name: env("TOKEN_NAME", "Token"), symbol: env("TOKEN_SYMBOL", "TKN"), logo: env("LOGO", ""), description: env("DESCRIPTION", ""), twitter: env("TWITTER", ""), telegram: env("TELEGRAM", ""), discord: env("DISCORD", ""), website: env("WEBSITE", ""), farcaster: env("FARCASTER", ""), creatorTaxBps: Number(env("CREATOR_TAX_BPS", 0)), buybackEnabled: env("BUYBACK_ENABLED", "1") !== "0" },
-    budgetEth: Number(arg("budget", env("BUDGET_ETH", "0.05"))),
-    devBuyEth: arg("dev-buy", env("DEV_BUY_ETH", null)) != null ? Number(arg("dev-buy", env("DEV_BUY_ETH"))) : undefined,
+    budgetEth: num("budget", env("BUDGET_ETH", "0.05")),
+    devBuyEth: (arg("dev-buy", undefined) !== undefined || env("DEV_BUY_ETH", null) != null) ? num("dev-buy", env("DEV_BUY_ETH", null)) : undefined,
     fleetConfig: {
-      durationMin: Number(arg("minutes", env("DURATION_MIN", "60"))), radarScore: Number(arg("score", env("RADAR_SCORE", "50"))), slippagePct: Number(env("SLIPPAGE_PCT", "15")), apeHoldMin: Number(env("APE_HOLD_MIN", "5")),
+      durationMin: num("minutes", env("DURATION_MIN", "60")), radarScore: num("score", env("RADAR_SCORE", "50")), slippagePct: Number(env("SLIPPAGE_PCT", "15")), apeHoldMin: Number(env("APE_HOLD_MIN", "5")),
       autoRug: { enabled: env("AUTO_RUG", "1") !== "0", droughtSec: Number(env("AUTO_RUG_DROUGHT_SEC", "45")), minWaitSec: Number(env("AUTO_RUG_MIN_WAIT_SEC", "60")) },
       profitConfig: env("PLATFORM_WALLET") && Number(env("CUT_PERCENT", "0")) > 0 ? { platformWallet: env("PLATFORM_WALLET"), cutPercent: Number(env("CUT_PERCENT")) } : null,
     },
@@ -96,8 +106,9 @@ function warRoom(ft, key, onClose) {
 
 async function cmdSim() {
   const scenario = String(arg("scenario", "organic")); if (!SCENARIOS[scenario]) die(`unknown scenario ${scenario}; one of ${Object.keys(SCENARIOS).join(", ")}`);
-  const runs = Number(arg("runs", 1)), seed0 = Number(arg("seed", 1)), quiet = flag("quiet") || runs > 1, json = flag("json");
-  const mode = String(arg("mode", "create")); const budget = Number(arg("budget", "0.3")); const minutes = Number(arg("minutes", "12"));
+  loadEnv(); // the simulator reads the same .env as the chain commands, so FLEET_SIM_* and the token apply
+  const runs = num("runs", 1), seed0 = num("seed", 1), quiet = flag("quiet") || runs > 1, json = flag("json");
+  const mode = String(arg("mode", "create")); const budget = num("budget", "0.3"); const minutes = num("minutes", "12");
   const rows = [];
   for (let i = 0; i < runs; i++) {
     const seed = seed0 + i;
@@ -109,7 +120,7 @@ async function cmdSim() {
     let r;
     if (mode === "ape") {
       const dev = v.createWallet(); v.faucet(dev.address, 1); await v.launch({ from: dev, params: { name: "Their token", symbol: "THEIRS" }, devBuyWei: ethToWei(0.05) }); await v.sleep(60_000);
-      r = await ft.launch({ master, budgetEth: budget, mode: "ape", token: v.token, fleetConfig: { ...cfg.fleetConfig, durationMin: minutes, radarScore: Number(arg("score", 70)), apeHoldMin: Number(arg("hold", 4)) } });
+      r = await ft.launch({ master, budgetEth: budget, mode: "ape", token: v.token, fleetConfig: { ...cfg.fleetConfig, durationMin: minutes, radarScore: num("score", 70), apeHoldMin: num("hold", 4) } });
     } else r = await ft.launch({ master, budgetEth: budget, mode: "create", tokenParams: cfg.tokenParams, devBuyEth: cfg.devBuyEth, fleetConfig: { ...cfg.fleetConfig, durationMin: minutes } });
     if (!r.ok) die(`sim launch failed: ${r.error}`);
     if (!quiet) warRoom(ft, r.session.token || r.session.id, () => ft.close(r.session.token || r.session.id));
@@ -190,6 +201,16 @@ async function runOnChain(mode) {
     console.log(`dry run ok: ${r.fn} via ${r.viaRouter ? "router" : "factory"}, value ${toEth(r.value)} ETH (fee ${toEth(terms.launchFeeWei)} + dev buy ${devBuy}), gas ${r.gas}${r.simulatedToken ? `\nthe launch would create ${r.simulatedToken}${r.expectedToken ? " (matches the mined address)" : ""}` : ""}\nstruct: ${JSON.stringify(r.struct)}`);
     await v.stop(); return process.exit(0);
   }
+  // --dry-run used to be honoured only for `launch`, so `ape --dry-run` funded wallets and bought.
+  if (dryRun) {
+    const a = await v.attach(token);
+    if (!a.ok) die(`dry run: ${a.error}`);
+    const info = await v.curveInfo();
+    const scout = +(cfg.budgetEth * 0.3).toFixed(6);
+    const q = await v.quoteBuy(ethToWei(scout), master);
+    console.log(`dry run ok: curve ${a.curve}${a.graduated ? " GRADUATED (the fleet would refuse it)" : ""}\ncurve now: mcap ${info?.mcapEth?.toFixed(5)} ETH, ${((info?.progress || 0) * 100).toFixed(1)}% to graduation, fee ${info?.feeBps} bps + tax ${info?.creatorTaxBps} bps${q.ok ? `\na ${scout} ETH buy would take ${Math.round(q.tokensOut).toLocaleString()} tokens at an opening tax of ${q.snipeTaxBps} bps` : `\nquote failed: ${q.error}`}\nnothing was sent; no wallet was funded.`);
+    await v.stop(); return process.exit(0);
+  }
   if (!flag("yes")) { const a = await ask(`Type ${mode === "ape" ? "APE" : "LAUNCH"} to fund ${cfg.budgetEth} ETH of fleet on chain ${init.chainId}: `); if (a !== (mode === "ape" ? "APE" : "LAUNCH")) die("not confirmed"); }
   const ft = new FleetTrader(v, { log: (m) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${m}`) });
   const st = readState(); const entry = { sessionId: null, chainId: init.chainId, mode, token, master: master.address, walletKeys: [], startedAt: Date.now(), status: "starting" };
@@ -198,9 +219,31 @@ async function runOnChain(mode) {
   const r = await ft.launch({ master, budgetEth: cfg.budgetEth, mode, token, tokenParams, devBuyEth: cfg.devBuyEth, fleetConfig: cfg.fleetConfig, onWallets: (keys) => { entry.walletKeys = keys; entry.status = "funded"; save(); console.log(`[STATE] ${keys.length} wallet keys saved to ${STATE_FILE()} (chmod 600). Lose this file and you lose the fleet's ETH.`); } });
   if (!r.ok) die(r.error);
   entry.sessionId = r.sessionId; save();
+  // Persist the token the moment the launch lands, not on the next 10-second tick: a crash in between
+  // left a token `close` could not find and therefore could not sell.
+  ft.on("phase", (p) => { if (p.token && entry.token !== p.token) { entry.token = p.token; entry.status = p.phase; save(); } });
   const key = r.session.token || r.session.id;
-  const finish = async () => { try { if (r.session.phase !== "closed") await ft.close(r.session.token || r.session.id); } catch (e) { console.log(`close: ${e.message}`); } const rep = await ft.report(r.session.token || r.session.id); entry.token = r.session.token; entry.status = rep.phase; entry.report = rep; entry.endedAt = Date.now(); save(); console.log(""); printReport(rep, null); console.log(`state: ${STATE_FILE()}`); await v.stop(); process.exit(0); };
-  process.on("SIGINT", () => { console.log("\nSIGINT: closing every wallet and sweeping…"); finish(); });
+  // One finish, however many callers ask for it. It used to run twice — the war-room `close` or SIGINT
+  // started one, the strategy loop then returned and the tail called it again — and the second call
+  // process.exit(0)'d while the first was still selling and sweeping, leaving tokens and ETH behind.
+  let finishing = null;
+  const finish = () => (finishing ||= (async () => {
+    try { await ft.close(key); } catch (e) { console.log(`close: ${e.message}`); }
+    try { const p = ft.pending(key); if (p) await p; } catch {}
+    let rep = null; try { rep = await ft.report(key); } catch (e) { console.log(`report: ${e.message}`); }
+    entry.token = r.session.token; entry.status = rep?.phase || r.session.phase; if (rep) entry.report = rep; entry.endedAt = Date.now(); save();
+    if (rep) { console.log(""); printReport(rep, null); }
+    console.log(`state: ${STATE_FILE()}`);
+    await v.stop(); process.exit(0);
+  })());
+  let sigints = 0;
+  process.on("SIGINT", () => {
+    if (++sigints > 1) { console.log("\nsecond Ctrl-C: leaving now. The wallet keys are in the state file; run `close` to finish selling and sweeping."); process.exit(130); }
+    console.log("\nSIGINT: selling every wallet and sweeping before exit (Ctrl-C again to abandon)…"); finish();
+  });
+  // A stray rejection anywhere in the fleet used to take the process down mid-launch with the fleet
+  // still holding. Close properly instead.
+  process.on("unhandledRejection", (e) => { console.log(`\nunhandled error: ${e?.message || e}\nclosing every wallet and sweeping…`); finish(); });
   const closeRoom = warRoom(ft, key, finish);
   const tick = setInterval(() => { entry.token = r.session.token; entry.status = r.session.phase; save(); }, 10_000);
   await ft.wait(r.session);

@@ -61,8 +61,12 @@ export class FleetTrader extends EventEmitter {
     if (!(budgetEth > 0)) return { ok: false, error: "budgetEth must be positive" };
     const master = opts.master; if (!master?.address) return { ok: false, error: "no master wallet" };
     const venue = this.venue; const log = this.log; const rng = this.rng;
-    const txCost = cfg.txCostEth || venue.gasEth?.("buy") || 0.00002;
-    const gasBuffer = Math.max(0.0003, txCost * cfg.gasTxsPerWallet);
+    // What a send actually costs the wallet: gasLimit × the fee the venue will send with, not the
+    // cached gas price times a typical gasUsed. A wallet funded on the smaller number cannot pay for
+    // its own sell when the rug comes, and the node refuses the transaction before it is mined.
+    const sellCost = venue.sendCostEth ? await venue.sendCostEth("sell") : (venue.gasEth?.("sell") || 0.00002);
+    const txCost = cfg.txCostEth || (venue.sendCostEth ? await venue.sendCostEth("buy") : venue.gasEth?.("buy")) || 0.00002;
+    const gasBuffer = Math.max(0.0003, txCost * cfg.gasTxsPerWallet, sellCost * 3);
     const masterBal = toEth(await venue.ethBalance(master.address));
     const terms = mode === "create" ? await venue.launchTerms() : null;
     const launchFee = terms ? toEth(terms.launchFeeWei) : 0;
@@ -103,7 +107,7 @@ export class FleetTrader extends EventEmitter {
 
     const session = {
       id: opts.sessionId || `fleet-${Date.now().toString(36)}`, mode, token: opts.token || null, tokenParams: opts.tokenParams || null, curve: null, master, devWallet, fleetWallets, budgetEth, fleetBudget, devBuyEth, launchFee, gasBuffer,
-      fleetConfig: cfg, config: cfg, minTrade: cfg.minTradeEth, gasReserve: Math.max(0.0001, txCost * 4), startTime: venue.now(), launchedAt: 0, phase: "starting", running: true, tradeCount: 0, totalEthSpent: 0, totalEthRecovered: 0, feesEth: 0, gasEth: 0,
+      fleetConfig: cfg, config: cfg, minTrade: cfg.minTradeEth, gasReserve: Math.max(0.0001, txCost * 2, sellCost * 2), sellCost, startTime: venue.now(), launchedAt: 0, phase: "starting", running: true, tradeCount: 0, totalEthSpent: 0, totalEthRecovered: 0, feesEth: 0, gasEth: 0,
       _profitConfig: cfg.profitConfig, _isApe: mode === "ape", rng, clock: this.clock, sleep: (ms) => venue.sleep(ms), log, venue, masterStartEth: masterBal, exitReason: null, walletKeys, events: [],
     };
     const key = session.token || session.id;
@@ -296,9 +300,10 @@ export class FleetTrader extends EventEmitter {
     // the game state can end volume too: a SELL_NOW that holds for 20 s means the market is leaving
     const sellNowWatch = (async () => { let since = 0; while (volumeEngine.running && session.running) { await session.sleep(2000); const gs = session.gameState.refresh(); if (gs.signal === "SELL_NOW") { since += 2000; if (since >= 20_000) { log(`[FLEET] SELL_NOW held 20s — stopping volume, exiting into what demand is left`); volumeEngine.stop(); autoRug.stop(); session.exitReason ||= "sell_now"; return; } } else since = 0; } })();
     await Promise.race([volumeEngine.start(), autoRug.start()]);
-    volumeEngine.stop();
-    if (autoRug.triggered) { await session._rugDone; }
-    else autoRug.stop();
+    volumeEngine.stop(); autoRug.stop();
+    // Whoever started a rug — the drought, or a close from the war room — this phase does not end
+    // until it has sold and swept. Awaiting only the auto-rug let a manual close race the process exit.
+    if (session._rugDone) await session._rugDone;
     await sellNowWatch;
   }
 
@@ -308,7 +313,15 @@ export class FleetTrader extends EventEmitter {
     const gs = session.gameState?.alive ? session.gameState.refresh() : null;
     const decision = session._devSellCtrl.shouldDevSell("buy", d.eth || 0, true, gs, session.curveInfo?.quoteReserve || 3);
     if (!decision?.shouldSell) return;
-    (async () => { await session.sleep(decision.delay); if (!session.running) return; const r = await this._executeSell(session, session.devWallet, decision.sellPct, "dev-profit"); if (r.ok) { session._devSellCtrl.recordSell(decision.sellPct); session.log(`[DEV-SELL] dev took ${(decision.sellPct * 100).toFixed(1)}% → ${r.ethOut.toFixed(5)} ETH (total ${session._devSellCtrl.summary().totalSoldPct}%)`); } })();
+    // Fire and forget, so it must never reject: an RPC error here was an unhandled rejection, which
+    // takes the whole process down mid-launch with the fleet still holding.
+    (async () => {
+      try {
+        await session.sleep(decision.delay); if (!session.running) return;
+        const r = await this._executeSell(session, session.devWallet, decision.sellPct, "dev-profit");
+        if (r.ok) { session._devSellCtrl.recordSell(decision.sellPct); session.log(`[DEV-SELL] dev took ${(decision.sellPct * 100).toFixed(1)}% → ${r.ethOut.toFixed(5)} ETH (total ${session._devSellCtrl.summary().totalSoldPct}%)`); }
+      } catch (e) { session.log(`[DEV-SELL] skipped: ${e.message}`); }
+    })();
   }
 
   /** GameState-adjusted sell rounds for one wallet (the fallback exit). */
@@ -338,9 +351,17 @@ export class FleetTrader extends EventEmitter {
   /** Every wallet sells everything at once, then the ETH is swept home. The auto-rug's action, and close()'s. */
   async rugAll(session, why = "rug") {
     const { venue, log } = session;
+    if (session._rugDone) return session._rugDone; // one rug per session; a close and the drought can both ask
     session._rugDone = (async () => {
       session.running = false; session._volumeEngine?.stop(); session.gameState?.stop();
       const holders = [session.devWallet, ...session.fleetWallets.filter(w => w.address !== session.devWallet.address)];
+      // A wallet that spent itself down to less than one sell cannot sell. Top it up from the master
+      // first: the tokens are worth more than the gas, and without this its position is simply stuck.
+      const need = (session.sellCost || 0) * 2;
+      if (need > 0) for (const w of holders) {
+        if (w.address === lc(session.master.address)) continue;
+        try { if ((await venue.tokenBalance(w.address)) > 0n && toEth(await venue.ethBalance(w.address)) < need) { const r = await venue.transfer(session.master, w.address, ethToWei(need)); log(`[${why.toUpperCase()}] ${w.role} topped up ${need.toFixed(6)} ETH to afford its sell${r.ok ? "" : `: ${r.error}`}`); } } catch (e) { log(`[${why.toUpperCase()}] ${w.role} top-up failed: ${e.message}`); }
+      }
       const results = await Promise.allSettled(holders.map(async (w) => { const r = await this._executeSell(session, w, 1, why); if (r.ok) log(`[${why.toUpperCase()}] ${w.role} sold → ${r.ethOut.toFixed(5)} ETH`); else if (r.error !== "no tokens") log(`[${why.toUpperCase()}] ${w.role} sell failed: ${r.error}`); return r; }));
       const sold = results.filter(r => r.status === "fulfilled" && r.value.ok).length;
       // a sell can be refused (graduated, slippage): try once more, sequentially and wider
@@ -379,22 +400,30 @@ export class FleetTrader extends EventEmitter {
 
   async _endOfStrategy(session) { session.endedAt = session.venue.now(); }
 
-  /** Close a session: sell everything, sweep, report. */
+  /** Close a session: sell everything, sweep, report.
+   *  One close per session, and every caller awaits the same one. It used to throw "already closing"
+   *  on the second call, which let the CLI's second finish() swallow the error and exit the process
+   *  while the first close was still selling and sweeping — the fleet's ETH and tokens stayed put. */
   async close(key) {
     const session = this.sessions.get(key); if (!session) throw new Error(`no session ${key}`);
-    if (session.phase === "closing") throw new Error("already closing");
+    if (session._closing) return session._closing;
     if (session.phase === "closed") return session._closeResult;
-    session.running = false; const prev = session.phase; session.phase = "closing"; session.exitReason ||= prev === "holding" ? "manual_close" : "close";
-    this.emit("phase", { token: session.token, phase: "closing" });
-    session._volumeEngine?.stop(); session._autoRug?.stop(); session._orchestrator?.stop();
-    await session.sleep(500);
-    if (session._rugDone) await session._rugDone; else await this.rugAll(session, "close");
-    session.gameState?.stop();
-    const masterBalance = toEth(await session.venue.ethBalance(session.master.address));
-    session.phase = "closed";
-    session._closeResult = { trades: session.tradeCount, wallets: session.fleetWallets.length, ethSpent: session.totalEthSpent, ethRecovered: session.totalEthRecovered, netProfit: masterBalance - session.masterStartEth, masterBalance, platformCut: session.skimmedEth || 0 };
-    return session._closeResult;
+    session._closing = (async () => {
+      session.running = false; const prev = session.phase; session.phase = "closing"; session.exitReason ||= prev === "holding" ? "manual_close" : "close";
+      this.emit("phase", { token: session.token, phase: "closing" });
+      session._volumeEngine?.stop(); session._autoRug?.stop(); session._orchestrator?.stop();
+      await session.sleep(500);
+      if (session._rugDone) await session._rugDone; else await this.rugAll(session, "close");
+      session.gameState?.stop();
+      const masterBalance = toEth(await session.venue.ethBalance(session.master.address));
+      session.phase = "closed";
+      session._closeResult = { trades: session.tradeCount, wallets: session.fleetWallets.length, ethSpent: session.totalEthSpent, ethRecovered: session.totalEthRecovered, netProfit: masterBalance - session.masterStartEth, masterBalance, platformCut: session.skimmedEth || 0 };
+      return session._closeResult;
+    })();
+    return session._closing;
   }
+  /** Whatever close/rug is in flight for this session, for a caller that must not exit before it lands. */
+  pending(key) { const s = this.sessions.get(key); return s ? (s._closing || s._rugDone || null) : null; }
   async closeAll() { const out = {}; for (const k of [...this.sessions.keys()]) { try { out[k] = await this.close(k); } catch (e) { out[k] = { error: e.message }; } } return out; }
   stop(key) { const s = this.sessions.get(key); if (s) s.running = false; }
 
