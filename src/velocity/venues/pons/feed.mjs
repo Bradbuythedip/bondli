@@ -6,7 +6,7 @@
 // The quote asset is ETH: every "solPrice" field on this venue is the ETH price in USD.
 import { JsonRpcProvider, Contract } from "ethers";
 import { Feed } from "../../core/feed.mjs";
-import { FACTORY, TOPICS, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, SNIPE_TAX_WINDOW_MS, decodeLog, mcapQuote, curveProgress, toEth, toTokens } from "./chain.mjs";
+import { FACTORY, FACTORY_ABI, TOPICS, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, SNIPE_TAX_WINDOW_MS, decodeLog, mcapQuote, curveProgress, toEth, toTokens } from "./chain.mjs";
 
 /** The chain, behind four calls, so a test can fake it. */
 export function ethersRpc(rpcUrl = process.env.PONS_RPC_URL || DEFAULT_RPC_URL) {
@@ -24,6 +24,14 @@ export function ethersRpc(rpcUrl = process.env.PONS_RPC_URL || DEFAULT_RPC_URL) 
       const c = new Contract(token, ERC20_ABI, provider);
       const [name, symbol] = await Promise.all([c.name().catch(() => ""), c.symbol().catch(() => "")]);
       return { name, symbol };
+    },
+    /** A launch the feed did not see (it happened before this process started): ask the factory. */
+    async launchInfo(token) {
+      const f = new Contract(FACTORY, FACTORY_ABI, provider);
+      const r = await f.getLaunchedToken(token);
+      const curve = String(r.curve || r[1] || "").toLowerCase();
+      if (!curve || /^0x0+$/.test(curve)) return null;
+      return { token: String(token).toLowerCase(), curve, deployer: String(r.deployer || r[2] || "").toLowerCase(), pairToken: String(r.pairToken || r[3] || "").toLowerCase(), graduationThreshold: toEth(r.graduationThreshold ?? r[5] ?? 0n), graduated: !!(r.graduated ?? r[6]) };
     },
   };
 }
@@ -103,6 +111,27 @@ export class PonsFeed extends Feed {
   }
 
   token(ca) { return this.tokens.get(String(ca).toLowerCase()) || null; }
+
+  /** A position opened before this process started is watched for a token the feed never saw launch:
+   *  it is adopted from the factory on the next poll, so the position gets its price and its exits. */
+  watch(id) {
+    const ca = String(id).toLowerCase();
+    super.watch(ca);
+    if (!this.tokens.has(ca)) (this._adopt = this._adopt || new Set()).add(ca);
+  }
+  unwatch(id) { super.unwatch(String(id).toLowerCase()); }
+  async _adoptWatched(now) {
+    if (!this._adopt?.size || !this.rpc.launchInfo) return;
+    for (const ca of [...this._adopt]) {
+      this._adopt.delete(ca);
+      try {
+        const info = await this.rpc.launchInfo(ca);
+        if (!info) { this.adoptFailures = (this.adoptFailures || 0) + 1; continue; }
+        const t = this.apply({ kind: "launch", ...info, block: null, tx: null }, now - SNIPE_TAX_WINDOW_MS - 1);
+        if (t) { t._ageUnknown = true; t._adopted = true; if (info.graduated) { t.graduated = true; t._curvePct = 1; } await this._hydrate(t); }
+      } catch (err) { this.adoptFailures = (this.adoptFailures || 0) + 1; this.lastHydrateError = `adopt ${ca.slice(0, 10)}: ${err.message}`.slice(0, 200); this._adopt.add(ca); }
+    }
+  }
 
   /** Apply one decoded log. Exposed for tests and replays. */
   apply(rec, now = this.clock()) {
@@ -185,6 +214,7 @@ export class PonsFeed extends Feed {
     const from = this._block, to = Math.min(head, from + 2000);
     const launches = await this.rpc.logs({ address: FACTORY, topics: [[TOPICS.TokenLaunched, TOPICS.PoolGraduated]], fromBlock: from, toBlock: to });
     for (const l of launches) { const r = decodeLog(l); if (r?.kind === "launch") this.apply(r, now); else if (r?.kind === "graduated") { const t = this.tokens.get(r.token); if (t) { t.graduated = true; t._curvePct = 1; } } }
+    await this._adoptWatched(now);
     const curves = [...this.byCurve.keys()];
     const touched = new Set();
     if (curves.length) {
@@ -225,5 +255,5 @@ export class PonsFeed extends Feed {
   }
   async stop() { this.running = false; for (const t of this._timers) clearTimeout(t); this._timers = []; this.markHealth(false, "stopped"); }
   /** The base status plus what a poll is doing: how many, how many failed, what the last failure said. */
-  status() { return { ...super.status(), polls: this.polls, candidates: this.candidates, ticks: this.ticks, watched: this.watched.size, block: this._block, errors: this.errors, lastError: this.lastError, hydrateErrors: this.hydrateErrors, lastHydrateError: this.lastHydrateError, skippedQuote: this.skippedQuote || 0 }; }
+  status() { return { ...super.status(), polls: this.polls, candidates: this.candidates, ticks: this.ticks, watched: this.watched.size, pendingAdopt: this._adopt?.size || 0, adoptFailures: this.adoptFailures || 0, block: this._block, errors: this.errors, lastError: this.lastError, hydrateErrors: this.hydrateErrors, lastHydrateError: this.lastHydrateError, skippedQuote: this.skippedQuote || 0 }; }
 }

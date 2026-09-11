@@ -113,3 +113,22 @@ test("T12: the PONS feed reports the dev's share of supply from the dev's own cu
     { side: "buy", quote: 0.5, tokens: 150_000_000, wallet: "0xdev", time: now - 60_000 }, { side: "buy", quote: 0.05, tokens: 5_000_000, wallet: "0xa", time: now - 30_000 }, { side: "sell", quote: 0.1, tokens: 30_000_000, wallet: "0xdev", time: now - 10_000 } ] };
   assert.equal(quickFeatures(t, now)._rg_devHoldPct, 0.12);
 });
+
+test("T12: a token watched before the feed saw it launch is adopted from the factory and ticks", async () => {
+  const { PonsFeed } = await import("../../src/velocity/venues/pons/feed.mjs");
+  let now = 1_800_000_000_000; const clock = () => now;
+  const TOKEN = addr(0x71), CURVE = addr(0x72);
+  const rpc = { blockNumber: async () => 5000, logs: async () => [], curveInfo: async () => ({ quoteReserve: 3.4, tokenReserve: 9e8, realQuoteReserve: 0.4, feeBps: 100, creatorTaxBps: 0, graduationThreshold: 4, native: true }), tokenMeta: async () => ({ name: "Old Cat", symbol: "OCAT" }),
+    launchInfo: async (t) => t === TOKEN ? { token: TOKEN, curve: CURVE, deployer: addr(0x73), pairToken: addr(0), graduationThreshold: 4, graduated: false } : null };
+  const feed = new PonsFeed({ rpc, pollMs: 1000, ethPrice: 2000, clock });
+  const events = []; feed.on("event", e => { if (e.kind !== "feed_health") events.push(e); });
+  feed.watch(TOKEN); // the engine restarted with this position open; the feed never saw its launch
+  assert.equal(feed.tokens.size, 0); assert.equal(feed.status().pendingAdopt, 1);
+  await feed.pollOnce();
+  const t = feed.token(TOKEN);
+  assert.ok(t && t._adopted, "adopted from the factory"); assert.equal(t.name, "Old Cat"); assert.equal(t.curve, CURVE);
+  const tick = events.find(e => e.kind === "tick" && e.id === TOKEN);
+  assert.ok(tick, "the position gets a price on the first poll"); assert.ok(tick.payload.mcapUsd > 0); assert.equal(tick.payload.curve.address, CURVE);
+  assert.equal(events.filter(e => e.kind === "candidate" && e.id === TOKEN).length, 0, "an adopted token of unknown age is priced, not judged as a launch");
+  assert.equal(feed.status().pendingAdopt, 0);
+});
