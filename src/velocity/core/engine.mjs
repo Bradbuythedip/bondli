@@ -70,7 +70,7 @@ export class Engine extends EventEmitter {
     this._holdings = {}; // venue -> { at, list: [{ instrument, qty }] } as the venue last reported them
     this._lastHoldingsReconcile = 0;
     this._lastSweepTry = new Map();
-    this.stats = statsFromOutcomes(this.ledger.query({ kind: "outcome", limit: 5000 }));
+    this.stats = this.modeStats();
     this.checksums = checksumFiles();
     this.verdict = { throttle: 1, halt: false, reasons: [] };
     this.running = false;
@@ -155,6 +155,34 @@ export class Engine extends EventEmitter {
 
   // ── wallet as bankroll (bankroll_source: wallet) ──
   walletMode() { return this.env.bankroll_source === "wallet"; }
+
+  /** Close the emptied token account and take its rent back. Opening one costs 0.00203928 SOL on
+   *  every new mint, about $0.41, which is the largest fixed cost of a round trip and is simply left
+   *  behind unless it is claimed. Deliberately not awaited: the engine queue also drives every open
+   *  position's exit checks, and no stop loss should wait on a housekeeping transaction. */
+  reclaimRent(venue, instrument) {
+    const router = this.venues[venue]?.liveRouter;
+    if (!router?.closeTokenAccount || this.store.venueMode(venue) !== "live") return;
+    Promise.resolve()
+      .then(() => router.closeTokenAccount(instrument))
+      .then(r => {
+        if (!r?.closed) return;
+        this.ledger.append({ kind: "rent", venue, instrument, sol: r.reclaimed_sol, accounts: r.closed, venue_ref: r.sig || null, note: "token account closed, rent reclaimed" });
+        this.log("info", `rent back ${r.reclaimed_sol} SOL from ${instrument.slice(0, 8)}`);
+        this.refreshWallet().catch(() => {});
+      })
+      .catch(err => this.log("warn", `rent reclaim ${instrument.slice(0, 8)}: ${err.shortMessage || err.message}`));
+  }
+
+  /** Realized statistics, never mixed across modes. A paper fill is a model's opinion and a live fill
+   *  is a receipt; pooling them let a run of simulated wins size a real bet. Each venue learns from
+   *  outcomes booked in the mode it is in now, so paper still calibrates itself and live only ever
+   *  hears from live. */
+  modeStats() {
+    const outs = this.ledger.query({ kind: "outcome", limit: 5000 })
+      .filter(o => o && o.venue && !!o.paper === (this.store.venueMode(o.venue) === "paper"));
+    return statsFromOutcomes(outs);
+  }
 
   /** The last hundred closes, grouped by how they ended: where the money went. */
   review(limit = 100) {
@@ -382,7 +410,7 @@ export class Engine extends EventEmitter {
     const gov = this.governorContext(venue);
     const t0 = performance.now();
     if (event.kind === "candidate" && (this.disqualified.get(event.id) || 0) > event.t_observed) return;
-    const decisions = v.runner.run(event, { governor: gov, stats: this.stats, weights: { pumpfun: this.weights.current().weights } });
+    const decisions = v.runner.run(event, { governor: gov, stats: this.stats, minStakeUsd: this.env.venues[venue]?.min_stake_usd ?? null, weights: { pumpfun: this.weights.current().weights } });
     const decideMs = performance.now() - t0;
     for (const d of decisions) {
       // A rug flag that cannot change (dev self-sniped, serial rugger, frozen, stolen art) is final for
@@ -651,6 +679,7 @@ export class Engine extends EventEmitter {
     if (done) {
       const pnl = +(p.proceeds_usd - p.cost_usd).toFixed(4);
       const held = (f.t_filled || this.clock()) - p.entryTime;
+      this.reclaimRent(venue, p.instrument); // the emptied token account's rent is ours again
       this.store.closePosition(p.id, { exitReason: reason, pnl_usd: pnl, remaining_qty: 0 });
       this.store.rollDay();
       this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4);
@@ -659,7 +688,7 @@ export class Engine extends EventEmitter {
       this.cooldown.set(p.instrument, this.clock() + this.cfg.reentryCooldownMs);
       this.venues[venue].feed?.unwatch(p.instrument);
       for (const l of p.legs || []) this.venues[venue].feed?.unwatch(l.instrument);
-      this.stats = statsFromOutcomes(this.ledger.query({ kind: "outcome", limit: 5000 }));
+      this.stats = this.modeStats();
       this.log("info", `EXIT ${venue} ${p.instrument} ${reason} pnl $${pnl.toFixed(2)} held ${Math.round(held / 1000)}s`);
       this.emit("outcome", { position: p, pnl });
       this.evaluateGovernor();

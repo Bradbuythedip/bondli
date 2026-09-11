@@ -35,8 +35,9 @@ function smallEnvelope(dir, over = {}) {
 class FakeLive {
   constructor({ wallet = {}, failInit = false, balanceSol = 1 } = {}) {
     this.ready = false; this.calls = []; this.wallet = wallet; this.failInit = failInit; this.balanceSol = balanceSol; this.priorityFeeSol = 0.0005;
-    this.closeImpl = null; this.submitImpl = null;
+    this.closeImpl = null; this.submitImpl = null; this.closedAccounts = [];
   }
+  async closeTokenAccount(mint) { this.closedAccounts.push(mint); return { closed: 1, reclaimed_sol: 0.002034, sig: "SIGRENT" }; }
   async init() { this.calls.push("init"); if (this.failInit) throw new Error("MASTER_SEED missing"); this.ready = true; return { wallet: "WALLET", balanceSol: this.balanceSol, rpc: "fake" }; }
   async health() { return { ok: true, latencyMs: 1, detail: "fake" }; }
   async preflight() { this.calls.push("preflight"); return { wallet: "WALLET", balanceSol: this.balanceSol, rpc: "fake" }; }
@@ -175,7 +176,9 @@ test("T10: the SOL a buy needs counts fees and rent, and the fill is read from t
   assert.ok(solNeededForBuy(0.025, { hasAccount: true }) < solNeededForBuy(0.025), "an existing token account needs no rent");
   const poor = liveRouter(fakeConn({ sol: 0.0275 }));
   const p = await poor.submit(buyOrder());
-  assert.equal(p.failure.code, "INSUFFICIENT_SOL"); assert.match(p.failure.reason, /order needs 0\.0326/, "15% slippage headroom, fees and rent are all counted");
+  assert.equal(p.failure.code, "INSUFFICIENT_SOL"); assert.match(p.failure.reason, /order needs 0\.0324/, "15% slippage headroom, fees and rent are all counted at the 0.0003 priority fee");
+  // The default priority fee is 0.0003: every 0.0001 off it is $0.02 a transaction, and a round trip pays two.
+  assert.ok(Math.abs(solNeededForBuy(0.025) - solNeededForBuy(0.025, { priorityFeeSol: 0.0003 })) < 1e-12, "0.0003 is the default");
   assert.equal(poor.connection.sent, 0);
 
   // Confirmed: the transaction metadata gives the exact debit (stake + fees) and tokens received,
@@ -412,14 +415,16 @@ test("T10: a signature survives an RPC that drops the reply; a zero read is re-r
   assert.equal(sold.ok, true); assert.equal(sold.fill.notional_usd, 6);
 
   // Tokens gone, SOL not visible, transaction not readable: UNCONFIRMED, never a $0 sale.
-  const half = fakeConn({ sol: 0.5, tokens: { M: 1000 }, statuses: { SIG1: confirmed }, txs: {} });
+  // A real position, not dust: at 1,000 tokens the curve pays $0.009 and the send costs more than that,
+  // so the honest estimate would be zero and the test would be measuring rounding, not the code path.
+  const half = fakeConn({ sol: 0.5, tokens: { M: 200_000 }, statuses: { SIG1: confirmed }, txs: {} });
   const r5 = liveRouter(half);
   half.sendRawTransaction = async () => { half.tokens.M = 0; return "SIG1"; };
   const z = await r5.close({ id: "p", instrument: "M", decisionId: "d", reference: { solPrice: 200 } }, 100, { reference: { solPrice: 200 } });
   assert.equal(z.failure.code, "UNCONFIRMED"); assert.equal(z.failure.venue_ref, "SIG1");
   // Later, still unreadable but long confirmed: the curve model's estimate is booked, flagged.
   r5.tick(100_000);
-  const est = await r5.resolvePending({ instrument: "M", side: "SELL", sig: "SIG1", at: 1_000_000, reference: { solPrice: 200, mcapUsd: 9000, vSolInBondingCurve: 30 }, qtyHint: 1000 });
+  const est = await r5.resolvePending({ instrument: "M", side: "SELL", sig: "SIG1", at: 1_000_000, reference: { solPrice: 200, mcapUsd: 9000, vSolInBondingCurve: 30 }, qtyHint: 200_000 });
   assert.equal(est.ok, true); assert.equal(est.fill.estimated, true); assert.ok(est.fill.notional_usd > 0);
 });
 
@@ -857,4 +862,33 @@ test("T10: a dev holding a rug-sized share is refused on every setting and never
   assert.equal(checkDisqualifiers(crowd, { ...qf, _rg_devHoldPct: 0.09, _rg_quickFlipRate: 0.1 }, AGGRESSION[1]).flags.includes("DEV_HOLDS_SUPPLY"), false, "9% is under the designed 10%");
   assert.equal(checkDisqualifiers(crowd, { ...qf, _rg_devHoldPct: 0.14, _rg_quickFlipRate: 0.1 }, AGGRESSION[3]).flags.includes("DEV_HOLDS_SUPPLY"), false, "degen tolerates up to 15%");
   assert.equal(checkDisqualifiers(crowd, { ...qf, _rg_devHoldPct: 0.14, _rg_quickFlipRate: 0.1 }, AGGRESSION[1]).flags.includes("DEV_HOLDS_SUPPLY"), true, "careful does not");
+});
+
+test("T10: the token account's rent comes back when a position leaves for good, and not while a moonbag is still held", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rent-"));
+  const env = smallEnvelope(dir);
+  const live = new FakeLive({ wallet: { MintR: 1000 } });
+  live.closeImpl = (p, pct) => { const t = Date.now(); const qty = (p.remaining_qty ?? p.qty) * pct / 100; live.wallet.MintR = Math.max(0, (live.wallet.MintR || 0) - qty); return { ok: true, fill: { orderId: `${p.id}:close`, decisionId: p.decisionId, venue: "pumpfun", instrument: p.instrument, side: "SELL", price: 0.006, qty, notional_usd: 13, fee_usd: 0, t_sent: t, t_filled: t + 3, latency_ms: 3, venue_ref: "SIGSELL", sol_received: 0.065 } }; };
+  const engine = mkEngine(dir, { envelope: env, mode: "paper", live, config: { reentryCooldownMs: 0, saveMs: 600_000, governorMs: 600_000, sweepMs: 600_000 } });
+  try {
+    await engine.start({ reconcile: false });
+    await engine.setVenueMode("pumpfun", "live", { override: true });
+    const plan = createPlan({ venue: "pumpfun", key: 2, entry: { score: 66 } });
+    const mk = (id, over = {}) => ({ id, venue: "pumpfun", instrument: "MintR", status: "open", paper: false, qty: 1000, remaining_qty: 1000, cost_usd: 25, notional_usd: 25, stake_usd: 25, proceeds_usd: 0, entryTime: Date.now() - 60_000, entryMark: 10_000, tier: 2, model: "bondli_gates", plan, reference: { solPrice: 200 }, ...over });
+
+    // A partial sell leaves tokens behind: the account is still in use, so nothing is closed.
+    const partial = mk("pos:partial");
+    engine.store.upsertPosition(partial);
+    await engine.closePosition(partial, 50, "TEST_PARTIAL", { by: "test" });
+    await new Promise(r => setTimeout(r, 20));
+    assert.deepEqual(live.closedAccounts, [], "a partial exit keeps the account open");
+
+    // The final sell empties it: the rent is claimed and booked.
+    await engine.closePosition(engine.store.state.positions["pos:partial"], 100, "TEST_FINAL", { by: "test" });
+    await new Promise(r => setTimeout(r, 20));
+    assert.deepEqual(live.closedAccounts, ["MintR"], "the emptied account is closed");
+    for (let i = 0; i < 50 && !engine.ledger.query({ kind: "rent", limit: 1 }).length; i++) await new Promise(r => setTimeout(r, 10));
+    const rent = engine.ledger.query({ kind: "rent", limit: 1 })[0];
+    assert.equal(rent.sol, 0.002034); assert.equal(rent.instrument, "MintR"); assert.equal(rent.venue_ref, "SIGRENT");
+  } finally { await engine.stop(); }
 });

@@ -80,12 +80,14 @@ test("T9: paper mode end to end writes every stage and blocks entries on a stale
   await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "candidate", id: "MintE2E", t_venue: now, t_observed: now + 10, payload: goodCandidatePayload("MintE2E") })));
   assert.equal(engine.ledger.query({ kind: "order", limit: 1 })[0].reason, "ALREADY_IN_OR_INFLIGHT");
 
-  // Take profit: TP1 partial, then a full exit, outcome with pnl.
+  // Ride mode: +150% takes nothing off the table, so no exit is written on the way up.
   await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "tick", id: "MintE2E", t_venue: now + 500, t_observed: now + 600, payload: tickPayload("MintE2E", 25_000) })));
-  const partial = engine.ledger.query({ kind: "exit", limit: 1 })[0];
-  assert.equal(partial.reason, "TP1"); assert.equal(partial.final, false);
+  assert.equal(engine.ledger.query({ kind: "exit", limit: 1 }).length, 0, "nothing is scalped on the way up");
+  assert.equal(engine.store.openPositions().length, 1, "the whole position is still on");
   await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "tick", id: "MintE2E", t_venue: now + 900, t_observed: now + 1000, payload: tickPayload("MintE2E", 4_000) })));
   assert.equal(engine.store.openPositions().length, 0);
+  const finalExit = engine.ledger.query({ kind: "exit", limit: 1 })[0];
+  assert.equal(finalExit.final, true, "it leaves in one sell, which is what makes the rent reclaimable");
   const outcome = engine.ledger.query({ kind: "outcome", limit: 1 })[0];
   assert.ok(Number.isFinite(outcome.pnl_usd));
   assert.ok(outcome.features, "outcome carries the entry features for the learner");

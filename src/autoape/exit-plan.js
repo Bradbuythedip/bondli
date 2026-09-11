@@ -11,11 +11,19 @@ export function createExitPlan(tier, entryScore, settings) {
   const MAX_HOLDS = { 1: 30 * 60000, 2: 15 * 60000, 3: 10 * 60000 }; // 30/15/10 min
 
   // Tier-specific take profit levels
+  // Ride mode (the default): no partial take-profits. The stop loss cuts a loser fast and the trail
+  // takes a winner out in ONE sell, which is what makes the token account closable and its rent
+  // reclaimable. Scalping a third of the position at +35% costs a transaction, gives up the right
+  // tail, and at these stakes the ladder's fixed cost is a larger drag than the profit it locks.
+  // The whole edge here is asymmetry: small losses, and a winner ridden until it actually rolls over.
+  // rideArm: the gain at which the trail switches on, below which only the stop loss can fire.
+  // rideFloor: the trail can never trigger an exit below this, so a trail never books a loss.
+  const ride = s.ride === false ? false : true;
   const GRADUATED_TPS = {
-    // Every tier keeps a moonbag once a token has run: a runner is never sold to zero.
-    1: { tp1: s.tp1 || 35, tp1Sell: 20, tp2: s.tp2 || 100, tp2Sell: 20, tp3: s.tp3 || 250, tp3Sell: 25, moonbagPct: 20, trailWidth: 40 },
-    2: { tp1: s.tp1 || 35, tp1Sell: s.tp1Sell || 30, tp2: s.tp2 || 100, tp2Sell: s.tp2Sell || 30, tp3: s.tp3 || 250, tp3Sell: s.tp3Sell || 40, moonbagPct: 15, trailWidth: 35 },
-    3: { tp1: Math.round((s.tp1 || 35) * 0.85), tp1Sell: 33, tp2: Math.round((s.tp2 || 100) * 0.75), tp2Sell: 33, tp3: 200, tp3Sell: 34, moonbagPct: 10, trailWidth: 25 },
+    // A token that actually mooned (peak >= 2x) still keeps a moonbag: a runner is never sold to zero.
+    1: { ride, rideArm: 30, rideFloor: 6, tp1: s.tp1 || 35, tp1Sell: 20, tp2: s.tp2 || 100, tp2Sell: 20, tp3: s.tp3 || 250, tp3Sell: 25, moonbagPct: 20, trailWidth: 40 },
+    2: { ride, rideArm: 30, rideFloor: 6, tp1: s.tp1 || 35, tp1Sell: s.tp1Sell || 30, tp2: s.tp2 || 100, tp2Sell: s.tp2Sell || 30, tp3: s.tp3 || 250, tp3Sell: s.tp3Sell || 40, moonbagPct: 15, trailWidth: 35 },
+    3: { ride, rideArm: 25, rideFloor: 6, tp1: Math.round((s.tp1 || 35) * 0.85), tp1Sell: 33, tp2: Math.round((s.tp2 || 100) * 0.75), tp2Sell: 33, tp3: 200, tp3Sell: 34, moonbagPct: 10, trailWidth: 25 },
   };
 
   return {
@@ -40,9 +48,11 @@ export function checkDerivativeExit(pos, dynamics, changePct, settings) {
   const plan = pos.exitPlan || createExitPlan(pos.tier || 2, pos.entryScore || 0, settings);
   const dyn = dynamics;
 
-  // Flash decay: score peaked and freefalling
-  if (dyn.trend === "crashing" && dyn.scores >= 3) {
-    return { action: "SELL", pct: 100, reason: "crash-exit", layer: 1, detail: `v=${dyn.velocity?.toFixed(3)} a=${dyn.acceleration?.toFixed(3)} CRASHING` };
+  // Flash decay: score peaked and freefalling. The score is a derived thing computed off snapshots that
+  // can be stale or thin, so on its own it produces exits at a flat price that pay a full round trip
+  // for no information. The price has to agree before the money moves: not up on the trade.
+  if (dyn.trend === "crashing" && dyn.scores >= 3 && changePct <= 0) {
+    return { action: "SELL", pct: 100, reason: "crash-exit", layer: 1, detail: `v=${dyn.velocity?.toFixed(3)} a=${dyn.acceleration?.toFixed(3)} CRASHING at ${changePct.toFixed(0)}%` };
   }
 
   // Fading: decelerating hard while still showing positive change
@@ -56,8 +66,8 @@ export function checkDerivativeExit(pos, dynamics, changePct, settings) {
   const hasStrongFundamentals = (pos.liveUB || 0) >= 20 && (pos.liveBuys || 0) >= 30 && changePct > 0;
   const momentumExitThreshold = hasStrongFundamentals ? plan.momentumDropAbsolute + 10 : plan.momentumDropAbsolute;
 
-  if (scoreDrop >= momentumExitThreshold) {
-    return { action: "SELL", pct: 100, reason: "momentum-exit", layer: 1, detail: `score ${pos.entryScore}→${pos.liveScore} (−${scoreDrop})` };
+  if (scoreDrop >= momentumExitThreshold && changePct <= 0) {
+    return { action: "SELL", pct: 100, reason: "momentum-exit", layer: 1, detail: `score ${pos.entryScore}→${pos.liveScore} (−${scoreDrop}) at ${changePct.toFixed(0)}%` };
   }
 
   if (scoreDrop >= plan.momentumTrimDrop && changePct > 5 && (pos.tpHit || 0) === 0) {
@@ -121,6 +131,24 @@ export function checkTrailingExit(pos, changePct, fromPeak, settings) {
       return { action: "SELL", pct: 100, reason: "moonbag-trail", layer: 3 };
     }
     return null;
+  }
+
+  // Ride mode: one trail, one exit, no ladder. The share of the peak gain kept grows with the run,
+  // so a 5x is allowed to breathe where a +40% blip is not. Anything that reached 2x keeps a moonbag.
+  if (tp.ride) {
+    const peakPct = pos.peakMcap > 0 && pos.entryMcap > 0 ? ((pos.peakMcap - pos.entryMcap) / pos.entryMcap) * 100 : Math.max(0, changePct);
+    if (peakPct >= (tp.rideArm ?? 30)) {
+      const keepGain = peakPct >= 300 ? 0.70 : peakPct >= 100 ? 0.65 : 0.55;
+      const trigger = Math.max(tp.rideFloor ?? 6, peakPct * keepGain);
+      if (changePct <= trigger) {
+        const keep = peakPct >= 200 && tp.moonbagPct > 0 ? tp.moonbagPct : 0;
+        const detail = `peaked +${peakPct.toFixed(0)}%, out at +${changePct.toFixed(0)}%${keep ? `, ${keep}% moonbag kept` : ""}`;
+        return keep
+          ? { action: "PARTIAL_SELL", pct: 100 - keep, reason: "RIDE-trail", layer: 3, moonbag: true, detail }
+          : { action: "SELL", pct: 100, reason: "RIDE-trail", layer: 3, detail };
+      }
+    }
+    return null; // the stop loss and this trail are the only ways out; nothing is scalped on the way up
   }
 
   // TP3: Runner — sell everything but the moonbag once the run gives back its trail

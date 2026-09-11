@@ -59,8 +59,14 @@ export function makePumpfunEdge({
   aggression = 1,
   priors = PUMPFUN_PRIORS,
   minOutcomesForStats = 30,
-  feeFractionRoundTrip = 0.02,     // pump.fun 1% in + 1% out
-  fixedCostSol = 0.0015,           // priority fee + Jito tip per side, rough
+  feeFractionRoundTrip = 0.03,     // pump.fun 1% in + 1% out, plus the router's 0.5% each way
+  // What a round trip really costs in fixed SOL, from the router's own constants: a priority fee and
+  // a base fee on the buy, the same on the sell, and one more base fee to close the token account and
+  // take its rent back. The rent itself nets out because it is reclaimed.
+  fixedCostSol = (Number(process.env.PRIORITY_FEE_SOL) > 0 ? Number(process.env.PRIORITY_FEE_SOL) : 0.0003) + 0.000005,
+  // The stake the gate prices costs at when the caller does not say. A gate that assumes $25 while the
+  // sizer hands it $5 approves trades that cannot clear their own costs, which is how a fixed cost
+  // becomes an invisible one.
   nominalStakeUsd = 25,
 } = {}) {
   const level = AGGRESSION[Math.max(0, Math.min(3, Math.round(Number(aggression) || 0)))] || AGGRESSION[1];
@@ -132,19 +138,24 @@ export function makePumpfunEdge({
       };
     },
 
-    costs(c) {
+    /** Cost as a fraction of the stake actually being risked. Pass stakeUsd when it is known: the
+     *  fixed part is a constant number of dollars, so it is 0.5% of $25 and 2.4% of $5, and pricing it
+     *  at the wrong size is the difference between a gate that works and one that waves everything
+     *  through. Both the fixed part and the curve impact scale with the real stake. */
+    costs(c, stakeUsd = null) {
       const quotePrice = c.solPrice || c.reference?.solPrice || 0; // SOL on pump.fun, ETH on PONS
       const pons = venue === "pons";
+      const stakeAt = Number(stakeUsd) > 0 ? Number(stakeUsd) : nominalStakeUsd;
       const vQuote = Number(c.reference?.vSolInBondingCurve) || (pons ? 3 : 30);
-      const stakeQuote = quotePrice > 0 ? nominalStakeUsd / quotePrice : (pons ? 0.01 : 0.1);
+      const stakeQuote = quotePrice > 0 ? stakeAt / quotePrice : (pons ? 0.01 : 0.1);
       // Constant-product curve: buying stake into the quote reserve moves price by about stake/reserve.
       const impact = Math.min(0.25, stakeQuote / Math.max(pons ? 0.1 : 1, vQuote));
       // Fixed cost per side: priority fee + tip on Solana; L2 gas on Robinhood Chain (a few cents).
       const fixedQuote = pons ? 0.00003 : fixedCostSol;
-      const fixed = quotePrice > 0 ? (2 * fixedQuote * quotePrice) / nominalStakeUsd : 0.02;
+      const fixed = quotePrice > 0 ? (2 * fixedQuote * quotePrice + (pons ? 0 : 0.000005 * quotePrice)) / stakeAt : 0.02;
       // Round-trip fee: pump.fun 1% + 1%; PONS the curve's own feeBps + creator tax, each way.
       const feeRT = pons && c.reference?.curve ? 2 * (((Number(c.reference.curve.feeBps) || 100) + (Number(c.reference.curve.creatorTaxBps) || 0)) / 1e4) : feeFractionRoundTrip;
-      return { fraction: feeRT + impact + fixed, detail: { feeFractionRoundTrip: feeRT, impact, fixed } };
+      return { fraction: feeRT + impact + fixed, detail: { feeFractionRoundTrip: feeRT, impact, fixed, stake_usd: stakeAt } };
     },
   };
 }

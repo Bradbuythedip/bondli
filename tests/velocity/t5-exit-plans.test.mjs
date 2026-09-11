@@ -37,13 +37,18 @@ test("T5: pump.fun layers fire at their triggers", () => {
   // Layer 1: crashing score
   let pos = pumpPos();
   markPosition(pos, tick(10_500));
-  let r = evaluateExit(pos, tick(10_500, { dynamics: { scores: 4, velocity: -0.5, acceleration: -0.1, trend: "crashing" } }));
+  // A crashing score with the price still up is not a crash: the score is derived off snapshots and
+  // leaving costs a full round trip, so the price has to agree before the money moves.
+  assert.equal(evaluateExit(pos, tick(10_500, { dynamics: { scores: 4, velocity: -0.5, acceleration: -0.1, trend: "crashing" } })), null, "+5% and 'crashing': held");
+  let r = evaluateExit(pos, tick(9_800, { dynamics: { scores: 4, velocity: -0.5, acceleration: -0.1, trend: "crashing" } }));
   assert.equal(r.action, "SELL"); assert.equal(r.reason, "crash-exit"); assert.equal(r.layer, 1);
-  // Layer 3: TP1 partial
+  // Layer 3: ride mode takes no partial profit on the way up — +40% is held, not scalped
   pos = pumpPos();
-  r = evaluateExit(pos, tick(14_000));
-  assert.equal(r.action, "PARTIAL_SELL"); assert.equal(r.reason, "TP1");
-  assert.equal(pos._bondli.tpHit, 1);
+  assert.equal(evaluateExit(pos, tick(14_000)), null, "nothing is sold at +40%: the ladder is gone");
+  // it comes out in one sell when it gives back its trail: peak +40%, 55% of the gain kept -> out at +22%
+  markPosition(pos, tick(14_000));
+  r = evaluateExit(pos, tick(12_100));
+  assert.equal(r.action, "SELL"); assert.equal(r.pct, 100); assert.equal(r.reason, "RIDE-trail");
   // Layer 2: SL2 full exit past twice the stop
   pos = pumpPos();
   r = evaluateExit(pos, tick(7_000));
@@ -83,23 +88,45 @@ test("T5: polymarket plans redeem, stop, target, and time out", () => {
   assert.equal(sq.unrealized_usd, 2);
 });
 
-test("T5: after TP2 a runner is trailed: a tier-3 plan with no TP3 sells 100% when it gives back 22% from the peak", () => {
-  // tier 3: TP1 at +30%, TP2 at +75%, no TP3. Before this rule the last third rode until the stop or max hold.
-  const plan3 = createPlan({ venue: "pumpfun", key: 3, entry: { score: 60 } });
-  const pos = pumpPos({ plan: plan3 });
-  assert.equal(evaluateExit(pos, tick(13_000)).reason, "TP1");
-  assert.equal(evaluateExit(pos, tick(17_600)).reason, "TP2");
-  assert.equal(pos._bondli.tpHit, 2);
-  // +150% peak, then 10% off: hold
-  evaluateExit(pos, tick(25_000)); assert.equal(evaluateExit(pos, tick(22_500)), null);
-  // 22% off the peak at +95%: sell everything (under 3x there is no moonbag to keep)
-  const r = evaluateExit(pos, tick(19_500));
-  assert.equal(r?.action, "SELL"); assert.equal(r.pct, 100); assert.equal(r.reason, "TP-trail");
-  // a tier-2 plan between TP2 (+100%) and TP3 (+250%) gets the same protection
-  const pos2 = pumpPos({ plan: createPlan({ venue: "pumpfun", key: 2, entry: { score: 60 } }) });
-  evaluateExit(pos2, tick(13_500)); evaluateExit(pos2, tick(20_000)); assert.equal(pos2._bondli.tpHit, 2);
-  markPosition(pos2, tick(30_000));
-  assert.equal(evaluateExit(pos2, tick(22_000))?.reason, "TP-trail", "+120% and 27% off its +200% peak");
+test("T5: ride mode holds all the way up and exits once, and the trail widens with the run", () => {
+  // +80% peak: below 100%, so 55% of the gain is kept -> the exit trigger sits at +44%
+  let pos = pumpPos();
+  markPosition(pos, tick(18_000));
+  assert.equal(evaluateExit(pos, tick(15_000)), null, "+50% and still above the trail: held");
+  let r = evaluateExit(pos, tick(14_000));
+  assert.equal(r?.reason, "RIDE-trail"); assert.equal(r.action, "SELL"); assert.equal(r.pct, 100);
+
+  // +400% peak: 70% of the gain is kept, so it may breathe all the way back to +280% before it goes
+  pos = pumpPos();
+  markPosition(pos, tick(50_000));
+  assert.equal(evaluateExit(pos, tick(40_000)), null, "+300% off a +400% peak is still inside the trail");
+  r = evaluateExit(pos, tick(37_000));
+  assert.ok(r?.reason === "RIDE-trail", "+270% finally trips it");
+
+  // the trail can never book a loss: a +30% peak that round-trips exits at the floor, not below entry
+  pos = pumpPos();
+  markPosition(pos, tick(13_000));
+  r = evaluateExit(pos, tick(10_500));
+  assert.equal(r?.reason, "RIDE-trail");
+  assert.ok(r.detail.includes("out at +5%"), r.detail);
+
+  // below the arm there is no trail at all: only the stop loss can take it out
+  pos = pumpPos();
+  markPosition(pos, tick(11_500));
+  assert.equal(evaluateExit(pos, tick(10_100)), null, "+1% after a +15% peak: not armed, still held");
+});
+
+test("T5: the old partial ladder is still there when ride is switched off", async () => {
+  const { createExitPlan, checkTrailingExit } = await import("../../src/autoape/exit-plan.js");
+  const laddered = createExitPlan(2, 66, { ride: false });
+  assert.equal(laddered.tpLevels.ride, false);
+  const pos = { tier: 2, entryScore: 66, entryMcap: 10_000, peakMcap: 14_000, tpHit: 0, exitPlan: laddered };
+  const r = checkTrailingExit(pos, 40, 0, { ride: false });
+  assert.equal(r?.action, "PARTIAL_SELL"); assert.equal(r.reason, "TP1");
+  // and ride mode on the same numbers takes nothing off the table
+  const riding = createExitPlan(2, 66, {});
+  assert.equal(riding.tpLevels.ride, true);
+  assert.equal(checkTrailingExit({ ...pos, exitPlan: riding }, 40, 0, {}), null);
 });
 
 test("T5: dead money is sold: three minutes flat with no buyers is a STALL exit on a tier-3 plan", () => {
@@ -109,8 +136,10 @@ test("T5: dead money is sold: three minutes flat with no buyers is a STALL exit 
   const quiet = { token: { trades: [{ side: "buy", time: T0 + 60_000 }, { side: "sell", time: T0 + 170_000 }] } };
   // two minutes in, flat, quiet: hold (not old enough)
   assert.equal(evaluateExit(pos, tick(10_300, quiet, T0 + 2 * 60_000)), null);
-  // three minutes in, +3%, one buy in the last minute: STALL
-  const r = evaluateExit(pos, tick(10_300, quiet, T0 + 3 * 60_000 + 1000));
+  // three minutes in and +3%: flat is not a reason to pay a round trip, so it is held
+  assert.equal(evaluateExit(pos, tick(10_300, quiet, T0 + 3 * 60_000 + 1000)), null, "flat and quiet is still held");
+  // three minutes in, drifting down, one buy in the last minute: STALL
+  const r = evaluateExit(pos, tick(9_400, quiet, T0 + 3 * 60_000 + 1000));
   assert.equal(r?.action, "SELL"); assert.equal(r.reason, "STALL"); assert.equal(r.pct, 100);
   // three minutes in but buying is alive: hold
   const busy = { token: { trades: Array.from({ length: 6 }, (_, i) => ({ side: "buy", time: T0 + 3 * 60_000 - i * 5000 })) } };
@@ -130,28 +159,23 @@ test("T5: a PONS position is sold at 85% curve progress whatever the P&L: the bo
   assert.equal(r?.action, "SELL"); assert.equal(r.pct, 100); assert.equal(r.reason, "pre-graduation-exit");
 });
 
-test("T5: a runner keeps its moonbag on every tier, and the moonbag outlives the time limit", () => {
-  // tier 3: TP1 +30%, TP2 +75%, then the trail at +300% sells 90% and keeps 10%
-  const pos = pumpPos({ plan: createPlan({ venue: "pumpfun", key: 3, entry: { score: 60 } }) });
-  evaluateExit(pos, tick(13_000)); evaluateExit(pos, tick(17_600));
-  evaluateExit(pos, tick(40_000)); // the peak, +300%
-  assert.equal(evaluateExit(pos, tick(30_000)), null, "at 3x a runner gets 40% of room");
-  const r = evaluateExit(pos, tick(22_000)); // +120%, 45% off the peak
-  assert.equal(r?.reason, "TP-trail"); assert.equal(r.action, "PARTIAL_SELL"); assert.equal(r.pct, 90);
-  assert.equal(pos._bondli.isMoonbag, true);
-  // the moonbag is not sold at the plan's 10-minute limit
-  assert.equal(evaluateExit(pos, tick(22_000, {}, T0 + 25 * 60_000)), null);
-  // it dies at -80% from entry, or gives back its own wide trail
+test("T5: a runner keeps its moonbag, and the moonbag outlives the time limit", () => {
+  // peak 4x: past 2x, so the trail sells all but the tier's moonbag instead of everything
+  const pos = pumpPos();
+  markPosition(pos, tick(40_000));
+  const r = evaluateExit(pos, tick(24_000));
+  assert.equal(r?.reason, "RIDE-trail"); assert.equal(r.action, "PARTIAL_SELL");
+  assert.equal(r.pct, 85, "tier 2 keeps 15%");
+  assert.equal(pos._bondli.isMoonbag, true, "the position is now a moonbag");
+  // the moonbag is not sold at the plan's time limit
+  assert.equal(evaluateExit(pos, tick(24_000, {}, T0 + 26 * 60_000)), null);
+  // it dies only when the token does
   assert.equal(evaluateExit(pos, tick(1_900, {}, T0 + 26 * 60_000))?.reason, "moonbag-dead");
-  // tier 2 through TP3 at +250%: sells 85%, keeps 15%
-  const pos2 = pumpPos();
-  evaluateExit(pos2, tick(13_500)); evaluateExit(pos2, tick(20_000)); evaluateExit(pos2, tick(36_000));
-  evaluateExit(pos2, tick(60_000)); // +500% peak
-  const r2 = evaluateExit(pos2, tick(35_000)); // 42% off the peak at +250%: past the 40% room a 3x runner gets
-  assert.equal(r2?.reason, "TP3"); assert.equal(r2.pct, 85); assert.equal(pos2._bondli.isMoonbag, true);
-  // a token that only made +120% before the trail is sold in full: no moon, no moonbag
-  const pos3 = pumpPos({ plan: createPlan({ venue: "pumpfun", key: 3, entry: { score: 60 } }) });
-  evaluateExit(pos3, tick(13_000)); evaluateExit(pos3, tick(17_600)); evaluateExit(pos3, tick(22_000));
-  const r3 = evaluateExit(pos3, tick(16_500));
-  assert.equal(r3?.reason, "TP-trail"); assert.equal(r3.pct, 100);
+
+  // a token that only made +120% is sold in full: no moon, no moonbag
+  const pos3 = pumpPos();
+  markPosition(pos3, tick(22_000));
+  const r3 = evaluateExit(pos3, tick(13_000));
+  assert.equal(r3?.reason, "RIDE-trail"); assert.equal(r3.pct, 100);
 });
+

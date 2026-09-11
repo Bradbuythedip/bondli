@@ -75,7 +75,10 @@ export class GateRunner {
 
     // Estimate and expected value after costs.
     const est = withClock(event.t_observed, () => this.edge.estimate(cand, ctx)) || {};
-    const costs = withClock(event.t_observed, () => this.edge.costs(cand, ctx)) || { fraction: 0 };
+    // Price the costs at the SMALLEST stake the sizer could hand back, not a nominal one. The fixed
+    // part is a fixed number of dollars, so a gate that prices it at $25 while the governor throttles
+    // the trade to the floor approves entries that cannot clear their own costs.
+    const costs = withClock(event.t_observed, () => this.edge.costs(cand, ctx?.minStakeUsd ?? null)) || { fraction: 0 };
     const p_win = clamp(Number(est.p_win) || 0, 0, 1);
     const payoff = Math.max(0, Number(est.payoff) || 0);
     const confidence = clamp(Number(est.confidence) || 0, 0, 1);

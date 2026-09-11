@@ -38,21 +38,32 @@ export function curveSell({ vSol, vTokens }, tokensIn) {
   return { solOut, avgPrice: avg, spot, slippage_bps: (1 - avg / spot) * 1e4 };
 }
 
+/** Paper has to pay what live pays, or every statistic it feeds is a lie in the same direction.
+ *  Live pays, per side: the curve's 1%, the router's 0.5%, a priority fee and a base fee. It also pays
+ *  the token account's rent on a new mint and takes it back when the position finally closes, so the
+ *  rent nets out and only the extra base fee for that close is charged here. Before this, a paper buy
+ *  booked cost_usd = stake_usd and a paper sell charged only the curve fee, which understated a round
+ *  trip by about $0.12 — small against a $25 stake and fatal against a $5 one. */
+const paperPrioritySol = () => Number(process.env.PRIORITY_FEE_SOL) > 0 ? Number(process.env.PRIORITY_FEE_SOL) : 0.0003;
 export function pumpfunFillModel(order) {
   const { vSol, vTokens, solPrice } = reservesFromReference(order.reference || {});
   if (!(solPrice > 0)) return { reject: "NO_SOL_PRICE", reason: "reference has no solPrice" };
-  const fee = PUMP_FEE_BPS / 1e4;
+  const fee = PUMP_FEE_BPS / 1e4, portal = PUMP_PORTAL_FEE_BPS / 1e4;
+  const perSendSol = paperPrioritySol() + BASE_FEE_SOL;
   if (order.side === "BUY") {
     const stakeSol = (Number(order.stake_usd) || 0) / solPrice;
     if (!(stakeSol > 0)) return { reject: "ZERO_STAKE", reason: "stake is zero" };
     const r = curveBuy({ vSol, vTokens }, stakeSol * (1 - fee));
-    return { price: r.avgPrice * solPrice, qty: r.tokensOut, notional_usd: Number(order.stake_usd), slippage_bps: r.slippage_bps, fee_usd: stakeSol * fee * solPrice };
+    // What actually leaves the wallet: the stake, the router's cut, and the send.
+    const spentSol = stakeSol * (1 + portal) + perSendSol;
+    return { price: (spentSol * solPrice) / (r.tokensOut || 1), qty: r.tokensOut, notional_usd: +(spentSol * solPrice).toFixed(4), slippage_bps: r.slippage_bps, fee_usd: +((spentSol - stakeSol) * solPrice).toFixed(4) };
   }
   const qty = Number(order.qty) || 0;
   if (!(qty > 0)) return { reject: "ZERO_QTY", reason: "nothing to sell" };
   const r = curveSell({ vSol, vTokens }, qty);
-  const gross = r.solOut * solPrice;
-  return { price: r.avgPrice * solPrice, qty, notional_usd: gross * (1 - fee), slippage_bps: r.slippage_bps, fee_usd: gross * fee };
+  // What actually arrives: the curve's proceeds less both cuts, the send, and the account close.
+  const netSol = Math.max(0, r.solOut * (1 - fee - portal) - perSendSol - BASE_FEE_SOL);
+  return { price: qty > 0 ? (netSol * solPrice) / qty : 0, qty, notional_usd: +(netSol * solPrice).toFixed(4), slippage_bps: r.slippage_bps, fee_usd: +((r.solOut - netSol) * solPrice).toFixed(4) };
 }
 
 export class PumpfunPaperRouter extends PaperRouter {
@@ -79,7 +90,7 @@ export const SOL_PRICE_MAX_AGE_MS = 10 * 60_000;
 /** SOL a buy of `solAmount` needs in the wallet. A SOL-denominated pump.fun buy may debit up to
  *  `slippagePct` more than the amount if the curve moves before it lands. `hasAccount` skips the
  *  token-account rent. */
-export function solNeededForBuy(solAmount, { priorityFeeSol = 0.0005, hasAccount = false, slippagePct = 0 } = {}) {
+export function solNeededForBuy(solAmount, { priorityFeeSol = 0.0003, hasAccount = false, slippagePct = 0 } = {}) {
   return solAmount * (1 + slippagePct / 100) * (1 + (PUMP_FEE_BPS + PUMP_PORTAL_FEE_BPS) / 1e4) + priorityFeeSol + BASE_FEE_SOL + (hasAccount ? 0 : RENT_ATA_SOL) + RENT_WALLET_MIN_SOL;
 }
 
@@ -99,7 +110,7 @@ export class PumpfunLiveRouter extends Router {
     // An order holds the engine queue while it waits, and no other position can exit meanwhile:
     // wait a normal confirmation's worth, then hand the signature to the sweep (buys) or the next
     // exit attempt (sells), which settle it from the chain without blocking anyone.
-    priorityFeeSol = Number(process.env.PRIORITY_FEE_SOL || 0.0005), confirmTimeoutMs = 12_000, lateConfirmMs = 0,
+    priorityFeeSol = Number(process.env.PRIORITY_FEE_SOL || 0.0003), confirmTimeoutMs = 12_000, lateConfirmMs = 0,
     tradeLocalUrl = "https://pumpportal.fun/api/trade-local", fetchImpl = globalThis.fetch, clock, sleep = ms => new Promise(r => setTimeout(r, ms)),
   } = {}) {
     super({ venue: "pumpfun", mode: "live", clock });
@@ -341,6 +352,33 @@ export class PumpfunLiveRouter extends Router {
     } catch (err) {
       return this._sendFailure({ id: position.id }, err, solPrice);
     }
+  }
+
+  /** Take back the rent on an emptied token account. Every new mint costs RENT_ATA_SOL (0.00203928 SOL,
+   *  about $0.41 at $200) to open an account for, and a sell leaves that account open with the rent
+   *  locked inside it. One small transaction closes it and returns the rent, for the price of a base
+   *  fee (0.000005 SOL). At a $25 stake that rent is 1.6% of the trade, so this is the single largest
+   *  cost the bot pays and the only one it can simply refuse to pay.
+   *
+   *  Only accounts whose balance is exactly zero are closed, so this can never destroy a holding: the
+   *  token program itself rejects closing a non-empty account, and the filter here means we never ask. */
+  async closeTokenAccount(mint) {
+    if (!this.ready) throw new Error("call init() first");
+    const { TOKEN_PROGRAM_ID, createCloseAccountInstruction } = await import("@solana/spl-token");
+    const res = await this.connection.getParsedTokenAccountsByOwner(this.keypair.publicKey, { mint: new this.web3.PublicKey(mint) });
+    const empty = (res?.value || []).filter(a => Number(a.account.data.parsed.info.tokenAmount.amount || 0) === 0);
+    if (!empty.length) return { closed: 0, reclaimed_sol: 0, sig: null };
+    const { Transaction } = this.web3;
+    const tx = new Transaction();
+    for (const a of empty.slice(0, 8)) tx.add(createCloseAccountInstruction(a.pubkey, this.keypair.publicKey, this.keypair.publicKey, [], TOKEN_PROGRAM_ID));
+    tx.feePayer = this.keypair.publicKey;
+    tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
+    tx.sign(this.keypair);
+    const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+    const st = await this._awaitStatus(sig, this.confirmTimeoutMs);
+    if (st.err) throw this._chainError(sig, st.err);
+    const n = Math.min(empty.length, 8);
+    return { closed: n, reclaimed_sol: +(n * RENT_ATA_SOL - BASE_FEE_SOL).toFixed(9), sig };
   }
 
   /** Plain SOL transfer from the trading wallet (the platform's performance fee). Returns the signature. */
