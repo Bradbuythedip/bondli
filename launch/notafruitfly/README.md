@@ -14,12 +14,43 @@ Everything here is ready to run except two decisions that are yours: the venue a
 | Vanity CA | yes, mined offline | yes, `TokenParams.salt`; miner needs the deployer source |
 | What you keep | 0% (fair launch) or `LIQUIDITY_TOKEN_PCT` < 100 | the launch-and-buy dev buy |
 
-The bot side of the site is built around PONS, so a PONS launch is the one the site can tie in fully:
-the token shows in the live feed with a verdict, the bot's users can trade it, and the banner reads
-the curve. The v2 launch is the one that is ready today, and the site supports it too (pool stats,
-Buy on Uniswap, DexScreener chart). To build the PONS miner, paste the verified source of the launch
-deployer (`0x3711ceA4feaDE896C913C68F01Eda97Cb06D1A42` on Blockscout, tab Contract): the
-`predictLaunchAddresses` function and the `new …{salt: …}` lines.
+Decision: PONS. The token shows in the live feed with a verdict, the bot's users can trade it, and the
+banner reads the curve. `launch.py` (Uniswap v2) stays here as the fallback and the site supports both.
+
+## PONS path (chosen): `pons-launch.mjs`
+
+The live deployer deploys curve then token with CREATE2 and salt `keccak256(abi.encode(launchWallet, userSalt))`.
+The token's address therefore depends on the launch wallet, the salt, every launch parameter (name,
+symbol, logo, description, socials, tax, buyback) and the deployer's live bytecode. The script never
+guesses the bytecode: it traces one recent real launch, lifts the two CREATE2 init codes, swaps in our
+parameters, and refuses to grind until its offline prediction equals the deployer's own
+`predictLaunchAddresses` for a trial salt. The found salt is checked on chain again before it is saved.
+
+```
+cd launch/notafruitfly && npm i            # ethers (or run from the repo root, which has it)
+echo 'PRIVATE_KEY=0x…' >> .env; echo 'PONS_RPC_URL=https://robinhood-mainnet.g.alchemy.com/v2/<NEW key>' >> .env
+node pons-launch.mjs abi                   # ABIs from Blockscout into pons-abi/
+node pons-launch.mjs inspect               # the launch struct as it will be filled, canLaunch(wallet), the router function
+node pons-launch.mjs template              # trace the latest launch -> pons-template.json (needs debug_traceTransaction: Alchemy Growth)
+node pons-launch.mjs mine                  # proof against the deployer, then grind; salt + CA -> pons-state.json
+node pons-launch.mjs launch --dry-run      # re-checks the CA today, simulates the launch-and-buy
+node pons-launch.mjs launch                # type LAUNCH
+node ../../tools/launch-push.mjs --venue pons --address 0x…  --update "We are live."
+```
+
+Read `inspect` carefully once: the script fills the launch struct by field name. If a field shows a
+value you did not intend (an empty string, a zero where a config id belongs), set it with
+`FLY_<KEY>` or edit `fillStruct`. `mine` cannot start until the offline math matches the deployer, so a
+wrong field is caught before any hashing, and `launch` re-checks the address on the day.
+
+Set `LOGO` to the image URL you will upload (the fly is at https://bondli.fun/fly.png once Vercel
+deploys) and the socials before mining; changing any of them afterwards changes the address.
+
+Vanity cost on the token address: each try hashes the whole token init code (a few KB), roughly
+2,000 tries per second per core. `f00d` alone is seconds; five characters is minutes; six is one to two hours.
+
+Announce the CA ahead of time once `mine` has it: nobody else can take it, and the 5-second opening
+tax makes sniping pointless.
 
 ## Before launch, once
 
