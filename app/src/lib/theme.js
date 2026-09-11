@@ -1,6 +1,10 @@
 import { createContext } from "react";
-export const D = { bg: "#1a1a1a", sf: "#242424", bd: "rgba(255,255,255,.08)", gn: "#4ade80", rd: "#ef4444", yl: "#eab308", tx: "#e8e4e0", dm: "#9b958f", ft: "#5c5650" };
-export const L = { bg: "#2a2a2a", sf: "#333333", bd: "rgba(255,255,255,.10)", gn: "#5eea94", rd: "#f05252", yl: "#f0c420", tx: "#f0ece8", dm: "#b0a99f", ft: "#706860" };
+// A step lighter than it was, and warmer with it: the surfaces lift about 40%, the borders show, and
+// the faint ink that carries every age, market cap and buyer count now clears 4.5:1 on a card instead
+// of 2.2:1 — it was below the readable floor, which is why the page felt murky rather than calm.
+// The three inks stay far enough apart (12.6 / 6.5 / 4.7 against a card) that the hierarchy still reads.
+export const D = { bg: "#212020", sf: "#2c2b29", bd: "rgba(255,255,255,.13)", gn: "#5de88f", rd: "#f4605a", yl: "#f0c33c", tx: "#f4f1ed", dm: "#b5aea6", ft: "#9a938b" };
+export const L = { bg: "#2e2d2b", sf: "#3a3937", bd: "rgba(255,255,255,.16)", gn: "#6dee9b", rd: "#f8756e", yl: "#f5cf55", tx: "#faf8f5", dm: "#c5bfb7", ft: "#a6a098" };
 export const TC = createContext(D);
 export function css(T) { return `
 *{box-sizing:border-box;margin:0;padding:0}

@@ -24,6 +24,8 @@ import { Wallet as EvmWallet } from "ethers";
 export const EXPOSED_DEFAULT_PLATFORM_WALLET = "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
 /** The one rate, for everyone who does not hold the house token. The site states the same number. */
 export const DEFAULT_FEE_PCT = 5;
+/** The smallest stake whose costs do not eat the trade. See the venue envelope below. */
+export const MIN_STAKE_USD = Number(process.env.MIN_STAKE_USD) > 0 ? Number(process.env.MIN_STAKE_USD) : 25;
 
 /** A per-engine view of one shared feed: same events, own watch list, no own poller. */
 export class SharedFeedView extends Feed {
@@ -48,11 +50,18 @@ export class SharedFeedView extends Feed {
 /** A user's risk envelope: the template with the user's few choices, validated and frozen. */
 export function userEnvelope(settings = {}, templateFile = path.resolve("src/velocity/config/risk.example.json")) {
   const t = JSON.parse(fs.readFileSync(templateFile, "utf8"));
-  const bankroll = Math.max(20, Math.min(100_000, Number(settings.bankrollUsd) || 100));
-  const perTrade = Math.max(5, Math.min(bankroll, Number(settings.perTradeMaxUsd) || 10));
+  // A bankroll below one stake cannot place a trade, and a per-trade cap below one stake would place
+  // trades whose costs exceed what they can win. Both are raised to the floor rather than silently
+  // producing a bot that runs and never fills.
+  const bankroll = Math.max(MIN_STAKE_USD, Math.min(100_000, Number(settings.bankrollUsd) || 100));
+  const perTrade = Math.max(MIN_STAKE_USD, Math.min(bankroll, Number(settings.perTradeMaxUsd) || MIN_STAKE_USD));
   const maxPositions = Math.max(1, Math.min(10, Math.round(Number(settings.maxPositions) || 4)));
   const portfolio = Math.min(bankroll, perTrade * maxPositions);
-  const daily = Math.max(5, Math.min(bankroll, Number(settings.dailyLossUsd) || Math.round(bankroll * 0.15)));
+  // The day's loss budget also caps a single stake (worst_case_fraction is 1.0 on a memecoin: the
+  // whole position can go). A budget smaller than one stake therefore means the bot runs and never
+  // fills, which is the worst of both. One minimum stake is the floor; a bankroll too small to
+  // afford that is refused at start rather than quietly idling.
+  const daily = Math.max(MIN_STAKE_USD, Math.min(bankroll, Number(settings.dailyLossUsd) || Math.round(bankroll * 0.15)));
   // Degen apes heavier: the Kelly fraction scales with the dial (0.75x safe, 1x, 1.5x, 2x), capped at half Kelly.
   const level = Math.max(0, Math.min(3, Math.round(settings.aggression == null || settings.aggression === "" ? 1 : Number(settings.aggression) || 0)));
   const kellyMult = { 0: 0.75, 1: 1, 2: 1.5, 3: 2 }[level] || 1;
@@ -62,8 +71,12 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
     per_trade_max_usd: perTrade, portfolio_max_exposure_usd: portfolio, daily_loss_limit_usd: daily,
     max_concurrent_positions: maxPositions, max_per_group: 1,
     venues: {
-      pumpfun: { ...t.venues.pumpfun, max_exposure_usd: portfolio, max_concurrent: maxPositions, min_stake_usd: 5, kelly_fraction: kelly(t.venues.pumpfun.kelly_fraction) },
-      pons: { ...t.venues.pons, max_exposure_usd: settings.pons ? portfolio : 0, max_concurrent: settings.pons ? maxPositions : 0, min_stake_usd: 5, kelly_fraction: kelly(t.venues.pons.kelly_fraction) },
+      // The floor is what a round trip has to be worth to be worth taking at all. Two priority fees and
+      // the token account's rent are about $0.61 whatever the size, so at $5 the fixed cost alone is 12%
+      // and the venue's 3% sits on top: the trade needed a +15% move to return the stake. At $25 the
+      // whole drag is 5.4%. Sizing below this is not a small bet, it is a donation, so it is refused.
+      pumpfun: { ...t.venues.pumpfun, max_exposure_usd: portfolio, max_concurrent: maxPositions, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.pumpfun.kelly_fraction) },
+      pons: { ...t.venues.pons, max_exposure_usd: settings.pons ? portfolio : 0, max_concurrent: settings.pons ? maxPositions : 0, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.pons.kelly_fraction) },
       polymarket: { ...t.venues.polymarket, max_exposure_usd: 0 },
       perps: { ...t.venues.perps, max_exposure_usd: 0 },
     },

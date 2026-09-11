@@ -20,6 +20,7 @@
 //
 // .env in this folder (never committed): PRIVATE_KEY=0x…  PONS_RPC_URL=https://robinhood-mainnet.g.alchemy.com/v2/…
 // Any CONFIG key can be overridden with FLY_<KEY> in the environment. Nothing is signed except by `launch`.
+import { fastPredictor, byteMatcher } from "./vanity.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -32,9 +33,9 @@ const CONFIG = {
   TOKEN_SYMBOL: "NOTAFRUITFLY",
   LOGO: "https://bondli.fun/fly.png",             // set to the image URL you upload for the launch
   DESCRIPTION: "flybrain is a fruit fly. this is not. Bondli's own token.",
-  TWITTER: "https://x.com/shitanalystXBT",        // TokenParams.socials: five strings, each baked into the address
+  TWITTER: "https://x.com/notafruitfly",          // TokenParams.socials: five strings, each baked into the address
   TELEGRAM: "",
-  DISCORD: "",
+  DISCORD: "https://discord.gg/SHueKKXRkv",
   WEBSITE: "https://bondli.fun",
   FARCASTER: "",
   DEV_BUY_ETH: "0.02",                            // quoteIn on launchAndBuy, exempt from the opening tax; msg.value = launchFee + quoteIn
@@ -43,11 +44,15 @@ const CONFIG = {
   MINE_MODE: "auto",                              // auto: offline when a template exists, else on chain. offline | onchain
   ONCHAIN_BATCH: 50,                              // predictLaunchAddresses calls per JSON-RPC batch when mining on chain
   ONCHAIN_PARALLEL: 6,
+  // The creator tax is yours, forever, on every buy and every sell of this token, paid to
+  // creatorFeeRecipient (the launch wallet). Zero means the token never pays you anything. It is baked
+  // into the address like everything else here, so it has to be decided BEFORE mining: changing it
+  // afterwards throws the mined salt away. 100 = 1%. `inspect` and `mine` both say what it is set to.
   CREATOR_TAX_BPS: 0,
   BUYBACK_ENABLED: true,
-  VANITY_PREFIX: "",                              // hex only. "f00d" alone: seconds. 5 characters: minutes. 6: an hour or two.
-  VANITY_SUFFIX: "f00d",
-  VANITY_MAX_SECONDS: 7200,
+  VANITY_PREFIX: "",                              // hex only, and every character multiplies the work by 16
+  VANITY_SUFFIX: "000000",                        // 4: seconds. 5: under a minute. 6: about 43 core-minutes.
+  VANITY_MAX_SECONDS: 21600,                      // six hours: six zeros on two slow cores still finishes
   CHAIN_ID: 4663,
   RPC_FALLBACK: "https://rpc.mainnet.chain.robinhood.com",
   FACTORY: "0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e",
@@ -301,7 +306,7 @@ async function offline(tpl, deployerIface, wallet) {
     const token = getCreate2Address(cfg("DEPLOYER"), salt, keccak256(concat([tok.creation, tokenArgsFor(curve)])));
     return { salt, curve, token };
   };
-  return { predict, tokenCreation: tok.creation, curveHash, supply: tok.args[8].toString(), tokenTypes, socials, curveInitLen: (curveInit.length - 2) / 2 };
+  return { predict, tokenCreation: tok.creation, curveHash, argsWithCurve: tokenArgsFor, supply: tok.args[8].toString(), tokenTypes, socials, curveInitLen: (curveInit.length - 2) / 2 };
 }
 
 async function onChainPredict(p, deployerIface, wallet, userSalt, extra = {}) {
@@ -369,7 +374,15 @@ async function cmdMine(p) {
     console.log(`offline  salt ${trial}: token ${mine.token} curve ${mine.curve}`);
     console.log(`deployer salt ${trial}: token ${chain.token} curve ${chain.curve}`);
     if (mine.token.toLowerCase() !== chain.token.toLowerCase() || mine.curve.toLowerCase() !== chain.curve.toLowerCase()) die("offline prediction disagrees with the deployer. Nothing mined. Likely a struct field the script filled differently from CONFIG (run `inspect`), or a constructor layout change; fix and rerun, or set FLY_MINE_MODE=onchain.");
-    console.log("offline math matches the deployer. grinding for 0x" + prefix + "…" + suffix + ` (${expected.toLocaleString()} tries expected)`);
+    // …and the fast byte-level grinder must reproduce the slow path, or the workers are grinding for
+    // an address nobody will ever deploy. Cheap to check, so check a spread of salts, not one.
+    const fast = fastPredictor({ tokenCreation: off.tokenCreation, argsWithCurve: off.argsWithCurve, curveHash: off.curveHash, wallet, deployer: cfg("DEPLOYER") });
+    for (const probe of [1n, 7n, 4096n, 1_000_003n, 0xffffffffn]) {
+      const slow = off.predict(probe).token.toLowerCase(), quick = "0x" + Buffer.from(fast(probe)).toString("hex");
+      if (slow !== quick) die(`the fast grinder disagrees with the checked prediction at salt ${probe}: ${quick} vs ${slow}. Nothing mined.`);
+    }
+    console.log(`fast grinder agrees with it on 5 salts. grinding for 0x${prefix}…${suffix} (${expected.toLocaleString()} tries expected)`);
+    console.log(`baking in: ${cfg("TOKEN_NAME")} ($${cfg("TOKEN_SYMBOL")}), creator tax ${cfg("CREATOR_TAX_BPS")} bps${Number(cfg("CREATOR_TAX_BPS")) === 0 ? "  ← ZERO: this token will never pay you a thing. FLY_CREATOR_TAX_BPS=100 is 1% of every trade, forever, and it must be set before mining." : ` (${(Number(cfg("CREATOR_TAX_BPS")) / 100).toFixed(2)}% of every buy and sell, to ${wallet})`}, buyback ${cfg("BUYBACK_ENABLED")}, socials ${[cfg("TWITTER"), cfg("TELEGRAM"), cfg("DISCORD"), cfg("WEBSITE"), cfg("FARCASTER")].filter(Boolean).join(" ") || "none"}`);
     found = await grind({ off, prefix, suffix, wallet, tokenCreation: off.tokenCreation, curveHash: off.curveHash, supply: off.supply, tokenTypes: off.tokenTypes, socials: off.socials }, cfg("VANITY_MAX_SECONDS"));
   } else {
     const trial = await onChainPredict(p, deployer, wallet, 7n, extra);
@@ -413,12 +426,11 @@ function grind(job, maxSeconds) {
 if (!isMainThread && workerData?.role === "grind") {
   const d = workerData, c = d.cfg;
   const tokenArgsFor = (curve) => coder.encode(d.tokenTypes, [c.TOKEN_NAME, c.TOKEN_SYMBOL, c.LOGO, c.DESCRIPTION, d.socials, d.wallet, curve, c.FACTORY, BigInt(d.supply)]);
+  const tokenFor = fastPredictor({ tokenCreation: d.tokenCreation, argsWithCurve: tokenArgsFor, curveHash: d.curveHash, wallet: d.wallet, deployer: c.DEPLOYER });
+  const matches = byteMatcher(d.prefix, d.suffix);
   parentPort.on("message", ({ start, count }) => {
     for (let s = BigInt(start), end = BigInt(start) + BigInt(count); s < end; s++) {
-      const salt = keccak256(coder.encode(["address", "bytes32"], [d.wallet, zeroPadValue(toBeHex(s), 32)]));
-      const curve = getCreate2Address(c.DEPLOYER, salt, d.curveHash);
-      const token = getCreate2Address(c.DEPLOYER, salt, keccak256(concat([d.tokenCreation, tokenArgsFor(curve)]))).slice(2).toLowerCase();
-      if (token.startsWith(d.prefix) && token.endsWith(d.suffix)) return parentPort.postMessage({ found: s.toString() });
+      if (matches(tokenFor(s))) return parentPort.postMessage({ found: s.toString() });
     }
     parentPort.postMessage({ count });
   });
