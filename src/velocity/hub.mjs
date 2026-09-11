@@ -87,6 +87,7 @@ export class VelocityHub {
     this.clock = clock; this.log = log;
     this.users = new Map(); // wallet -> { engine, sup, view, settings, startedAt }
     this._sweeps = new Map(); // wallet -> running or finished sweep job
+    this._holdingsCache = new Map();
     this.feeOk = !!this.platformWallet;
     if (!this.feeOk) log.error?.(`[VELOCITY-HUB] PLATFORM_WALLET is unset: SOL performance fees will NOT be collected`);
     else if (this.platformWallet === EXPOSED_DEFAULT_PLATFORM_WALLET) log.warn?.(`[VELOCITY-HUB] PLATFORM_WALLET is the original wallet whose key was once exposed in a chat: fees go there by the operator's choice; sweep it often`);
@@ -232,6 +233,64 @@ export class VelocityHub {
   }
   _sweepView(j) { return j ? { startedAt: j.startedAt, done: j.done, finishedAt: j.finishedAt, chain: j.chain, sold: j.report.filter(r => r.ok).length, failed: j.report.filter(r => !r.ok).length, report: j.report, error: j.error, current: j.current || null } : null; }
 
+  /** Every token both wallets hold, with what is known about each: name, curve state, what a sell
+   *  would fetch. Works with the bot stopped (routers built from the keys). Cached 20 seconds. */
+  async listHoldings(wallet, { secret = null, evmSecret = null } = {}) {
+    const cached = this._holdingsCache.get(wallet);
+    if (cached && Date.now() - cached.at < 20_000) return cached.data;
+    const u = this.users.get(wallet);
+    const out = { at: Date.now(), sol: [], eth: [], errors: [] };
+    const open = new Map(u ? u.engine.store.openPositions().map(p => [p.venue + ":" + p.instrument.toLowerCase(), p]) : []);
+    const solRouter = u?.engine.venues.pumpfun?.liveRouter || (secret ? this.makeLiveRouter({ secret, wallet }) : null);
+    if (solRouter) {
+      try {
+        if (!solRouter.ready) await solRouter.init();
+        const solPrice = this.feed?.solPrice || 0;
+        for (const h of await solRouter.positions()) {
+          if (!(h.qty >= 1)) continue;
+          const t = this.feed?.tokens?.get?.(h.instrument) || null, p = open.get("pumpfun:" + h.instrument.toLowerCase());
+          const valueUsd = t?.mcapUsd > 0 ? +(h.qty / 1e9 * t.mcapUsd).toFixed(2) : null;
+          out.sol.push({ venue: "pumpfun", instrument: h.instrument, qty: h.qty, name: t?.name || p?.reference?.name || "", ticker: t?.ticker || p?.reference?.ticker || "", state: t?.graduated ? "graduated" : t ? "curve" : "unknown", valueUsd, tracked: !!p, positionId: p?.id || null, url: `https://pump.fun/coin/${h.instrument}` });
+        }
+      } catch (err) { out.errors.push(`solana: ${err.message}`); }
+    }
+    const ethRouter = u?.engine.venues.pons?.liveRouter || (evmSecret ? this.makePonsRouter({ secret: evmSecret, wallet }) : null);
+    const rpc = this.ponsFeed?.rpc;
+    if (ethRouter && rpc) {
+      try {
+        if (!ethRouter.ready) await ethRouter.init();
+        const ethPrice = this.ponsFeed?.solPrice || 0;
+        let held = [];
+        try { held = await rpc.walletTokens(ethRouter.address); } catch (err) { out.errors.push(`robinhood listing: ${err.message}`); }
+        if (u) u.engine.seedRouterKnowledge("pons"); else for (const inst of this._instrumentsFromDisk(wallet, "pons")) ethRouter.track?.(inst);
+        for (const p of await ethRouter.positions()) if (!held.some(h => h.instrument.toLowerCase() === p.instrument.toLowerCase())) held.push(p);
+        const { curveSellQuote, mcapQuote, curveProgress } = await import("./venues/pons/chain.mjs");
+        for (const h of held) {
+          if (!(h.qty >= 1)) continue;
+          const inst = h.instrument.toLowerCase(), p = open.get("pons:" + inst), feedTok = this.ponsFeed?.tokens?.get(inst);
+          const row = { venue: "pons", instrument: inst, qty: h.qty, name: feedTok?.name || p?.reference?.name || h.name || "", ticker: feedTok?.ticker || p?.reference?.ticker || h.symbol || "", state: "unknown", valueUsd: null, tracked: !!p, positionId: p?.id || null, url: (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}").replace("{ca}", inst), explorer: `https://robinhoodchain.blockscout.com/token/${inst}` };
+          try {
+            if (!row.name && rpc.tokenMeta) { const m = await rpc.tokenMeta(inst); row.name = m.name || ""; row.ticker = m.symbol || ""; }
+            const info = await rpc.launchInfo(inst);
+            if (!info) row.state = "not a PONS launch";
+            else if (info.graduated) { row.state = "graduated"; row.curve = info.curve; }
+            else {
+              row.state = "curve"; row.curve = info.curve;
+              const ci = await rpc.curveInfo(info.curve);
+              row.curvePct = +curveProgress(ci.realQuoteReserve, ci.graduationThreshold).toFixed(3);
+              row.mcapUsd = Math.round(mcapQuote(ci) * ethPrice);
+              const q = curveSellQuote(ci, h.qty, ci.feeBps + ci.creatorTaxBps);
+              row.sellEth = +q.quoteOut.toFixed(6); row.valueUsd = +(q.quoteOut * ethPrice).toFixed(2);
+            }
+          } catch (err) { row.note = err.message.slice(0, 80); }
+          out.eth.push(row);
+        }
+      } catch (err) { out.errors.push(`robinhood: ${err.message}`); }
+    }
+    this._holdingsCache.set(wallet, { at: Date.now(), data: out });
+    return out;
+  }
+
   /** Sell one token the wallet holds, tracked or not, straight through the router. */
   async sellHolding(wallet, { venue, instrument, pct = 100, secret = null, evmSecret = null }) {
     const u = this.users.get(wallet);
@@ -244,6 +303,7 @@ export class VelocityHub {
     const price = venue === "pons" ? (this.ponsFeed?.solPrice || 0) : (this.feed?.solPrice || 0);
     const r = await router.close({ id: `sell:${inst}`, instrument: inst }, pct, { reference: { solPrice: price } });
     u?.engine.log("info", `sell ${inst.slice(0, 10)} (${venue}): ${r?.ok ? `sold for ${(r.fill.sol_received ?? 0).toFixed(venue === "pons" ? 5 : 4)} ${venue === "pons" ? "ETH" : "SOL"}` : `${r?.failure?.code || ""} ${r?.failure?.reason || "failed"}`}`);
+    this._holdingsCache.delete(wallet);
     if (u) { try { await u.engine.refreshWallet(); } catch {} }
     return r?.ok ? { ok: true, received: r.fill.sol_received ?? null, proceeds_usd: r.fill.notional_usd ?? null } : { ok: false, error: r?.failure?.reason || "sell failed", code: r?.failure?.code || null };
   }
@@ -301,6 +361,7 @@ export class VelocityHub {
       } catch (err) { report.push({ venue: "pons", instrument: null, ok: false, error: err.message }); }
     }
     if (job) job.current = null;
+    this._holdingsCache.delete(wallet);
     if (u) { try { await u.engine.refreshWallet(); } catch {} }
     return { ok: true, sold: report.filter(r => r.ok).length, failed: report.filter(r => !r.ok).length, report };
   }
@@ -342,6 +403,13 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
       const tw = await getTradingWallet(wallet);
       if (!tw?.secret) return res.status(400).json({ error: "No trading wallet" });
       res.json(hub.startSweep(wallet, { secret: tw.secret, evmSecret: tw.evmSecret || null, chain: chain || "all" }));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+  app.get("/api/velocity/holdings", requireOwner, async (req, res) => {
+    try {
+      const wallet = req.query.wallet; const tw = await getTradingWallet(wallet);
+      if (!tw?.secret) return res.status(400).json({ error: "No trading wallet" });
+      res.json({ ok: true, holdings: await hub.listHoldings(wallet, { secret: tw.secret, evmSecret: tw.evmSecret || null }) });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
   app.get("/api/velocity/sweep", requireOwner, (req, res) => res.json({ ok: true, sweep: hub._sweepView(hub._sweeps.get(req.query.wallet)) }));
