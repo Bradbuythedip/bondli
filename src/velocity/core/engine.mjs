@@ -19,13 +19,16 @@ import { LatencyHistogram } from "./events.mjs";
 import { statsFromOutcomes } from "./stats.mjs";
 import { promotionGate } from "./promote.mjs";
 
+/** Gate-1 flags that describe the token, not the last minute: a reject on these stands. */
+export const FATAL_FLAGS = new Set(["SERIAL_LAUNCHER", "SERIAL_RUGGER", "DEV_SELF_SNIPE", "FREEZE_AUTHORITY", "STOLEN_ART", "TOO_LATE"]);
+
 export class Engine extends EventEmitter {
   constructor({ dataDir, envelope, venues = {}, clock = () => Date.now(), config = {}, alerter = null }) {
     super();
     this.dataDir = dataDir;
     this.env = envelope;
     this.clock = clock;
-    this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000, failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, ...config };
+    this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000, failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000, ...config };
     this.ledger = new Ledger(path.join(dataDir, "ledger.jsonl"), { now: clock });
     this.store = new Store(path.join(dataDir, "state.json"), { now: clock });
     this.weights = new WeightStore(path.join(dataDir, "weights"));
@@ -44,7 +47,7 @@ export class Engine extends EventEmitter {
     this.blocked = {};          // venue -> reason from the supervisor (feed stale, router down)
     this.inflight = new Set();  // instruments with an order in flight
     this.cooldown = new Map();  // instrument -> until
-    this.disqualified = new Map(); // instrument -> until; a fatal gate-1 reject is not re-judged every poll
+    this.disqualified = new Map(); // instrument -> until; a gate-1 reject is not re-judged every poll (see FATAL_FLAGS)
     this.pendingBuys = new Map();  // instrument -> { sig, decision, orderId, stake, sizing, at }: sent, not yet confirmed
     this.wallet = { sol: null, usd: null, solPrice: null, at: 0, venue: null }; // last live wallet reading (bankroll_source: wallet)
     this._lastSweepTry = new Map();
@@ -279,7 +282,15 @@ export class Engine extends EventEmitter {
     const decisions = v.runner.run(event, { governor: gov, stats: this.stats, weights: { pumpfun: this.weights.current().weights } });
     const decideMs = performance.now() - t0;
     for (const d of decisions) {
-      if (d.action === "REJECT" && d.gate === "disqualifiers") this.disqualified.set(d.instrument, event.t_observed + this.cfg.disqualifyMs);
+      // A rug flag that cannot change (dev self-sniped, serial rugger, frozen, stolen art) is final for
+      // disqualifyMs. Every other gate-1 flag is a reading of the last minute of trades, and the first
+      // minute is when they are noisiest: a token rejected for QUICK_FLIP at 40 seconds is re-judged
+      // rejudgeMs later, when it has the trades to be judged on. A 5-minute blacklist here was the
+      // difference between seeing a runner and missing it.
+      if (d.action === "REJECT" && d.gate === "disqualifiers") {
+        const fatal = (d.reasons || []).some(r => FATAL_FLAGS.has(String(r)));
+        this.disqualified.set(d.instrument, event.t_observed + (fatal ? this.cfg.disqualifyMs : this.cfg.rejudgeMs));
+      }
       this.latency[venue].decide.record(decideMs);
       d.decide_ms = +decideMs.toFixed(3);
       this.ledger.append({ kind: "decision", venue, id: d.id, decisionId: d.id, ...d });

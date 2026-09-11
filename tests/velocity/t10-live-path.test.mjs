@@ -695,3 +695,33 @@ test("T10: a production-shaped candidate (no enrichment, tier 3) is a GO; missin
   // The designed level keeps its 0.5 floor.
   assert.equal(new GateRunner({ venue: "pumpfun", edge: makePumpfunEdge({ aggression: 1 }) }).minConfidence, 0.5);
 });
+
+test("T10: a transient gate-1 reject is re-judged after 30s; a fatal one stands for 5 minutes", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  const engine = mkEngine(dir, { envelope: env, mode: "paper", feed });
+  try {
+    await feed.start(); await engine.start();
+    const t0 = Date.now();
+    const rejects = () => engine.ledger.query({ kind: "decision", limit: 50 }).filter(d => d.action === "REJECT");
+    // Minute one: quick flips everywhere, so QUICK_FLIP fires. A reading of the last minute, not a verdict on the token.
+    const flip = goodCandidatePayload("MintFlip"); flip.qf = { ...flip.qf, _rg_quickFlipRate: 0.6 };
+    feed.emitEvent({ kind: "candidate", id: "MintFlip", payload: flip, t_venue: t0 }); await engine.enqueue(() => {});
+    assert.equal(rejects().filter(d => d.instrument === "MintFlip").length, 1);
+    // 10 seconds later, same token, now clean: still inside the cooldown, not re-judged.
+    feed.emitEvent({ kind: "candidate", id: "MintFlip", payload: goodCandidatePayload("MintFlip"), t_venue: t0 + 10_000, t_observed: t0 + 10_000 }); await engine.enqueue(() => {});
+    assert.equal(engine.ledger.query({ kind: "decision", limit: 50 }).filter(d => d.instrument === "MintFlip").length, 1);
+    // 35 seconds later: re-judged, and this time it is a GO.
+    const fresh = goodCandidatePayload("MintFlip"); fresh.scores.scoreTimestamp = t0 + 35_000;
+    feed.emitEvent({ kind: "candidate", id: "MintFlip", payload: fresh, t_venue: t0 + 35_000, t_observed: t0 + 35_000 }); await engine.enqueue(() => {});
+    const ds = engine.ledger.query({ kind: "decision", limit: 50 }).filter(d => d.instrument === "MintFlip");
+    assert.equal(ds.length, 2); assert.equal(ds.find(d => d.action === "GO")?.action, "GO", JSON.stringify(ds.map(d => [d.action, d.gate, d.reasons])));
+    // A dev self-snipe is the token, not the minute: rejected at t0, silent at t0+35s, judged again only after 5 minutes.
+    const snipe = goodCandidatePayload("MintSnipe"); snipe.qf = { ...snipe.qf, _rg_devSelfSnipe: 1 };
+    feed.emitEvent({ kind: "candidate", id: "MintSnipe", payload: snipe, t_venue: t0, t_observed: t0 }); await engine.enqueue(() => {});
+    feed.emitEvent({ kind: "candidate", id: "MintSnipe", payload: goodCandidatePayload("MintSnipe"), t_venue: t0 + 35_000, t_observed: t0 + 35_000 }); await engine.enqueue(() => {});
+    assert.equal(engine.ledger.query({ kind: "decision", limit: 50 }).filter(d => d.instrument === "MintSnipe").length, 1);
+    feed.emitEvent({ kind: "candidate", id: "MintSnipe", payload: goodCandidatePayload("MintSnipe"), t_venue: t0 + 6 * 60_000, t_observed: t0 + 6 * 60_000 }); await engine.enqueue(() => {});
+    assert.equal(engine.ledger.query({ kind: "decision", limit: 50 }).filter(d => d.instrument === "MintSnipe").length, 2);
+  } finally { await engine.stop(); await feed.stop(); }
+});
