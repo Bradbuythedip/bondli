@@ -3,7 +3,7 @@
 // spent and received, gas included, and reference.solPrice is the ETH price in USD.
 import { Wallet, JsonRpcProvider, Contract, MaxUint256 } from "ethers";
 import { PaperRouter, Router, failure } from "../../core/router.mjs";
-import { CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, CHAIN_ID, curveBuyQuote, curveSellQuote, decodeLog, toEth, toWei, toTokens, TOKEN_DECIMALS } from "./chain.mjs";
+import { FACTORY, FACTORY_ABI, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, CHAIN_ID, curveBuyQuote, curveSellQuote, decodeLog, toEth, toWei, toTokens, TOKEN_DECIMALS } from "./chain.mjs";
 
 const PRICE_MAX_AGE_MS = 5 * 60_000;
 const DEFAULT_RESERVES = { quoteReserve: 3, tokenReserve: 1_000_000_000, feeBps: 100, creatorTaxBps: 0 };
@@ -41,7 +41,7 @@ export class PonsLiveRouter extends Router {
     super({ venue: "pons", mode: "live", clock });
     this.secret = secret; this.rpcUrl = rpcUrl; this.provider = provider; this.slippagePct = slippagePct; this.confirmTimeoutMs = confirmTimeoutMs;
     this.gasLimitBuy = gasLimitBuy; this.gasLimitSell = gasLimitSell;
-    this.ready = false; this.address = null; this.known = new Set(); // tokens this wallet has been told about (EVM has no account enumeration)
+    this.ready = false; this.address = null; this.known = new Set(); this._curves = new Map(); // tokens this wallet has been told about (EVM has no account enumeration)
   }
 
   async init() {
@@ -119,43 +119,83 @@ export class PonsLiveRouter extends Router {
     }
   }
 
+  /** The curve behind a token, from the position, the reference, or the factory (an adopted position
+   *  can carry none). Remembered per token. */
+  async _curveFor(instrument, hint = null) {
+    const key = String(instrument).toLowerCase();
+    if (hint) { this._curves.set(key, String(hint).toLowerCase()); return this._curves.get(key); }
+    if (this._curves.has(key)) return this._curves.get(key);
+    const f = new Contract(FACTORY, FACTORY_ABI, this.provider);
+    const r = await f.getLaunchedToken(instrument);
+    const curve = String(r.curve || r[1] || "").toLowerCase();
+    if (!curve || /^0x0+$/.test(curve)) return null;
+    this._curves.set(key, curve);
+    return curve;
+  }
+
+  /** What the curve says right now: reserves and fees for the quote, graduated for the refusal. */
+  async _curveNow(curveAddr) {
+    const c = new Contract(curveAddr, CURVE_ABI, this.provider);
+    const [[q, t], feeBps, taxBps, graduated] = await Promise.all([c.getReserves(), c.feeBps().catch(() => 0n), c.creatorTaxBps().catch(() => 0n), c.graduated().catch(() => false)]);
+    return { quoteReserve: toEth(q), tokenReserve: toTokens(t), feeBps: Number(feeBps) + Number(taxBps), graduated: !!graduated };
+  }
+
+  /** Sell pct of what the wallet holds. Sizes from the wallet's exact balance (a float rounding up
+   *  by one unit would revert), quotes from the curve as it is now (not a stale reference), dry-runs
+   *  the sell before paying gas so a revert comes back with its reason instead of a burned fee,
+   *  and lets the node estimate gas. */
   async close(position, pct = 100, ctx = {}) {
     if (!this.ready) return failure({ id: position.id }, "NOT_READY", "call init() first");
-    const ref = ctx.reference || position.reference || {}, price = Number(ref.solPrice) || 0, curveAddr = ref.curve?.address || position.curve;
-    if (!curveAddr) return failure({ id: position.id }, "NO_CURVE", "position has no bonding curve address");
+    const ref = ctx.reference || position.reference || {}, price = Number(ref.solPrice) || 0;
+    let curveAddr = ref.curve?.address || position.curve || null;
     const t_sent = this.clock();
     let hash = null;
     try {
+      if (!curveAddr) { curveAddr = await this._curveFor(position.instrument).catch(() => null); if (!curveAddr) return failure({ id: position.id }, "NO_CURVE", "the factory does not know this token; not a PONS launch, sell by hand"); }
+      else this._curveFor(position.instrument, curveAddr);
+      this.track(position.instrument);
       if (position.pendingExit?.sig) {
         const prev = await this.resolvePending({ instrument: position.instrument, side: "SELL", sig: position.pendingExit.sig, at: position.pendingExit.at, reference: { ...ref, solPrice: price }, curve: curveAddr });
         if (prev.ok) return { ...prev, fill: { ...prev.fill, orderId: `${position.id}:close`, decisionId: position.decisionId, pending_pct: Number(position.pendingExit.pct) || 100 } };
         if (!prev.failure.expired) return prev;
       }
-      const held = await this._tokenBalance(position.instrument);
-      if (!(held > 0)) return failure({ id: position.id }, "NO_POSITION", "no token balance to sell");
-      const curveRead = new Contract(curveAddr, CURVE_ABI, this.provider);
-      if (await curveRead.graduated().catch(() => false)) return failure({ id: position.id }, "GRADUATED", "the curve has graduated to a Uniswap V4 pool; sell by hand on PONS (export the key into Rabby)");
-      const p = Math.min(100, Math.max(1, Math.round(pct)));
-      const tokensIn = held * p / 100;
-      const units = BigInt(Math.floor(tokensIn * 1e6)) * 10n ** BigInt(TOKEN_DECIMALS - 6);
       const token = new Contract(position.instrument, ERC20_ABI, this.wallet);
-      const allowance = await token.allowance(this.address, curveAddr);
-      if (allowance < units) { const a = await token.approve(curveAddr, MaxUint256); await this._waitReceipt(a.hash, this.confirmTimeoutMs); }
-      const r = reserves(ref);
+      const balUnits = BigInt(await token.balanceOf(this.address));
+      if (!(balUnits > 0n)) return failure({ id: position.id }, "NO_POSITION", "no token balance to sell");
+      const held = toTokens(balUnits);
+      const now = await this._curveNow(curveAddr);
+      if (now.graduated) return failure({ id: position.id }, "GRADUATED", "the curve has graduated to a Uniswap V4 pool; sell by hand on PONS (export the key into Rabby)");
+      const p = Math.min(100, Math.max(1, Math.round(pct)));
+      const units = p >= 100 ? balUnits : balUnits * BigInt(p) / 100n;
+      const tokensIn = toTokens(units);
+      if (!(units > 0n)) return failure({ id: position.id }, "NO_POSITION", "nothing left to sell at that share");
+      const allowance = BigInt(await token.allowance(this.address, curveAddr));
+      if (allowance < units) {
+        const a = await token.approve(curveAddr, MaxUint256);
+        const ar = await this._waitReceipt(a.hash, this.confirmTimeoutMs);
+        if (!ar) return failure({ id: position.id }, "UNCONFIRMED", `approve ${a.hash} not confirmed within ${this.confirmTimeoutMs}ms`, { venue_ref: a.hash, t_sent });
+        if (ar.status === 0) return failure({ id: position.id }, "SEND_FAILED", `approve ${a.hash} reverted`, { venue_ref: a.hash });
+      }
+      const r = now.tokenReserve > 0 ? now : reserves(ref);
       const q = curveSellQuote(r, tokensIn, r.feeBps);
-      const minOut = toWei(Math.max(0, q.quoteOut * (1 - this.slippagePct / 100)));
+      const minOut = toWei(Math.max(0, (q.quoteOut || 0) * (1 - this.slippagePct / 100)));
       const curve = new Contract(curveAddr, CURVE_ABI, this.wallet);
-      const tx = await curve.sell(units, minOut, this.address, { gasLimit: this.gasLimitSell });
+      // Dry run: a revert here costs nothing and says why.
+      try { await curve.sell.staticCall(units, minOut, this.address); }
+      catch (err) { return failure({ id: position.id }, "REVERT", `sell would revert: ${err.reason || err.shortMessage || err.message}`.slice(0, 300)); }
+      let gasLimit = this.gasLimitSell;
+      try { const est = await curve.sell.estimateGas(units, minOut, this.address); gasLimit = est * 13n / 10n; if (gasLimit < this.gasLimitSell) gasLimit = this.gasLimitSell; } catch {}
+      const tx = await curve.sell(units, minOut, this.address, { gasLimit });
       hash = tx.hash;
       const receipt = await this._waitReceipt(hash, this.confirmTimeoutMs);
       if (!receipt) return failure({ id: position.id }, "UNCONFIRMED", `tx ${hash} not confirmed within ${this.confirmTimeoutMs}ms`, { venue_ref: hash, t_sent });
       const d = this._receiptDeltas(receipt, curveAddr);
-      if (d.reverted) return failure({ id: position.id }, "SEND_FAILED", `tx ${hash} reverted`, { venue_ref: hash });
+      if (d.reverted) return failure({ id: position.id }, "SEND_FAILED", `tx ${hash} reverted`, { venue_ref: hash, fee_usd: d.gasEth * price });
       const t_filled = this.clock();
       const qty = d.trade?.tokens || tokensIn, got = Math.max(0, (d.trade ? d.trade.quote : q.quoteOut) - d.gasEth);
-      return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "pons", instrument: position.instrument, side: "SELL", price: qty > 0 ? (got * price) / qty : 0, qty, notional_usd: +(got * price).toFixed(4), slippage_bps: null, fee_usd: +(((d.trade?.fee || 0) + (d.trade?.tax || 0) + d.gasEth) * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: hash, sol_received: got, exact: !!d.trade } };
+      return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "pons", instrument: position.instrument, side: "SELL", price: qty > 0 ? (got * price) / qty : 0, qty, notional_usd: +(got * price).toFixed(4), slippage_bps: null, fee_usd: +(((d.trade?.fee || 0) + (d.trade?.tax || 0) + d.gasEth) * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: hash, sol_received: got, exact: !!d.trade, held_before: held } };
     } catch (err) {
-      return failure({ id: position.id }, "SEND_FAILED", err.shortMessage || err.message, hash ? { venue_ref: hash, t_sent } : {});
+      return failure({ id: position.id }, "SEND_FAILED", (err.reason || err.shortMessage || err.message || String(err)).slice(0, 300), hash ? { venue_ref: hash, t_sent } : {});
     }
   }
 

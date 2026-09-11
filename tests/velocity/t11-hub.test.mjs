@@ -206,5 +206,17 @@ test("T11: the sweep sells every token in both wallets: open positions through t
     assert.ok(r.report.some(x => x.instrument === "0xrandom" && /not a PONS launch/.test(x.error)));
     assert.ok(!r.report.some(x => x.instrument === "0xdust"), "dust is ignored");
     assert.equal(hub.users.get("UserS").engine.ledger.query({ kind: "exit", limit: 5 }).some(e => e.reason === "USER_SWEEP"), true);
+    // The same sweep as a background job: the call returns at once, status follows it, a second call while it runs joins it.
+    routers.UserS.tokens.MintOrphan2 = 2000; routers.evm.tokens["0xheld"] = 700;
+    const j = hub.startSweep("UserS", { secret: "sS", evmSecret: "0xkey" });
+    assert.equal(j.started, true); assert.equal(j.sweep.done, false);
+    assert.equal(hub.startSweep("UserS", { secret: "sS", evmSecret: "0xkey" }).started, false, "one sweep at a time");
+    for (let i = 0; i < 100 && !hub.status("UserS").sweep.done; i++) await new Promise(r => setTimeout(r, 20));
+    const sv = hub.status("UserS").sweep;
+    assert.equal(sv.done, true); assert.ok(sv.report.some(x => x.instrument === "MintOrphan2" && x.ok)); assert.ok(sv.report.some(x => x.instrument === "0xheld" && x.ok)); assert.equal(sv.current, null);
+    // One holding by itself, tracked or not, through the router
+    routers.evm.tokens["0xheld"] = 900;
+    const one = await hub.sellHolding("UserS", { venue: "pons", instrument: "0xheld", evmSecret: "0xkey" });
+    assert.equal(one.ok, true); assert.equal(one.received, 0.006); assert.equal(routers.evm.tokens["0xheld"], 0);
   } finally { await hub.stopAll(); await feed.stop(); await ponsFeed.stop(); }
 });
