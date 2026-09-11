@@ -25,12 +25,24 @@ export function ethersRpc(rpcUrl = process.env.PONS_RPC_URL || DEFAULT_RPC_URL) 
       const [name, symbol] = await Promise.all([c.name().catch(() => ""), c.symbol().catch(() => "")]);
       return { name, symbol };
     },
-    /** Every ERC-20 an address holds, from the chain's explorer (an EVM node cannot list them). */
+    /** Every ERC-20 an address holds. An EVM node cannot list them; the RPC provider's token-balance
+     *  method can (Alchemy), and the chain's explorer can. Whichever answers first wins; both failing throws. */
     async walletTokens(address) {
-      const r = await fetch(`${EXPLORER}/api/v2/addresses/${address}/tokens?type=ERC-20`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(10_000) });
-      if (!r.ok) throw new Error(`explorer ${r.status}`);
-      const d = await r.json();
-      return (d.items || []).map(i => ({ instrument: String(i.token?.address || "").toLowerCase(), qty: toTokens(BigInt(i.value || "0"), Number(i.token?.decimals ?? 18)), symbol: i.token?.symbol || "" })).filter(x => x.instrument && x.qty > 0);
+      const errors = [];
+      try {
+        const res = await provider.send("alchemy_getTokenBalances", [address, "erc20"]);
+        const rows = (res?.tokenBalances || []).filter(b => b.tokenBalance && b.tokenBalance !== "0x" && BigInt(b.tokenBalance) > 0n);
+        const out = [];
+        for (const b of rows) { let dec = 18; try { dec = Number(await new Contract(b.contractAddress, ERC20_ABI, provider).decimals()); } catch {} out.push({ instrument: String(b.contractAddress).toLowerCase(), qty: toTokens(BigInt(b.tokenBalance), dec) }); }
+        return out.filter(x => x.qty > 0);
+      } catch (err) { errors.push(`rpc: ${err.shortMessage || err.message}`); }
+      try {
+        const r = await fetch(`${EXPLORER}/api/v2/addresses/${address}/tokens?type=ERC-20`, { headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) bondli/1.0" }, signal: AbortSignal.timeout(10_000) });
+        if (!r.ok) throw new Error(`explorer ${r.status}`);
+        const d = await r.json();
+        return (d.items || []).map(i => ({ instrument: String(i.token?.address || "").toLowerCase(), qty: toTokens(BigInt(i.value || "0"), Number(i.token?.decimals ?? 18)), symbol: i.token?.symbol || "" })).filter(x => x.instrument && x.qty > 0);
+      } catch (err) { errors.push(err.message); }
+      throw new Error(errors.join("; "));
     },
     /** A launch the feed did not see (it happened before this process started): ask the factory. */
     async launchInfo(token) {
