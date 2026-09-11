@@ -271,7 +271,7 @@ export default function Simple() {
             <div style={{ color: stale ? T.yl : T.ft }}>price updated {tickAge == null ? "never" : tickAge < 60 ? Math.round(tickAge) + "s ago" : Math.round(tickAge / 60) + "m ago"}{stale ? " · exits cannot fire without a price" : ""}</div>
           </div>}
         </div>; })}</div>}
-        {(() => { const h = s?.holdings || {}; const rows = Object.entries(h).flatMap(([venue, x]) => (x.list || []).filter(i => !i.tracked && i.qty > 0).map(i => ({ ...i, venue }))); if (!rows.length) return null; return <div style={{ marginTop: 10, fontFamily: M, fontSize: 11, color: T.yl, lineHeight: 1.6 }}>
+        {(() => { const h = s?.holdings || {}; const rows = Object.entries(h).flatMap(([venue, x]) => (x.list || []).filter(i => !i.tracked && i.qty >= 1).map(i => ({ ...i, venue }))); if (!rows.length) return null; return <div style={{ marginTop: 10, fontFamily: M, fontSize: 11, color: T.yl, lineHeight: 1.6 }}>
           <div>in the wallet but not tracked as open (being reconciled):</div>
           {rows.map(r => <div key={r.venue + r.instrument}><a href={r.venue === "pons" ? `https://www.ponsfamily.com/launchpad/${r.instrument}` : `https://pump.fun/coin/${r.instrument}`} target="_blank" rel="noopener" style={{ color: T.yl }}>{r.instrument.slice(0, 10)}…</a> · {r.venue === "pons" ? "RH" : "SOL"} · {Number(r.qty).toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens</div>)}
         </div>; })()}
