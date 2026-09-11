@@ -49,6 +49,6 @@ class A {
   vpause(w) { return this.f("/api/velocity/pause", { method: "POST", body: { wallet: w } }); }
   vresume(w) { return this.f("/api/velocity/resume", { method: "POST", body: { wallet: w } }); }
   // What the bot sees (public)
-  live() { return this.f("/api/radar/live", { noauth: true, timeout: 8000 }); }
+  live(agg) { return this.f("/api/radar/live" + (agg != null ? "?aggression=" + agg : ""), { noauth: true, timeout: 8000 }); }
 }
 export const a = new A(); export default a;

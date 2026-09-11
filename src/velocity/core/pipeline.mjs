@@ -81,7 +81,7 @@ export class GateRunner {
     const confidence = clamp(Number(est.confidence) || 0, 0, 1);
     const ev = expectedValue({ p_win, payoff, costs: costs.fraction || 0 });
     const tier = est.tier ?? cand.tier ?? 0;
-    const common = { ...base, tier, p_win: round(p_win), payoff: round(payoff), confidence: round(confidence), ev: round(ev), costs: { ...costs, fraction: round(costs.fraction || 0) }, stop_fraction: est.stop_fraction ?? cand.stop_fraction ?? null, group: est.group ?? base.group, size_hint: est.size_hint ?? null, features: est.features || null };
+    const common = { ...base, tier, p_win: round(p_win), payoff: round(payoff), confidence: round(confidence), ev: round(ev), costs: { ...costs, fraction: round(costs.fraction || 0) }, stop_fraction: est.stop_fraction ?? cand.stop_fraction ?? null, plan_key: est.plan_key ?? null, stake_cap_fraction: est.stake_cap_fraction ?? null, group: est.group ?? base.group, size_hint: est.size_hint ?? null, features: est.features || null };
     if (!(p_win > 0) || !(payoff > 0)) return { ...common, action: "REJECT", gate: "estimate", reasons: ["NO_EDGE_ESTIMATE"] };
     if (confidence < this.minConfidence) return { ...common, action: "REJECT", gate: "confidence", reasons: [`CONFIDENCE_${confidence.toFixed(2)}_BELOW_${this.minConfidence}`] };
     if (ev <= this.minEv) return { ...common, action: "REJECT", gate: "ev", reasons: [`EV_${ev.toFixed(4)}_NOT_POSITIVE_AFTER_COSTS`] };

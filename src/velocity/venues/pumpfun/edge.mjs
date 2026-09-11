@@ -71,7 +71,8 @@ export function makePumpfunEdge({
       if (p.token._mayhem) return []; // Mayhem launches are never looked at
       if (p.token._copyOf) return []; // a same-name copy is an advert for another token, never a trade
       return [{
-        model: "bondli_gates",
+        model: p.token._revival ? "bondli_revival" : "bondli_gates",
+        revival: p.token._revival || null,
         instrument: p.token.ca,
         token: p.token, qf: p.qf, scores: p.scores || {}, dynamics: p.dynamics,
         solPrice: p.solPrice || 0,
@@ -81,9 +82,12 @@ export function makePumpfunEdge({
     },
 
     gates: [
-      { name: "disqualifiers", check: c => { const r = checkDisqualifiers(c.token, c.qf, { ...gateOpts, freezeAuthority: !!c.token.freezeAuthority }); return { pass: r.pass, reasons: r.flags }; } },
+      // A revival is hours old by definition: the age rules (STALE) do not apply; every rug rule does.
+      { name: "disqualifiers", check: c => { const r = checkDisqualifiers(c.token, c.qf, { ...gateOpts, ...(c.revival ? { staleMin: Infinity } : {}), freezeAuthority: !!c.token.freezeAuthority }); return { pass: r.pass, reasons: r.flags }; } },
       { name: "viability", check: c => { const r = checkViability(c.token, c.qf, c.scores, c.dynamics, gateOpts); return { pass: r.pass, reasons: r.checks }; } },
       { name: "confidence", check: c => {
+          // A revival is always a speculative entry: its own plan, half the stake, never a bigger tier.
+          if (c.revival) { c.tier = 3; c.tierLabel = "REVIVAL"; c.tierReasons = [`buyers5m ${c.revival.buyers5m} vs ${c.revival.baseline5m}`, `curve +${c.revival.curveDelta}`]; return { pass: true }; }
           const r = classifyConfidence(c.token, c.qf, c.scores, c.dynamics, gateOpts);
           c.tier = r.tier; c.tierLabel = r.label; c.tierReasons = r.reasons;
           if (r.tier >= 1 && r.tier <= 3) return { pass: true };
@@ -104,9 +108,11 @@ export function makePumpfunEdge({
       const features = pumpfunFeatures(c);
       const ranked = scoreFeatures(features, weights);
       const confidence = Math.min(0.95, ranked + (c.tier === 1 ? 0.15 : c.tier === 2 ? 0.05 : 0));
+      const plan = planFor("pumpfun", c.revival ? "revival" : c.tier);
       return {
         p_win, payoff, confidence, tier: c.tier,
-        stop_fraction: planFor("pumpfun", c.tier).worst_case_fraction,
+        plan_key: plan.key, stake_cap_fraction: plan.stake_cap_fraction ?? null,
+        stop_fraction: plan.worst_case_fraction,
         group: c.token.devWallet || null,
         features,
         reasons: [c.tierLabel, ...(c.tierReasons || []), useStats ? `stats n=${stats.n}` : "priors", `rank ${ranked.toFixed(3)}`],

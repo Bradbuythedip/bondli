@@ -151,6 +151,8 @@ export class Sizer {
 
     const cap = (name, limit) => { if (stake > limit) { stake = Math.max(0, limit); caps.push(name); } };
     cap("PER_TRADE_MAX", env.per_trade_max_usd);
+    // A model may cap itself below the envelope (a revival takes half of what a launch may).
+    if (decision.stake_cap_fraction > 0 && decision.stake_cap_fraction < 1) cap("MODEL_CAP", env.per_trade_max_usd * decision.stake_cap_fraction);
     cap("VENUE_EXPOSURE", vc.max_exposure_usd - venueOpen);
     cap("PORTFOLIO_EXPOSURE", env.portfolio_max_exposure_usd - totalOpen);
 

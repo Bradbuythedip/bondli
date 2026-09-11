@@ -11,6 +11,9 @@ export const EXIT_PLANS = Object.freeze({
     1: Object.freeze({ key: 1, label: "GOD_CANDLE", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 30 * MIN }),
     2: Object.freeze({ key: 2, label: "STRONG", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 15 * MIN }),
     3: Object.freeze({ key: 3, label: "SPECULATIVE", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 10 * MIN }),
+    // A revival moves faster on the way down than a launch: tier-3 layers with a tighter stop, a
+    // shorter hold, and half the per-trade cap (stake_cap_fraction is read by the sizer).
+    revival: Object.freeze({ key: "revival", label: "REVIVAL", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 6 * MIN, stop_pct: 8, tier: 3, stake_cap_fraction: 0.5 }),
   }),
   polymarket: Object.freeze({
     // A wrong fact loses the whole stake: worst case is 1.0 even though the plan is hold-to-redeem.

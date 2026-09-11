@@ -40,6 +40,12 @@ import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculate
 import { makeVault } from "../middleware/keyvault.mjs";
 import { detectMayhem, PUMP_PROGRAM as PUMP_PROGRAM_ID } from "./mayhem.mjs";
 import { CopycatIndex } from "./copycat.mjs";
+import { RevivalTracker, revivalFilter } from "./revival.mjs";
+import { AGGRESSION as VELOCITY_AGGRESSION } from "../velocity/venues/pumpfun/edge.mjs";
+import { checkDisqualifiers as judgeDisqualifiers } from "../autoape/gates/disqualifiers.js";
+import { checkViability as judgeViability } from "../autoape/gates/viability.js";
+import { classifyConfidence as judgeConfidence } from "../autoape/gates/confidence.js";
+import { checkExecutionWindow as judgeWindow } from "../autoape/gates/execution-window.js";
 import { VelocityHub, mountVelocityRoutes } from "../velocity/hub.mjs";
 import { PumpfunFeed } from "../velocity/venues/pumpfun/feed.mjs";
 import { generateChallenge, verifySolanaSignature, issueAuthToken, makeRequireOwner, nonces as authNonces } from "../middleware/wallet-auth.mjs";
@@ -871,6 +877,7 @@ async function fetchPumpFunMetadata(ca) {
       bondingCurve: d.bonding_curve || "",
       creator: d.creator || "",
       mayhem: detectMayhem({ meta: d }),
+      createdAt: Number(d.created_timestamp) > 1e12 ? Number(d.created_timestamp) : Number(d.created_timestamp) > 1e9 ? Number(d.created_timestamp) * 1000 : null,
     };
   } catch (e) {
     console.log(`[META] Error for ${ca.slice(0,8)}: ${e.message}`);
@@ -1052,6 +1059,10 @@ radar._mayhemProbed = new Set();
 // The copy is never a candidate (_copyOf); the original carries _copies for the scorer. ═══
 radar._copycats = new CopycatIndex({ windowMs: (parseInt(process.env.COPYCAT_WINDOW_MIN || "60") || 60) * 60_000 });
 radar._copycatLogged = 0;
+// ═══ Revivals: 72 hours of 5-minute buckets per mint, so a token that wakes up at hour 6 is seen. ═══
+radar._revivals = new RevivalTracker();
+radar._revivalLogged = 0;
+setInterval(() => radar._revivals.prune(), 10 * 60_000).unref?.();
 function noteCopycat(token) {
   const hit = radar._copycats.note({ ca: token.ca, name: token.name, ticker: token.ticker, createdAt: token.createdAt });
   if (!hit) return;
@@ -1356,6 +1367,7 @@ function processRadarMessage(data) {
         mcapSol: mcSol, mcapUsd: mcUsd, prevVSol: vSol, vSolInBondingCurve: vSol,
         uniqueBuyers: new Set(), spark: mcUsd > 0 ? [mcUsd] : [],
         h1Change: 0, devWallet: "", graduated: false, bundled: false, initialBuy: 0,
+        _firstSeenByTrade: now, _ageUnknown: true, // createdAt is a guess until the coin API says when it launched
       };
       radar.tokens.set(mint, token);
       subscribeToToken(mint);
@@ -1366,6 +1378,8 @@ function processRadarMessage(data) {
         if (meta.mayhem?.mayhem) markMayhem(mint, meta.mayhem.source);
         const t = radar.tokens.get(mint);
         if (!t) return;
+        if (meta.createdAt && meta.createdAt < t.createdAt) { t.createdAt = meta.createdAt; t._ageUnknown = false; }
+        if (meta.creator && !t.devWallet) t.devWallet = meta.creator;
         t.name = meta.name; t.ticker = meta.symbol;
         t.description = meta.description; t.image = meta.image;
         t.twitter = meta.twitter; t.website = meta.website; t.telegram = meta.telegram;
@@ -1418,6 +1432,7 @@ function processRadarMessage(data) {
     const hub = noteWalletTrade(trader.slice(0, 8), mint, now);
     token.trades.push({ side: data.txType, sol: +sol.toFixed(4), wallet: trader.slice(0, 8), time: now, hub });
     if (token.trades.length > 100) token.trades = token.trades.slice(-100);
+    if (!hub) radar._revivals.noteTrade(mint, { side: data.txType, sol, wallet: trader, curvePct: token.graduated ? null : Math.min(100, (vSol / 85) * 100), ts: now });
 
     // h1 change
     const firstSpark = token.spark.length > 1 ? token.spark[0] : token.mcapUsd;
@@ -2303,7 +2318,8 @@ setInterval(() => {
   // Clean old tokens — graduated/high MC get 4h, rest get 2h
   // Before eviction: label outcome and feed to meme intelligence for learning
   for (const [ca, t] of radar.tokens) {
-    const ttl = (t.graduated || t.mcapUsd >= 10000) ? 14400000 : 7200000;
+    // Launches live 2h (4h graduated / $10k+); a mint that still trades stays for the revival window (72h).
+    const ttl = radar._revivals.active(ca, now) ? 72 * 3600_000 : (t.graduated || t.mcapUsd >= 10000) ? 14400000 : 7200000;
     if (now - t.createdAt > ttl) {
       // Auto-label outcome before eviction — this is how the model learns from rugs
       try {
@@ -7882,12 +7898,43 @@ app.get("/api/radar", (req, res) => {
 // bondli's own trader only ever gates tokens that passed its base filter: at least 3 buyers,
 // at least 1 sell, at least 5 buys (3 when DexScreener-boosted), 30s old, $4k market cap.
 // Serving the same population to external pipelines keeps the gates meaning what they mean there.
-function passesTraderBaseFilter(t, now = Date.now()) {
+function passesTraderBaseFilter(t, now = Date.now(), loose = false) {
   const ub = t.uniqueBuyers?.size || 0, buys = t.buys || 0, sells = t.sells || 0, mc = t.mcapUsd || 0;
   const ageMin = (now - (t.createdAt || now)) / 60000;
   if (t._mayhem || t._copyOf) return false;
   const boosted = !!radar.dexBoosted?.get?.(t.ca);
+  // Degen (aggression 3) sees a token earlier: 2 buyers, 3 buys, $2.5k, 20 seconds. The gates still judge it.
+  if (loose) return ub >= 2 && buys >= 3 && ageMin >= 0.33 && mc >= 2500;
   return ub >= 3 && sells >= 1 && buys >= (boosted ? 3 : 5) && ageMin >= 0.5 && mc >= 4000;
+}
+/** The hub's loosest running user decides how early the shared feed admits a token. */
+function feedIsLoose() { try { return !!velocityHub && velocityHub.list().some(w => (velocityHub.users.get(w)?.settings?.aggression || 0) >= 3); } catch { return false; } }
+
+/** A revival on this token right now, or null: the signal must fire and the filter must pass. */
+function revivalOn(t, qf, now = Date.now()) {
+  if (t._ageUnknown || t._mayhem || t._copyOf) return null;
+  const sig = radar._revivals.signal(t.ca, { createdAt: t.createdAt, now });
+  if (!sig.revival) return null;
+  const f = revivalFilter(t, qf, sig);
+  if (!f.pass) return null;
+  return { buyers5m: sig.buyers5m, baseline5m: sig.baseline5m, netSol5m: sig.netSol5m, curveDelta: sig.curveDelta, at: now };
+}
+
+/** The velocity judge, as the bot runs it, at one aggression: what would it do with this token now? */
+function judgeToken(t, qf, dyn, aggression = 2) {
+  const opts = VELOCITY_AGGRESSION[Math.max(0, Math.min(3, aggression))] || VELOCITY_AGGRESSION[1];
+  const scores = { apeScore: t._apeScore || 0, scoreTimestamp: t._scoredAt || Date.now() };
+  const revival = t._revival || null;
+  const g1 = judgeDisqualifiers(t, qf, { ...opts, ...(revival ? { staleMin: Infinity } : {}), freezeAuthority: !!t.freezeAuthority });
+  if (!g1.pass) return { enter: false, gate: "rug", reasons: g1.flags, tier: 0 };
+  const g2 = judgeViability(t, qf, scores, dyn, opts);
+  if (!g2.pass) return { enter: false, gate: "viability", reasons: g2.checks, tier: 0 };
+  let tier;
+  if (revival) tier = 3;
+  else { const c = judgeConfidence(t, qf, scores, dyn, opts); tier = c.tier; if (tier === 4 && opts.enterWatchlist) tier = 3; if (!(tier >= 1 && tier <= 3)) return { enter: false, gate: "confidence", reasons: [tier === 4 ? "WATCHLIST" : "BELOW_THRESHOLD"], tier }; }
+  const g3 = judgeWindow(t, tier, scores.scoreTimestamp, opts);
+  if (!g3.pass) return { enter: false, gate: "window", reasons: g3.checks, tier };
+  return { enter: true, gate: null, reasons: [], tier, revival: !!revival };
 }
 
 /** The scored radar as one object; the HTTP route and the in-process velocity hub both read it. */
@@ -7896,18 +7943,25 @@ function buildScoredResponse(query = {}) {
   const limit = Math.min(200, Math.max(1, parseInt(query.limit || "60") || 60));
   const only = query.ca ? String(query.ca).split(",").map(s => s.trim()).filter(Boolean) : null;
   const all = !!query.all; // ?all=1: everything, for calibration tools and the frontend
+  const loose = query.base === "loose" || feedIsLoose();
   const now = Date.now();
   const source = only ? only.map(ca => radar.tokens.get(ca)).filter(Boolean) : [...radar.tokens.values()];
   const rows = [];
   for (const t of source) {
     if ((t._mayhem || t._copyOf) && !all) continue;
-    if (!only && (t._apeScore || 0) < min) continue;
-    // A score the background scorer has not refreshed within 10s is stale: the scorer skipped
-    // the token (rug gate or base filter) and its old score must not be served as current.
-    if (!only && !all && (!t._scoredAt || now - t._scoredAt > 10_000)) continue;
-    if (!only && !all && !passesTraderBaseFilter(t, now)) continue;
     let qf = null, dyn = null;
-    try { qf = extractQuickFeatures(t); } catch {}
+    // A revival is served whatever its score: its own model judges it. Everything else is the launch feed.
+    const revival = !only && !all ? revivalOn(t, (qf = (() => { try { return extractQuickFeatures(t); } catch { return null; } })()), now) : null;
+    if (revival) { t._revival = revival; if (radar._revivalLogged++ < 20) console.log(`[RADAR] revival: ${(t.name || t.ca).slice(0, 16)} ${t.ca.slice(0, 8)} ${Math.round((now - t.createdAt) / 3600_000)}h old, ${revival.buyers5m} buyers/5m vs ${revival.baseline5m}, curve +${revival.curveDelta}`); }
+    else if (t._revival && now - t._revival.at > 10 * 60_000) t._revival = null;
+    if (!revival) {
+      if (!only && (t._apeScore || 0) < min) continue;
+      // A score the background scorer has not refreshed within 10s is stale: the scorer skipped
+      // the token (rug gate or base filter) and its old score must not be served as current.
+      if (!only && !all && (!t._scoredAt || now - t._scoredAt > 10_000)) continue;
+      if (!only && !all && !passesTraderBaseFilter(t, now, loose)) continue;
+    }
+    if (!qf) { try { qf = extractQuickFeatures(t); } catch {} }
     try { dyn = scoreDynamics.get(t.ca) || null; } catch {}
     const { uniqueBuyers, trades, spark, _bradEval, ...rest } = t;
     const lastTrade = trades?.length ? trades[trades.length - 1] : null;
@@ -7943,21 +7997,31 @@ app.get("/api/radar/live", (req, res) => {
   const now = Date.now(), limit = Math.min(60, Math.max(5, parseInt(req.query.limit || "30") || 30));
   const all = [...radar.tokens.values()];
   const hour = all.filter(t => now - (t.createdAt || 0) < 3600_000);
-  const rows = all.filter(t => now - (t.createdAt || 0) < 30 * 60_000).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0)).slice(0, limit).map(t => {
+  const aggression = Math.max(0, Math.min(3, parseInt(req.query.aggression || "2") || 2));
+  const loose = aggression >= 3;
+  const row = t => {
     const score = t._apeScore || 0;
-    const rug = (t._rugFlags?.length || 0) > 0 || t._scoreSkippedAt && now - t._scoreSkippedAt < 10_000 && (t.buys || 0) >= 5;
     const buyers = t.uniqueBuyers?.size || 0, ageS = (now - (t.createdAt || now)) / 1000, mc = t.mcapUsd || 0;
-    // The one reason the bot is not in yet, in the order it checks them.
-    const tag = t._mayhem ? "mayhem" : t._copyOf ? "copy" : rug && score === 0 ? "rug"
-      : ageS < 30 ? "new" : buyers === 0 ? "nobuyers" : buyers < 3 ? "fewbuyers" : mc < 4000 ? "small"
-      : score >= 60 ? "hot" : score >= 40 ? "close" : "weak";
-    return { ca: t.ca, name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(t.mcapUsd || 0), buys: t.buys || 0, sells: t.sells || 0, buyers, spark: (t.spark || []).slice(-30), score, tag, copies: t._copies || 0 };
-  });
+    // The verdict is the bot's own judge at this aggression, not a score threshold: "buy zone" means it would enter.
+    let verdict = null, tag;
+    if (t._mayhem) tag = "mayhem"; else if (t._copyOf) tag = "copy";
+    else if (ageS < (loose ? 20 : 30)) tag = "new";
+    else if (buyers === 0) tag = "nobuyers";
+    else if (!passesTraderBaseFilter(t, now, loose)) tag = buyers < (loose ? 2 : 3) ? "fewbuyers" : mc < (loose ? 2500 : 4000) ? "small" : "fewbuyers";
+    else {
+      let qf = null; try { qf = extractQuickFeatures(t); } catch {}
+      verdict = judgeToken(t, qf, scoreDynamics.get(t.ca) || null, aggression);
+      tag = verdict.enter ? "hot" : verdict.gate === "rug" ? "rug" : verdict.gate === "viability" && verdict.reasons.includes("SCORE_BELOW_FLOOR") ? "weak" : verdict.gate === "window" ? "close" : verdict.gate === "confidence" ? "close" : "weak";
+    }
+    return { ca: t.ca, name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, revival: t._revival || null, graduated: !!t.graduated };
+  };
+  const rows = all.filter(t => now - (t.createdAt || 0) < 30 * 60_000).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0)).slice(0, limit).map(row);
+  const revivals = all.filter(t => t._revival && now - t._revival.at < 10 * 60_000).sort((x, y) => (y._revival.at || 0) - (x._revival.at || 0)).slice(0, 10).map(row);
   res.json({
-    ts: now, solPrice: solUsdPrice, online: radar.online,
-    hour: { launches: hour.length, mayhem: hour.filter(t => t._mayhem).length, copies: hour.filter(t => t._copyOf).length, hot: hour.filter(t => (t._apeScore || 0) >= 60).length },
+    ts: now, solPrice: solUsdPrice, online: radar.online, aggression,
+    hour: { launches: hour.length, mayhem: hour.filter(t => t._mayhem).length, copies: hour.filter(t => t._copyOf).length, hot: rows.filter(r => r.tag === "hot").length },
     bots: velocityHub ? velocityHub.list().length : null,
-    tokens: rows,
+    tokens: rows, revivals,
   });
 });
 
@@ -10980,9 +11044,11 @@ server.listen(PORT, async () => {
       // A skipped token must not keep an old score: clear it so it is not served as current.
       const skip = () => { t._apeScore = 0; t._scoreSkippedAt = Date.now(); };
 
-      // Base filter — skip obvious non-starters
-      if (!isDexPaid && !isAccelerating && !isLowVelocity) {
-        if (!(mc > 5000 && buys >= 2 && ub >= 2 && ageMin >= 0.5 && sells <= buys * 1.2)) { skip(); continue; }
+      // Base filter — skip obvious non-starters (a revival is scored regardless: its model needs the score)
+      const revivalNow = !!t._revival, loose = feedIsLoose();
+      if (revivalNow) { /* scored */ }
+      else if (!isDexPaid && !isAccelerating && !isLowVelocity) {
+        if (!(mc > (loose ? 2500 : 5000) && buys >= 2 && ub >= 2 && ageMin >= (loose ? 0.33 : 0.5) && sells <= buys * 1.2)) { skip(); continue; }
       } else if (isAccelerating) {
         if (!(mc > 3000 && buys >= 2 && ub >= 1 && ageMin >= 0.3 && sells <= buys * 1.5)) { skip(); continue; }
       }

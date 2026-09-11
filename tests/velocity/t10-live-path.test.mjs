@@ -634,3 +634,34 @@ test("T10: the risk dial moves gates 1, 2 and 3 together; the designed rules are
   const r1 = conf1.check({ ...wl }); assert.equal(r1.pass, false); assert.ok(r1.reasons.includes("WATCHLIST"));
   const c2 = { ...wl }; const r2 = conf2.check(c2); assert.equal(r2.pass, true); assert.equal(c2.tier, 3); assert.equal(c2.tierLabel, "WATCHLIST_AS_SPEC");
 });
+
+test("T10: a revival candidate is its own model: tier-3 layers with a tighter stop, a 6-minute hold, half the stake", async () => {
+  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const { createPlan } = await import("../../src/velocity/core/exits.mjs");
+  const { Sizer } = await import("../../src/velocity/core/risk.mjs");
+  const edge = makePumpfunEdge({ aggression: 1 });
+  const p = goodCandidatePayload("MintOld");
+  p.token.createdAt = Date.now() - 5 * 3600_000; // five hours old: STALE for the launch judge
+  p.token._revival = { buyers5m: 9, baseline5m: 1.2, netSol5m: 2.1, curveDelta: 7 };
+  const [c] = edge.ingest({ kind: "candidate", payload: p });
+  assert.equal(c.model, "bondli_revival");
+  for (const g of edge.gates) { const r = g.check(c); assert.equal(r.pass, true, `${g.name}: ${JSON.stringify(r.reasons)}`); }
+  assert.equal(c.tier, 3); assert.equal(c.tierLabel, "REVIVAL");
+  const est = edge.estimate(c, {});
+  assert.equal(est.plan_key, "revival"); assert.equal(est.stake_cap_fraction, 0.5);
+  // the same token without the revival mark is stale for the launch judge
+  const plain = goodCandidatePayload("MintOld2"); plain.token.createdAt = Date.now() - 5 * 3600_000;
+  const [c2] = edge.ingest({ kind: "candidate", payload: plain });
+  assert.equal(c2.model, "bondli_gates");
+  assert.ok(edge.gates[0].check(c2).reasons.includes("STALE"));
+  // the plan: tier-3 layers, 8% stop instead of 10, six minutes
+  const plan = createPlan({ venue: "pumpfun", key: "revival", entry: { score: 60 } });
+  assert.equal(plan.bondli.stopLoss, 8); assert.equal(plan.bondli.tier, 3); assert.equal(plan.max_hold_ms, 6 * 60_000); assert.equal(plan.bondli.maxHoldMs, 6 * 60_000);
+  assert.equal(createPlan({ venue: "pumpfun", key: 3, entry: { score: 60 } }).bondli.stopLoss, 10);
+  // the sizer honours the model's cap
+  const sizer = new Sizer(smallEnvelope(tmp(), { bankroll_usd: 1000, per_trade_max_usd: 40, portfolio_max_exposure_usd: 400, daily_loss_limit_usd: 200, pumpfun: { max_exposure_usd: 400 } }));
+  const base = { venue: "pumpfun", p_win: 0.6, payoff: 2, stop_fraction: 1, tier: 3 };
+  const full = sizer.size({ decision: base, portfolio: { open: [], realized_today_usd: 0 } });
+  const half = sizer.size({ decision: { ...base, stake_cap_fraction: 0.5 }, portfolio: { open: [], realized_today_usd: 0 } });
+  assert.ok(full.stake_usd > 20, JSON.stringify(full)); assert.equal(half.stake_usd, 20); assert.ok(half.caps.includes("MODEL_CAP"));
+});
