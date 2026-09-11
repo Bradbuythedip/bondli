@@ -177,6 +177,13 @@ export default function Simple() {
   const pause = async () => { sBusy("pause"); try { const r = await a.vpause(pk); if (r.ok) sSt(x => ({ ...x, ...r })); else say(r.error, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
   const resume = async () => { sBusy("pause"); try { const r = await a.vresume(pk); if (r.ok) sSt(x => ({ ...x, ...r })); else say(r.error, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
   const sellPos = async (p, pct) => { sBusy("sell:" + p.id); try { const r = await a.vclose(pk, p.id, pct); if (r.ok) { say(`Sold ${pct}% of ${p.name || p.ticker || p.instrument.slice(0, 6)}${r.proceeds_usd != null ? ` for ${fmt(r.proceeds_usd)}` : ""}`, "ok"); sSt(x => ({ ...x, ...r })); } else say(r.error || "Sell failed", "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
+  const [sweep, sSweep] = useState(null);
+  const sweepAll = async () => {
+    if (!confirm("Sell every token in both bot wallets to SOL and ETH, one by one?")) return;
+    sBusy("sweep"); sSweep(null);
+    try { const r = await a.vsweep(pk, "all"); sSweep(r); say(`Sold ${r.sold}, ${r.failed} could not be sold`, r.failed ? "error" : "ok"); await loadWallet(); }
+    catch (e) { say(e.message, "error"); } finally { sBusy(null); }
+  };
   const withdraw = async () => {
     if (running) { say("Stop the bot first", "error"); return; }
     if (!confirm(`Send all SOL from the bot wallet back to ${pk.slice(0, 6)}…?`)) return;
@@ -255,7 +262,7 @@ export default function Simple() {
           <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: T.gn, animation: "gp 2s infinite" }} /><span style={{ fontWeight: 800 }}>Trading</span></span>
           <span style={{ fontFamily: M, fontWeight: 900, fontSize: 30, color: pnl >= 0 ? T.gn : T.rd }}>{pnl >= 0 ? "+" : ""}{fmt(pnl)}</span>
         </div>
-        <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span>today, {day?.trades || 0} trades</span><span>{(() => { const w = s?.bankroll?.wallets || {}; const parts = []; if (w.pumpfun?.sol != null) parts.push(Number(w.pumpfun.sol).toFixed(3) + " SOL"); if (w.pons?.sol != null) parts.push(Number(w.pons.sol).toFixed(4) + " ETH"); if (!parts.length && s?.bankroll?.wallet) parts.push(Number(s.bankroll.wallet.sol).toFixed(3) + " " + (s.bankroll.wallet.quote || "SOL")); return parts.join(" · "); })()}</span></div>
+        <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span>today, {day?.trades || 0} trades</span><span>{(() => { const w = s?.bankroll?.wallets || {}; const sol = w.pumpfun?.sol ?? tw?.solBalance, eth = w.pons?.sol ?? tw?.ethBalance; const parts = []; if (sol != null) parts.push(Number(sol).toFixed(3) + " SOL"); if (eth != null) parts.push(Number(eth).toFixed(4) + " ETH"); return parts.join(" · "); })()}</span></div>
         {paused && <div style={{ color: T.yl, fontSize: 13, marginTop: 8 }}>{/user/.test(s.halt.reason || "") ? "Paused. Open positions still get sold on their plan; nothing new is bought." : `Paused by the bot: ${s.halt.reason}`}</div>}
         {s?.positions?.length > 0 && <div style={{ marginTop: 12 }}>{s.positions.map(p => { const now = Date.now(); const tickAge = p.lastTickAt ? (now - p.lastTickAt) / 1000 : null; const stale = tickAge == null ? now - p.entryTime > 60_000 : tickAge > 60; const open = openPos === p.id; const url = p.venue === "pons" ? `https://www.ponsfamily.com/launchpad/${p.instrument}` : `https://pump.fun/coin/${p.instrument}`; const held = Math.round((now - p.entryTime) / 60000); return <div key={p.id} style={{ borderTop: `1px solid ${T.bd}` }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 8, alignItems: "center", fontFamily: M, fontSize: 13, padding: "6px 0" }}>
@@ -267,6 +274,7 @@ export default function Simple() {
           {open && <div style={{ fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.6, padding: "2px 0 8px" }}>
             <div>{p.instrument} <a href={url} target="_blank" rel="noopener" style={{ color: T.gn }}>open on {p.venue === "pons" ? "PONS" : "pump.fun"}</a></div>
             <div>paid {fmt(p.stake_usd || p.notional_usd)} · entry mcap {kfmt(p.entryMark || 0)} · now {kfmt(p.mark || p.entryMark || 0)} · peak {kfmt(p.peak || p.entryMark || 0)}</div>
+            {p.sizing && <div>sized {fmt(p.stake_usd || 0)}{p.sizing.kelly ? ` · kelly ${(p.sizing.kelly.f_used * 100).toFixed(1)}% × throttle ${p.sizing.throttle ?? 1}` : ""}{p.sizing.caps?.length ? ` · capped by ${p.sizing.caps.join(", ").toLowerCase().replace(/_/g, " ")}` : ""}</div>}
             <div>tier {p.tier} · plan {String(p.plan?.key)} · targets hit {p.tpHit || 0}{p.plan?.stall_ms ? ` · stall check at ${Math.round(p.plan.stall_ms / 60000)}m` : ""}{p.plan?.max_hold_ms ? ` · out by ${Math.round(p.plan.max_hold_ms / 60000)}m` : ""}</div>
             <div style={{ color: stale ? T.yl : T.ft }}>price updated {tickAge == null ? "never" : tickAge < 60 ? Math.round(tickAge) + "s ago" : Math.round(tickAge / 60) + "m ago"}{stale ? " · exits cannot fire without a price" : ""}</div>
           </div>}
@@ -293,6 +301,10 @@ export default function Simple() {
       <Btn ghost T={T} onClick={withdraw} disabled={busy === "withdraw" || running}>{busy === "withdraw" ? "Sending…" : "Withdraw SOL"}</Btn>
       {tw.ethBalance > 0 && <Btn ghost T={T} onClick={withdrawEth} disabled={busy === "withdraw" || running}>Withdraw ETH</Btn>}
       <Btn ghost T={T} onClick={exportKey} disabled={busy === "key"}>{busy === "key" ? "Signing…" : "Export key"}</Btn>
+    </div>}
+    {pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 8 }}>
+      <Btn ghost T={T} onClick={sweepAll} disabled={busy === "sweep"}>{busy === "sweep" ? "Selling everything…" : "Sell every token in the wallets"}</Btn>
+      {sweep?.report?.length > 0 && <div style={{ marginTop: 8, fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.6 }}>{sweep.report.map((r, i) => <div key={i} style={{ color: r.ok ? T.gn : T.yl }}>{r.venue === "pons" ? "RH" : "SOL"} {r.instrument ? r.instrument.slice(0, 10) + "…" : ""} {r.ok ? `sold${r.received != null ? ` for ${Number(r.received).toFixed(r.venue === "pons" ? 5 : 4)} ${r.venue === "pons" ? "ETH" : "SOL"}` : ""}` : r.error}</div>)}</div>}
     </div>}
     {msg && !running && pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 8, fontSize: 13, color: msg.kind === "error" ? T.rd : T.gn }}>{msg.m}</div>}
     {showKey && <div style={{ width: "100%", maxWidth: 440, marginTop: 10, background: T.sf, border: `1px solid ${T.yl}`, borderRadius: 12, padding: 14 }}>

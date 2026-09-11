@@ -169,3 +169,42 @@ test("T11: a stop's halt does not outlive the next start; pause freezes entries 
     assert.equal(hub.pause("Nobody") instanceof Promise, true); assert.equal((await hub.pause("Nobody")).ok, false);
   } finally { await hub.stopAll(); await feed.stop(); }
 });
+
+test("T11: the sweep sells every token in both wallets: open positions through the engine, the rest through the routers, graduated PONS reported", async () => {
+  const root = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] }); feed.solPrice = 100;
+  const ponsFeed = new ScriptedFeed({ venue: "pons", script: [] }); ponsFeed.solPrice = 2000;
+  ponsFeed.rpc = {
+    walletTokens: async () => [{ instrument: "0xheld", qty: 500 }, { instrument: "0xgrad", qty: 300 }, { instrument: "0xdust", qty: 0.2 }, { instrument: "0xrandom", qty: 10 }],
+    launchInfo: async (t) => t === "0xheld" ? { curve: "0xcurve1", graduated: false } : t === "0xgrad" ? { curve: "0xcurve2", graduated: true } : null,
+    curveInfo: async () => ({ quoteReserve: 3, tokenReserve: 9e8, feeBps: 100, creatorTaxBps: 0 }),
+  };
+  const routers = {};
+  class FakeEvm { constructor() { this.ready = false; this.address = "0xme"; this.known = new Set(); this.tokens = { "0xheld": 500, "0xgrad": 300 }; this.closed = []; }
+    async init() { this.ready = true; return this.preflight(); } async preflight() { return { wallet: this.address, balanceSol: 0.05, quote: "ETH" }; } async health() { return { ok: true, latencyMs: 1 }; }
+    track(t) { this.known.add(t); } async positions() { return [...this.known].filter(t => this.tokens[t] > 0).map(t => ({ instrument: t, qty: this.tokens[t] })); }
+    async submit() { return failure({ id: "x" }, "UNUSED", ""); }
+    async close(p, pct, ctx) { this.closed.push({ instrument: p.instrument, curve: ctx?.reference?.curve?.address }); this.tokens[p.instrument] = 0; return { ok: true, fill: { price: 0.00001, qty: 500, notional_usd: 12, fee_usd: 0, t_sent: 1, t_filled: 2, latency_ms: 1, venue_ref: "0xtx", sol_received: 0.006 } }; }
+    async transferSol() { return "0xfee"; } }
+  const hub = new VelocityHub({ feed, ponsFeed, rootDir: root, platformWallet: "PLATFORM_FRESH_WALLET", platformEvmWallet: "0x" + "1".repeat(40), fee: feeDeps("pro"), makeLiveRouter: ({ secret, wallet }) => (routers[wallet] = new FakeLive({ secret, wallet })), makePonsRouter: () => (routers.evm = new FakeEvm()), log: { log() {}, error() {}, warn() {} } });
+  await feed.start(); await ponsFeed.start();
+  try {
+    await hub.start({ wallet: "UserS", secret: "sS", evmSecret: "0xkey", settings: { bankrollUsd: 100, pons: true } });
+    // an open pump.fun position, plus a token the wallet holds that the store never tracked
+    const now = Date.now();
+    feed.emitEvent({ kind: "candidate", id: "MintX", payload: goodCandidatePayload("MintX"), t_venue: now - 100 });
+    await new Promise(r => setTimeout(r, 50)); await hub.users.get("UserS").engine.enqueue(() => {});
+    assert.equal(hub.users.get("UserS").engine.store.openPositions("pumpfun").length, 1);
+    routers.UserS.tokens.MintOrphan = 2000;
+    const r = await hub.sweepWallet("UserS", { secret: "sS", evmSecret: "0xkey" });
+    assert.equal(r.ok, true);
+    assert.equal(hub.users.get("UserS").engine.store.openPositions("pumpfun").length, 0, "the open position was closed through the engine");
+    assert.ok(r.report.some(x => x.venue === "pumpfun" && x.instrument === "MintX" && x.ok && x.position), "booked as a position close");
+    assert.ok(r.report.some(x => x.venue === "pumpfun" && x.instrument === "MintOrphan" && x.ok), "the orphan was sold straight through the router");
+    assert.ok(routers.evm.closed.some(c => c.instrument === "0xheld" && c.curve === "0xcurve1"), "the RH holding was sold on its curve");
+    assert.ok(r.report.some(x => x.instrument === "0xgrad" && x.code === "GRADUATED"), "a graduated curve is reported, not attempted");
+    assert.ok(r.report.some(x => x.instrument === "0xrandom" && /not a PONS launch/.test(x.error)));
+    assert.ok(!r.report.some(x => x.instrument === "0xdust"), "dust is ignored");
+    assert.equal(hub.users.get("UserS").engine.ledger.query({ kind: "exit", limit: 5 }).some(e => e.reason === "USER_SWEEP"), true);
+  } finally { await hub.stopAll(); await feed.stop(); await ponsFeed.stop(); }
+});

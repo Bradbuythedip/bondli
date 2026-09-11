@@ -213,6 +213,61 @@ export class VelocityHub {
     return { fee: +(net * this.feePct / 100).toFixed(6), net, rate: this.feePct, type: "profit-share" };
   }
 
+  /**
+   * Sell every token in the user's wallets to SOL / ETH, one by one: first every open position through
+   * the engine (booked as USER_SWEEP), then anything else the wallets hold, straight through the routers.
+   * Works whether or not the bot is running (routers are built from the keys when it is not).
+   * A PONS token whose curve has graduated cannot be sold by the router and is reported as such.
+   */
+  async sweepWallet(wallet, { secret, evmSecret = null, chain = "all", explorer = null } = {}) {
+    const u = this.users.get(wallet);
+    const report = [];
+    const note = (venue, instrument, r, extra = {}) => report.push({ venue, instrument, ok: !!r?.ok, proceeds_usd: r?.fill?.notional_usd ?? null, received: r?.fill?.sol_received ?? null, error: r?.ok ? null : (r?.failure?.reason || "failed"), code: r?.ok ? null : (r?.failure?.code || null), ...extra });
+    const doSol = chain === "all" || chain === "sol" || chain === "pumpfun", doEth = (chain === "all" || chain === "eth" || chain === "pons" || chain === "rh") && !!(u?.engine.venues.pons || evmSecret);
+    // 1. open positions, through the engine, so the ledger and P&L see them
+    if (u) for (const venue of ["pumpfun", "pons"]) {
+      if ((venue === "pumpfun" && !doSol) || (venue === "pons" && !doEth) || !u.engine.venues[venue]) continue;
+      for (const p of u.engine.store.openPositions(venue)) { const r = await u.engine.enqueue(() => u.engine.closePosition(p, 100, "USER_SWEEP", { by: "user", detail: "wallet sweep" })); note(venue, p.instrument, r, { position: p.id }); }
+    }
+    // 2. whatever else the wallets hold, through the routers
+    const solRouter = u?.engine.venues.pumpfun?.liveRouter || (secret ? this.makeLiveRouter({ secret, wallet }) : null);
+    const ethRouter = u?.engine.venues.pons?.liveRouter || (evmSecret ? this.makePonsRouter({ secret: evmSecret, wallet }) : null);
+    if (doSol && solRouter) {
+      try {
+        if (!solRouter.ready) await solRouter.init();
+        const solPrice = this.feed?.solPrice || 0;
+        for (const h of await solRouter.positions()) {
+          if (!(h.qty >= 1)) continue;
+          const r = await solRouter.close({ id: `sweep:${h.instrument}`, instrument: h.instrument }, 100, { reference: { solPrice } });
+          note("pumpfun", h.instrument, r, { qty: h.qty });
+          u?.engine.log("info", `sweep ${h.instrument.slice(0, 8)}: ${r?.ok ? `sold ${h.qty} tokens for ${(r.fill.sol_received ?? 0).toFixed(4)} SOL` : r?.failure?.reason}`);
+        }
+      } catch (err) { report.push({ venue: "pumpfun", instrument: null, ok: false, error: err.message }); }
+    }
+    if (doEth && ethRouter) {
+      try {
+        if (!ethRouter.ready) await ethRouter.init();
+        const rpc = this.ponsFeed?.rpc || explorer;
+        const ethPrice = this.ponsFeed?.solPrice || 0;
+        let held = [];
+        try { held = rpc?.walletTokens ? await rpc.walletTokens(ethRouter.address) : []; } catch (err) { report.push({ venue: "pons", instrument: null, ok: false, error: `explorer: ${err.message}` }); }
+        if (u) { u.engine.seedRouterKnowledge("pons"); for (const p of await ethRouter.positions()) if (!held.some(h => h.instrument === p.instrument)) held.push(p); }
+        for (const h of held) {
+          if (!(h.qty >= 1)) continue;
+          let info = null; try { info = rpc?.launchInfo ? await rpc.launchInfo(h.instrument) : null; } catch {}
+          if (!info) { report.push({ venue: "pons", instrument: h.instrument, ok: false, qty: h.qty, error: "not a PONS launch; sell by hand" }); continue; }
+          if (info.graduated) { report.push({ venue: "pons", instrument: h.instrument, ok: false, qty: h.qty, code: "GRADUATED", error: "curve graduated to Uniswap; sell by hand on PONS" }); continue; }
+          let ci = {}; try { ci = rpc?.curveInfo ? await rpc.curveInfo(info.curve) : {}; } catch {}
+          const r = await ethRouter.close({ id: `sweep:${h.instrument}`, instrument: h.instrument, curve: info.curve }, 100, { reference: { solPrice: ethPrice, curve: { address: info.curve, ...ci } } });
+          note("pons", h.instrument, r, { qty: h.qty });
+          u?.engine.log("info", `sweep ${h.instrument.slice(0, 10)}: ${r?.ok ? `sold ${h.qty} tokens for ${(r.fill.sol_received ?? 0).toFixed(5)} ETH` : r?.failure?.reason}`);
+        }
+      } catch (err) { report.push({ venue: "pons", instrument: null, ok: false, error: err.message }); }
+    }
+    if (u) { try { await u.engine.refreshWallet(); } catch {} }
+    return { ok: true, sold: report.filter(r => r.ok).length, failed: report.filter(r => !r.ok).length, report };
+  }
+
   async stopAll() { for (const w of this.list()) { try { await this.stop(w, { flatten: false }); } catch {} } }
 }
 
@@ -230,6 +285,14 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
   app.post("/api/velocity/stop", requireOwner, async (req, res) => { try { res.json(await hub.stop(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/pause", requireOwner, async (req, res) => { try { res.json(await hub.pause(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/resume", requireOwner, (req, res) => { try { res.json(hub.resume(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
+  app.post("/api/velocity/sweep", requireOwner, async (req, res) => {
+    try {
+      const { wallet, chain } = req.body || {};
+      const tw = await getTradingWallet(wallet);
+      if (!tw?.secret) return res.status(400).json({ error: "No trading wallet" });
+      res.json(await hub.sweepWallet(wallet, { secret: tw.secret, evmSecret: tw.evmSecret || null, chain: chain || "all" }));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
   app.post("/api/velocity/close", requireOwner, async (req, res) => { try { res.json(await hub.closePosition(req.body.wallet, req.body.positionId, req.body.pct)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/halt", requireOwner, async (req, res) => { try { res.json(await hub.halt(req.body.wallet, req.body.mode === "freeze" ? "freeze" : "flatten")); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.get("/api/velocity/status", requireOwner, (req, res) => res.json({ ok: true, ...hub.status(req.query.wallet), narration: hub.narration(req.query.wallet, 40) }));
