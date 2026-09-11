@@ -137,12 +137,14 @@ export function checkDisqualifiers(token, qf, opts = {}) {
   if (momentum && flags.length) {
     const organic = qf?._rg_organicBuyers ?? ub;
     const crowd = organic >= momentum.buyers && ageMin <= momentum.ageMaxMin
+      && !(qf?.rg_devSellSpeed > 0.35)                          // a dev selling into the crowd is never a crowd
       && (qf?.rg_mcapDropRate ?? 0) < 0.2                      // at or near its high
       && (qf?.rg_liqRemovalSpeed ?? 0) < momentum.sellShareMax  // sellers a minority of the flow
       && sells <= (token.buys || 0) * 0.6;
     if (crowd) {
-      const keep = flags.filter(f => FATAL_DISQUALIFIERS.has(f) || f.startsWith("SERIAL_"));
-      waived = flags.filter(f => !keep.includes(f));
+      // An allow-list, never "everything not fatal": a rule not named here stands.
+      waived = flags.filter(f => MOMENTUM_WAIVABLE.has(f) || f.startsWith("MULTI_RUG_SIGNAL_"));
+      const keep = flags.filter(f => !waived.includes(f));
       flags.length = 0; flags.push(...keep);
     }
   }
@@ -155,8 +157,13 @@ export function checkDisqualifiers(token, qf, opts = {}) {
   };
 }
 
-/** Never waived by momentum: who is selling, and whether it is already collapsing. */
+/** The only rules a crowd may waive: readings of behaviour a real crowd also produces. */
+export const MOMENTUM_WAIVABLE = new Set(["QUICK_FLIP", "COORDINATED_DUMP", "EXTREME_CONCENTRATION"]);
+
+/** Never waived by momentum (documentation of the intent; the allow-list above is what runs). */
 export const FATAL_DISQUALIFIERS = new Set([
+  "LINEAR_PUMP", "BOT_PUMP", "ZERO_SELLS", "ZERO_SELLS_FAKE_CHART", "ALL_BUYS_NO_SELLS", "FRESH_WALLET_RUG",
+  "STAIRCASE_CHART", "STAIRCASE_FRESH", "FLATLINE_SPIKE", "FLATLINE_NO_SELLS", "FLATLINE_FRESH", "SMOOTH_GRIND", "NO_DIPS_GRIND", "LIQ_REMOVAL",
   "DEV_SELLING", "DEV_SELF_SNIPE", "DEV_SELF_PUMP", "DEV_PUMP_NO_SELLS", "FREEZE_AUTHORITY", "STOLEN_ART",
   "SYBIL_ATTACK", "PUMP_DUMP", "MCAP_CRASHING", "EARLY_DUMP", "BOT_FARM_VOLUME", "BOTTED_VOLUME", "FAKE_VOLUME_HIGH_SOL",
   "TOO_LATE", "STALE", "TOO_FEW_BUYERS", "TOO_YOUNG",

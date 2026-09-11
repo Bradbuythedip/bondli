@@ -8029,7 +8029,8 @@ app.get("/api/radar/live", (req, res) => {
   const now = Date.now(), limit = Math.min(60, Math.max(5, parseInt(req.query.limit || "30") || 30));
   const all = [...radar.tokens.values()];
   const hour = all.filter(t => now - (t.createdAt || 0) < 3600_000);
-  const aggression = Math.max(0, Math.min(3, parseInt(req.query.aggression || "2") || 2));
+  const aggRaw = parseInt(req.query.aggression ?? "2", 10);
+  const aggression = Number.isFinite(aggRaw) ? Math.max(0, Math.min(3, aggRaw)) : 2;
   const loose = aggression >= 3;
   // Where a row opens: the launchpad the token lives on. PONS_TOKEN_URL can override the PONS pattern.
   const ponsUrl = (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}");

@@ -107,7 +107,7 @@ export class Store {
   noteDecision(decision) {
     this.state.lastDecisions.unshift({
       id: decision.id, venue: decision.venue, instrument: decision.instrument, action: decision.action,
-      gate: decision.gate, reason: (decision.reasons || [])[0] || null, ts: decision.t_decided,
+      gate: decision.gate, reason: (decision.reasons || [])[0] || null, waived: (decision.reasons || []).find(r => /^momentum waived /.test(r)) || null, ts: decision.t_decided,
     });
     if (this.state.lastDecisions.length > 20) this.state.lastDecisions.length = 20;
   }

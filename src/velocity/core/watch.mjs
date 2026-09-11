@@ -14,7 +14,7 @@ export function formatRecord(r) {
   switch (r.kind) {
     case "decision": {
       const score = r.features?.apeScore != null ? ` score ${Math.round(r.features.apeScore * 100)}` : "";
-      if (r.action === "GO") return `${at} GO      ${short(r.instrument)} tier ${r.tier ?? "?"} p_win ${(r.p_win ?? 0).toFixed(2)}${score}  -> sizing`;
+      if (r.action === "GO") { const waived = (r.reasons || []).find(x => /^momentum waived /.test(x)); return `${at} GO      ${short(r.instrument)} tier ${r.tier ?? "?"} p_win ${(r.p_win ?? 0).toFixed(2)}${score}${waived ? `  ${waived}` : ""}  -> sizing`; }
       const why = (r.reasons || []).slice(0, 3).join(", ");
       return `${at} reject  ${short(r.instrument)} ${r.gate || ""}: ${why}${score}`;
     }
