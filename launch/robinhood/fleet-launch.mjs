@@ -283,4 +283,4 @@ function cmdStatus() {
 
 const commands = { sim: cmdSim, preflight: cmdPreflight, "deploy-launchpad": cmdDeployLaunchpad, launch: () => runOnChain("create"), ape: () => runOnChain("ape"), close: () => cmdCloseOrRecover(true), recover: () => cmdCloseOrRecover(false), status: cmdStatus };
 if (!commands[cmd]) { console.log(fs.readFileSync(new URL(import.meta.url)).toString().split("\n").slice(1, 16).map(l => l.replace(/^\/\/ ?/, "")).join("\n")); process.exit(cmd === "help" ? 0 : 2); }
-commands[cmd]().catch(e => die(e.stack || e.message));
+Promise.resolve(commands[cmd]()).catch(e => die(e.stack || e.message)); // `status` is synchronous and returns nothing

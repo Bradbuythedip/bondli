@@ -13,18 +13,84 @@ runs the whole playbook against an in-memory PONS curve and a synthetic crowd in
 rehearsal path, and the mainnet launch. One code path drives all three: the strategy never knows
 whether it is talking to the simulator, the testnet launchpad, or the live PONS factory.
 
+## Run it, from nothing
+
+Node 20 or newer. Every step below is safe until step 4; nothing before it can spend money.
+
+**0. Get the code.**
+
+```bash
+git clone https://github.com/Bradbuythedip/bondli.git
+cd bondli
+git checkout claude/youthful-carson-6imo58
+npm install
 ```
-npm run fleet:sim -- --scenario organic --seed 3         # the simulator, with the log
-npm run fleet:sim -- --scenario hostile --runs 20         # twenty seeds, one line each, the mean
-node launch/robinhood/fleet-launch.mjs preflight          # the chain, the wallet, the launchpad, the cost
-node launch/robinhood/fleet-launch.mjs deploy-launchpad   # testnet only: PONS has no testnet, so deploy the test double
+
+**1. Simulate. No keys, no wallet, no configuration.** This is the whole playbook against an
+in-memory PONS curve and a synthetic crowd; a twelve-minute launch plays out in about a second.
+
+```bash
+npm run fleet:sim -- --scenario organic --seed 3 --budget 0.3 --minutes 12
+```
+
+It prints every phase as it happens and then a report: what went in, what came home, curve fees, gas,
+the launch fee, how the dev sold, what the crowd did, and whether every wei is accounted for. Run the
+other scenarios before trusting any of it:
+
+```bash
+npm run fleet:sim -- --scenario dead --runs 5      # nobody comes: the floor, the cost of trying
+npm run fleet:sim -- --scenario hostile --runs 5   # flippers and snipers only
+npm run fleet:sim -- --scenario hype --runs 5      # it catches
+npm run fleet:sim -- --scenario organic --runs 20  # twenty seeds, one line each, the mean
+```
+
+Change the token and the budget in `launch/robinhood/.env` (step 2) and the simulator uses them too.
+`--mode ape --score 80` simulates buying someone else's launch instead of making your own.
+
+**2. Configure.**
+
+```bash
+cp launch/robinhood/.env.example launch/robinhood/.env
+$EDITOR launch/robinhood/.env
+```
+
+Set `PRIVATE_KEY` to a **fresh** wallet you use for nothing else, then `FLEET_TOKEN_NAME`,
+`FLEET_TOKEN_SYMBOL`, `FLEET_LOGO`, and `FLEET_BUDGET_ETH`. Leave `FLEET_CHAIN_ID=46630` for now.
+
+**3. Rehearse on testnet.** Fund the wallet from https://faucet.testnet.chain.robinhood.com, then:
+
+```bash
+node launch/robinhood/fleet-launch.mjs deploy-launchpad   # PONS has no testnet; this deploys the double
+node launch/robinhood/fleet-launch.mjs preflight          # must print READY
 node launch/robinhood/fleet-launch.mjs launch --dry-run   # simulates the launch call, sends nothing
-node launch/robinhood/fleet-launch.mjs launch             # type LAUNCH
-node launch/robinhood/fleet-launch.mjs ape --token 0x…    # a Kelly-sized fleet into someone else's curve
-node launch/robinhood/fleet-launch.mjs close              # sell every wallet of the last run, sweep home
-node launch/robinhood/fleet-launch.mjs recover            # sweep the ETH only (after a crash)
-npm run fleet:test                                        # the suite; runs on-chain when a local node answers
+node launch/robinhood/fleet-launch.mjs launch             # type LAUNCH when it asks
 ```
+
+Watch the whole run. It is the same code and the same report you will see on mainnet.
+
+**4. Mainnet.** Only after step 3 ran clean. In `.env` set `FLEET_CHAIN_ID=4663`, an
+`FLEET_RPC_URL` you control (the public one is rate-limited), and `FLEET_I_UNDERSTAND_MAINNET=1`,
+which exists so this step cannot happen by accident.
+
+```bash
+node launch/robinhood/fleet-launch.mjs preflight
+node launch/robinhood/fleet-launch.mjs launch --dry-run
+node launch/robinhood/fleet-launch.mjs launch            # type LAUNCH
+```
+
+**While it runs**, the terminal takes commands: `accumulate`, `hold`, `distribute`, `boost`, `auto`,
+`status`, and `close` to sell everything and sweep. Ctrl-C does the same; a second Ctrl-C abandons.
+
+**If anything goes wrong**, the fleet's keys are in `launch/robinhood/fleet-state.json`:
+
+```bash
+node launch/robinhood/fleet-launch.mjs status    # what the last run was and where it got to
+node launch/robinhood/fleet-launch.mjs close     # sell every wallet and sweep the ETH home
+node launch/robinhood/fleet-launch.mjs recover   # sweep the ETH only, no selling
+```
+
+Other commands: `ape --token 0x…` puts a Kelly-sized fleet into someone else's curve, and
+`npm run fleet:test` runs the suite (the on-chain tests run only when a local node answers).
 
 ## What was ported, and what changed on an EVM curve
 
