@@ -53,6 +53,7 @@ export const AGGRESSION = Object.freeze({
 });
 
 export function makePumpfunEdge({
+  venue = "pumpfun",               // "pons": the same judge on Robinhood Chain; snipe-tax window refused
   aggression = 1,
   priors = PUMPFUN_PRIORS,
   minOutcomesForStats = 30,
@@ -60,9 +61,10 @@ export function makePumpfunEdge({
   fixedCostSol = 0.0015,           // priority fee + Jito tip per side, rough
   nominalStakeUsd = 25,
 } = {}) {
-  const gateOpts = AGGRESSION[Math.max(0, Math.min(3, Math.round(Number(aggression) || 0)))] || AGGRESSION[1];
+  const level = AGGRESSION[Math.max(0, Math.min(3, Math.round(Number(aggression) || 0)))] || AGGRESSION[1];
+  const gateOpts = venue === "pons" ? { ...level, minAgeMin: 1.1 } : level; // PONS: up to 99% snipe tax in the first 60s
   return {
-    venue: "pumpfun",
+    venue,
     name: "bondli_gates",
     aggression: Number(aggression),
     gateOpts,
@@ -113,7 +115,7 @@ export function makePumpfunEdge({
       const features = pumpfunFeatures(c);
       const ranked = scoreFeatures(features, weights);
       const confidence = Math.min(0.95, ranked + (c.tier === 1 ? 0.15 : c.tier === 2 ? 0.05 : 0));
-      const plan = planFor("pumpfun", c.revival ? "revival" : c.tier);
+      const plan = planFor(venue, c.revival ? "revival" : c.tier);
       return {
         p_win, payoff, confidence, tier: c.tier,
         plan_key: plan.key, stake_cap_fraction: plan.stake_cap_fraction ?? null,

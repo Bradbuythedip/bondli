@@ -42,6 +42,7 @@ class A {
   ctw(w) { return this.f("/api/trading-wallet/create", { method: "POST", body: { wallet: w } }); }
   etw(w) { return this.f("/api/trading-wallet/export", { method: "POST", body: { wallet: w } }); }
   wdr(w, to, sol) { return this.f("/api/trading-wallet/withdraw", { method: "POST", body: { wallet: w, to, sol: sol || "all" }, timeout: 60000 }); }
+  wdrEth(w, to) { return this.f("/api/trading-wallet/withdraw", { method: "POST", body: { wallet: w, to, sol: "all", chain: "pons" }, timeout: 60000 }); }
   // The bot
   vst(w, s) { return this.f("/api/velocity/start", { method: "POST", body: { wallet: w, settings: s }, timeout: 90000 }); }
   vsp(w) { return this.f("/api/velocity/stop", { method: "POST", body: { wallet: w }, timeout: 90000 }); }

@@ -42,6 +42,16 @@ import { detectMayhem, PUMP_PROGRAM as PUMP_PROGRAM_ID } from "./mayhem.mjs";
 import { CopycatIndex } from "./copycat.mjs";
 import { RevivalTracker, revivalFilter } from "./revival.mjs";
 import { AGGRESSION as VELOCITY_AGGRESSION } from "../velocity/venues/pumpfun/edge.mjs";
+import { PonsFeed } from "../velocity/venues/pons/feed.mjs";
+import { DEFAULT_RPC_URL as PONS_DEFAULT_RPC, CHAIN_ID as PONS_CHAIN_ID } from "../velocity/venues/pons/chain.mjs";
+import { Wallet as EvmWallet, JsonRpcProvider as EvmProvider, formatEther, parseEther } from "ethers";
+// Robinhood Chain: one provider for balances and withdrawals; the PONS feed and routers have their own.
+const ponsProvider = new EvmProvider(process.env.PONS_RPC_URL || PONS_DEFAULT_RPC, { chainId: PONS_CHAIN_ID, name: "robinhood" }, { staticNetwork: true });
+async function ethPriceUsd() {
+  const r = await fetch("https://api.coinbase.com/v2/prices/ETH-USD/spot", { signal: AbortSignal.timeout(5000) });
+  if (!r.ok) throw new Error(`coinbase ${r.status}`);
+  const d = await r.json(); const p = Number(d?.data?.amount); if (!(p > 0)) throw new Error("no ETH price"); return p;
+}
 import { checkDisqualifiers as judgeDisqualifiers } from "../autoape/gates/disqualifiers.js";
 import { checkViability as judgeViability } from "../autoape/gates/viability.js";
 import { classifyConfidence as judgeConfidence } from "../autoape/gates/confidence.js";
@@ -3425,7 +3435,11 @@ app.get("/api/trading-wallet/:wallet", async (req, res) => {
     }
   }
   const totalBalance = +(solBalance + tokenValueSol).toFixed(6);
-  const result = { ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails };
+  // An older wallet has no ETH key yet: mint one now so Robinhood Chain is available to everyone.
+  if (!tw.evmAddress && tw.secret && vault.canCreate()) { try { const evm = EvmWallet.createRandom(); tw.evmAddress = evm.address; tw.evmSecret = evm.privateKey; await saveTradingWallet(req.params.wallet, tw); } catch {} }
+  let ethBalance = null;
+  if (tw.evmAddress) { try { ethBalance = +Number(formatEther(await ponsProvider.getBalance(tw.evmAddress))).toFixed(6); } catch {} }
+  const result = { ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails, evmAddress: tw.evmAddress || null, ethBalance };
   // Only cache successful results (don't cache 0 balance from RPC failures)
   if (!rpcFailed) setCachedBalance(cacheKey, result);
   console.log(`[WALLET-BAL] ${pubkey.slice(0,8)}: ${solBalance.toFixed(4)} SOL + ${tokenValueSol.toFixed(4)} tokens = ${totalBalance} total (${tokenDetails.length} tokens)`);
@@ -3522,18 +3536,32 @@ app.post("/api/trading-wallet/create", requireOwner, async (req, res) => {
   if (existing) return res.json({ ok: true, tradingWallet: existing.pubkey, already: true });
   if (!vault.canCreate()) return res.status(503).json({ error: "custodial wallets are disabled until WALLET_ENCRYPTION_KEY is set on the server" });
   const kp = Keypair.generate();
-  const tw = { pubkey: kp.publicKey.toBase58(), secret: bs58.encode(kp.secretKey), createdAt: new Date().toISOString() };
+  const evm = EvmWallet.createRandom(); // the same bot, on Robinhood Chain: one ETH key beside the SOL key
+  const tw = { pubkey: kp.publicKey.toBase58(), secret: bs58.encode(kp.secretKey), evmAddress: evm.address, evmSecret: evm.privateKey, createdAt: new Date().toISOString() };
   await saveTradingWallet(wallet, tw);
-  await saveUser(wallet, { tradingWallet: tw.pubkey });
-  res.json({ ok: true, tradingWallet: tw.pubkey, privateKey: tw.secret });
+  await saveUser(wallet, { tradingWallet: tw.pubkey, evmAddress: evm.address });
+  res.json({ ok: true, tradingWallet: tw.pubkey, evmAddress: evm.address, privateKey: tw.secret });
 });
 
 // Withdraw: SOL from the trading wallet back to the connected wallet (or any address the owner names).
 app.post("/api/trading-wallet/withdraw", requireOwner, async (req, res) => {
   try {
-    const { wallet, to, sol } = req.body || {};
+    const { wallet, to, sol, chain } = req.body || {};
     const tw = await getTradingWallet(wallet);
     if (!tw?.secret) return res.status(404).json({ error: "No trading wallet" });
+    if (chain === "pons") { // ETH on Robinhood Chain back to an EVM address the owner names
+      if (!tw.evmSecret) return res.status(404).json({ error: "No Robinhood Chain wallet" });
+      if (!/^0x[0-9a-fA-F]{40}$/.test(String(to || ""))) return res.status(400).json({ error: "to must be an EVM address (0x…) for a Robinhood Chain withdrawal" });
+      if (velocityHub?.has(wallet)) return res.status(409).json({ error: "stop Velocity first" });
+      const w = new EvmWallet(tw.evmSecret, ponsProvider);
+      const bal = await ponsProvider.getBalance(w.address);
+      const fee = await ponsProvider.getFeeData();
+      const gas = 21_000n * ((fee.maxFeePerGas ?? fee.gasPrice ?? 100_000_000n) * 2n);
+      const value = sol === "all" || sol == null ? bal - gas : parseEther(String(sol));
+      if (!(value > 0n) || value > bal - gas) return res.status(400).json({ error: `nothing to withdraw (balance ${formatEther(bal)} ETH)` });
+      const tx = await w.sendTransaction({ to, value, gasLimit: 21_000n });
+      return res.json({ ok: true, sig: tx.hash, eth: Number(formatEther(value)), to });
+    }
     const kp = Keypair.fromSecretKey(bs58.decode(tw.secret));
     const dest = new PublicKey(to || wallet);
     const bal = await connection.getBalance(kp.publicKey);
@@ -3554,7 +3582,7 @@ app.post("/api/trading-wallet/export", requireOwner, async (req, res) => {
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const tw = await getTradingWallet(wallet);
   if (!tw) return res.status(404).json({ error: "No trading wallet" });
-  res.json({ ok: true, privateKey: tw.secret, pubkey: tw.pubkey });
+  res.json({ ok: true, privateKey: tw.secret, pubkey: tw.pubkey, evmAddress: tw.evmAddress || null, evmPrivateKey: tw.evmSecret || null });
 });
 
 // ── MULTI-WALLET: Pro/VIP can create additional trading wallets ──
@@ -10943,12 +10971,16 @@ if (process.env.VELOCITY_HOSTED === "1") {
   // The hub's feed reads the radar in-process: same shape as GET /api/radar/scored, no HTTP hop.
   const inProcessFetch = async (url) => { const q = Object.fromEntries(new URL(url, "http://x").searchParams); return { ok: true, status: 200, json: async () => buildScoredResponse(q) }; };
   const hubFeed = new PumpfunFeed({ bondliUrl: "http://in-process", minScore: parseInt(process.env.VELOCITY_MIN_SCORE || "25") || 25, pollMs: 2000, tickMs: 1000, pumpportal: false, fetchImpl: inProcessFetch });
+  // Robinhood Chain (PONS): one shared feed of launches and curve trades, ETH priced from Coinbase.
+  const ponsFeed = process.env.VELOCITY_PONS !== "0" ? new PonsFeed({ rpcUrl: process.env.PONS_RPC_URL || PONS_DEFAULT_RPC, pollMs: parseInt(process.env.PONS_POLL_MS || "3000") || 3000, priceFn: ethPriceUsd }) : null;
   velocityHub = new VelocityHub({
-    feed: hubFeed, rootDir: path.resolve(process.env.VELOCITY_DATA_DIR || "data/velocity/users"), platformWallet: process.env.PLATFORM_WALLET || null, rpcUrl: RPC_URL,
+    feed: hubFeed, ponsFeed, platformEvmWallet: /^0x[0-9a-fA-F]{40}$/.test(process.env.PLATFORM_EVM_WALLET || "") ? process.env.PLATFORM_EVM_WALLET : null,
+    rootDir: path.resolve(process.env.VELOCITY_DATA_DIR || "data/velocity/users"), platformWallet: process.env.PLATFORM_WALLET || null, rpcUrl: RPC_URL,
     fee: { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser, isOwnerWallet },
     feePct: process.env.VELOCITY_FEE_PCT != null ? Number(process.env.VELOCITY_FEE_PCT) : 5,
   });
   hubFeed.start().then(() => console.log(`[VELOCITY-HUB] radar feed started; fee wallet ${velocityHub.feeOk ? "configured" : "NOT configured"}`)).catch(e => console.error("[VELOCITY-HUB] feed failed to start:", e.message));
+  if (ponsFeed) ponsFeed.start().then(() => console.log(`[VELOCITY-HUB] Robinhood Chain (PONS) feed started; ETH fee wallet ${velocityHub.platformEvmWallet ? "configured" : "NOT configured"}`)).catch(e => console.error("[VELOCITY-HUB] pons feed failed to start:", e.message));
   mountVelocityRoutes(app, { hub: velocityHub, requireOwner, getTradingWallet, getUser, resolveTier });
   for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { velocityHub.stopAll().finally(() => process.exit(0)); });
 }

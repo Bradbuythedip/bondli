@@ -24,8 +24,11 @@ export const EXIT_PLANS = Object.freeze({
   }),
 });
 
+// PONS trades the same way pump.fun does: same tiers, same layers, same revival plan.
+const ALIAS = Object.freeze({ pons: "pumpfun" });
+
 export function planFor(venue, key) {
-  const p = EXIT_PLANS[venue]?.[key];
+  const p = EXIT_PLANS[ALIAS[venue] || venue]?.[key];
   if (!p) throw new Error(`no exit plan for ${venue}/${key}`);
   return p;
 }

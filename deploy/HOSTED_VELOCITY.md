@@ -19,6 +19,10 @@ node -e "const c=require('crypto');console.log('WALLET_ENCRYPTION_KEY='+c.random
 | `RADAR_TRADE_SOURCE` | `onchain` | free trade stream; `RADAR_STREAM_RPC_URL` to a Helius endpoint if the public one drops |
 | `REDIS_URL` | from the Railway Redis plugin | users, wallets (sealed), tiers |
 
+| `VELOCITY_PONS` | `1` | Robinhood Chain (PONS launchpad) feed beside pump.fun; `0` to turn it off |
+| `PONS_RPC_URL` | `https://rpc.mainnet.chain.robinhood.com` or a QuickNode/dRPC endpoint | the public RPC is rate-limited; a paid one for production |
+| `PLATFORM_EVM_WALLET` | a **fresh** 0x address you control | where ETH performance fees go; unset means PONS profits are not charged |
+
 Keep `NETWORK_FEE_PCT` / `FREE_PROFIT_CUT` as they are unless you want different fee rates; velocity uses the same `calculateFee` as the rest of the site.
 
 ## 2. Persistent disk (required)
