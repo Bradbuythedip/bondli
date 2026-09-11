@@ -134,26 +134,76 @@ function Live({ T, agg }) {
       </a>; }
 }
 
+// How long the trend covers, said the way a person would say it.
+const spanOf = m => (!m || m < 1) ? "a minute" : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h${m % 60 ? " " + (m % 60) + "m" : ""}`;
+/** The launch's market cap over the session it has been watched. One series, so no legend: the label
+ *  above names it. The line is recessive; only the current point wears the accent, ringed in the card's
+ *  own surface so it reads on top of the line. Hovering moves the read-out to that point. */
+function LaunchChart({ pts, T, h = 54 }) {
+  const box = useRef(null);
+  const [w, sW] = useState(340);
+  const [hi, sHi] = useState(null);
+  useEffect(() => {
+    const el = box.current; if (!el) return;
+    const set = () => sW(Math.max(120, el.clientWidth));
+    set();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(set) : null;
+    ro?.observe(el); window.addEventListener("resize", set);
+    return () => { ro?.disconnect(); window.removeEventListener("resize", set); };
+  }, []);
+  const n = pts?.length || 0;
+  if (n < 2) return null;
+  const pad = 5, mn = Math.min(...pts), mx = Math.max(...pts), rng = (mx - mn) || Math.max(1, mx * 0.02);
+  const X = i => pad + (i / (n - 1)) * (w - pad * 2);
+  const Y = v => h - pad - ((v - mn) / rng) * (h - pad * 2);
+  const line = pts.map((v, i) => `${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(" ");
+  const up = pts[n - 1] >= pts[0], acc = up ? T.gn : T.rd;
+  const at = hi == null ? n - 1 : hi;
+  const read = e => { const b = box.current?.getBoundingClientRect(); if (!b) return; const x = (e.touches ? e.touches[0].clientX : e.clientX) - b.left; sHi(Math.max(0, Math.min(n - 1, Math.round(((x - pad) / Math.max(1, w - pad * 2)) * (n - 1))))); };
+  return <div ref={box} onMouseMove={read} onMouseLeave={() => sHi(null)} onTouchStart={read} onTouchMove={read} onTouchEnd={() => sHi(null)}
+    style={{ position: "relative", height: h, margin: "8px 0 4px", cursor: "crosshair", touchAction: "pan-y" }}>
+    <svg width={w} height={h} style={{ display: "block", overflow: "visible" }} role="img" aria-label={`market cap, last ${n} readings`}>
+      <polyline points={line} fill="none" stroke={T.dm} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+      {hi != null && <line x1={X(at)} y1="0" x2={X(at)} y2={h} stroke={T.bd} strokeWidth="1" />}
+      <circle cx={X(at)} cy={Y(pts[at])} r="4" fill={acc} stroke={T.sf} strokeWidth="2" />
+    </svg>
+    {hi != null && <div style={{ position: "absolute", left: Math.max(0, Math.min(X(at) - 32, w - 64)), top: -2, fontFamily: M, fontSize: 11, fontWeight: 800, color: T.tx, background: T.bg, border: `1px solid ${T.bd}`, borderRadius: 6, padding: "2px 6px", pointerEvents: "none", whiteSpace: "nowrap" }}>{kfmt(pts[at])}</div>}
+  </div>;
+}
+
 /** Bondli's own token, front and centre: the fly, the status, and when it is live the number, the
  *  curve, the address and the way in. State comes from the API every 15s, pushed by tools/launch-push.mjs. */
 function Launch({ T }) {
   const [l, sL] = useState(null); const [copied, sCopied] = useState(false);
   useEffect(() => { let on = true; const poll = async () => { try { const r = await a.launch(); if (on) sL(r); } catch {} }; poll(); const id = setInterval(poll, 15000); return () => { on = false; clearInterval(id); }; }, []);
   if (!l || l.status === "off") return null;
-  const live = l.status === "live" || l.status === "graduated", lv = l.live && !l.live.error ? l.live : null;
+  const live = l.status === "live" || l.status === "graduated", lv = l.live && !l.live.error ? l.live : null, tr = l.trend || null;
   const copy = async () => { try { await navigator.clipboard.writeText(l.address); sCopied(true); setTimeout(() => sCopied(false), 1500); } catch {} };
-  const pill = { display: "inline-block", padding: "4px 10px", borderRadius: 999, fontFamily: M, fontSize: 11, fontWeight: 800, letterSpacing: ".08em" };
+  const pill = { display: "inline-block", padding: "4px 10px", borderRadius: 999, fontFamily: M, fontSize: 11, fontWeight: 800, letterSpacing: ".08em", whiteSpace: "nowrap" };
+  // The corner badge is the state of the launch and, once there is something to buy, the way in.
+  const where = l.venue === "uniswap-v2" ? "UNISWAP" : "PONS";
+  const buyUrl = live ? (l.buy || l.url || "") : "";
+  const badge = l.status === "graduated" ? `GRADUATED · BUY ON ${where}` : live ? `NOW LIVE · BUY ON ${where}` : "SOON ON ROBINHOOD CHAIN";
   return <div style={{ width: "100%", maxWidth: 440, marginBottom: 18, position: "relative", overflow: "hidden", borderRadius: 18, border: `1px solid ${live ? T.gn : T.bd}`, background: `radial-gradient(120% 90% at 85% 20%, ${T.gn}2a 0%, ${T.sf} 55%)`, padding: "18px 18px 16px", boxSizing: "border-box" }}>
     <img src={l.image || "/fly.png"} alt="Not a fruit fly" style={{ position: "absolute", right: -18, top: -6, width: 190, height: "auto", animation: "fly 5s ease-in-out infinite", filter: `drop-shadow(0 0 22px ${T.gn}88)`, pointerEvents: "none" }} />
     <div style={{ position: "relative", zIndex: 1, maxWidth: 240 }}>
-      <span style={{ ...pill, background: live ? T.gn : T.bg, color: live ? "#000" : T.dm, border: `1px solid ${live ? T.gn : T.bd}` }}>{l.status === "graduated" ? "GRADUATED · ROBINHOOD CHAIN" : live ? "LIVE · ROBINHOOD CHAIN" : "LAUNCHING SOON · ROBINHOOD CHAIN"}</span>
+      {buyUrl
+        ? <a href={buyUrl} target="_blank" rel="noopener" style={{ ...pill, display: "inline-flex", alignItems: "center", gap: 6, background: T.gn, color: "#000", border: `1px solid ${T.gn}`, textDecoration: "none", animation: "gp 1.8s infinite" }}>{badge}<span aria-hidden="true">&#8594;</span></a>
+        : <span style={{ ...pill, background: live ? T.gn : T.bg, color: live ? "#000" : T.dm, border: `1px solid ${live ? T.gn : T.bd}` }}>{badge}</span>}
       <div style={{ fontSize: 30, fontWeight: 900, letterSpacing: "-.03em", lineHeight: 1, marginTop: 12 }}>NOT A<br />FRUIT FLY</div>
       {l.ticker && <div style={{ fontFamily: M, fontWeight: 800, color: T.gn, marginTop: 6 }}>${l.ticker.replace(/^\$/, "")}</div>}
       <div style={{ color: T.ft, fontSize: 13, lineHeight: 1.45, marginTop: 8 }}>{l.tagline}</div>
     </div>
     {live && <div style={{ position: "relative", zIndex: 1, marginTop: 14 }}>
+      {lv && <div style={{ marginBottom: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontFamily: M, fontSize: 11, color: T.ft }}>
+          <span style={{ letterSpacing: ".07em" }}>MARKET CAP</span>
+          {tr?.changePct != null && <span style={{ color: tr.changePct >= 0 ? T.gn : T.rd, fontWeight: 800 }}>{tr.changePct >= 0 ? "+" : "-"}{Math.abs(tr.changePct).toFixed(1)}%<span style={{ color: T.ft, fontWeight: 400 }}> · last {spanOf(tr.spanMin)}</span></span>}
+        </div>
+        <div style={{ fontFamily: M, fontWeight: 900, fontSize: 28, lineHeight: 1.1, color: T.tx, marginTop: 1 }}>{kfmt(lv.mcapUsd || 0)}</div>
+        {tr?.spark?.length >= 2 && <LaunchChart pts={tr.spark} T={T} />}
+      </div>}
       {lv && <div style={{ display: "flex", gap: 14, fontFamily: M, fontSize: 13, alignItems: "baseline", flexWrap: "wrap" }}>
-        <span><span style={{ color: T.ft, fontSize: 11 }}>mcap </span><b style={{ color: T.tx, fontSize: 18 }}>{kfmt(lv.mcapUsd || 0)}</b></span>
         {lv.buys != null && <span><span style={{ color: T.ft, fontSize: 11 }}>buys </span><b>{lv.buys}</b></span>}
         {lv.buyers != null && lv.buyers > 0 && <span><span style={{ color: T.ft, fontSize: 11 }}>holders </span><b>{lv.buyers}</b></span>}
         {lv.liquidityUsd != null && <span><span style={{ color: T.ft, fontSize: 11 }}>liquidity </span><b>{kfmt(lv.liquidityUsd)}</b></span>}

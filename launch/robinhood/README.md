@@ -92,6 +92,29 @@ node launch/robinhood/fleet-launch.mjs recover   # sweep the ETH only, no sellin
 Other commands: `ape --token 0x…` puts a Kelly-sized fleet into someone else's curve, and
 `npm run fleet:test` runs the suite (the on-chain tests run only when a local node answers).
 
+**5. Put it on bondli.fun.** The site reads `GET /api/launch` every 15 s and `tools/launch-push.mjs`
+writes it — no redeploy for any of this. `--from-state` reads only the token address out of the
+fleet's state file (that file also holds the fleet's private keys; nothing else is ever read from it,
+and nothing else is ever sent), sets the venue to `pons`, and flips the banner to live, which turns
+the badge in the card's top-left corner into a link straight to the PONS buy page.
+
+```bash
+export BONDLI_API=https://<your-railway-app>.up.railway.app
+export ADMIN_SECRET=<the same ADMIN_SECRET Railway has>
+
+node tools/launch-push.mjs --from-state launch/robinhood/fleet-state.json \
+  --ticker FLY --update "Live on Robinhood Chain."
+node tools/launch-push.mjs --show        # what the site has now, and the chain's view of it
+node tools/launch-push.mjs --announce    # ready-to-post text for X and Telegram, with the buy link
+node tools/launch-push.mjs --watch 720   # read the chain every 30s for 12h: pushes a milestone line
+                                         # at 10k/25k/50k/100k/250k/500k/1M and when the curve graduates
+```
+
+Leave `--watch` running through the launch. It is also what keeps the banner's chart dense: the
+server samples the market cap every time the chain is read, so a poll every 30 s draws a smooth line
+whether or not anyone has the page open. Before the token exists, `--status soon` shows the teaser
+card; `--reset` puts it back; `--status off` removes it from the site entirely.
+
 ## What was ported, and what changed on an EVM curve
 
 | pump.fun engine | Robinhood Chain (PONS V2) |
