@@ -109,6 +109,9 @@ export class VelocityHub {
     if (!live.ok) { await engine.stop(); return { ok: false, error: live.error || "could not go live", preflight: live.preflight || null }; }
     sup.start();
     this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression }, startedAt: this.clock() });
+    // Once a minute, the funnel in the server log: what the candidates hit. The first place to look when nothing fills.
+    const fun = setInterval(() => { try { const f = engine.funnel(); this.log.log?.(`[velocity ${wallet.slice(0, 8)}] funnel 10m: judged ${f.judged} (${f.distinct} tokens) go ${f.gos} filled ${f.filled} | ${Object.entries(f.gates).map(([g, n]) => `${g} ${n}`).join(", ") || "no rejects"} | top: ${f.top.map(x => `${x.k} ${x.n}`).join("; ")}${f.sized0 ? ` | no size: ${JSON.stringify(f.sized0)}` : ""}${f.failed ? ` | failed: ${JSON.stringify(f.failed)}` : ""}`); } catch {} }, 60_000);
+    fun.unref?.(); this.users.get(wallet).fun = fun;
     return { ok: true, ...this.status(wallet) };
   }
 
@@ -118,7 +121,7 @@ export class VelocityHub {
     if (!u) return { ok: false, error: "not running" };
     let result = null;
     if (flatten) result = await u.engine.halt("flatten", "user stop", { by: "user" });
-    u.sup.stop();
+    u.sup.stop(); clearInterval(u.fun);
     await u.engine.stop();
     this.users.delete(wallet);
     return { ok: true, closed: result?.closed?.length || 0, failed: result?.failed || [] };
@@ -148,7 +151,7 @@ export class VelocityHub {
     const u = this.users.get(wallet);
     if (!u) return { running: false };
     const s = u.engine.status();
-    return { running: true, startedAt: u.startedAt, settings: u.settings, status: s, feeWallet: this.feeOk ? this.platformWallet : null };
+    return { running: true, startedAt: u.startedAt, settings: u.settings, status: s, funnel: u.engine.funnel(), feeWallet: this.feeOk ? this.platformWallet : null };
   }
 
   /** The narration, newest last, from the user's own ledger. */

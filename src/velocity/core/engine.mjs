@@ -695,6 +695,22 @@ export class Engine extends EventEmitter {
     };
   }
 
+  /** The entry funnel over the last windowMs, from the ledger: where candidates stop. */
+  funnel(windowMs = 10 * 60_000) {
+    const since = this.clock() - windowMs;
+    const decisions = this.ledger.query({ kind: "decision", limit: 2000 }).filter(d => d.ts >= since);
+    const orders = this.ledger.query({ kind: "order", limit: 500 }).filter(o => o.ts >= since);
+    const by = {}; const add = (k) => { by[k] = (by[k] || 0) + 1; };
+    let gos = 0;
+    for (const d of decisions) { if (d.action === "GO") gos++; else add(`${d.gate}:${(d.reasons || [])[0] || "?"}`); }
+    const sized0 = orders.filter(o => o.stage === "sized" && !(o.stake_usd > 0)).map(o => (o.sizing?.reasons || [])[0] || "?");
+    const failed = orders.filter(o => o.stage === "failed").map(o => o.code || o.reason || "?");
+    const filled = orders.filter(o => o.stage === "filled").length;
+    const top = Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, n]) => ({ k, n }));
+    const gateTotals = {}; for (const d of decisions) if (d.action !== "GO") gateTotals[d.gate] = (gateTotals[d.gate] || 0) + 1;
+    return { windowMs, judged: decisions.length, distinct: new Set(decisions.map(d => d.instrument)).size, gos, gates: gateTotals, top, sized0: sized0.length ? sized0.reduce((m, r) => (m[r] = (m[r] || 0) + 1, m), {}) : null, failed: failed.length ? failed.reduce((m, r) => (m[r] = (m[r] || 0) + 1, m), {}) : null, filled, feed: Object.fromEntries(Object.entries(this.venues).map(([v, x]) => [v, x.feed?.status ? { events: x.feed.status().events, stale: x.feed.status().stale } : null])) };
+  }
+
   why(id) {
     if (id === "last") { const d = this.ledger.lastDecision(); return d ? this.ledger.trail(d.id) : []; }
     const m = /^(\w+) last$/.exec(id);
