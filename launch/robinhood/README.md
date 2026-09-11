@@ -1,5 +1,12 @@
 # Fleet launcher for Robinhood Chain
 
+**Scope: this is an operator tool for launching your own token, run by hand from a terminal. It is not
+part of bondli.fun and nothing in the product uses it.** The dependency runs one way only: this folder
+imports the PONS ABI and curve helpers from `src/velocity/venues/pons/chain.mjs`, and nothing under
+`src/`, `app/` or `deploy/` imports anything here. The hosted trader deliberately excludes fleet
+wallets and manufactured volume (see the constraint in `src/velocity/README.md`), and that line stays
+where it is: the bot the site runs for users never calls this code.
+
 The pump.fun fleet engine (`src/engine/fleet-trader.mjs`, `fleet-brains.mjs`, `launch-orchestrator.mjs`,
 `volume-engine.mjs`, `GAME_THEORY.md`) ported to PONS on Robinhood Chain, with a fleet simulator that
 runs the whole playbook against an in-memory PONS curve and a synthetic crowd in seconds, a testnet
