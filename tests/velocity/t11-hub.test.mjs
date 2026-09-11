@@ -9,7 +9,7 @@ import path from "node:path";
 import { ScriptedFeed } from "../../src/velocity/core/feed.mjs";
 import { makeEvent } from "../../src/velocity/core/events.mjs";
 import { failure } from "../../src/velocity/core/router.mjs";
-import { VelocityHub, SharedFeedView, userEnvelope, EXPOSED_DEFAULT_PLATFORM_WALLET } from "../../src/velocity/hub.mjs";
+import { VelocityHub, SharedFeedView, userEnvelope, EXPOSED_DEFAULT_PLATFORM_WALLET, DEFAULT_FEE_PCT } from "../../src/velocity/hub.mjs";
 import { goodCandidatePayload, tickPayload } from "./helpers/fixtures.mjs";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "velocity-t11-"));
@@ -73,16 +73,18 @@ test("T11: one feed, two users, isolated ledgers, fee paid on the profitable clo
     feed.emitEvent({ kind: "candidate", id: "MintX", payload: goodCandidatePayload("MintX"), t_venue: now - 100 });
     await new Promise(r => setTimeout(r, 50));
     for (const w of ["UserA", "UserB"]) { await hub.users.get(w).engine.enqueue(() => {}); assert.equal(hub.users.get(w).engine.store.openPositions("pumpfun").length, 1, `${w} holds MintX`); }
-    // A crash tick closes both. Sold for 0.07 SOL against 0.051 spent: 0.019 profit, 10% fee = 0.0019 SOL.
+    // A crash tick closes both. Sold for 0.07 SOL against 0.051 spent: 0.019 profit, 5% fee = 0.00095 SOL.
+    // One rate for everyone who does not hold the house token: the old free/pro/vip ladder no longer
+    // decides anything here, so the "pro" deps below change nothing about what is charged.
     feed.emitEvent({ kind: "tick", id: "MintX", payload: tickPayload("MintX", 17_000, { dynamics: { scores: 5, velocity: -0.6, acceleration: -0.2, trend: "crashing" } }), t_venue: now + 500 });
     await new Promise(r => setTimeout(r, 80));
     for (const w of ["UserA", "UserB"]) await hub.users.get(w).engine.enqueue(() => {});
     await new Promise(r => setTimeout(r, 30));
-    assert.deepEqual(routers.UserA.transfers, [{ to: "PLATFORM_FRESH_WALLET", sol: 0.0019 }]);
-    assert.deepEqual(routers.UserB.transfers, [{ to: "PLATFORM_FRESH_WALLET", sol: 0.0019 }]);
+    assert.deepEqual(routers.UserA.transfers, [{ to: "PLATFORM_FRESH_WALLET", sol: 0.00095 }]);
+    assert.deepEqual(routers.UserB.transfers, [{ to: "PLATFORM_FRESH_WALLET", sol: 0.00095 }]);
     const feeRec = hub.users.get("UserA").engine.ledger.query({ kind: "fee", limit: 1 })[0];
-    assert.equal(feeRec.scope, "platform"); assert.equal(feeRec.sol, 0.0019); assert.equal(feeRec.venue_ref, "SIGFEE"); assert.equal(feeRec.usd, 0.285, "priced at the candidate's SOL price (150), fresher than the feed's 100");
-    assert.deepEqual(deps.global, [0.0019, 0.0019]); assert.deepEqual(deps.outcomes, [0.019, 0.019]);
+    assert.equal(feeRec.scope, "platform"); assert.equal(feeRec.sol, 0.00095); assert.equal(feeRec.venue_ref, "SIGFEE"); assert.equal(feeRec.usd, 0.1425, "priced at the candidate's SOL price (150), fresher than the feed's 100");
+    assert.deepEqual(deps.global, [0.00095, 0.00095]); assert.deepEqual(deps.outcomes, [0.019, 0.019]);
     const nar = hub.narration("UserA", 20).map(x => x.line);
     assert.ok(nar.some(l => /FILLED  BUY MintX/.test(l)) && nar.some(l => /fee/.test(l)), nar.join("\n"));
 
@@ -145,7 +147,8 @@ test("T11: a flat fee rate takes that share of realized profit, nothing on a los
   assert.equal(hub.flatFee(0.05, 0.04, "UserE").fee, 0, "a loss pays nothing");
   assert.equal(hub.flatFee(0.05, 0.0505, "UserE").fee, 0, "dust pays nothing");
   assert.equal(hub.flatFee(0.05, 0.09, "Owner").fee, 0, "the owner pays nothing");
-  assert.equal(new VelocityHub({ feed, rootDir: tmp(), platformWallet: "P", fee: deps, log: { error() {} } }).feePct, null, "unset means the site's ladder");
+  // Unset falls back to the one standard rate, never to the retired free/pro/vip ladder.
+  assert.equal(new VelocityHub({ feed, rootDir: tmp(), platformWallet: "P", fee: deps, log: { error() {} } }).feePct, DEFAULT_FEE_PCT, "unset means the one standard rate");
   await feed.stop();
 });
 
