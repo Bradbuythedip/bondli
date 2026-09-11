@@ -665,3 +665,33 @@ test("T10: a revival candidate is its own model: tier-3 layers with a tighter st
   const half = sizer.size({ decision: { ...base, stake_cap_fraction: 0.5 }, portfolio: { open: [], realized_today_usd: 0 } });
   assert.ok(full.stake_usd > 20, JSON.stringify(full)); assert.equal(half.stake_usd, 20); assert.ok(half.caps.includes("MODEL_CAP"));
 });
+
+test("T10: a production-shaped candidate (no enrichment, tier 3) is a GO; missing features are not zeros and tier-3 priors clear costs", async () => {
+  const { makePumpfunEdge, pumpfunFeatures, PUMPFUN_PRIORS } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const { GateRunner, expectedValue } = await import("../../src/velocity/core/pipeline.mjs");
+  const { scoreFeatures, DEFAULT_WEIGHTS } = await import("../../src/velocity/core/learner.mjs");
+  // What the radar's live path actually serves: apeScore, chart health, fresh-wallet ratio. Nothing else.
+  const p = goodCandidatePayload("MintProd");
+  delete p.token._memeticQuick; delete p.token._survivorMatch;
+  p.qf = { rg_devSellSpeed: 0.05, _rg_sybilScore: 0.1, _rg_freshWalletRatio: 0.2, rg_holderConcentration: 0.3, ch_healthScore: 0.5 };
+  p.scores = { apeScore: 45, scoreTimestamp: Date.now() };
+  const f = pumpfunFeatures({ token: p.token, qf: p.qf, scores: p.scores });
+  assert.equal(f.memeticQuick, null); assert.equal(f.survivorMatch, null); assert.equal(f.whaleBullish, null); assert.equal(f.walletAge, null);
+  const ranked = scoreFeatures(f, DEFAULT_WEIGHTS.pumpfun);
+  assert.ok(ranked > 0.4 && ranked < 0.6, `renormalised over present features: ${ranked}`);
+  const asZeros = scoreFeatures({ ...f, memeticQuick: 0, survivorMatch: 0, whaleBullish: 0, walletAge: 0 }, DEFAULT_WEIGHTS.pumpfun);
+  assert.ok(asZeros < 0.35, `the old reading, which refused everything: ${asZeros}`);
+  // Every tier's prior clears a 5% cost, so a tier can earn the outcomes that replace its prior.
+  for (const t of [1, 2, 3]) assert.ok(expectedValue({ ...PUMPFUN_PRIORS[t], costs: 0.06 }) > 0, `tier ${t} prior EV`);
+  // Through the whole runner at Normal: a GO, not a confidence or EV reject.
+  const edge = makePumpfunEdge({ aggression: 2 });
+  const runner = new GateRunner({ venue: "pumpfun", edge });
+  assert.equal(runner.minConfidence, 0.40);
+  const ev = makeEvent({ venue: "pumpfun", kind: "candidate", id: "MintProd", t_venue: Date.now() - 100, t_observed: Date.now(), payload: p });
+  const [cand] = edge.ingest(ev);
+  const d = runner.evaluate(ev, cand, { governor: {} });
+  assert.equal(d.action, "GO", JSON.stringify(d.reasons));
+  assert.equal(d.tier, 3);
+  // The designed level keeps its 0.5 floor.
+  assert.equal(new GateRunner({ venue: "pumpfun", edge: makePumpfunEdge({ aggression: 1 }) }).minConfidence, 0.5);
+});
