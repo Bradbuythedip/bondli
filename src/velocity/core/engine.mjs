@@ -66,6 +66,7 @@ export class Engine extends EventEmitter {
     this.wallet = { sol: null, usd: null, solPrice: null, at: 0, venue: null }; // last live wallet reading (bankroll_source: wallet)
     this.wallets = {}; // venue -> reading; a hosted user trades pump.fun from a SOL wallet and PONS from an ETH wallet
     this.quotePrice = {}; // venue -> quote asset price in USD (SOL, ETH), from that venue's own events
+    this._knownForeign = new Set(); // venue:instrument the wallet holds that the bot never bought
     this._holdings = {}; // venue -> { at, list: [{ instrument, qty }] } as the venue last reported them
     this._lastHoldingsReconcile = 0;
     this._lastSweepTry = new Map();
@@ -225,7 +226,8 @@ export class Engine extends EventEmitter {
         const list = (await v.liveRouter.positions()).map(p => ({ instrument: p.instrument, qty: p.qty }));
         this._holdings[venue] = { at: this.clock(), list };
         const open = new Set(this.store.openPositions(venue).map(p => p.instrument));
-        const untracked = list.filter(h => !open.has(h.instrument) && h.qty >= 1); // dust left by a sell is not a holding
+        // A holding already reconciled as "not the bot's" (no fill, no order for it) is not asked about again.
+        const untracked = list.filter(h => !open.has(h.instrument) && h.qty >= 1 && !this._knownForeign.has(venue + ":" + h.instrument)); // dust left by a sell is not a holding
         if (untracked.length && this.clock() - this._lastHoldingsReconcile > 2 * 60_000) {
           this._lastHoldingsReconcile = this.clock();
           this.log("warn", `${venue}: wallet holds ${untracked.length} token(s) the store does not track (${untracked.map(u => u.instrument.slice(0, 8)).join(", ")}); reconciling`);
@@ -735,7 +737,7 @@ export class Engine extends EventEmitter {
         // the sold quantity later, so the store's quantity is left alone until then.
         if (inStore.has(inst)) { const p = inStore.get(inst); if (vp.qty != null && !p.pendingExit) { p.qty = vp.qty; p.remaining_qty = vp.qty; } rep.matched.push(inst); continue; }
         const f = openInLedger.get(inst);
-        if (!f && !sent.has(inst)) { rep.unknown.push({ instrument: inst, qty: vp.qty }); continue; }
+        if (!f && !sent.has(inst)) { rep.unknown.push({ instrument: inst, qty: vp.qty }); this._knownForeign.add(venue + ":" + inst); continue; }
         const decision = f ? this.ledger.readAll(r => r.kind === "decision" && r.decisionId === f.decisionId)[0] : null;
         const tier = decision?.tier || 2;
         const key = CURVE_VENUES.has(venue) ? (tier >= 1 && tier <= 3 ? tier : 2) : (decision?.model || "resolved_fact");
