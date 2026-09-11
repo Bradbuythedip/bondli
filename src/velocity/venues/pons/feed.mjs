@@ -152,6 +152,7 @@ export class PonsFeed extends Feed {
     const qf = quickFeatures(t, now);
     t._apeScore = scoreToken(t, qf, now); t._scoredAt = now;
     const dynamics = this.dyn.record(t.ca, t._apeScore, now);
+    t._lastQf = qf; t._lastDyn = dynamics;
     const { uniqueBuyers, trades, ...rest } = t;
     const token = { ...rest, uniqueBuyers: { size: uniqueBuyers.size }, trades: trades.slice(-60), vSolInBondingCurve: t.quoteReserve, mcapSol: t.mcapQuote, _ageMs: now - t.createdAt };
     return {
