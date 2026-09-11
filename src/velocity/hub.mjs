@@ -159,6 +159,17 @@ export class VelocityHub {
     return { ok: true, ...this.status(wallet) };
   }
 
+  /** Sell some or all of one open position now, by the user's hand. Runs on the engine's queue. */
+  async closePosition(wallet, positionId, pct = 100) {
+    const u = this.users.get(wallet);
+    if (!u) return { ok: false, error: "not running" };
+    const p = u.engine.store.state.positions[positionId];
+    if (!p || p.status !== "open") return { ok: false, error: "no such open position" };
+    const share = Math.min(100, Math.max(1, Math.round(Number(pct) || 100)));
+    const r = await u.engine.enqueue(() => u.engine.closePosition(p, share, "USER_SELL", { by: "user", detail: `${share}% by the user` }));
+    return { ok: !!r?.ok, ...(r?.ok ? { sold_pct: share, proceeds_usd: r.fill?.notional_usd ?? null } : { error: r?.failure?.reason || "sell failed", code: r?.failure?.code || null }), ...this.status(wallet) };
+  }
+
   status(wallet) {
     const u = this.users.get(wallet);
     if (!u) return { running: false };
@@ -219,6 +230,7 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
   app.post("/api/velocity/stop", requireOwner, async (req, res) => { try { res.json(await hub.stop(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/pause", requireOwner, async (req, res) => { try { res.json(await hub.pause(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/resume", requireOwner, (req, res) => { try { res.json(hub.resume(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
+  app.post("/api/velocity/close", requireOwner, async (req, res) => { try { res.json(await hub.closePosition(req.body.wallet, req.body.positionId, req.body.pct)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/halt", requireOwner, async (req, res) => { try { res.json(await hub.halt(req.body.wallet, req.body.mode === "freeze" ? "freeze" : "flatten")); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.get("/api/velocity/status", requireOwner, (req, res) => res.json({ ok: true, ...hub.status(req.query.wallet), narration: hub.narration(req.query.wallet, 40) }));
   app.get("/api/velocity/health", (req, res) => res.json({ ok: true, users: hub.list().length, feeConfigured: hub.feeOk, feed: hub.feed.status?.() || null, pons: hub.ponsFeed ? { ...(hub.ponsFeed.status?.() || {}), tokens: hub.ponsFeed.tokens?.size ?? null, ethPrice: hub.ponsFeed.solPrice, feeConfigured: !!hub.platformEvmWallet } : null }));

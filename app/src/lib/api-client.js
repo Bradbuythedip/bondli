@@ -49,6 +49,7 @@ class A {
   vstat(w) { return this.f(`/api/velocity/status?wallet=${w}`); }
   vpause(w) { return this.f("/api/velocity/pause", { method: "POST", body: { wallet: w } }); }
   vresume(w) { return this.f("/api/velocity/resume", { method: "POST", body: { wallet: w } }); }
+  vclose(w, positionId, pct) { return this.f("/api/velocity/close", { method: "POST", body: { wallet: w, positionId, pct }, timeout: 90000 }); }
   // What the bot sees (public)
   live(agg) { return this.f("/api/radar/live" + (agg != null ? "?aggression=" + agg : ""), { noauth: true, timeout: 8000 }); }
 }
