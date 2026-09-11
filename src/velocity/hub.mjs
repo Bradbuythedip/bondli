@@ -17,7 +17,8 @@ import { makePumpfunEdge } from "./venues/pumpfun/edge.mjs";
 import { PumpfunPaperRouter, PumpfunLiveRouter } from "./venues/pumpfun/router.mjs";
 import { PonsLiveRouter, PonsPaperRouter } from "./venues/pons/router.mjs";
 
-/** The wallet whose key was pasted into a chat; fees must never be sent there. */
+/** The original platform wallet. Its key was pasted into a chat once; the operator chose to keep it,
+ *  so it is accepted with a loud warning at boot rather than refused. Sweep it often. */
 export const EXPOSED_DEFAULT_PLATFORM_WALLET = "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
 
 /** A per-engine view of one shared feed: same events, own watch list, no own poller. */
@@ -81,8 +82,9 @@ export class VelocityHub {
     this.makeLiveRouter = makeLiveRouter || (({ secret }) => new PumpfunLiveRouter({ secret, rpcUrl, clock }));
     this.clock = clock; this.log = log;
     this.users = new Map(); // wallet -> { engine, sup, view, settings, startedAt }
-    this.feeOk = !!this.platformWallet && this.platformWallet !== EXPOSED_DEFAULT_PLATFORM_WALLET;
-    if (!this.feeOk) log.error?.(`[VELOCITY-HUB] PLATFORM_WALLET is ${this.platformWallet ? "the exposed default" : "unset"}: performance fees will NOT be collected until it is set to a fresh wallet`);
+    this.feeOk = !!this.platformWallet;
+    if (!this.feeOk) log.error?.(`[VELOCITY-HUB] PLATFORM_WALLET is unset: SOL performance fees will NOT be collected`);
+    else if (this.platformWallet === EXPOSED_DEFAULT_PLATFORM_WALLET) log.warn?.(`[VELOCITY-HUB] PLATFORM_WALLET is the original wallet whose key was once exposed in a chat: fees go there by the operator's choice; sweep it often`);
   }
 
   has(wallet) { return this.users.has(wallet); }
