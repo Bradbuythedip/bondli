@@ -90,10 +90,10 @@ test("T5: after TP2 a runner is trailed: a tier-3 plan with no TP3 sells 100% wh
   assert.equal(evaluateExit(pos, tick(13_000)).reason, "TP1");
   assert.equal(evaluateExit(pos, tick(17_600)).reason, "TP2");
   assert.equal(pos._bondli.tpHit, 2);
-  // +300% peak, then 10% off: hold
-  markPosition(pos, tick(40_000)); assert.equal(evaluateExit(pos, tick(36_000)), null);
-  // 25% off the peak at still +200%: sell everything
-  const r = evaluateExit(pos, tick(30_000));
+  // +150% peak, then 10% off: hold
+  evaluateExit(pos, tick(25_000)); assert.equal(evaluateExit(pos, tick(22_500)), null);
+  // 22% off the peak at +95%: sell everything (under 3x there is no moonbag to keep)
+  const r = evaluateExit(pos, tick(19_500));
   assert.equal(r?.action, "SELL"); assert.equal(r.pct, 100); assert.equal(r.reason, "TP-trail");
   // a tier-2 plan between TP2 (+100%) and TP3 (+250%) gets the same protection
   const pos2 = pumpPos({ plan: createPlan({ venue: "pumpfun", key: 2, entry: { score: 60 } }) });
@@ -128,4 +128,30 @@ test("T5: a PONS position is sold at 85% curve progress whatever the P&L: the bo
   assert.equal(evaluateExit(pos, t(10_200, 0.5)), null);
   const r = evaluateExit(pos, t(10_200, 0.86));
   assert.equal(r?.action, "SELL"); assert.equal(r.pct, 100); assert.equal(r.reason, "pre-graduation-exit");
+});
+
+test("T5: a runner keeps its moonbag on every tier, and the moonbag outlives the time limit", () => {
+  // tier 3: TP1 +30%, TP2 +75%, then the trail at +300% sells 90% and keeps 10%
+  const pos = pumpPos({ plan: createPlan({ venue: "pumpfun", key: 3, entry: { score: 60 } }) });
+  evaluateExit(pos, tick(13_000)); evaluateExit(pos, tick(17_600));
+  evaluateExit(pos, tick(40_000)); // the peak, +300%
+  assert.equal(evaluateExit(pos, tick(30_000)), null, "at 3x a runner gets 40% of room");
+  const r = evaluateExit(pos, tick(22_000)); // +120%, 45% off the peak
+  assert.equal(r?.reason, "TP-trail"); assert.equal(r.action, "PARTIAL_SELL"); assert.equal(r.pct, 90);
+  assert.equal(pos._bondli.isMoonbag, true);
+  // the moonbag is not sold at the plan's 10-minute limit
+  assert.equal(evaluateExit(pos, tick(22_000, {}, T0 + 25 * 60_000)), null);
+  // it dies at -80% from entry, or gives back its own wide trail
+  assert.equal(evaluateExit(pos, tick(1_900, {}, T0 + 26 * 60_000))?.reason, "moonbag-dead");
+  // tier 2 through TP3 at +250%: sells 85%, keeps 15%
+  const pos2 = pumpPos();
+  evaluateExit(pos2, tick(13_500)); evaluateExit(pos2, tick(20_000)); evaluateExit(pos2, tick(36_000));
+  evaluateExit(pos2, tick(60_000)); // +500% peak
+  const r2 = evaluateExit(pos2, tick(35_000)); // 42% off the peak at +250%: past the 40% room a 3x runner gets
+  assert.equal(r2?.reason, "TP3"); assert.equal(r2.pct, 85); assert.equal(pos2._bondli.isMoonbag, true);
+  // a token that only made +120% before the trail is sold in full: no moon, no moonbag
+  const pos3 = pumpPos({ plan: createPlan({ venue: "pumpfun", key: 3, entry: { score: 60 } }) });
+  evaluateExit(pos3, tick(13_000)); evaluateExit(pos3, tick(17_600)); evaluateExit(pos3, tick(22_000));
+  const r3 = evaluateExit(pos3, tick(16_500));
+  assert.equal(r3?.reason, "TP-trail"); assert.equal(r3.pct, 100);
 });

@@ -210,7 +210,9 @@ export class Engine extends EventEmitter {
       if (p.legs?.length) continue; // multi-leg sets hold to redemption
       const maxHold = p.plan?.max_hold_ms;
       const quiet = now - (p.lastTickAt || p.entryTime);
-      if (maxHold && now - p.entryTime > maxHold && quiet > this.cfg.tickSilenceMs && due(p.id))
+      // A moonbag outlives the plan's time limit; only a moonbag whose token has gone silent for six hours is swept.
+      const holdLimit = p._bondli?.isMoonbag ? Math.max(maxHold || 0, 6 * 3_600_000) : maxHold;
+      if (holdLimit && now - p.entryTime > holdLimit && quiet > (p._bondli?.isMoonbag ? 6 * 3_600_000 : this.cfg.tickSilenceMs) && due(p.id))
         await this.closePosition(p, 100, "MAX_HOLD", { by: "timer", detail: `${Math.round((now - p.entryTime) / 60000)}min, no tick for ${Math.round(quiet / 1000)}s` });
     }
   }
