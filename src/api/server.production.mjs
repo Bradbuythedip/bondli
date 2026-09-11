@@ -41,6 +41,7 @@ import { makeVault } from "../middleware/keyvault.mjs";
 import { detectMayhem, PUMP_PROGRAM as PUMP_PROGRAM_ID } from "./mayhem.mjs";
 import { CopycatIndex } from "./copycat.mjs";
 import { RevivalTracker, revivalFilter } from "./revival.mjs";
+import { tagFor } from "./verdict-tag.mjs";
 import { AGGRESSION as VELOCITY_AGGRESSION } from "../velocity/venues/pumpfun/edge.mjs";
 import { PonsFeed, ethersRpc as ponsRpc } from "../velocity/venues/pons/feed.mjs";
 import { LaunchStore } from "./launch.mjs";
@@ -7956,13 +7957,31 @@ function revivalOn(t, qf, now = Date.now()) {
   return { buyers5m: sig.buyers5m, baseline5m: sig.baseline5m, netSol5m: sig.netSol5m, curveDelta: sig.curveDelta, at: now };
 }
 
+/** A token past the stale clock that never stopped building. Unlike a revival this buys it nothing
+ *  but the clock: no forced tier, no special plan, and every rug rule still judges it. Cached for a
+ *  minute because the answer moves on the scale of five-minute buckets, and it is read per row. */
+function slowCookOn(t, qf, now = Date.now()) {
+  if (t._ageUnknown || t._mayhem || t._copyOf) return null;
+  const sig = radar._revivals.slowCook(t.ca, { createdAt: t.createdAt, now });
+  if (!sig.slowCook) return null;
+  if (!revivalFilter(t, qf, sig).pass) return null;   // the same "is this one actor?" filter
+  return { buyers: sig.buyers, activeBuckets: sig.activeBuckets, netSol: sig.netSol, curveDelta: sig.curveDelta, windowMin: sig.windowMin, at: now };
+}
+function slowCookOf(t, qf, now = Date.now()) {
+  if (t._slowCookAt && now - t._slowCookAt < 60_000) return t._slowCook || null;
+  t._slowCookAt = now;
+  try { t._slowCook = slowCookOn(t, qf, now); } catch { t._slowCook = null; }
+  return t._slowCook;
+}
+
 /** The velocity judge, as the bot runs it, at one aggression: what would it do with this token now? */
 function judgeToken(t, qf, dyn, aggression = 2) {
   const opts = VELOCITY_AGGRESSION[Math.max(0, Math.min(3, aggression))] || VELOCITY_AGGRESSION[1];
   const scores = { apeScore: t._apeScore || 0, scoreTimestamp: t._scoredAt || Date.now() };
   const revival = t._revival || null;
-  const g1 = judgeDisqualifiers(t, qf, { ...opts, ...(revival ? { staleMin: Infinity } : {}), freezeAuthority: !!t.freezeAuthority });
-  if (!g1.pass) return { enter: false, gate: "rug", reasons: g1.flags, tier: 0 };
+  const cooking = revival ? null : slowCookOf(t, qf);
+  const g1 = judgeDisqualifiers(t, qf, { ...opts, ...(revival || cooking ? { staleMin: Infinity } : {}), freezeAuthority: !!t.freezeAuthority });
+  if (!g1.pass) return { enter: false, gate: g1.timingOnly ? "timing" : "rug", reasons: g1.flags, tier: 0 };
   const g2 = judgeViability(t, qf, scores, dyn, opts);
   if (!g2.pass) return { enter: false, gate: "viability", reasons: g2.checks, tier: 0 };
   let tier;
@@ -7970,7 +7989,7 @@ function judgeToken(t, qf, dyn, aggression = 2) {
   else { const c = judgeConfidence(t, qf, scores, dyn, opts); tier = c.tier; if (tier === 4 && opts.enterWatchlist) tier = 3; if (!(tier >= 1 && tier <= 3)) return { enter: false, gate: "confidence", reasons: [tier === 4 ? "WATCHLIST" : "BELOW_THRESHOLD"], tier }; }
   const g3 = judgeWindow(t, tier, scores.scoreTimestamp, opts);
   if (!g3.pass) return { enter: false, gate: "window", reasons: g3.checks, tier };
-  return { enter: true, gate: null, reasons: [], tier, revival: !!revival };
+  return { enter: true, gate: null, reasons: [], tier, revival: !!revival, slowCook: !!cooking };
 }
 
 /** The scored radar as one object; the HTTP route and the in-process velocity hub both read it. */
@@ -7998,8 +8017,10 @@ function buildScoredResponse(query = {}) {
       if (!only && !all && !passesTraderBaseFilter(t, now, loose)) continue;
     }
     if (!qf) { try { qf = extractQuickFeatures(t); } catch {} }
+    // Stamped here, not only in judgeToken, so the row carries it to the live engine's own gates.
+    if (!revival) slowCookOf(t, qf, now);
     try { dyn = scoreDynamics.get(t.ca) || null; } catch {}
-    const { uniqueBuyers, trades, spark, _bradEval, ...rest } = t;
+    const { uniqueBuyers, trades, spark, _bradEval, _slowCookAt, ...rest } = t;
     const lastTrade = trades?.length ? trades[trades.length - 1] : null;
     rows.push({
       token: {
@@ -8048,7 +8069,8 @@ app.get("/api/radar/live", (req, res) => {
     if (pons) {
       // The PONS feed judges its own tokens with the same gates; the row reads what it last decided.
       if (ageS < 60) tag = "new"; else if (buyers === 0) tag = "nobuyers"; else if (buyers < 2 || (t.buys || 0) < 3) tag = "fewbuyers";
-      else { const qf = t._lastQf || null; verdict = judgeToken({ ...t, uniqueBuyers: { size: buyers } }, qf, t._lastDyn || null, aggression); tag = verdict.enter ? "hot" : verdict.gate === "rug" ? "rug" : verdict.gate === "viability" && verdict.reasons.includes("SCORE_BELOW_FLOOR") ? "weak" : verdict.gate === "window" || verdict.gate === "confidence" ? "close" : "weak"; }
+      // Stamped on the token itself, not on the copy the judge is handed, or the reading is thrown away.
+      else { const qf = t._lastQf || null; slowCookOf(t, qf, now); verdict = judgeToken({ ...t, uniqueBuyers: { size: buyers } }, qf, t._lastDyn || null, aggression); tag = tagFor(verdict, !!t._slowCook); }
     }
     else if (t._mayhem) tag = "mayhem"; else if (t._copyOf) tag = "copy";
     else if (ageS < (loose ? 20 : 30)) tag = "new";
@@ -8057,20 +8079,31 @@ app.get("/api/radar/live", (req, res) => {
     else {
       let qf = null; try { qf = extractQuickFeatures(t); } catch {}
       verdict = judgeToken(t, qf, scoreDynamics.get(t.ca) || null, aggression);
-      tag = verdict.enter ? "hot" : verdict.gate === "rug" ? "rug" : verdict.gate === "viability" && verdict.reasons.includes("MCAP_BELOW_FLOOR") ? "small" : verdict.gate === "viability" && verdict.reasons.includes("SCORE_BELOW_FLOOR") ? "weak" : verdict.gate === "window" ? "close" : verdict.gate === "confidence" ? "close" : "weak";
+      tag = tagFor(verdict, !!t._slowCook);
     }
-    return { ca: t.ca, chain: pons ? "robinhood" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, revival: t._revival || null, graduated: !!t.graduated };
+    return { ca: t.ca, chain: pons ? "robinhood" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated };
   };
   // Robinhood Chain launches sit in the same list, newest first, marked by chain.
   const ponsTokens = velocityHub?.ponsFeed ? [...velocityHub.ponsFeed.tokens.values()] : [];
   const both = [...all, ...ponsTokens];
   const rows = both.filter(t => now - (t.createdAt || 0) < 30 * 60_000).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0)).slice(0, limit).map(row);
   const revivals = all.filter(t => t._revival && now - t._revival.at < 10 * 60_000).sort((x, y) => (y._revival.at || 0) - (x._revival.at || 0)).slice(0, 10).map(row);
+  // The list above is the last half hour, because that is what a launch feed is. Tokens that aged
+  // out of it while still filling up are the ones the stale clock used to throw away; they get their
+  // own list rather than pushing the new launches off the front page. Most buyers first.
+  // Read here rather than relying on the scored feed having run: bounded to the tokens that could
+  // plausibly qualify, and cached for a minute inside slowCookOf, so this costs little per poll.
+  for (const t of both.filter(t => { const age = now - (t.createdAt || 0); return age >= 30 * 60_000 && age < 3 * 3600_000 && !t._mayhem && !t._copyOf && passesTraderBaseFilter(t, now, loose); }).slice(0, 60)) {
+    let qf = null; try { qf = extractQuickFeatures(t); } catch {}
+    slowCookOf(t, qf, now);
+  }
+  const cooking = both.filter(t => t._slowCook && now - (t.createdAt || 0) >= 30 * 60_000 && now - t._slowCook.at < 5 * 60_000)
+    .sort((x, y) => (y._slowCook.buyers || 0) - (x._slowCook.buyers || 0)).slice(0, 10).map(row);
   res.json({
     ts: now, solPrice: solUsdPrice, online: radar.online, aggression,
     hour: { launches: hour.length + ponsTokens.filter(t => now - (t.createdAt || 0) < 3600_000).length, robinhood: ponsTokens.filter(t => now - (t.createdAt || 0) < 3600_000).length, mayhem: hour.filter(t => t._mayhem).length, copies: hour.filter(t => t._copyOf).length, hot: rows.filter(r => r.tag === "hot").length },
     bots: velocityHub ? velocityHub.list().length : null,
-    tokens: rows, revivals,
+    tokens: rows, revivals, cooking,
   });
 });
 
@@ -11060,7 +11093,10 @@ if (process.env.VELOCITY_HOSTED === "1") {
   const inProcessFetch = async (url) => { const q = Object.fromEntries(new URL(url, "http://x").searchParams); return { ok: true, status: 200, json: async () => buildScoredResponse(q) }; };
   const hubFeed = new PumpfunFeed({ bondliUrl: "http://in-process", minScore: parseInt(process.env.VELOCITY_MIN_SCORE || "25") || 25, pollMs: 2000, tickMs: 1000, pumpportal: false, fetchImpl: inProcessFetch });
   // Robinhood Chain (PONS): one shared feed of launches and curve trades, ETH priced from Coinbase.
-  const ponsFeed = process.env.VELOCITY_PONS !== "0" ? new PonsFeed({ rpcUrl: process.env.PONS_RPC_URL || PONS_DEFAULT_RPC, pollMs: parseInt(process.env.PONS_POLL_MS || "3000") || 3000, priceFn: ethPriceUsd }) : null;
+  const ponsFeed = process.env.VELOCITY_PONS !== "0" ? new PonsFeed({ rpcUrl: process.env.PONS_RPC_URL || PONS_DEFAULT_RPC, pollMs: parseInt(process.env.PONS_POLL_MS || "3000") || 3000, priceFn: ethPriceUsd,
+      // Robinhood Chain trades go into the same history Solana's do, so the revival and slow-cook
+      // signals can speak about a PONS token instead of silently answering "no trades" for every one.
+      onTrade: (t, tr) => radar._revivals.noteTrade(t.ca, { side: tr.side, sol: tr.quote, wallet: tr.wallet, curvePct: tr.curvePct, ts: tr.ts }) }) : null;
   velocityHub = new VelocityHub({
     feed: hubFeed, ponsFeed, platformEvmWallet: /^0x[0-9a-fA-F]{40}$/.test(process.env.PLATFORM_EVM_WALLET || "") ? process.env.PLATFORM_EVM_WALLET : null,
     rootDir: path.resolve(process.env.VELOCITY_DATA_DIR || "data/velocity/users"), platformWallet: process.env.PLATFORM_WALLET || null, rpcUrl: RPC_URL,
