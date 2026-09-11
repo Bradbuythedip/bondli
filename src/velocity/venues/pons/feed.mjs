@@ -195,6 +195,7 @@ export class PonsFeed extends Feed {
       const payload = this.payloadFor(t, now);
       if (this.watched.has(t.ca)) this.emitEvent({ kind: "tick", id: t.ca, payload: { ...payload, source: "pons" }, t_venue: now });
       if (now - t.createdAt < SNIPE_TAX_WINDOW_MS) continue; // a buy in the snipe-tax window is a donation: not even a candidate
+      if (t.uniqueBuyers.size < 2 || t.buys < 3) continue; // the pump.fun base filter's floor: two people and three buys before anyone is asked to judge it
       if (!this._changed(t, payload, now)) continue;
       this.emitEvent({ kind: "candidate", id: t.ca, payload, t_venue: now }); emitted++;
     }

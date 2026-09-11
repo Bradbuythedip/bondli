@@ -83,7 +83,8 @@ export function makePumpfunEdge({
         instrument: p.token.ca,
         token: p.token, qf: p.qf, scores: p.scores || {}, dynamics: p.dynamics,
         solPrice: p.solPrice || 0,
-        reference: { mcapUsd: p.mcapUsd || p.token.mcapUsd || 0, vSolInBondingCurve: p.vSolInBondingCurve || p.token.vSolInBondingCurve || 0, solPrice: p.solPrice || 0, solPriceAt: p.solPriceAt || 0 },
+        // The router sizes and routes from this: on PONS it needs the curve contract and its reserves.
+        reference: { mcapUsd: p.mcapUsd || p.token.mcapUsd || 0, vSolInBondingCurve: p.vSolInBondingCurve || p.token.vSolInBondingCurve || 0, solPrice: p.solPrice || 0, solPriceAt: p.solPriceAt || 0, ...(p.curve ? { curve: p.curve, quote: p.quote || "ETH" } : {}) },
         group: p.token.devWallet || null,
       }];
     },
@@ -100,7 +101,7 @@ export function makePumpfunEdge({
           if (r.tier >= 1 && r.tier <= 3) return { pass: true };
           // On the loose settings a watchlist token is a speculative entry: tier-3 plan and sizing.
           if (r.tier === 4 && gateOpts.enterWatchlist) { c.tier = 3; c.tierLabel = "WATCHLIST_AS_SPEC"; return { pass: true }; }
-          return { pass: false, reasons: [r.tier === 4 ? "WATCHLIST" : "BELOW_THRESHOLD", ...r.reasons] };
+          return { pass: false, reasons: [...new Set([r.tier === 4 ? "WATCHLIST" : "BELOW_THRESHOLD", ...r.reasons])] };
         } },
       { name: "execution_window", check: c => { const r = checkExecutionWindow(c.token, c.tier, c.scores.scoreTimestamp, gateOpts); return { pass: r.pass, reasons: r.checks }; } },
     ],
@@ -127,13 +128,18 @@ export function makePumpfunEdge({
     },
 
     costs(c) {
-      const solPrice = c.solPrice || c.reference?.solPrice || 0;
-      const vSol = Number(c.reference?.vSolInBondingCurve) || 30;
-      const stakeSol = solPrice > 0 ? nominalStakeUsd / solPrice : 0.1;
-      // Constant-product curve: buying stake into vSol moves price by about stake/vSol.
-      const impact = Math.min(0.25, stakeSol / Math.max(1, vSol));
-      const fixed = solPrice > 0 ? (2 * fixedCostSol * solPrice) / nominalStakeUsd : 0.02;
-      return { fraction: feeFractionRoundTrip + impact + fixed, detail: { feeFractionRoundTrip, impact, fixed } };
+      const quotePrice = c.solPrice || c.reference?.solPrice || 0; // SOL on pump.fun, ETH on PONS
+      const pons = venue === "pons";
+      const vQuote = Number(c.reference?.vSolInBondingCurve) || (pons ? 3 : 30);
+      const stakeQuote = quotePrice > 0 ? nominalStakeUsd / quotePrice : (pons ? 0.01 : 0.1);
+      // Constant-product curve: buying stake into the quote reserve moves price by about stake/reserve.
+      const impact = Math.min(0.25, stakeQuote / Math.max(pons ? 0.1 : 1, vQuote));
+      // Fixed cost per side: priority fee + tip on Solana; L2 gas on Robinhood Chain (a few cents).
+      const fixedQuote = pons ? 0.00003 : fixedCostSol;
+      const fixed = quotePrice > 0 ? (2 * fixedQuote * quotePrice) / nominalStakeUsd : 0.02;
+      // Round-trip fee: pump.fun 1% + 1%; PONS the curve's own feeBps + creator tax, each way.
+      const feeRT = pons && c.reference?.curve ? 2 * (((Number(c.reference.curve.feeBps) || 100) + (Number(c.reference.curve.creatorTaxBps) || 0)) / 1e4) : feeFractionRoundTrip;
+      return { fraction: feeRT + impact + fixed, detail: { feeFractionRoundTrip: feeRT, impact, fixed } };
     },
   };
 }
