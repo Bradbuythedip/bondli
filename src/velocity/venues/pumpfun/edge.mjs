@@ -80,8 +80,10 @@ export function makePumpfunEdge({
       if (p.token._mayhem) return []; // Mayhem launches are never looked at
       if (p.token._copyOf) return []; // a same-name copy is an advert for another token, never a trade
       return [{
-        model: p.token._revival ? "bondli_revival" : "bondli_gates",
+        model: p.token._revival ? "bondli_revival" : p.token._slowCook ? "bondli_slowcook" : "bondli_gates",
         revival: p.token._revival || null,
+        // Still building, just slowly (src/api/revival.mjs). Waives the stale clock and nothing else.
+        slowCook: p.token._revival ? null : (p.token._slowCook || null),
         instrument: p.token.ca,
         token: p.token, qf: p.qf, scores: p.scores || {}, dynamics: p.dynamics,
         solPrice: p.solPrice || 0,
@@ -92,8 +94,9 @@ export function makePumpfunEdge({
     },
 
     gates: [
-      // A revival is hours old by definition: the age rules (STALE) do not apply; every rug rule does.
-      { name: "disqualifiers", check: c => { const r = checkDisqualifiers(c.token, c.qf, { ...gateOpts, ...(c.revival ? { staleMin: Infinity } : {}), freezeAuthority: !!c.token.freezeAuthority }); if (r.waived?.length) c.waived = r.waived; return { pass: r.pass, reasons: r.flags }; } },
+      // A revival is hours old by definition and a slow cook is older than the stale clock on purpose:
+      // for both, the age rule (STALE) does not apply and every rug rule still does.
+      { name: "disqualifiers", check: c => { const r = checkDisqualifiers(c.token, c.qf, { ...gateOpts, ...(c.revival || c.slowCook ? { staleMin: Infinity } : {}), freezeAuthority: !!c.token.freezeAuthority }); if (r.waived?.length) c.waived = r.waived; return { pass: r.pass, reasons: r.flags, timingOnly: r.timingOnly }; } },
       { name: "viability", check: c => { const r = checkViability(c.token, c.qf, c.scores, c.dynamics, gateOpts); return { pass: r.pass, reasons: r.checks }; } },
       { name: "confidence", check: c => {
           // A revival is always a speculative entry: its own plan, half the stake, never a bigger tier.

@@ -168,7 +168,7 @@ export function quickFeatures(t, now) {
 }
 
 export class PonsFeed extends Feed {
-  constructor({ rpc = null, rpcUrl, pollMs = 2_000, ethPrice = null, priceFn = null, fromBlock = null, maxTokens = 3000, clock, ...rest } = {}) {
+  constructor({ rpc = null, rpcUrl, pollMs = 2_000, ethPrice = null, priceFn = null, fromBlock = null, maxTokens = 3000, clock, onTrade = null, ...rest } = {}) {
     super({ venue: "pons", name: "pons-feed", staleAfterMs: rest.staleAfterMs ?? Math.max(8_000, 3 * pollMs), latencyBoundMs: rest.latencyBoundMs ?? 2_500, clock });
     this.rpc = rpc || ethersRpc(rpcUrl);
     this.pollMs = pollMs; this.fromBlock = fromBlock; this.maxTokens = maxTokens;
@@ -176,6 +176,7 @@ export class PonsFeed extends Feed {
     this.tokens = new Map(); this.byCurve = new Map(); this.dyn = new Dynamics();
     this._lastEmitted = new Map(); this._timers = []; this._block = null; this.errors = 0; this.reemitMs = rest.reemitMs ?? 30_000;
     this.lastError = null; this.hydrateErrors = 0; this.lastHydrateError = null; this.ticks = 0; this.candidates = 0; this.polls = 0;
+    this.onTrade = typeof onTrade === "function" ? onTrade : null; // one buy or sell, for anything that keeps its own history
   }
 
   token(ca) { return this.tokens.get(String(ca).toLowerCase()) || null; }
@@ -229,6 +230,8 @@ export class PonsFeed extends Feed {
       t.quoteReserve = Math.max(0, t.quoteReserve + spent); t.realQuoteReserve = Math.max(0, t.realQuoteReserve + spent);
       t.tokenReserve = Math.max(0, t.tokenReserve + (buy ? -rec.tokens : rec.tokens));
       this._remark(t);
+      // A listener's failure is its own problem: the feed must not stop applying trades over it.
+      if (this.onTrade) { try { this.onTrade(t, { side: rec.kind, quote: rec.quote, wallet: rec.wallet, curvePct: t.graduated ? null : t.progress * 100, ts: now }); } catch {} }
       return t;
     }
   }

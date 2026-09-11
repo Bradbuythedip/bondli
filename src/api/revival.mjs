@@ -15,8 +15,24 @@ export const REVIVAL_DEFAULTS = Object.freeze({
   flatPts: 3,                // ...after moving less than this over the prior hour
 });
 
+// ═══ Slow cooks: a token that never went quiet, it is just taking its time ═══
+// The stale clock (15 min at the designed settings) throws away everything older than it, on the
+// assumption that a token either runs in its first quarter hour or never will. Tokens that grind up
+// over an hour are the ones that rule costs us, and they are not revivals: a revival needs an hour of
+// flat followed by a 3x burst, and a slow cook is by definition never flat. This is the other
+// pattern in the same buckets — still buying, still steady, still going up — and all it buys the
+// token is the clock. Every rug rule in gate 1 still judges it, and it enters at its own tier.
+export const SLOWCOOK_DEFAULTS = Object.freeze({
+  windowMin: 30,         // "still building" is measured over this much of the recent past
+  minAgeMs: 10 * MIN,    // younger than this is the launch feed's own job
+  minBuyers: 8,          // distinct buyers across the window
+  minActiveBuckets: 4,   // of the window's six 5-minute buckets: steady arrival, not one burst
+  minCurveDeltaPts: 2,   // and the curve actually moved up, so it is cooking rather than simmering
+  minRecentShare: 0.35,  // this share of those buyers arrived in the window's second half
+});
+
 export class RevivalTracker {
-  constructor(opts = {}) { this.o = { ...REVIVAL_DEFAULTS, ...opts }; this.mints = new Map(); }
+  constructor(opts = {}) { this.o = { ...REVIVAL_DEFAULTS, ...opts }; this.s = { ...SLOWCOOK_DEFAULTS, ...(opts.slowCook || {}) }; this.mints = new Map(); }
 
   /** One trade. curvePct is 0..100 bonding-curve progress (or null once graduated). */
   noteTrade(mint, { side, sol = 0, wallet = "", curvePct = null, ts = Date.now() }) {
@@ -62,6 +78,42 @@ export class RevivalTracker {
       if (out.curveDelta < this.o.curveDeltaPts) out.reasons.push("CURVE_NOT_MOVING");
     }
     out.revival = out.reasons.length === 0;
+    return out;
+  }
+
+  /** Still cooking? The same buckets, read for steady accumulation rather than a burst after silence. */
+  slowCook(mint, { createdAt, now = Date.now() } = {}) {
+    const o = this.s;
+    const out = { slowCook: false, reasons: [], buyers: 0, activeBuckets: 0, netSol: 0, curveDelta: 0, recentShare: 0, windowMin: o.windowMin, ageMs: createdAt ? now - createdAt : null };
+    const m = this.mints.get(mint);
+    if (!m) { out.reasons.push("NO_TRADES"); return out; }
+    if (!createdAt) { out.reasons.push("AGE_UNKNOWN"); return out; }
+    if (now - createdAt < o.minAgeMs) { out.reasons.push("TOO_YOUNG_TO_BE_SLOW"); return out; }
+    // The newest bucket starts at `now` and runs forward, so between n-1 and n of these hold past
+    // trades depending on where in the bucket we are. minActiveBuckets is set below both.
+    const k = Math.floor(now / this.o.bucketMs);
+    const n = Math.max(2, Math.round((o.windowMin * MIN) / this.o.bucketMs));
+    const mid = k - Math.floor(n / 2) + 1;
+    const all = new Set(), recent = new Set();
+    let buySol = 0, sellSol = 0, first = null, last = null;
+    for (let i = k - n + 1; i <= k; i++) {
+      const b = m.buckets.get(i); if (!b) continue;
+      if (b.buyers.size) out.activeBuckets++;
+      for (const w of b.buyers) { all.add(w); if (i >= mid) recent.add(w); }
+      buySol += b.buySol; sellSol += b.sellSol;
+      if (b.curve != null) { if (first == null) first = b.curve; last = b.curve; }
+    }
+    out.buyers = all.size;
+    out.netSol = +(buySol - sellSol).toFixed(4);
+    out.curveDelta = first != null && last != null ? +(last - first).toFixed(1) : 0;
+    out.recentShare = all.size ? +(recent.size / all.size).toFixed(2) : 0;
+    if (out.buyers < o.minBuyers) out.reasons.push("FEW_BUYERS");
+    if (out.activeBuckets < o.minActiveBuckets) out.reasons.push("ONE_BURST");
+    if (!(out.netSol > 0)) out.reasons.push("SOL_FLOWING_OUT");
+    // No curve reading means it graduated or the venue does not report one; buyers and SOL decide.
+    if (first != null && out.curveDelta < o.minCurveDeltaPts) out.reasons.push("CURVE_NOT_MOVING");
+    if (out.recentShare < o.minRecentShare) out.reasons.push("FADING");
+    out.slowCook = out.reasons.length === 0;
     return out;
   }
 

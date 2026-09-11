@@ -156,9 +156,17 @@ export function checkDisqualifiers(token, qf, opts = {}) {
     pass: flags.length === 0,
     flags,
     waived,
+    // Gate 1 refuses for two different reasons and they must not be reported as one. A rug flag says
+    // the token is dangerous. A timing flag says the token is fine and it is not our moment — too
+    // late on the curve, older than the stale clock, not enough buyers yet, not old enough yet.
+    // Calling the second kind a rug is how a clean slow cooker ends up labelled a scam.
+    timingOnly: flags.length > 0 && flags.every(f => TIMING_DISQUALIFIERS.has(f)),
     fatal: true,
   };
 }
+
+/** Refusals about the clock and the crowd, not about the token being dangerous. */
+export const TIMING_DISQUALIFIERS = new Set(["TOO_LATE", "STALE", "TOO_FEW_BUYERS", "TOO_YOUNG"]);
 
 /** The only rules a crowd may waive: readings of behaviour a real crowd also produces. */
 export const MOMENTUM_WAIVABLE = new Set(["QUICK_FLIP", "COORDINATED_DUMP", "EXTREME_CONCENTRATION"]);

@@ -50,7 +50,7 @@ function Pulse({ st, T }) {
   const what = dead ? "engine not responding" : stale ? "market feed stale" : s.halt?.mode ? (/user/.test(s.halt.reason || "") ? "paused by you" : "paused: " + s.halt.reason) : judged === 0 ? "waiting for the first token to qualify" : "watching for the next token";
   const dots = ".".repeat(1 + (Math.floor(now / 500) % 3));
   const f = st.funnel;
-  const GATE = { disqualifiers: "rug rules", viability: "too weak", confidence: "unsure", ev: "no edge", execution_window: "bad timing", governor: "paused", estimate: "no edge" };
+  const GATE = { disqualifiers: "hard rules", viability: "too weak", confidence: "unsure", ev: "no edge", execution_window: "bad timing", governor: "paused", estimate: "no edge" };
   return <>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, fontFamily: M, fontSize: 11, color: T.ft }}>
       <span style={{ display: "flex", alignItems: "center", gap: 6, color: c }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: c, animation: dead ? "none" : "gp 1.5s infinite" }} />{what}{dead || stale ? "" : dots}</span>
@@ -75,7 +75,7 @@ function Spark({ v, T, w = 72, h = 22 }) {
   return <svg width={w} height={h} style={{ display: "block" }}><polyline points={d} fill="none" stroke={up ? T.gn : T.rd} strokeWidth="1.5" strokeLinejoin="round" /></svg>;
 }
 // The bot's one reason per token, in plain words.
-const TAG = { hot: ["BUY ZONE", "gn"], close: ["almost", "yl"], weak: ["weak", "ft"], new: ["too new", "ft"], nobuyers: ["no buyers", "ft"], fewbuyers: ["few buyers", "ft"], small: ["too small", "ft"], rug: ["rug", "rd"], mayhem: ["mayhem", "ft"], copy: ["copy", "ft"] };
+const TAG = { hot: ["BUY ZONE", "gn"], close: ["almost", "yl"], cooking: ["still cooking", "yl"], weak: ["weak", "ft"], new: ["too new", "ft"], nobuyers: ["no buyers", "ft"], fewbuyers: ["few buyers", "ft"], small: ["too small", "ft"], late: ["missed it", "ft"], rug: ["rug", "rd"], mayhem: ["mayhem", "ft"], copy: ["copy", "ft"] };
 // Risk reads green → yellow → red, the same three colours the rest of the page uses for gain, caution, loss.
 const RISK_C = (v, T) => v >= 3 ? T.rd : v >= 2 ? T.yl : T.gn;
 function Dial({ value, onChange, T }) {
@@ -117,6 +117,10 @@ function Live({ T, agg }) {
       <div style={{ ...muted, marginBottom: 6 }}>waking up · launched hours or days ago, buyers back at 3x</div>
       <div style={{ background: T.sf, border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.revivals.map(t => rowOf(t, true))}</div>
     </>}
+    {d.cooking?.length > 0 && <>
+      <div style={{ ...muted, marginBottom: 6 }}>still cooking · past the half hour and still filling up</div>
+      <div style={{ background: T.sf, border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.cooking.map(t => rowOf(t))}</div>
+    </>}
     <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between" }}><span>last hour · both chains · judged at {AGG[d.aggression ?? agg]?.l || "Normal"}</span><span>tap to open on its launchpad</span></div>
     <div style={{ background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
       {d.tokens.slice(0, 25).map(t => rowOf(t))}
@@ -127,7 +131,7 @@ function Live({ T, agg }) {
         <TokenImg src={t.image} ca={t.ca} label={initial} size={56} T={T} />
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}><span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name || t.ca.slice(0, 6)}</span><span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{t.ticker}</span>{t.chain === "robinhood" && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".05em", color: "#e0b3ff", background: "#e0b3ff1a", padding: "1px 5px", borderRadius: 4, whiteSpace: "nowrap" }}>RH</span>}</div>
-          <div style={{ ...muted, fontFamily: M, fontSize: 12, marginTop: 2 }}>{ago(now - t.createdAt)} · {kfmt(t.mcapUsd)} · {t.buyers} buyers{t.copies ? ` · ${t.copies} copies` : ""}{revival && t.revival ? ` · ${t.revival.buyers5m} in 5m vs ${t.revival.baseline5m}` : ""}{t.why ? ` · ${t.why.toLowerCase().replace(/_/g, " ")}` : ""}</div>
+          <div style={{ ...muted, fontFamily: M, fontSize: 12, marginTop: 2 }}>{ago(now - t.createdAt)} · {kfmt(t.mcapUsd)} · {t.buyers} buyers{t.copies ? ` · ${t.copies} copies` : ""}{revival && t.revival ? ` · ${t.revival.buyers5m} in 5m vs ${t.revival.baseline5m}` : ""}{!revival && t.slowCook ? ` · ${t.slowCook.buyers} in ${t.slowCook.windowMin}m, curve +${t.slowCook.curveDelta}` : ""}{t.why ? ` · ${t.why.toLowerCase().replace(/_/g, " ")}` : ""}</div>
         </div>
         <Spark v={t.spark} T={T} w={100} h={30} />
         <div style={{ textAlign: "right" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 18, color: t.score >= 60 ? T.gn : t.score >= 40 ? T.tx : T.ft }}>{dim || !t.score ? "" : t.score}</div><div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: T[c], whiteSpace: "nowrap" }}>{label}</div></div>
