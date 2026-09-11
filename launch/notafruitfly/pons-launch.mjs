@@ -94,14 +94,33 @@ const describe = f => `${f.name}(${f.inputs.map(i => `${i.type === "tuple" ? "{"
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000", ZERO32 = "0x" + "0".repeat(64);
 const salt32 = (n) => zeroPadValue(toBeHex(BigInt(n)), 32); // TokenParams.salt is bytes32; the same 32 bytes as a uint256 word
 /** The launch struct filled by field name (TokenParams, and the deployer's LaunchDeployment which nests it).
- *  Verified layout: name, symbol, logo, description, socials{twitter,telegram,discord,website,farcaster},
- *  creatorFeeRecipient, creatorTaxBps, buybackEnabled, expectedEconomics, salt. */
+ *  Verified layout of TokenParams: name, symbol, logo, description, socials{twitter,telegram,discord,website,
+ *  farcaster}, creatorFeeRecipient, creatorTaxBps, buybackEnabled, expectedEconomics, salt.
+ *  LaunchDeployment (what predictLaunchAddresses takes) adds what only the factory knows: pairToken,
+ *  originalDeployer, feePolicy (the meme hook), policy{protocolFeeRecipient, protocolFeeShareBps, buybackBurnBps,
+ *  hookFeeBps, maxInternalPriceImpactBps}, feeEscrow, buybackVault, phantomQuote, curveFeeBps, graduationThreshold,
+ *  supply. Those come from `extra.factory` (factoryValues); zeros in their place would make the deployer predict
+ *  the address of a launch the factory never makes, and the curve's constructor args are part of the CREATE2 hash. */
 function fillStruct(components, wallet, salt, extra = {}) {
-  const out = {};
+  const out = {}; const fv = extra.factory || {};
+  const dflt = (c) => { out[c.name] = c.type.startsWith("uint") ? 0 : c.type === "bool" ? false : c.type === "address" ? ZERO_ADDR : c.type === "bytes32" ? ZERO32 : c.type.endsWith("[]") ? [] : ""; if (Array.isArray(extra.unset)) extra.unset.push(`${c.name} (${c.type})`); };
+  const known = (c, v) => { if (v == null) dflt(c); else out[c.name] = v; };
   for (const c of components) {
     const n = c.name.toLowerCase();
     if (c.type === "tuple") { out[c.name] = fillStruct(c.components, wallet, salt, extra); continue; }
-    if (/^name$/.test(n)) out[c.name] = cfg("TOKEN_NAME");
+    if (/^protocolfeerecipient$/.test(n) && c.type === "address") known(c, fv.policy?.protocolFeeRecipient);
+    else if (/^protocolfeesharebps$/.test(n)) known(c, fv.policy?.protocolFeeShareBps);
+    else if (/^buybackburnbps$/.test(n)) known(c, fv.policy?.buybackBurnBps);
+    else if (/^hookfeebps$/.test(n)) known(c, fv.policy?.hookFeeBps);
+    else if (/^maxinternalpriceimpactbps$/.test(n)) known(c, fv.policy?.maxInternalPriceImpactBps);
+    else if (/feepolicy|memehook|^hook$/.test(n) && c.type === "address") known(c, fv.feePolicy);
+    else if (/escrow/.test(n) && c.type === "address") known(c, fv.feeEscrow);
+    else if (/vault/.test(n) && c.type === "address") known(c, fv.buybackVault);
+    else if (/phantom/.test(n)) known(c, fv.phantomQuote);
+    else if (/curvefee|^feebps$/.test(n)) known(c, fv.curveFeeBps);
+    else if (/graduation/.test(n)) known(c, fv.graduationThreshold);
+    else if (/^supply$|totalsupply/.test(n)) known(c, fv.supply);
+    else if (/^name$/.test(n)) out[c.name] = cfg("TOKEN_NAME");
     else if (/symbol|ticker/.test(n)) out[c.name] = cfg("TOKEN_SYMBOL");
     else if (/logo|image/.test(n)) out[c.name] = cfg("LOGO");
     else if (/description/.test(n)) out[c.name] = cfg("DESCRIPTION");
@@ -118,9 +137,28 @@ function fillStruct(components, wallet, salt, extra = {}) {
     else if (/creatortax/.test(n)) out[c.name] = cfg("CREATOR_TAX_BPS");
     else if (/buyback/.test(n) && c.type === "bool") out[c.name] = cfg("BUYBACK_ENABLED");
     else if (/launchconfig|configid/.test(n)) out[c.name] = cfg("LAUNCH_CONFIG_ID");
-    else { out[c.name] = c.type.startsWith("uint") ? 0 : c.type === "bool" ? false : c.type === "address" ? ZERO_ADDR : c.type === "bytes32" ? ZERO32 : c.type.endsWith("[]") ? [] : ""; (extra.unset ||= []).push(`${c.name} (${c.type})`); }
+    else dflt(c);
   }
   return out;
+}
+/** What the factory would put into LaunchDeployment for our launch: the meme hook (fee policy), its current
+ *  policy snapshot, the fee escrow, the buyback vault, and the launch config's supply, curveFeeBps,
+ *  phantomQuote and graduationThreshold. `missing` names whatever could not be read; mining refuses then. */
+async function factoryValues(p, factoryIface) {
+  const c = new Contract(cfg("FACTORY"), factoryIface, p);
+  const view = async (re, args = []) => { for (const f of fnsNamed(factoryIface, re).filter(f => (f.stateMutability === "view" || f.stateMutability === "pure") && f.inputs.length === args.length)) { try { return await c[f.name](...args); } catch {} } return null; };
+  const memeHook = await view(/^memeHook$|^feePolicy$/), feeEscrow = await view(/^feeEscrow$/), buybackVault = await view(/^buybackVault$/);
+  const config = (await view(/^getLaunchConfig$/, [cfg("LAUNCH_CONFIG_ID")])) ?? (await view(/^launchConfigs$/, [cfg("LAUNCH_CONFIG_ID")]));
+  let policy = null;
+  if (memeHook) { try { policy = await new Contract(String(memeHook), ["function currentFeePolicy() view returns (tuple(address protocolFeeRecipient,uint16 protocolFeeShareBps,uint16 buybackBurnBps,uint16 hookFeeBps,uint16 maxInternalPriceImpactBps))"], p).currentFeePolicy(); } catch {} }
+  const pick = (r, name, i) => r == null ? null : (r[name] ?? r[i] ?? null);
+  const v = {
+    feePolicy: memeHook ? String(memeHook) : null, feeEscrow: feeEscrow ? String(feeEscrow) : null, buybackVault: buybackVault ? String(buybackVault) : null,
+    supply: pick(config, "supply", 0), curveFeeBps: pick(config, "curveFeeBps", 1), phantomQuote: pick(config, "phantomQuote", 2), graduationThreshold: pick(config, "graduationThreshold", 3),
+    policy: policy ? { protocolFeeRecipient: String(policy.protocolFeeRecipient ?? policy[0]), protocolFeeShareBps: policy.protocolFeeShareBps ?? policy[1], buybackBurnBps: policy.buybackBurnBps ?? policy[2], hookFeeBps: policy.hookFeeBps ?? policy[3], maxInternalPriceImpactBps: policy.maxInternalPriceImpactBps ?? policy[4] } : null,
+  };
+  v.missing = Object.entries(v).filter(([k, x]) => x == null).map(([k]) => k);
+  return v;
 }
 /** expectedEconomics: the factory's own hash of the config we will launch under, so a config change between mining and launch reverts instead of landing on a different address. */
 async function economicsPin(p, factoryIface) {
@@ -161,13 +199,16 @@ async function cmdInspect(p) {
   console.log("router launch functions:"); for (const c of cands) console.log(`  ${c === fn ? "*" : " "} ${describe(c)}`);
   console.log("  (* is the one `launch` will call; set FLY_LAUNCH_FN=<name> to pick another)");
   const struct = predictFn(deployer).inputs[0];
-  const extra = {};
+  let fv = null; try { fv = await factoryValues(p, factory); } catch (e) { console.log("factory values:", e.shortMessage || e.message); }
+  console.log("\nfactory values the deployer struct carries:", JSON.stringify(fv, (k, v) => typeof v === "bigint" ? v.toString() : v, 2));
+  if (fv?.missing?.length) console.log(`COULD NOT READ: ${fv.missing.join(", ")} — mining refuses until these resolve (the factory ABI may name them differently; see the getters above)`);
+  const extra = { factory: fv, unset: [] };
   console.log("\ndeployer struct as `mine` would fill it (wallet " + (wallet || "unknown, no PRIVATE_KEY") + "):");
-  console.log(JSON.stringify(fillStruct(struct.components || [struct], wallet || ZERO_ADDR, 1, extra), null, 2));
-  const rp = fn.inputs.find(i => i.type === "tuple"); const extra2 = {};
-  if (rp) { console.log(`\nrouter ${fn.name} struct '${rp.name}':`); console.log(JSON.stringify(fillStruct(rp.components, wallet || ZERO_ADDR, 1, extra2), null, 2)); }
-  const unset = [...new Set([...(extra.unset || []), ...(extra2.unset || [])])];
-  if (unset.length) console.log("\nFIELDS THE SCRIPT DID NOT RECOGNISE (left at zero/empty; tell me their meaning before mining): " + unset.join(", "));
+  console.log(JSON.stringify(fillStruct(struct.components || [struct], wallet || ZERO_ADDR, 1, extra), (k, v) => typeof v === "bigint" ? v.toString() : v, 2));
+  const rp = fn.inputs.find(i => i.type === "tuple"); const extra2 = { factory: fv, unset: [] };
+  if (rp) { console.log(`\nrouter ${fn.name} struct '${rp.name}':`); console.log(JSON.stringify(fillStruct(rp.components, wallet || ZERO_ADDR, 1, extra2), (k, v) => typeof v === "bigint" ? v.toString() : v, 2)); }
+  const unset = [...new Set([...extra.unset, ...extra2.unset])];
+  if (unset.length) console.log("\nFIELDS LEFT AT ZERO (the script does not know them, or the factory did not answer): " + unset.join(", ") + "\n`mine` refuses to run while the deployer struct has any: a zero where the factory puts a real value predicts the wrong address.");
   try { console.log("\nlaunch fee:", formatEther(await launchFeeWei(p, factory)), "ETH  (msg.value on launchAndBuy = fee + dev buy)"); } catch (e) { console.log("\nlaunch fee:", e.message); }
   try { console.log("expectedEconomics pin:", await economicsPin(p, factory)); } catch (e) { console.log("expectedEconomics pin:", e.shortMessage || e.message); }
   for (const f of fnsNamed(factory, /canLaunch|isWhitelisted|launchAllowed|publicLaunch/i)) {
@@ -266,7 +307,11 @@ async function offline(tpl, deployerIface, wallet) {
 async function onChainPredict(p, deployerIface, wallet, userSalt, extra = {}) {
   const f = predictFn(deployerIface);
   const struct = f.inputs[0];
-  const params = fillStruct(struct.components || [struct], wallet, userSalt, extra);
+  const ex = { ...extra, unset: [] };
+  const params = fillStruct(struct.components || [struct], wallet, userSalt, ex);
+  // The oracle only answers for the launch the factory will actually make: every field the factory fills
+  // must be filled here with the factory's value, or the predicted address belongs to some other launch.
+  if (ex.unset.length) die(`the deployer struct has fields the script could not fill from the factory: ${ex.unset.join(", ")}. Run \`inspect\`; nothing predicted with zeros there can be trusted.`);
   const c = new Contract(cfg("DEPLOYER"), deployerIface, p);
   const r = await c.predictLaunchAddresses(params);
   return { token: String(r.token ?? r[0]), curve: String(r.curve ?? r[1]), params };
@@ -308,7 +353,9 @@ async function cmdMine(p) {
   const { factory, deployer } = await abis();
   const prefix = String(cfg("VANITY_PREFIX")).toLowerCase().replace(/^0x/, ""), suffix = String(cfg("VANITY_SUFFIX")).toLowerCase();
   if (/[^0-9a-f]/.test(prefix + suffix)) die("vanity pattern must be hex");
-  const extra = { economics: await economicsPin(p, factory) };
+  const fv = await factoryValues(p, factory);
+  if (fv.missing.length) die(`could not read ${fv.missing.join(", ")} from the factory; the deployer struct needs them (run \`inspect\`)`);
+  const extra = { economics: await economicsPin(p, factory), factory: fv };
   const tpl = readJson(cfg("TEMPLATE_FILE"));
   const mode = cfg("MINE_MODE") === "auto" ? (tpl ? "offline" : "onchain") : cfg("MINE_MODE");
   const expected = 16 ** (prefix.length + suffix.length);
@@ -335,7 +382,7 @@ async function cmdMine(p) {
   if (!(t.startsWith(prefix) && t.endsWith(suffix))) die("the found salt does not reproduce on chain; not saving it");
   if (off) { const ours = off.predict(found); if (again.token.toLowerCase() !== ours.token.toLowerCase()) die("offline and on-chain disagree on the found salt; not saving it"); }
   const st = readJson(cfg("STATE_FILE"), {});
-  Object.assign(st, { wallet, userSalt: found.toString(), predictedToken: again.token, predictedCurve: again.curve, params: again.params, economics: extra.economics, launchConfigId: cfg("LAUNCH_CONFIG_ID"), mode, minedAt: Date.now(), templateTx: tpl?.tx || null, baked: { name: cfg("TOKEN_NAME"), symbol: cfg("TOKEN_SYMBOL"), logo: cfg("LOGO"), description: cfg("DESCRIPTION"), socials: [cfg("TWITTER"), cfg("TELEGRAM"), cfg("DISCORD"), cfg("WEBSITE"), cfg("FARCASTER")], creatorTaxBps: cfg("CREATOR_TAX_BPS"), buybackEnabled: cfg("BUYBACK_ENABLED") } });
+  Object.assign(st, { wallet, userSalt: found.toString(), predictedToken: again.token, predictedCurve: again.curve, params: again.params, economics: extra.economics, factory: fv, launchConfigId: cfg("LAUNCH_CONFIG_ID"), mode, minedAt: Date.now(), templateTx: tpl?.tx || null, baked: { name: cfg("TOKEN_NAME"), symbol: cfg("TOKEN_SYMBOL"), logo: cfg("LOGO"), description: cfg("DESCRIPTION"), socials: [cfg("TWITTER"), cfg("TELEGRAM"), cfg("DISCORD"), cfg("WEBSITE"), cfg("FARCASTER")], creatorTaxBps: cfg("CREATOR_TAX_BPS"), buybackEnabled: cfg("BUYBACK_ENABLED") } });
   writeJson(cfg("STATE_FILE"), st);
   console.log(`\nsalt ${found}\nTOKEN ${again.token}\ncurve ${again.curve}\nsaved to ${cfg("STATE_FILE")}. Any change to name, symbol, logo, description, the five socials, tax, buyback, config or wallet changes the address: re-run mine.`);
 }
@@ -383,12 +430,14 @@ async function cmdLaunch(p, dryRun) {
   const signer = new Wallet(process.env.PRIVATE_KEY, p);
   if (signer.address.toLowerCase() !== st.wallet.toLowerCase()) die(`the salt was mined for ${st.wallet}, this key is ${signer.address}`);
   const { factory, deployer, router } = await abis();
-  // the address must still be the same today (fees or config on the deployer may have changed since mining)
-  const now = await onChainPredict(p, deployer, signer.address, BigInt(st.userSalt), { economics: st.economics || ZERO32 });
+  // the address must still be the same today (fees, the policy, the escrow or the config may have changed since mining)
+  const fv = await factoryValues(p, factory);
+  if (fv.missing.length) die(`could not read ${fv.missing.join(", ")} from the factory today; cannot confirm the address`);
+  const now = await onChainPredict(p, deployer, signer.address, BigInt(st.userSalt), { economics: st.economics || ZERO32, factory: fv });
   if (now.token.toLowerCase() !== st.predictedToken.toLowerCase()) die(`the deployer now predicts ${now.token}, not ${st.predictedToken}: something changed since mining; re-run mine`);
   if ((await p.getCode(st.predictedToken)) !== "0x") die(`${st.predictedToken} already has code: the token was launched; run status`);
   const { fn } = launchFn(router);
-  const extra = { economics: st.economics && st.economics !== ZERO32 ? await economicsPin(p, factory) : ZERO32 };
+  const extra = { economics: st.economics && st.economics !== ZERO32 ? await economicsPin(p, factory) : ZERO32, factory: fv };
   if (st.economics && st.economics !== ZERO32 && extra.economics !== st.economics) die(`the factory's economics changed since mining (${st.economics.slice(0, 10)}… -> ${extra.economics.slice(0, 10)}…); the address would differ. Re-run mine.`);
   const quoteIn = parseEther(cfg("DEV_BUY_ETH"));
   // launchAndBuy(TokenParams params, uint256 launchConfigId, address pairToken, uint256 quoteIn, uint256 minTokensOut, address recipient, address[] snipeTaxExemptions) payable
@@ -412,7 +461,15 @@ async function cmdLaunch(p, dryRun) {
   console.log("struct:", JSON.stringify(args[0], (k, v) => typeof v === "bigint" ? v.toString() : v));
   const bal = await p.getBalance(signer.address);
   if (bal < value + parseEther("0.005")) die(`wallet has ${formatEther(bal)} ETH; needs ${formatEther(value)} plus ~0.005 for gas`);
-  try { await c[fn.name].staticCall(...args, { value }); } catch (e) { die(`the launch would revert: ${e.reason || e.shortMessage || e.message}`); }
+  // The simulation of the real call is the last word: the router returns the (token, curve) the launch
+  // would create. It must be the mined address, whatever the deployer's oracle said.
+  let simulated;
+  try { simulated = await c[fn.name].staticCall(...args, { value }); } catch (e) { die(`the launch would revert: ${e.reason || e.shortMessage || e.message}`); }
+  const simToken = simulated?.token ?? simulated?.[0];
+  if (typeof simToken === "string" && /^0x[0-9a-fA-F]{40}$/.test(simToken)) {
+    if (simToken.toLowerCase() !== st.predictedToken.toLowerCase()) die(`the launch simulation creates ${simToken}, not the mined ${st.predictedToken}. Nothing sent. The oracle and the factory disagree: re-run mine (and \`inspect\`) before launching.`);
+    console.log(`simulation confirms token ${simToken}`);
+  } else console.log("(the router's launch function returns no token address; relying on predictLaunchAddresses alone)");
   const gas = await c[fn.name].estimateGas(...args, { value });
   console.log(`dry run ok, gas ${gas}`);
   if (dryRun) { console.log("dry run; nothing sent"); return; }
