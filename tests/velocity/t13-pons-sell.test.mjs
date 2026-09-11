@@ -54,6 +54,7 @@ class FakeChain extends JsonRpcProvider {
         if (f.name === "sell") {
           s.sellSeen.push({ units: f.args[0], minOut: f.args[1] });
           if (s.revert) { const e = new Error("execution reverted: " + s.revert); e.code = 3; e.data = coder.encode(["string"], [s.revert]).replace(/^0x/, "0x08c379a0" + "0".repeat(0)); e.data = "0x08c379a0" + coder.encode(["string"], [s.revert]).slice(2); throw e; }
+          if (s.maxUnits != null && f.args[0] > s.maxUnits) { const e = new Error("execution reverted (unknown custom error)"); e.code = 3; e.data = "0xdeadbeef" + "0".repeat(56); throw e; }
           if (f.args[0] > s.balance) { const e = new Error("execution reverted: ERC20: transfer amount exceeds balance"); e.code = 3; e.data = "0x08c379a0" + coder.encode(["string"], ["ERC20: transfer amount exceeds balance"]).slice(2); throw e; }
           return method === "eth_estimateGas" ? "0x30000" : curveI.encodeFunctionResult("sell", [toWei(0.01)]);
         }
@@ -120,4 +121,21 @@ test("T13: graduated curve and unknown token are named, not attempted", async ()
   assert.equal(g.failure.code, "GRADUATED");
   const u = await r.close(position({ instrument: "0x" + "e2".repeat(20) }), 100, { reference: { solPrice: 3000 } });
   assert.equal(u.failure.code, "NO_CURVE"); assert.equal(c.sent.length, 0);
+});
+
+test("T13: a curve that refuses the whole amount but takes a quarter is sold in chunks until empty", async () => {
+  const c = chain({ allowance: 2n ** 255n, balance: 800n * 10n ** 18n, maxUnits: 250n * 10n ** 18n }); const r = new PonsLiveRouter({ secret: KEY, provider: c, confirmTimeoutMs: 3000 }); await r.init();
+  const res = await r.close(position({ reference: { curve: { address: CURVE } } }), 100, { reference: { solPrice: 3000 } });
+  assert.equal(res.ok, true, JSON.stringify(res.failure));
+  assert.equal(c.s.balance, 0n, "everything sold");
+  assert.equal(res.fill.chunks, 4, "four sells of a quarter each"); assert.equal(res.fill.partial, 0); assert.match(res.fill.shape, /1\/4/);
+  assert.ok(res.fill.sol_received > 0.03, "proceeds add up across chunks");
+});
+
+test("T13: a custom error the ABI does not know is named by selector when the explorer cannot help", async () => {
+  const c = chain({ allowance: 2n ** 255n, maxUnits: 0n }); const r = new PonsLiveRouter({ secret: KEY, provider: c, confirmTimeoutMs: 3000 }); await r.init();
+  r._abis = new Map([[CURVE, []]]); // explorer already consulted: nothing known
+  const res = await r.close(position({ reference: { curve: { address: CURVE } } }), 100, { reference: { solPrice: 3000 } });
+  assert.equal(res.ok, false); assert.equal(res.failure.code, "REVERT"); assert.match(res.failure.reason, /custom error 0xdeadbeef/);
+  assert.equal(c.sent.length, 0);
 });

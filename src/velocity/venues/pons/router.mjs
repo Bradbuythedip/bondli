@@ -1,9 +1,9 @@
 // ═══ PONS routers: paper (curve model) and live (ethers wallet on Robinhood Chain) (DP4) ═══
 // Fill records keep the engine's field names: sol_spent / sol_received are the QUOTE asset (ETH)
 // spent and received, gas included, and reference.solPrice is the ETH price in USD.
-import { Wallet, JsonRpcProvider, Contract, MaxUint256 } from "ethers";
+import { Wallet, JsonRpcProvider, Contract, MaxUint256, Interface } from "ethers";
 import { PaperRouter, Router, failure } from "../../core/router.mjs";
-import { FACTORY, FACTORY_ABI, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, CHAIN_ID, curveBuyQuote, curveSellQuote, decodeLog, toEth, toWei, toTokens, TOKEN_DECIMALS } from "./chain.mjs";
+import { EXPLORER, FACTORY, FACTORY_ABI, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, CHAIN_ID, curveBuyQuote, curveSellQuote, decodeLog, toEth, toWei, toTokens, TOKEN_DECIMALS } from "./chain.mjs";
 
 const PRICE_MAX_AGE_MS = 5 * 60_000;
 const DEFAULT_RESERVES = { quoteReserve: 3, tokenReserve: 1_000_000_000, feeBps: 100, creatorTaxBps: 0 };
@@ -140,6 +140,49 @@ export class PonsLiveRouter extends Router {
     return { quoteReserve: toEth(q), tokenReserve: toTokens(t), feeBps: Number(feeBps) + Number(taxBps), graduated: !!graduated };
   }
 
+  /** Which sell the curve will take, found by dry runs that cost nothing: full amount at the normal
+   *  slippage, then wider, then halves down to an eighth. Returns { ok, units, keep, note } or { ok:false, err }. */
+  async _sellShape(curve, units, r) {
+    const keeps = [1 - this.slippagePct / 100, 0.5, 0];
+    const fractions = [1n, 2n, 4n, 8n];
+    let err = null;
+    for (const div of fractions) {
+      const u = units / div; if (u <= 0n) break;
+      const q = curveSellQuote(r, toTokens(u), r.feeBps);
+      for (const keep of keeps) {
+        const minOut = toWei(Math.max(0, (q.quoteOut || 0) * keep));
+        try { await curve.sell.staticCall(u, minOut, this.address); return { ok: true, units: u, keep, note: `${div === 1n ? "all" : `1/${div}`} at ${Math.round(keep * 100)}% of quote` }; }
+        catch (e) { err = e; if (!/revert|CALL_EXCEPTION|execution/i.test(String(e.message || e.shortMessage || "")) && e.code !== "CALL_EXCEPTION") return { ok: false, err: e }; }
+      }
+    }
+    return { ok: false, err };
+  }
+
+  /** A custom error the ABI in this file does not know: the verified contract on the explorer does.
+   *  Cached per curve; the explorer being down leaves the raw selector. */
+  async _explainRevert(curveAddr, err) {
+    const data = err?.data || err?.info?.error?.data || null;
+    const plain = err?.reason || err?.shortMessage || err?.message || "reverted";
+    if (!data || typeof data !== "string" || data.length < 10 || err?.reason || /^0x(08c379a0|4e487b71)/i.test(data)) return plain.slice(0, 160); // Error(string) and Panic decode by themselves
+    if (!this._abis) this._abis = new Map();
+    const key = String(curveAddr).toLowerCase();
+    try {
+      if (!this._abis.has(key)) {
+        const abis = [];
+        for (const addr of [key]) {
+          const res = await fetch(`${EXPLORER}/api/v2/smart-contracts/${addr}`, { headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) bondli/1.0" }, signal: AbortSignal.timeout(6000) });
+          if (!res.ok) throw new Error(`explorer ${res.status}`);
+          const j = await res.json();
+          if (Array.isArray(j.abi)) abis.push(j.abi);
+          for (const impl of j.implementations || []) { if (impl.address) { const r2 = await fetch(`${EXPLORER}/api/v2/smart-contracts/${impl.address}`, { headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 bondli/1.0" }, signal: AbortSignal.timeout(6000) }).catch(() => null); const j2 = r2?.ok ? await r2.json() : null; if (Array.isArray(j2?.abi)) abis.push(j2.abi); } }
+        }
+        this._abis.set(key, abis.map(a => new Interface(a.filter(x => x.type === "error"))));
+      }
+      for (const iface of this._abis.get(key)) { const e = iface.parseError(data); if (e) return `${e.name}${e.args?.length ? `(${e.args.map(String).join(", ")})` : ""}`; }
+      return `custom error ${data.slice(0, 10)}`;
+    } catch (e2) { return `custom error ${data.slice(0, 10)}, explorer ${e2.message.slice(0, 40)}`; }
+  }
+
   /** Sell pct of what the wallet holds. Sizes from the wallet's exact balance (a float rounding up
    *  by one unit would revert), quotes from the curve as it is now (not a stale reference), dry-runs
    *  the sell before paying gas so a revert comes back with its reason instead of a burned fee,
@@ -177,23 +220,40 @@ export class PonsLiveRouter extends Router {
         if (ar.status === 0) return failure({ id: position.id }, "SEND_FAILED", `approve ${a.hash} reverted`, { venue_ref: a.hash });
       }
       const r = now.tokenReserve > 0 ? now : reserves(ref);
-      const q = curveSellQuote(r, tokensIn, r.feeBps);
-      const minOut = toWei(Math.max(0, (q.quoteOut || 0) * (1 - this.slippagePct / 100)));
       const curve = new Contract(curveAddr, CURVE_ABI, this.wallet);
-      // Dry run: a revert here costs nothing and says why.
-      try { await curve.sell.staticCall(units, minOut, this.address); }
-      catch (err) { return failure({ id: position.id }, "REVERT", `sell would revert: ${err.reason || err.shortMessage || err.message}`.slice(0, 300)); }
-      let gasLimit = this.gasLimitSell;
-      try { const est = await curve.sell.estimateGas(units, minOut, this.address); gasLimit = est * 13n / 10n; if (gasLimit < this.gasLimitSell) gasLimit = this.gasLimitSell; } catch {}
-      const tx = await curve.sell(units, minOut, this.address, { gasLimit });
-      hash = tx.hash;
-      const receipt = await this._waitReceipt(hash, this.confirmTimeoutMs);
-      if (!receipt) return failure({ id: position.id }, "UNCONFIRMED", `tx ${hash} not confirmed within ${this.confirmTimeoutMs}ms`, { venue_ref: hash, t_sent });
-      const d = this._receiptDeltas(receipt, curveAddr);
-      if (d.reverted) return failure({ id: position.id }, "SEND_FAILED", `tx ${hash} reverted`, { venue_ref: hash, fee_usd: d.gasEth * price });
+      // Find a sell the curve accepts before paying for one. First the quoted amount at the normal
+      // slippage; if the curve refuses, wider slippage; if it still refuses, smaller chunks (a curve
+      // can refuse a sell that would drain it past a limit while taking a quarter). The first shape
+      // the dry run accepts is what gets sent, chunk by chunk until the wallet is empty or one fails.
+      const shape = await this._sellShape(curve, units, r);
+      if (!shape.ok) {
+        const why = await this._explainRevert(curveAddr, shape.err);
+        const ready = await curve.readyToGraduate().catch(() => null);
+        const hint = ready ? "; the curve is full and waiting to graduate, sell on the pool once it has" : "";
+        return failure({ id: position.id }, "REVERT", `sell would revert (${why})${hint}`.slice(0, 300));
+      }
+      let leftUnits = units, gotQuote = 0, feeQuote = 0, gasEth = 0, qtySold = 0, chunks = 0, lastHash = null, exact = true;
+      while (leftUnits > 0n && chunks < 8) {
+        const u = leftUnits < shape.units ? leftUnits : shape.units;
+        const tIn = toTokens(u), q = curveSellQuote(r, tIn, r.feeBps);
+        const minOut = toWei(Math.max(0, (q.quoteOut || 0) * shape.keep));
+        if (chunks > 0) { try { await curve.sell.staticCall(u, minOut, this.address); } catch (err) { break; } }
+        let gasLimit = this.gasLimitSell;
+        try { const est = await curve.sell.estimateGas(u, minOut, this.address); gasLimit = est * 13n / 10n; if (gasLimit < this.gasLimitSell) gasLimit = this.gasLimitSell; } catch {}
+        const tx = await curve.sell(u, minOut, this.address, { gasLimit });
+        hash = lastHash = tx.hash;
+        const receipt = await this._waitReceipt(hash, this.confirmTimeoutMs);
+        if (!receipt) { if (chunks === 0) return failure({ id: position.id }, "UNCONFIRMED", `tx ${hash} not confirmed within ${this.confirmTimeoutMs}ms`, { venue_ref: hash, t_sent }); break; }
+        const d = this._receiptDeltas(receipt, curveAddr);
+        if (d.reverted) { if (chunks === 0) return failure({ id: position.id }, "SEND_FAILED", `tx ${hash} reverted`, { venue_ref: hash, fee_usd: d.gasEth * price }); gasEth += d.gasEth; break; }
+        gasEth += d.gasEth; gotQuote += d.trade ? d.trade.quote : q.quoteOut; feeQuote += (d.trade?.fee || 0) + (d.trade?.tax || 0); qtySold += d.trade?.tokens || tIn; exact = exact && !!d.trade;
+        leftUnits -= u; chunks++;
+        // the curve moved: re-read it for the next chunk's quote
+        if (leftUnits > 0n) { try { const n2 = await this._curveNow(curveAddr); if (n2.tokenReserve > 0) Object.assign(r, { quoteReserve: n2.quoteReserve, tokenReserve: n2.tokenReserve, feeBps: n2.feeBps }); } catch {} }
+      }
       const t_filled = this.clock();
-      const qty = d.trade?.tokens || tokensIn, got = Math.max(0, (d.trade ? d.trade.quote : q.quoteOut) - d.gasEth);
-      return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "pons", instrument: position.instrument, side: "SELL", price: qty > 0 ? (got * price) / qty : 0, qty, notional_usd: +(got * price).toFixed(4), slippage_bps: null, fee_usd: +(((d.trade?.fee || 0) + (d.trade?.tax || 0) + d.gasEth) * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: hash, sol_received: got, exact: !!d.trade, held_before: held } };
+      const got = Math.max(0, gotQuote - gasEth);
+      return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "pons", instrument: position.instrument, side: "SELL", price: qtySold > 0 ? (got * price) / qtySold : 0, qty: qtySold, notional_usd: +(got * price).toFixed(4), slippage_bps: null, fee_usd: +((feeQuote + gasEth) * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: lastHash, sol_received: got, exact, held_before: held, chunks, partial: leftUnits > 0n ? toTokens(leftUnits) : 0, shape: shape.note } };
     } catch (err) {
       return failure({ id: position.id }, "SEND_FAILED", (err.reason || err.shortMessage || err.message || String(err)).slice(0, 300), hash ? { venue_ref: hash, t_sent } : {});
     }

@@ -214,6 +214,12 @@ test("T11: the sweep sells every token in both wallets: open positions through t
     for (let i = 0; i < 100 && !hub.status("UserS").sweep.done; i++) await new Promise(r => setTimeout(r, 20));
     const sv = hub.status("UserS").sweep;
     assert.equal(sv.done, true); assert.ok(sv.report.some(x => x.instrument === "MintOrphan2" && x.ok)); assert.ok(sv.report.some(x => x.instrument === "0xheld" && x.ok)); assert.equal(sv.current, null);
+    // The holdings list: every token, its curve state, what a sell would fetch
+    routers.evm.tokens["0xheld"] = 900; routers.UserS.tokens.MintOrphan3 = 50;
+    const hl = await hub.listHoldings("UserS", { secret: "sS", evmSecret: "0xkey" });
+    const heldRow = hl.eth.find(x => x.instrument === "0xheld"), gradRow = hl.eth.find(x => x.instrument === "0xgrad"), randRow = hl.eth.find(x => x.instrument === "0xrandom");
+    assert.equal(heldRow.state, "curve"); assert.ok(heldRow.sellEth > 0); assert.equal(gradRow.state, "graduated"); assert.equal(randRow.state, "not a PONS launch");
+    assert.ok(hl.sol.some(x => x.instrument === "MintOrphan3" && x.qty === 50));
     // One holding by itself, tracked or not, through the router
     routers.evm.tokens["0xheld"] = 900;
     const one = await hub.sellHolding("UserS", { venue: "pons", instrument: "0xheld", evmSecret: "0xkey" });

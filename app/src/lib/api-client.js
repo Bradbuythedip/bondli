@@ -50,6 +50,7 @@ class A {
   vpause(w) { return this.f("/api/velocity/pause", { method: "POST", body: { wallet: w } }); }
   vresume(w) { return this.f("/api/velocity/resume", { method: "POST", body: { wallet: w } }); }
   vsweepStatus(w) { return this.f("/api/velocity/sweep?wallet=" + w); }
+  vholdings(w) { return this.f("/api/velocity/holdings?wallet=" + w, { timeout: 60000 }); }
   vsell(w, venue, instrument, pct) { return this.f("/api/velocity/sell", { method: "POST", body: { wallet: w, venue, instrument, pct: pct || 100 }, timeout: 120000 }); }
   vsweep(w, chain) { return this.f("/api/velocity/sweep", { method: "POST", body: { wallet: w, chain: chain || "all" }, timeout: 180000 }); }
   vclose(w, positionId, pct) { return this.f("/api/velocity/close", { method: "POST", body: { wallet: w, positionId, pct }, timeout: 90000 }); }
