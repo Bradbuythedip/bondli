@@ -423,13 +423,15 @@ test("T10: a signature survives an RPC that drops the reply; a zero read is re-r
   assert.equal(est.ok, true); assert.equal(est.fill.estimated, true); assert.ok(est.fill.notional_usd > 0);
 });
 
-test("T10: a throttled stake is never floored back up; a failed startup freeze lifts on a good restart; stopping opens no new risk", async () => {
+test("T10: a half-throttled stake trades the minimum, a quarter-throttled one does not; a failed startup freeze lifts on a good restart; stopping opens no new risk", async () => {
   const dir = tmp(); const env = smallEnvelope(dir);
   const sizer = new Sizer(env);
   const d = { venue: "pumpfun", p_win: 0.45, payoff: 3, stop_fraction: 1 };
   assert.equal(sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: 0 }, throttle: 1 }).stake_usd, 5);
-  const shrunk = sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: 0 }, throttle: 0.5 });
-  assert.equal(shrunk.stake_usd, 0); assert.match(shrunk.reasons[0], /BELOW_MIN_STAKE/, "the governor's shrink means not trading at this bankroll");
+  const halved = sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: 0 }, throttle: 0.5 });
+  assert.equal(halved.stake_usd, 5, "half of a minimum order does not exist: the minimum trades"); assert.ok(halved.caps.includes("MIN_STAKE_FLOOR"));
+  const shrunk = sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: 0 }, throttle: 0.25 });
+  assert.equal(shrunk.stake_usd, 0); assert.match(shrunk.reasons[0], /BELOW_MIN_STAKE/, "cut past half means not trading at this bankroll");
 
   const first = mkEngine(dir, { envelope: env, mode: "paper", live: new FakeLive({ failInit: true }) });
   first.store.setVenueMode("pumpfun", "live");
@@ -789,4 +791,59 @@ test("T10: the market-cap floor follows the dial and is named for what it is; a 
   assert.equal(curveEntryMark("pons", { qty: 12_000_000, price: 12 / 12_000_000 }, { reference: { mcapUsd: 1_500 } }), 1000);
   assert.equal(curveEntryMark("pumpfun", { qty: 1, price: 5 }, { reference: { mcapUsd: 9_000 } }), 9_000);
   assert.equal(curveEntryMark("polymarket", { qty: 1, price: 0.6 }, { reference: {} }), 0.6);
+});
+
+test("T10: an EVM router is told what the wallet has traded, so a restart adopts holdings instead of losing them", async () => {
+  const { Engine } = await import("../../src/velocity/core/engine.mjs");
+  const { PonsPaperRouter } = await import("../../src/velocity/venues/pons/router.mjs");
+  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const dir = tmp();
+  const base = JSON.parse(fs.readFileSync(path.resolve("src/velocity/config/risk.example.json"), "utf8"));
+  const cfg = { ...base, bankroll_usd: 100, per_trade_max_usd: 10, portfolio_max_exposure_usd: 40, daily_loss_limit_usd: 30, max_concurrent_positions: 4, max_per_group: 1 };
+  cfg.venues = { ...base.venues, pumpfun: { ...base.venues.pumpfun, max_exposure_usd: 0 }, pons: { ...base.venues.pons, max_exposure_usd: 40, max_concurrent: 4, min_stake_usd: 5 }, polymarket: { ...base.venues.polymarket, max_exposure_usd: 0 } };
+  fs.writeFileSync(path.join(dir, "risk.json"), JSON.stringify(cfg));
+  const env = loadRiskEnvelope(path.join(dir, "risk.json"));
+  // A live router shaped like the EVM one: it only sees balances of tokens it was told about.
+  class FakeEvm { constructor() { this.ready = false; this.known = new Set(); this.wallet = { "0xheld": 900 }; this.calls = []; }
+    async init() { this.ready = true; return this.preflight(); } async preflight() { return { wallet: "0xme", balanceSol: 0.05, quote: "ETH" }; }
+    async health() { return { ok: true, latencyMs: 1, detail: "ok" }; } track(t) { this.known.add(t); }
+    async positions() { return [...this.known].filter(t => this.wallet[t] > 0).map(t => ({ instrument: t, qty: this.wallet[t] })); }
+    async submit() { return { ok: false, failure: { code: "UNUSED", reason: "" } }; } async close() { return { ok: false, failure: { code: "UNUSED", reason: "" } }; } }
+  const feed = new ScriptedFeed({ venue: "pons", script: [] });
+  const mk = (live) => new Engine({ dataDir: dir, envelope: env, venues: { pons: { mode: "live", feed, edge: makePumpfunEdge({ venue: "pons" }), router: new PonsPaperRouter({ bookFile: path.join(dir, "pb.json") }), liveRouter: live } }, config: { saveMs: 600_000, governorMs: 600_000, sweepMs: 600_000 } });
+  // First life: the engine bought 0xheld (a fill in the ledger, a position in the store).
+  const first = mk(new FakeEvm());
+  first.store.setVenueMode("pons", "live");
+  first.ledger.append({ kind: "order", venue: "pons", orderId: "o1", stage: "sent", instrument: "0xheld", side: "BUY", stake_usd: 8 });
+  first.ledger.append({ kind: "fill", venue: "pons", orderId: "o1", positionId: "pons:0xheld:1", instrument: "0xheld", side: "BUY", price: 0.00001, qty: 900, notional_usd: 8, sol_spent: 0.003 });
+  first.store.upsertPosition({ id: "pons:0xheld:1", venue: "pons", instrument: "0xheld", status: "open", paper: false, qty: 900, remaining_qty: 900, cost_usd: 8, notional_usd: 8, stake_usd: 8, proceeds_usd: 0, entryTime: Date.now(), entryMark: 10_000, plan: createPlan({ venue: "pons", key: 3, entry: { score: 60 } }) });
+  first.store.save();
+  // Second life, fresh router with no memory: the engine tells it, and the position survives.
+  const live = new FakeEvm();
+  const second = mk(live);
+  try {
+    await second.start();
+    assert.ok(live.known.has("0xheld"), "the router was told about the instrument from the ledger and store");
+    assert.equal(second.store.openPositions("pons").length, 1, "the held token stays an open position, not 'missing at venue'");
+    assert.deepEqual(second.status().holdings.pons.list, [{ instrument: "0xheld", qty: 900, tracked: true }]);
+    // A holding the store does not know (bought, then the store lost it): shown untracked, and reconcile adopts it from the ledger fill.
+    live.wallet["0xlost"] = 500;
+    second.ledger.append({ kind: "fill", venue: "pons", orderId: "o2", positionId: "pons:0xlost:1", instrument: "0xlost", side: "BUY", price: 0.00002, qty: 500, notional_usd: 9, sol_spent: 0.003 });
+    await second.refreshWallet();
+    const h = second.status().holdings.pons.list.find(x => x.instrument === "0xlost");
+    assert.ok(h, "the wallet's holding is listed"); 
+    assert.ok(second.store.openPositions("pons").some(p => p.instrument === "0xlost" && p.adopted), "adopted from the ledger fill");
+  } finally { await second.stop(); }
+});
+
+test("T10: a dev holding a rug-sized share is refused on every setting and never waived by momentum", async () => {
+  const { checkDisqualifiers } = await import("../../src/autoape/gates/disqualifiers.js");
+  const { AGGRESSION } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const now = Date.now();
+  const crowd = { ca: "D", createdAt: now - 2 * 60_000, buys: 60, sells: 10, uniqueBuyers: { size: 22 }, mcapUsd: 30_000, vSolInBondingCurve: 40 };
+  const qf = { _rg_organicBuyers: 22, rg_mcapDropRate: 0.02, rg_liqRemovalSpeed: 0.15, rg_devSellSpeed: 0, _rg_devHoldPct: 0.18, _rg_quickFlipRate: 0.5 };
+  for (const lvl of [0, 1, 2, 3]) { const r = checkDisqualifiers(crowd, qf, AGGRESSION[lvl]); assert.equal(r.pass, false, `level ${lvl}`); assert.ok(r.flags.includes("DEV_HOLDS_SUPPLY")); }
+  assert.equal(checkDisqualifiers(crowd, { ...qf, _rg_devHoldPct: 0.09, _rg_quickFlipRate: 0.1 }, AGGRESSION[1]).flags.includes("DEV_HOLDS_SUPPLY"), false, "9% is under the designed 10%");
+  assert.equal(checkDisqualifiers(crowd, { ...qf, _rg_devHoldPct: 0.14, _rg_quickFlipRate: 0.1 }, AGGRESSION[3]).flags.includes("DEV_HOLDS_SUPPLY"), false, "degen tolerates up to 15%");
+  assert.equal(checkDisqualifiers(crowd, { ...qf, _rg_devHoldPct: 0.14, _rg_quickFlipRate: 0.1 }, AGGRESSION[1]).flags.includes("DEV_HOLDS_SUPPLY"), true, "careful does not");
 });

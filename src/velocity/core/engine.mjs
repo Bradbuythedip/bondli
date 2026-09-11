@@ -65,6 +65,8 @@ export class Engine extends EventEmitter {
     this.pendingBuys = new Map();  // instrument -> { sig, decision, orderId, stake, sizing, at }: sent, not yet confirmed
     this.wallet = { sol: null, usd: null, solPrice: null, at: 0, venue: null }; // last live wallet reading (bankroll_source: wallet)
     this.wallets = {}; // venue -> reading; a hosted user trades pump.fun from a SOL wallet and PONS from an ETH wallet
+    this._holdings = {}; // venue -> { at, list: [{ instrument, qty }] } as the venue last reported them
+    this._lastHoldingsReconcile = 0;
     this._lastSweepTry = new Map();
     this.stats = statsFromOutcomes(this.ledger.query({ kind: "outcome", limit: 5000 }));
     this.checksums = checksumFiles();
@@ -100,6 +102,19 @@ export class Engine extends EventEmitter {
 
   /** A venue persisted as live gets its router initialized before any reconcile, order or exit.
    *  If that fails the venue freezes rather than treating an uninitialized router as an empty venue. */
+  /** An EVM wallet cannot list its tokens: the router only knows what it is told. Tell it every
+   *  instrument this engine ever bought (store positions, ledger fills, orders sent), so a restart
+   *  does not make the wallet's holdings invisible and the store's positions "missing". */
+  seedRouterKnowledge(venue) {
+    const r = this.venues[venue]?.liveRouter;
+    if (!r?.track) return 0;
+    const inst = new Set();
+    for (const p of Object.values(this.store.state.positions)) if (p.venue === venue && p.instrument) inst.add(p.instrument);
+    try { for (const f of this.ledger.readAll(x => x.venue === venue && x.instrument && (x.kind === "fill" || (x.kind === "order" && x.stage === "sent")))) inst.add(f.instrument); } catch {}
+    for (const i of inst) r.track(i);
+    return inst.size;
+  }
+
   async initLiveRouters() {
     for (const [venue, v] of Object.entries(this.venues)) {
       const mode = this.store.venueMode(venue);
@@ -107,6 +122,8 @@ export class Engine extends EventEmitter {
       if (mode !== "live" || !v.liveRouter || v.liveRouter.ready) continue;
       try {
         const pre = await v.liveRouter.init();
+        const seeded = this.seedRouterKnowledge(venue);
+        if (seeded) this.log("info", `${venue}: router told about ${seeded} instrument(s) this wallet has traded`);
         const h = await v.liveRouter.health();
         if (!h.ok) throw new Error(h.detail);
         this.ledger.append({ kind: "venue", venue, mode: "live", by: "restart", preflight: pre });
@@ -150,6 +167,20 @@ export class Engine extends EventEmitter {
     for (const [venue, v] of Object.entries(this.venues)) {
       if (this.store.venueMode(venue) !== "live" || !v.liveRouter?.ready || !v.liveRouter.preflight) continue;
       try { this.noteWallet(venue, await v.liveRouter.preflight()); } catch (err) { this.log("warn", `${venue}: wallet read failed: ${err.message}`); }
+      // What the wallet actually holds, beside what the store says is open. A holding the store does
+      // not track is shown, and reconciled (adopted or reported) at most every two minutes.
+      try {
+        this.seedRouterKnowledge(venue);
+        const list = (await v.liveRouter.positions()).map(p => ({ instrument: p.instrument, qty: p.qty }));
+        this._holdings[venue] = { at: this.clock(), list };
+        const open = new Set(this.store.openPositions(venue).map(p => p.instrument));
+        const untracked = list.filter(h => !open.has(h.instrument) && h.qty > 0);
+        if (untracked.length && this.clock() - this._lastHoldingsReconcile > 2 * 60_000) {
+          this._lastHoldingsReconcile = this.clock();
+          this.log("warn", `${venue}: wallet holds ${untracked.length} token(s) the store does not track (${untracked.map(u => u.instrument.slice(0, 8)).join(", ")}); reconciling`);
+          await this.reconcile();
+        }
+      } catch (err) { this.log("warn", `${venue}: holdings read failed: ${err.message}`); }
     }
   }
 
@@ -629,8 +660,10 @@ export class Engine extends EventEmitter {
       // An uninitialized live router reports an empty wallet; that is not a reason to close anything.
       if (!router || router.ready === false) { rep.error = "live router not initialized"; rep.frozen = true; if (!this.store.state.halt.venues?.[venue]) this.store.setHalt("freeze", "reconcile: live router not initialized", venue); continue; }
       let venuePositions;
+      this.seedRouterKnowledge(venue);
       try { venuePositions = await router.positions(); }
       catch (err) { rep.error = err.message; rep.frozen = true; this.store.setHalt("freeze", `reconcile failed: ${err.message}`, venue); continue; }
+      this._holdings[venue] = { at: this.clock(), list: venuePositions.map(p => ({ instrument: p.instrument, qty: p.qty })) };
       const atVenue = new Map(venuePositions.map(p => [p.instrument, p]));
       const inStore = new Map(this.store.openPositions(venue).map(p => [p.instrument, p]));
       // Ledger truth: BUY fills with no final exit since.
@@ -720,6 +753,7 @@ export class Engine extends EventEmitter {
       bankroll: { source: this.walletMode() ? "wallet" : "fixed", fixed_usd: this.env.bankroll_usd, equity_usd: this.portfolioSnapshot().equity_usd ?? null, wallet: this.wallet.at ? this.wallet : null, wallets: this.wallets },
       positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, name: p.reference?.name || "", ticker: p.reference?.ticker || "", tier: p.tier, model: p.model, notional_usd: p.notional_usd, stake_usd: p.stake_usd, mark: p.mark, entryMark: p.entryMark, peak: p.peak, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode, stall_ms: p.plan?.stall_ms ?? null, max_hold_ms: p.plan?.max_hold_ms ?? null }, tpHit: p._bondli?.tpHit ?? 0, entryTime: p.entryTime, lastTickAt: p.lastTickAt || null, curve: p.reference?.curve?.address || null, adopted: !!p.adopted })),
       venues, weightsVersion: this.weights.current().version, lastDecisions: s.lastDecisions, alerts: s.alerts.slice(0, 10),
+      holdings: Object.fromEntries(Object.entries(this._holdings).map(([venue, h]) => { const open = new Set(this.store.openPositions(venue).map(p => p.instrument)); return [venue, { at: h.at, list: h.list.map(x => ({ ...x, tracked: open.has(x.instrument) })) }]; })),
     };
   }
 

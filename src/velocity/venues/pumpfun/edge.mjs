@@ -43,15 +43,15 @@ export const PUMPFUN_PRIORS = Object.freeze({
 // (+11) in gate 1; DEAD_ON_ARRIVAL (63%) and INSUFFICIENT_DATA (22%) in gate 2; WATCHLIST in gate 3.
 export const AGGRESSION = Object.freeze({
   0: Object.freeze({ scoreFloor: 50, tier3Floor: 55, sybilMax: 0.35, freshWalletMax: 0.70, curveMax: 0.50, curveMaxSpec: 0.30, spikeSlope: 0.10, blockDecel: true,  requireStable: true,
-                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.55, momentum: null, kellyMult: 0.75, mcapFloor: 4000 }),
+                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.55, momentum: null, kellyMult: 0.75, mcapFloor: 4000, devHoldMax: 0.08 }),
   1: Object.freeze({ scoreFloor: 45, tier3Floor: 50, sybilMax: 0.40, freshWalletMax: 0.80, curveMax: 0.60, curveMaxSpec: 0.40, spikeSlope: 0.15, blockDecel: true,  requireStable: true,
-                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.50, momentum: null, kellyMult: 1, mcapFloor: 4000 }),
+                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.50, momentum: null, kellyMult: 1, mcapFloor: 4000, devHoldMax: 0.10 }),
   2: Object.freeze({ scoreFloor: 38, tier3Floor: 42, sybilMax: 0.50, freshWalletMax: 0.90, curveMax: 0.70, curveMaxSpec: 0.55, spikeSlope: 0.25, blockDecel: false, requireStable: false,
                      coordDump: 0.7, staleMin: 30, tooLateCurve: 0.90, concentrationMax: 0.80, doaBuyers: 4, minScores: 1, enterWatchlist: true, minConfidence: 0.40,
-                     momentum: { buyers: 15, ageMaxMin: 3, sellShareMax: 0.40 }, kellyMult: 1.5, mcapFloor: 3000 }),
+                     momentum: { buyers: 15, ageMaxMin: 3, sellShareMax: 0.40 }, kellyMult: 1.5, mcapFloor: 3000, devHoldMax: 0.12 }),
   3: Object.freeze({ scoreFloor: 32, tier3Floor: 35, sybilMax: 0.60, freshWalletMax: 1.00, curveMax: 0.80, curveMaxSpec: 0.65, spikeSlope: 0.40, blockDecel: false, requireStable: false,
                      coordDump: 0.85, staleMin: 60, tooLateCurve: 0.95, concentrationMax: 0.90, doaBuyers: 3, minScores: 0, enterWatchlist: true, minConfidence: 0.30,
-                     momentum: { buyers: 10, ageMaxMin: 5, sellShareMax: 0.45 }, kellyMult: 2, mcapFloor: 2500 }),
+                     momentum: { buyers: 10, ageMaxMin: 5, sellShareMax: 0.45 }, kellyMult: 2, mcapFloor: 2500, devHoldMax: 0.15 }),
 });
 
 export function makePumpfunEdge({

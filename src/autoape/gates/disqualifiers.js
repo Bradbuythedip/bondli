@@ -4,7 +4,7 @@
 // opts: freezeAuthority, isRecoveryPlay, and the aggression profile's gate-1 knobs
 // (src/velocity/venues/pumpfun/edge.mjs AGGRESSION); defaults are the designed rules.
 export function checkDisqualifiers(token, qf, opts = {}) {
-  const { coordDump = 0.5, staleMin = 15, tooLateCurve = 0.80, concentrationMax = 0.7, minAgeMin = 0.5, momentum = null } = opts;
+  const { coordDump = 0.5, staleMin = 15, tooLateCurve = 0.80, concentrationMax = 0.7, minAgeMin = 0.5, momentum = null, devHoldMax = 0.10 } = opts;
   const flags = [];
 
   // === RUG SIGNALS (on-chain) ===
@@ -17,6 +17,9 @@ export function checkDisqualifiers(token, qf, opts = {}) {
 
   // Dev self-sniped the launch
   if (qf?._rg_devSelfSnipe > 0) flags.push("DEV_SELF_SNIPE");
+  // The dev still holds a rug-sized share of supply: one transaction empties the curve, and there is
+  // no selling into that. Never waived.
+  if (qf?._rg_devHoldPct > devHoldMax) flags.push("DEV_HOLDS_SUPPLY");
 
   // Freeze authority still active
   if (opts.freezeAuthority) flags.push("FREEZE_AUTHORITY");
@@ -162,7 +165,7 @@ export const MOMENTUM_WAIVABLE = new Set(["QUICK_FLIP", "COORDINATED_DUMP", "EXT
 
 /** Never waived by momentum (documentation of the intent; the allow-list above is what runs). */
 export const FATAL_DISQUALIFIERS = new Set([
-  "LINEAR_PUMP", "BOT_PUMP", "ZERO_SELLS", "ZERO_SELLS_FAKE_CHART", "ALL_BUYS_NO_SELLS", "FRESH_WALLET_RUG",
+  "DEV_HOLDS_SUPPLY", "LINEAR_PUMP", "BOT_PUMP", "ZERO_SELLS", "ZERO_SELLS_FAKE_CHART", "ALL_BUYS_NO_SELLS", "FRESH_WALLET_RUG",
   "STAIRCASE_CHART", "STAIRCASE_FRESH", "FLATLINE_SPIKE", "FLATLINE_NO_SELLS", "FLATLINE_FRESH", "SMOOTH_GRIND", "NO_DIPS_GRIND", "LIQ_REMOVAL",
   "DEV_SELLING", "DEV_SELF_SNIPE", "DEV_SELF_PUMP", "DEV_PUMP_NO_SELLS", "FREEZE_AUTHORITY", "STOLEN_ART",
   "SYBIL_ATTACK", "PUMP_DUMP", "MCAP_CRASHING", "EARLY_DUMP", "BOT_FARM_VOLUME", "BOTTED_VOLUME", "FAKE_VOLUME_HIGH_SOL",

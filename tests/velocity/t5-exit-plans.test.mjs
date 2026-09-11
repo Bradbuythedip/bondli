@@ -121,3 +121,11 @@ test("T5: dead money is sold: three minutes flat with no buyers is a STALL exit 
   evaluateExit(pos3, tick(12_000, quiet, T0 + 60_000));
   assert.notEqual(evaluateExit(pos3, tick(10_300, quiet, T0 + 3 * 60_000 + 1000))?.reason, "STALL");
 });
+
+test("T5: a PONS position is sold at 85% curve progress whatever the P&L: the bot cannot sell after graduation", () => {
+  const pos = { ...pumpPos({ plan: createPlan({ venue: "pons", key: 3, entry: { score: 60 } }) }), venue: "pons", instrument: "0xabc" };
+  const t = (mc, curve) => { const e = tick(mc, { token: { _curvePct: curve, ca: "0xabc" } }); e.venue = "pons"; return e; };
+  assert.equal(evaluateExit(pos, t(10_200, 0.5)), null);
+  const r = evaluateExit(pos, t(10_200, 0.86));
+  assert.equal(r?.action, "SELL"); assert.equal(r.pct, 100); assert.equal(r.reason, "pre-graduation-exit");
+});

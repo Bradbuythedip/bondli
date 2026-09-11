@@ -196,7 +196,7 @@ export function runExitChecks(pos, token, dynamics, settings) {
   if (volExit) return { ...volExit, changePct, fromPeak, currentMcap };
 
   // Layer 4: Graduation exit (check before trailing — graduation is time-critical)
-  const curvePct = token.vSolInBondingCurve ? token.vSolInBondingCurve / 85 : 0;
+  const curvePct = token._curvePct != null ? Number(token._curvePct) : token.vSolInBondingCurve ? token.vSolInBondingCurve / 85 : 0;
   const gradExit = checkGraduationExit(pos, changePct, curvePct);
   if (gradExit) return { ...gradExit, changePct, fromPeak, currentMcap };
 

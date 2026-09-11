@@ -88,6 +88,9 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   // The engine marks the position on every tick, including ticks that never reach this evaluator;
   // its peak is the truth the trailing stops measure from.
   if (position.peak > (pos.peakMcap || 0)) pos.peakMcap = position.peak;
+  // PONS: once the curve completes, sells go to a Uniswap V4 pool the router does not speak. Everything
+  // is sold at 85% progress, whatever the P&L, because a token held through graduation cannot be sold by the bot.
+  if (position.venue === "pons" && Number(token._curvePct) >= 0.85 && !token.graduated) return { action: "SELL", pct: 100, reason: "pre-graduation-exit", layer: 4, detail: `curve ${Math.round(Number(token._curvePct) * 100)}%: the bot cannot sell after graduation` };
   // Dead money: old enough, never left the band around entry (peak included), and nobody is buying.
   // A token that does not move in its first minutes on a curve is not about to; the slot is worth more.
   if (plan.stall_ms && held >= plan.stall_ms && (pos.tpHit || 0) === 0) {

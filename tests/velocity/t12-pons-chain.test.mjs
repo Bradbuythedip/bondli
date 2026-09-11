@@ -105,3 +105,11 @@ test("T12: a launch quoted in an ERC-20 is never tracked; the router could not t
   assert.ok(feed.apply({ kind: "launch", token: addr(0x61), curve: addr(0x62), deployer: addr(0x63), pairToken: addr(0), graduationThreshold: 4, block: 1, tx: "0x" }));
   assert.equal(feed.tokens.size, 1);
 });
+
+test("T12: the PONS feed reports the dev's share of supply from the dev's own curve trades", async () => {
+  const { quickFeatures } = await import("../../src/velocity/venues/pons/feed.mjs");
+  const now = Date.now();
+  const t = { devWallet: "0xdev", devInitialQuote: 0.5, uniqueBuyers: new Set(["0xdev", "0xa"]), spark: [1000], mcapUsd: 1000, trades: [
+    { side: "buy", quote: 0.5, tokens: 150_000_000, wallet: "0xdev", time: now - 60_000 }, { side: "buy", quote: 0.05, tokens: 5_000_000, wallet: "0xa", time: now - 30_000 }, { side: "sell", quote: 0.1, tokens: 30_000_000, wallet: "0xdev", time: now - 10_000 } ] };
+  assert.equal(quickFeatures(t, now)._rg_devHoldPct, 0.12);
+});
