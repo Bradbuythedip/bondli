@@ -2010,7 +2010,8 @@ function extractQuickFeatures(t) {
     // no socials" from "we have not fetched its metadata yet", and would reject every young token.
     _socialsKnown: t._metaAt ? 1 : 0,
     // A twitter handle the X API says does not exist does not count as a social link.
-    _hasAnySocial: ((t.twitter && !t._xSocial?.dead) || t.telegram || t.website) ? 1 : 0,
+    _hasAnySocial: ((t.twitter && !t._xSocial?.dead) || t.telegram || (t.website && t._siteAlive?.ok !== false)) ? 1 : 0,
+    _siteDead: t._siteAlive && t._siteAlive.ok === false ? 1 : 0,
     _xDeadHandle: t._xSocial?.dead ? 1 : 0,
     _xScore: t._xSocial ? t._xSocial.score : null,
     _xFlags: t._xSocial?.flags || null,
@@ -7979,6 +7980,46 @@ function queueXCheck(t) {
     .finally(() => { xQueue.inflight--; });
 }
 
+// ── Website liveness: does the link a launch lists actually resolve? ──
+// No credential, no quota, one request per hostname. A parked, dead or never-registered domain tells
+// you the same thing a dead twitter handle does, and unlike the X check this works everywhere, on any
+// chain, for free. Same discipline: background, deduped, never awaited by a decision.
+// Any answer from the server means the domain is live, including a 403 from a bot-blocking CDN, since
+// the question is "does this exist", not "will it serve me". Only a missing page or a dead name counts.
+const siteQueue = { seen: new Map(), inflight: 0 };
+async function probeSite(url) {
+  for (const method of ["HEAD", "GET"]) {
+    try {
+      const r = await fetch(url, { method, redirect: "follow", signal: AbortSignal.timeout(6000), headers: { "User-Agent": "Mozilla/5.0 (compatible; bondli/1.0)" } });
+      if (method === "HEAD" && (r.status === 405 || r.status === 501)) continue; // some servers refuse HEAD; ask properly
+      return { ok: r.status !== 404 && r.status !== 410, status: r.status };
+    } catch (err) {
+      if (method === "GET") return { ok: false, status: 0, error: String(err?.name === "TimeoutError" ? "timeout" : err?.message || err).slice(0, 60) };
+    }
+  }
+  return { ok: false, status: 0, error: "unreachable" };
+}
+function queueSiteCheck(t) {
+  if (!t?.website || t._siteAlive !== undefined || siteQueue.inflight >= 4) return;
+  let host, url;
+  try { url = new URL(/^https?:\/\//i.test(t.website) ? t.website : "https://" + t.website); host = url.hostname.toLowerCase(); }
+  catch { t._siteAlive = { ok: false, status: 0, error: "unparseable", at: Date.now() }; return; }
+  const known = siteQueue.seen.get(host);
+  if (known) { t._siteAlive = known; return; }             // one probe per hostname, shared by every token listing it
+  siteQueue.inflight++;
+  const ca = t.ca;
+  probeSite(url.toString())
+    .then(r => {
+      const verdict = { ...r, at: Date.now() };
+      siteQueue.seen.set(host, verdict);
+      if (siteQueue.seen.size > 5000) siteQueue.seen.clear();
+      const tok = radar.tokens.get(ca); if (tok) tok._siteAlive = verdict;
+      if (!r.ok) console.log(`[SITE] ${ca.slice(0, 8)} lists ${host} which does not answer (${r.error || r.status})`);
+    })
+    .catch(() => {})
+    .finally(() => { siteQueue.inflight--; });
+}
+
 function passesTraderBaseFilter(t, now = Date.now(), loose = false) {
   const ub = t.uniqueBuyers?.size || 0, buys = t.buys || 0, sells = t.sells || 0, mc = t.mcapUsd || 0;
   const ageMin = (now - (t.createdAt || now)) / 60000;
@@ -8059,7 +8100,7 @@ function buildScoredResponse(query = {}) {
       // the token (rug gate or base filter) and its old score must not be served as current.
       if (!only && !all && (!t._scoredAt || now - t._scoredAt > 10_000)) continue;
       if (!only && !all && !passesTraderBaseFilter(t, now, loose)) continue;
-      queueXCheck(t); // background, budgeted, never awaited
+      queueXCheck(t); queueSiteCheck(t); // background, budgeted, never awaited
     }
     if (!qf) { try { qf = extractQuickFeatures(t); } catch {} }
     // Stamped here, not only in judgeToken, so the row carries it to the live engine's own gates.
