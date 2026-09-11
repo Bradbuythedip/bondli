@@ -20,7 +20,7 @@ export function expectedValue({ p_win, payoff, costs }) {
 }
 
 export class GateRunner {
-  constructor({ venue, edge, minConfidence = 0.5, minEv = 0 }) {
+  constructor({ venue, edge, minConfidence = edge?.minConfidence ?? 0.5, minEv = 0 }) {
     if (!edge || edge.venue !== venue) throw new Error(`edge model must be for venue ${venue}`);
     this.venue = venue;
     this.edge = edge;

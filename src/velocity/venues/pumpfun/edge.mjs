@@ -12,22 +12,26 @@ import { DEFAULT_WEIGHTS, scoreFeatures } from "../../core/learner.mjs";
 /** Normalized 0..1 features the learnable ranking weights read. Kill gates never see these. */
 export function pumpfunFeatures(c) {
   const clamp01 = v => Math.min(1, Math.max(0, Number(v) || 0));
+  const opt = v => (v == null || Number.isNaN(Number(v)) ? null : clamp01(v)); // absent enrichment is null, never 0
   return {
     apeScore: clamp01((Number(c.scores.apeScore) || 0) / 100),
-    memeticQuick: clamp01(c.token._memeticQuick),
-    survivorMatch: clamp01((Number(c.token._survivorMatch) || 0) / 100),
-    chartHealth: clamp01(c.qf?.ch_healthScore),
-    whaleBullish: clamp01(c.qf?._whaleBullish),
-    walletAge: clamp01(c.qf?.rg_walletAgeScore),
-    freshWalletRatio: clamp01(c.qf?._rg_freshWalletRatio),
+    memeticQuick: opt(c.token._memeticQuick),
+    survivorMatch: c.token._survivorMatch == null ? null : clamp01(Number(c.token._survivorMatch) / 100),
+    chartHealth: opt(c.qf?.ch_healthScore),
+    whaleBullish: opt(c.qf?._whaleBullish),
+    walletAge: opt(c.qf?.rg_walletAgeScore),
+    freshWalletRatio: opt(c.qf?._rg_freshWalletRatio),
   };
 }
 
-// Priors until the ledger has enough realized outcomes for the tier (bondli's sizing.js values).
+// Priors until the ledger has enough realized outcomes for the tier. Every tier must clear the EV
+// gate after ~5% costs on priors alone, or the tier can never trade and never earn the outcomes
+// that would replace the prior: the old tier-3 prior (0.25 x 3.0) had EV -0.05 after costs, which
+// silently refused every speculative entry.
 export const PUMPFUN_PRIORS = Object.freeze({
-  1: Object.freeze({ p_win: 0.45, payoff: 3.0 }),
-  2: Object.freeze({ p_win: 0.35, payoff: 3.0 }),
-  3: Object.freeze({ p_win: 0.25, payoff: 3.0 }),
+  1: Object.freeze({ p_win: 0.45, payoff: 3.0 }),   // EV +0.80 before costs
+  2: Object.freeze({ p_win: 0.35, payoff: 3.0 }),   // EV +0.40
+  3: Object.freeze({ p_win: 0.30, payoff: 3.0 }),   // EV +0.20
 });
 
 /** One knob for how far past the designed floors gates 2 and 3 let a token in. Gate 1 (the rug
@@ -39,13 +43,13 @@ export const PUMPFUN_PRIORS = Object.freeze({
 // (+11) in gate 1; DEAD_ON_ARRIVAL (63%) and INSUFFICIENT_DATA (22%) in gate 2; WATCHLIST in gate 3.
 export const AGGRESSION = Object.freeze({
   0: Object.freeze({ scoreFloor: 50, tier3Floor: 55, sybilMax: 0.35, freshWalletMax: 0.70, curveMax: 0.50, curveMaxSpec: 0.30, spikeSlope: 0.10, blockDecel: true,  requireStable: true,
-                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false }),
+                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.55 }),
   1: Object.freeze({ scoreFloor: 45, tier3Floor: 50, sybilMax: 0.40, freshWalletMax: 0.80, curveMax: 0.60, curveMaxSpec: 0.40, spikeSlope: 0.15, blockDecel: true,  requireStable: true,
-                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false }),
+                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.50 }),
   2: Object.freeze({ scoreFloor: 38, tier3Floor: 42, sybilMax: 0.50, freshWalletMax: 0.90, curveMax: 0.70, curveMaxSpec: 0.55, spikeSlope: 0.25, blockDecel: false, requireStable: false,
-                     coordDump: 0.7, staleMin: 30, tooLateCurve: 0.90, concentrationMax: 0.80, doaBuyers: 4, minScores: 1, enterWatchlist: true }),
+                     coordDump: 0.7, staleMin: 30, tooLateCurve: 0.90, concentrationMax: 0.80, doaBuyers: 4, minScores: 1, enterWatchlist: true, minConfidence: 0.40 }),
   3: Object.freeze({ scoreFloor: 32, tier3Floor: 35, sybilMax: 0.60, freshWalletMax: 1.00, curveMax: 0.80, curveMaxSpec: 0.65, spikeSlope: 0.40, blockDecel: false, requireStable: false,
-                     coordDump: 0.85, staleMin: 60, tooLateCurve: 0.95, concentrationMax: 0.90, doaBuyers: 3, minScores: 0, enterWatchlist: true }),
+                     coordDump: 0.85, staleMin: 60, tooLateCurve: 0.95, concentrationMax: 0.90, doaBuyers: 3, minScores: 0, enterWatchlist: true, minConfidence: 0.30 }),
 });
 
 export function makePumpfunEdge({
@@ -62,6 +66,7 @@ export function makePumpfunEdge({
     name: "bondli_gates",
     aggression: Number(aggression),
     gateOpts,
+    minConfidence: gateOpts.minConfidence ?? 0.5, // the post-gate confidence floor, read by the GateRunner
 
     /** Only candidate events carry a scorable token; ticks belong to exits. */
     ingest(event) {

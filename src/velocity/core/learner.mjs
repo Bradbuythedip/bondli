@@ -38,10 +38,15 @@ export const SACRED_INVERSIONS = Object.freeze({
 });
 
 /** Ranking score in [0,1]: signed weighted sum, negatives measured as (1 - feature). */
+// A feature that is null/undefined is MISSING, not zero: the radar's live path does not compute
+// the memetic, survivor, whale and wallet-age enrichments, and counting them as 0 dragged every
+// candidate's confidence under the floor. The weights renormalise over what is present.
 export function scoreFeatures(features, weights, signs = FEATURE_SIGNS.pumpfun) {
   let s = 0, wsum = 0;
   for (const [k, w] of Object.entries(weights)) {
-    const f = Math.min(1, Math.max(0, Number(features?.[k]) || 0));
+    const raw = features?.[k];
+    if (raw == null || Number.isNaN(Number(raw))) continue;
+    const f = Math.min(1, Math.max(0, Number(raw)));
     s += w * ((signs[k] ?? 1) < 0 ? 1 - f : f);
     wsum += w;
   }
