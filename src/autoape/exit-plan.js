@@ -133,6 +133,13 @@ export function checkTrailingExit(pos, changePct, fromPeak, settings) {
     return null;
   }
 
+  // After TP2 (or on a plan with no TP3): a trailing stop on what is left, so a runner never rides
+  // all the way back. The wider the run, the more room it gets; a 10x may breathe 30% off its peak.
+  if ((pos.tpHit || 0) >= 2 && (tp.tp3 <= 0 || changePct < tp.tp3) && changePct > 20) {
+    const trailPct = changePct >= 900 ? 30 : changePct >= 400 ? 26 : 22;
+    if (fromPeak >= trailPct) return { action: "SELL", pct: 100, reason: "TP-trail", layer: 3, detail: `+${changePct.toFixed(0)}%, ${fromPeak.toFixed(0)}% off peak` };
+  }
+
   // TP2: Second target
   if ((pos.tpHit || 0) < 2 && changePct >= tp.tp2) {
     return { action: "PARTIAL_SELL", pct: tp.tp2Sell, reason: "TP2", layer: 3 };

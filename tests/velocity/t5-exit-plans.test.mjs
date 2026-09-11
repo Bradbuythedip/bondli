@@ -82,3 +82,22 @@ test("T5: polymarket plans redeem, stop, target, and time out", () => {
   markPosition(sq, mk({ price: 0.52 }));
   assert.equal(sq.unrealized_usd, 2);
 });
+
+test("T5: after TP2 a runner is trailed: a tier-3 plan with no TP3 sells 100% when it gives back 22% from the peak", () => {
+  // tier 3: TP1 at +30%, TP2 at +75%, no TP3. Before this rule the last third rode until the stop or max hold.
+  const plan3 = createPlan({ venue: "pumpfun", key: 3, entry: { score: 60 } });
+  const pos = pumpPos({ plan: plan3 });
+  assert.equal(evaluateExit(pos, tick(13_000)).reason, "TP1");
+  assert.equal(evaluateExit(pos, tick(17_600)).reason, "TP2");
+  assert.equal(pos._bondli.tpHit, 2);
+  // +300% peak, then 10% off: hold
+  markPosition(pos, tick(40_000)); assert.equal(evaluateExit(pos, tick(36_000)), null);
+  // 25% off the peak at still +200%: sell everything
+  const r = evaluateExit(pos, tick(30_000));
+  assert.equal(r?.action, "SELL"); assert.equal(r.pct, 100); assert.equal(r.reason, "TP-trail");
+  // a tier-2 plan between TP2 (+100%) and TP3 (+250%) gets the same protection
+  const pos2 = pumpPos({ plan: createPlan({ venue: "pumpfun", key: 2, entry: { score: 60 } }) });
+  evaluateExit(pos2, tick(13_500)); evaluateExit(pos2, tick(20_000)); assert.equal(pos2._bondli.tpHit, 2);
+  markPosition(pos2, tick(30_000));
+  assert.equal(evaluateExit(pos2, tick(22_000))?.reason, "TP-trail", "+120% and 27% off its +200% peak");
+});

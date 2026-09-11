@@ -85,6 +85,9 @@ function evaluatePumpfun(position, tick, plan, now, held) {
     entryMcap: position.entryMark, peakMcap: position.peak || position.entryMark, tier: Number(plan.key), entryScore: position.entryScore || 0,
     entryTime: position.entryTime, tpHit: 0, slHit: 0, isMoonbag: false, exitPlan: plan.bondli,
   });
+  // The engine marks the position on every tick, including ticks that never reach this evaluator;
+  // its peak is the truth the trailing stops measure from.
+  if (position.peak > (pos.peakMcap || 0)) pos.peakMcap = position.peak;
   pos.liveScore = Number(p.scores?.apeScore ?? pos.liveScore ?? pos.entryScore) || 0;
   pos.liveUB = token.uniqueBuyers?.size ?? pos.liveUB ?? 0;
   pos.liveBuys = token.buys ?? pos.liveBuys ?? 0;
