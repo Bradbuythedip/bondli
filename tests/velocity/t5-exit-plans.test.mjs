@@ -101,3 +101,23 @@ test("T5: after TP2 a runner is trailed: a tier-3 plan with no TP3 sells 100% wh
   markPosition(pos2, tick(30_000));
   assert.equal(evaluateExit(pos2, tick(22_000))?.reason, "TP-trail", "+120% and 27% off its +200% peak");
 });
+
+test("T5: dead money is sold: three minutes flat with no buyers is a STALL exit on a tier-3 plan", () => {
+  const plan3 = createPlan({ venue: "pumpfun", key: 3, entry: { score: 60 } });
+  assert.equal(plan3.stall_ms, 3 * 60_000);
+  const pos = pumpPos({ plan: plan3 });
+  const quiet = { token: { trades: [{ side: "buy", time: T0 + 60_000 }, { side: "sell", time: T0 + 170_000 }] } };
+  // two minutes in, flat, quiet: hold (not old enough)
+  assert.equal(evaluateExit(pos, tick(10_300, quiet, T0 + 2 * 60_000)), null);
+  // three minutes in, +3%, one buy in the last minute: STALL
+  const r = evaluateExit(pos, tick(10_300, quiet, T0 + 3 * 60_000 + 1000));
+  assert.equal(r?.action, "SELL"); assert.equal(r.reason, "STALL"); assert.equal(r.pct, 100);
+  // three minutes in but buying is alive: hold
+  const busy = { token: { trades: Array.from({ length: 6 }, (_, i) => ({ side: "buy", time: T0 + 3 * 60_000 - i * 5000 })) } };
+  const pos2 = pumpPos({ plan: plan3 });
+  assert.equal(evaluateExit(pos2, tick(10_300, busy, T0 + 3 * 60_000 + 1000)), null);
+  // three minutes in, flat now, but it peaked +20% earlier: not dead money, the trail rules own it
+  const pos3 = pumpPos({ plan: plan3 });
+  evaluateExit(pos3, tick(12_000, quiet, T0 + 60_000));
+  assert.notEqual(evaluateExit(pos3, tick(10_300, quiet, T0 + 3 * 60_000 + 1000))?.reason, "STALL");
+});

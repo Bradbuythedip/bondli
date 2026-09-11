@@ -15,7 +15,7 @@ export function createPlan({ venue, key, entry = {} }) {
   const base = planFor(venue, key);
   if (CURVE(venue)) {
     return {
-      venue, key, mode: base.mode, worst_case_fraction: base.worst_case_fraction, max_hold_ms: base.max_hold_ms,
+      venue, key, mode: base.mode, worst_case_fraction: base.worst_case_fraction, max_hold_ms: base.max_hold_ms, stall_ms: base.stall_ms ?? null, stall_band_pct: base.stall_band_pct ?? 8,
       bondli: { ...createExitPlan(base.tier ?? Number(key), Number(entry.score) || 0, base.stop_pct ? { ...PUMPFUN_EXIT_SETTINGS, sl2: base.stop_pct } : PUMPFUN_EXIT_SETTINGS), maxHoldMs: base.max_hold_ms },
       settings: { ...PUMPFUN_EXIT_SETTINGS },
     };
@@ -88,6 +88,14 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   // The engine marks the position on every tick, including ticks that never reach this evaluator;
   // its peak is the truth the trailing stops measure from.
   if (position.peak > (pos.peakMcap || 0)) pos.peakMcap = position.peak;
+  // Dead money: old enough, never left the band around entry (peak included), and nobody is buying.
+  // A token that does not move in its first minutes on a curve is not about to; the slot is worth more.
+  if (plan.stall_ms && held >= plan.stall_ms && (pos.tpHit || 0) === 0) {
+    const band = plan.stall_band_pct, chg = position.entryMark > 0 ? ((token.mcapUsd - position.entryMark) / position.entryMark) * 100 : 0;
+    const peakPct = position.entryMark > 0 ? ((pos.peakMcap - position.entryMark) / position.entryMark) * 100 : 0;
+    const recentBuys = (token.trades || []).filter(t => t.side === "buy" && now - (t.time || 0) <= 60_000).length;
+    if (Math.abs(chg) <= band && peakPct < band * 1.5 && recentBuys <= 2) return { action: "SELL", pct: 100, reason: "STALL", layer: 2, detail: `${Math.round(held / 60000)}min, ${chg >= 0 ? "+" : ""}${chg.toFixed(0)}%, ${recentBuys} buys/min` };
+  }
   pos.liveScore = Number(p.scores?.apeScore ?? pos.liveScore ?? pos.entryScore) || 0;
   pos.liveUB = token.uniqueBuyers?.size ?? pos.liveUB ?? 0;
   pos.liveBuys = token.buys ?? pos.liveBuys ?? 0;
