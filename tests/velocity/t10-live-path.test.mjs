@@ -725,3 +725,42 @@ test("T10: a transient gate-1 reject is re-judged after 30s; a fatal one stands 
     assert.equal(engine.ledger.query({ kind: "decision", limit: 50 }).filter(d => d.instrument === "MintSnipe").length, 2);
   } finally { await engine.stop(); await feed.stop(); }
 });
+
+test("T10: momentum override: a crowd waives the pattern rules on Normal and Degen, never the who-is-selling rules, never on Careful", async () => {
+  const { checkDisqualifiers, FATAL_DISQUALIFIERS } = await import("../../src/autoape/gates/disqualifiers.js");
+  const { AGGRESSION, makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const now = Date.now();
+  // Two minutes in: 22 distinct buyers, at its high, sellers a fifth of the flow; but the crowd trips QUICK_FLIP and LIQ_REMOVAL-style readings.
+  const runner = { ca: "R", createdAt: now - 2 * 60_000, buys: 60, sells: 32, uniqueBuyers: { size: 22 }, mcapUsd: 30_000, vSolInBondingCurve: 40, spark: [26_000, 27_500, 28_000, 29_000, 29_500, 30_000] };
+  const qf = { _rg_organicBuyers: 22, _rg_quickFlipRate: 0.5, rg_coordDumpScore: 0.8, rg_sellWaveDetect: 0.8, rg_holderConcentration: 0.8, rg_liqRemovalSpeed: 0.2, rg_mcapDropRate: 0.05, rg_devSellSpeed: 0.1 };
+  const careful = checkDisqualifiers(runner, qf, AGGRESSION[1]);
+  assert.equal(careful.pass, false); assert.ok(careful.flags.includes("QUICK_FLIP")); assert.deepEqual(careful.waived, []);
+  const normal = checkDisqualifiers(runner, qf, AGGRESSION[2]);
+  assert.equal(normal.pass, true, JSON.stringify(normal)); assert.ok(normal.waived.includes("QUICK_FLIP")); assert.ok(normal.waived.includes("COORDINATED_DUMP"));
+  // The dev selling into that crowd is still a no, on any setting.
+  const devDump = checkDisqualifiers(runner, { ...qf, rg_devSellSpeed: 0.7 }, AGGRESSION[3]);
+  assert.equal(devDump.pass, false); assert.deepEqual(devDump.flags, ["DEV_SELLING"]); assert.ok(devDump.waived.includes("QUICK_FLIP"));
+  // Price 30% off its high: not a crowd on its way up, no waiver.
+  const off = checkDisqualifiers(runner, { ...qf, rg_mcapDropRate: 0.3 }, AGGRESSION[2]);
+  assert.equal(off.pass, false); assert.deepEqual(off.waived, []);
+  // Ten buyers is a crowd on Degen, not on Normal.
+  const small = { ...runner, uniqueBuyers: { size: 10 } }, qfs = { ...qf, _rg_organicBuyers: 10 };
+  assert.equal(checkDisqualifiers(small, qfs, AGGRESSION[2]).pass, false);
+  assert.equal(checkDisqualifiers(small, qfs, AGGRESSION[3]).pass, true);
+  assert.ok(FATAL_DISQUALIFIERS.has("SYBIL_ATTACK") && FATAL_DISQUALIFIERS.has("MCAP_CRASHING"));
+  // Through the edge, the waiver is in the decision's reasons so the narration says why it was let in.
+  const edge = makePumpfunEdge({ aggression: 2 });
+  const p = goodCandidatePayload("R"); p.token = { ...p.token, ...runner }; p.qf = { ...p.qf, ...qf };
+  const [c] = edge.ingest({ kind: "candidate", payload: p });
+  assert.equal(edge.gates[0].check(c).pass, true); assert.deepEqual(c.waived, normal.waived);
+  for (const g of edge.gates.slice(1)) { const r = g.check(c); assert.equal(r.pass, true, `${g.name}: ${JSON.stringify(r.reasons)}`); }
+  assert.ok(edge.estimate(c, {}).reasons.some(r => /momentum waived/.test(r)));
+});
+
+test("T10: the dial scales the Kelly fraction: Degen sizes twice Careful, capped at half Kelly", async () => {
+  const { userEnvelope } = await import("../../src/velocity/hub.mjs");
+  const base = userEnvelope({ bankrollUsd: 100, aggression: 1 }).venues.pumpfun.kelly_fraction;
+  assert.equal(userEnvelope({ bankrollUsd: 100, aggression: 0 }).venues.pumpfun.kelly_fraction, +(base * 0.75).toFixed(6));
+  assert.equal(userEnvelope({ bankrollUsd: 100, aggression: 2 }).venues.pumpfun.kelly_fraction, Math.min(0.5, base * 1.5));
+  assert.equal(userEnvelope({ bankrollUsd: 100, aggression: 3 }).venues.pumpfun.kelly_fraction, Math.min(0.5, base * 2));
+});

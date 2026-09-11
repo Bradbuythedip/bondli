@@ -49,13 +49,17 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
   const maxPositions = Math.max(1, Math.min(10, Math.round(Number(settings.maxPositions) || 4)));
   const portfolio = Math.min(bankroll, perTrade * maxPositions);
   const daily = Math.max(5, Math.min(bankroll, Number(settings.dailyLossUsd) || Math.round(bankroll * 0.15)));
+  // Degen apes heavier: the Kelly fraction scales with the dial (0.75x safe, 1x, 1.5x, 2x), capped at half Kelly.
+  const level = Math.max(0, Math.min(3, Math.round(settings.aggression == null || settings.aggression === "" ? 1 : Number(settings.aggression) || 0)));
+  const kellyMult = { 0: 0.75, 1: 1, 2: 1.5, 3: 2 }[level] || 1;
+  const kelly = v => Math.min(0.5, (Number(v) || 0.25) * kellyMult);
   const cfg = {
     ...t, bankroll_usd: bankroll, bankroll_source: "wallet", wallet_reserve_sol: 0.02,
     per_trade_max_usd: perTrade, portfolio_max_exposure_usd: portfolio, daily_loss_limit_usd: daily,
     max_concurrent_positions: maxPositions, max_per_group: 1,
     venues: {
-      pumpfun: { ...t.venues.pumpfun, max_exposure_usd: portfolio, max_concurrent: maxPositions, min_stake_usd: 5 },
-      pons: { ...t.venues.pons, max_exposure_usd: settings.pons ? portfolio : 0, max_concurrent: settings.pons ? maxPositions : 0, min_stake_usd: 5 },
+      pumpfun: { ...t.venues.pumpfun, max_exposure_usd: portfolio, max_concurrent: maxPositions, min_stake_usd: 5, kelly_fraction: kelly(t.venues.pumpfun.kelly_fraction) },
+      pons: { ...t.venues.pons, max_exposure_usd: settings.pons ? portfolio : 0, max_concurrent: settings.pons ? maxPositions : 0, min_stake_usd: 5, kelly_fraction: kelly(t.venues.pons.kelly_fraction) },
       polymarket: { ...t.venues.polymarket, max_exposure_usd: 0 },
       perps: { ...t.venues.perps, max_exposure_usd: 0 },
     },
@@ -97,8 +101,8 @@ export class VelocityHub {
     const dataDir = path.join(this.rootDir, wallet);
     fs.mkdirSync(dataDir, { recursive: true });
     const pons = !!settings.pons && !!this.ponsFeed && !!evmSecret; // Robinhood Chain: opted in, feed running, ETH key on file
-    const envelope = userEnvelope({ ...settings, pons });
-    const aggression = Math.max(0, Math.min(3, Math.round(Number(settings.aggression) || 1)));
+    const aggression = Math.max(0, Math.min(3, Math.round(settings.aggression == null || settings.aggression === "" ? 1 : Number(settings.aggression) || 0)));
+    const envelope = userEnvelope({ ...settings, pons, aggression });
     const view = new SharedFeedView(this.feed, { clock: this.clock });
     const liveRouter = this.makeLiveRouter({ secret, wallet });
     const venues = { pumpfun: { mode: "paper", feed: view, edge: makePumpfunEdge({ aggression }), router: new PumpfunPaperRouter({ bookFile: path.join(dataDir, "paper-book-pumpfun.json"), clock: this.clock }), liveRouter } };
