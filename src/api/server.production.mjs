@@ -951,6 +951,7 @@ async function fetchTokenImageOnce(ca, uri, attempt = 0) {
     if (meta.twitter && !token.twitter) token.twitter = meta.twitter;
     if (meta.website && !token.website) token.website = meta.website;
     if (meta.telegram && !token.telegram) token.telegram = meta.telegram;
+    token._metaAt = Date.now(); // the socials are now known, present or absent; before this, absence means nothing
     
     if (radar._debugCount < 10) {
       console.log(`[IMG] ${ca.slice(0,8)}: ${token.name} → ${img?.slice(0,60) || "none"}`);
@@ -1319,6 +1320,7 @@ function processRadarMessage(data) {
         if (!t.image && meta.image) { t.image = meta.image; }
         if (!t.twitter && meta.twitter) t.twitter = meta.twitter;
         if (!t.website && meta.website) t.website = meta.website;
+        t._metaAt = Date.now();
         // Only trust meta.complete if token also has a raydiumPool — prevents false positives
         // from stale/wrong API responses marking brand-new tokens as graduated
         if (meta.complete && meta.raydiumPool) {
@@ -1400,6 +1402,7 @@ function processRadarMessage(data) {
         t.name = meta.name; t.ticker = meta.symbol;
         t.description = meta.description; t.image = meta.image;
         t.twitter = meta.twitter; t.website = meta.website; t.telegram = meta.telegram;
+        t._metaAt = Date.now();
       }).catch(() => {});
     }
 
@@ -2003,6 +2006,10 @@ function extractQuickFeatures(t) {
     so_hasTwitter: t.twitter ? 1 : 0,
     so_hasTelegram: t.telegram ? 1 : 0,
     so_hasWebsite: t.website ? 1 : 0,
+    // Whether the metadata has been read at all. Without this a gate cannot tell "this launch listed
+    // no socials" from "we have not fetched its metadata yet", and would reject every young token.
+    _socialsKnown: t._metaAt ? 1 : 0,
+    _hasAnySocial: (t.twitter || t.telegram || t.website) ? 1 : 0,
     // Rug detection (enhanced)
     rg_devSellSpeed: devSellSpeed,
     // The dev's share of supply still held: what one wallet can dump in a single transaction.

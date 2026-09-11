@@ -4,8 +4,15 @@
 // opts: freezeAuthority, isRecoveryPlay, and the aggression profile's gate-1 knobs
 // (src/velocity/venues/pumpfun/edge.mjs AGGRESSION); defaults are the designed rules.
 export function checkDisqualifiers(token, qf, opts = {}) {
-  const { coordDump = 0.5, staleMin = 15, tooLateCurve = 0.80, concentrationMax = 0.7, minAgeMin = 0.5, momentum = null, devHoldMax = 0.10 } = opts;
+  const { coordDump = 0.5, staleMin = 15, tooLateCurve = 0.80, concentrationMax = 0.7, minAgeMin = 0.5, momentum = null, devHoldMax = 0.10, requireSocials = false } = opts;
   const flags = [];
+
+  // A launch that lists no twitter, no telegram and no website is someone who did not intend to be
+  // found. It is the cheapest thing a real project does and the first thing a throwaway skips. This
+  // only fires once the metadata has actually been read: before that, absence is ignorance, not a fact.
+  // A link is not verification — anyone can paste a URL — so this removes the laziest launches, not
+  // the deliberate ones.
+  if (requireSocials && qf?._socialsKnown && !qf._hasAnySocial) flags.push("NO_SOCIALS");
 
   // === RUG SIGNALS (on-chain) ===
   // Dev wallet has 2+ prior rugs in last 30 days
@@ -177,5 +184,5 @@ export const FATAL_DISQUALIFIERS = new Set([
   "STAIRCASE_CHART", "STAIRCASE_FRESH", "FLATLINE_SPIKE", "FLATLINE_NO_SELLS", "FLATLINE_FRESH", "SMOOTH_GRIND", "NO_DIPS_GRIND", "LIQ_REMOVAL",
   "DEV_SELLING", "DEV_SELF_SNIPE", "DEV_SELF_PUMP", "DEV_PUMP_NO_SELLS", "FREEZE_AUTHORITY", "STOLEN_ART",
   "SYBIL_ATTACK", "PUMP_DUMP", "MCAP_CRASHING", "EARLY_DUMP", "BOT_FARM_VOLUME", "BOTTED_VOLUME", "FAKE_VOLUME_HIGH_SOL",
-  "TOO_LATE", "STALE", "TOO_FEW_BUYERS", "TOO_YOUNG",
+  "TOO_LATE", "STALE", "TOO_FEW_BUYERS", "TOO_YOUNG", "NO_SOCIALS",
 ]);
