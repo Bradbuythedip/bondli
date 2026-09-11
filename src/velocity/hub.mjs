@@ -22,6 +22,8 @@ import { Wallet as EvmWallet } from "ethers";
 /** The original platform wallet. Its key was pasted into a chat once; the operator chose to keep it,
  *  so it is accepted with a loud warning at boot rather than refused. Sweep it often. */
 export const EXPOSED_DEFAULT_PLATFORM_WALLET = "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
+/** The one rate, for everyone who does not hold the house token. The site states the same number. */
+export const DEFAULT_FEE_PCT = 5;
 
 /** A per-engine view of one shared feed: same events, own watch list, no own poller. */
 export class SharedFeedView extends Feed {
@@ -84,7 +86,10 @@ export class VelocityHub {
     this.feed = feed; this.ponsFeed = ponsFeed; this.rootDir = rootDir; this.platformWallet = platformWallet || null; this.platformEvmWallet = platformEvmWallet || null; this.fee = fee; this.rpcUrl = rpcUrl;
     this.makePonsRouter = makePonsRouter || (({ secret }) => new PonsLiveRouter({ secret, clock }));
     // A flat rate on realized profit (VELOCITY_FEE_PCT) replaces the site's ladder when set: one number, said plainly.
-    this.feePct = feePct != null && feePct !== "" && Number.isFinite(Number(feePct)) && Number(feePct) >= 0 ? Number(feePct) : null;
+    // One rate for everyone who does not hold the house token. There are no tiers: the old free /
+    // pro / vip ladder was a different revenue model and no longer decides anything here, so an
+    // unset or nonsense VELOCITY_FEE_PCT falls back to the standard rate rather than to that ladder.
+    this.feePct = feePct != null && feePct !== "" && Number.isFinite(Number(feePct)) && Number(feePct) >= 0 ? Number(feePct) : DEFAULT_FEE_PCT;
     this.makeLiveRouter = makeLiveRouter || (({ secret }) => new PumpfunLiveRouter({ secret, rpcUrl, clock }));
     this.clock = clock; this.log = log;
     this.users = new Map(); // wallet -> { engine, sup, view, settings, startedAt }
@@ -213,8 +218,7 @@ export class VelocityHub {
     if (!u || position.paper) return null;
     const solIn = Number(position.sol_spent) || 0, solOut = Number(position.sol_received) || 0;
     if (!(solIn > 0) || !(solOut > 0)) return null; // no measured SOL on both sides: no basis for a fee
-    const tier = this.fee.resolveTier(wallet, await this.fee.getUser?.(wallet));
-    const f = this.feePct != null ? this.flatFee(solIn, solOut, wallet) : this.fee.calculateFee(solIn, solOut, wallet, tier.tier);
+    const f = this.flatFee(solIn, solOut, wallet);
     this.fee.recordTradeOutcome?.(wallet, f.net);
     if (!(f.fee > 0.0005)) return { fee: 0, net: f.net };
     // Holders trade free. Checked after the fee is computed so the ledger can say what was waived.
@@ -251,7 +255,8 @@ export class VelocityHub {
     try { return await this.waiver.holds(addr); } catch { return false; }
   }
 
-  /** feePct of realized profit; nothing on a loss or dust; the owner pays nothing. */
+  /** feePct of realized profit; nothing on a loss or dust; the owner pays nothing. The only other way
+   *  to pay nothing is to hold the house token, which settleFee checks separately. No tiers. */
   flatFee(solIn, solOut, wallet) {
     const net = +(solOut - solIn).toFixed(6);
     if (net <= 0.001 || this.fee.isOwnerWallet?.(wallet)) return { fee: 0, net, rate: this.feePct };

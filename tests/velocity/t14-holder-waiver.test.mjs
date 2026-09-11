@@ -73,3 +73,32 @@ test("T14: a garbage address is never waived and never read", async () => {
   for (const bad of [null, undefined, "", "0xnothex", "not-an-address", ADDR(1).slice(0, 20)]) assert.equal(await w.holds(bad), false);
   assert.equal(w.reads, reads);
 });
+
+// The fee is binary: one rate, or nothing because you hold the token (or are the owner, or did not
+// profit). The old free/pro/vip ladder must not be able to decide anything here.
+test("T14: one flat rate, no tiers, whatever the fee engine would have said", async () => {
+  const { VelocityHub, DEFAULT_FEE_PCT } = await import("../../src/velocity/hub.mjs");
+  let tierAsked = 0;
+  const feeStub = {
+    isOwnerWallet: (w) => w === "OWNER",
+    recordTradeOutcome: () => {}, recordGlobalFee: () => {},
+    // If anything still reaches for a tier, this notices.
+    resolveTier: () => { tierAsked++; return { tier: "vip" }; },
+    calculateFee: () => { tierAsked++; return { fee: 999, net: 999 }; },
+    getUser: async () => { tierAsked++; return {}; },
+  };
+  const hub = (feePct) => new VelocityHub({ feed: { solPrice: 200 }, rootDir: "/tmp/velocity-test", platformWallet: "P", fee: feeStub, feePct, log: { log() {}, warn() {}, error() {} } });
+
+  assert.equal(DEFAULT_FEE_PCT, 5);
+  // An unset or nonsense rate falls back to the standard rate, never to the ladder.
+  for (const v of [null, undefined, "", "abc", NaN]) assert.equal(hub(v).feePct, DEFAULT_FEE_PCT, `feePct ${String(v)}`);
+  assert.equal(hub(0).feePct, 0, "an explicit zero is honoured");
+  assert.equal(hub(3).feePct, 3);
+
+  const h = hub(5);
+  assert.equal(h.flatFee(1, 2, "USER").fee, 0.05, "5% of one SOL of profit");
+  assert.equal(h.flatFee(1, 2, "OWNER").fee, 0, "the owner pays nothing");
+  assert.equal(h.flatFee(2, 1, "USER").fee, 0, "a loss costs nothing");
+  assert.equal(h.flatFee(1, 1.0005, "USER").fee, 0, "dust costs nothing");
+  assert.equal(tierAsked, 0, "nothing on the fee path asked for a tier");
+});

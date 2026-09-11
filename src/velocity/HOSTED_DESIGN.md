@@ -7,7 +7,8 @@ matrix, what had to be decoupled, and the phases.
 
 - bondli.fun exists: React app on Vercel, Express API on Railway with Redis, per-user *trading
   wallets* whose keys the server generates and holds (custodial), an auto-ape UI already wired to
-  `/api/auto-trade/*`, a fee engine (`src/engine/fee-engine.mjs`) with a profit ladder, and
+  `/api/auto-trade/*`, a fee engine (`src/engine/fee-engine.mjs`) carrying an older free/pro/vip
+  ladder that the hosted trader no longer consults (it keeps only the owner check and the stats), and
   wallet-signature auth middleware (`src/middleware/wallet-auth.mjs`) that no route uses yet.
 - velocity works single-tenant: one key from `.env`, one `risk.json`, one `data/velocity` directory.
   Reconciled to the lamport against the chain on 2026-09-10 (tools/tx-audit.mjs).
@@ -33,7 +34,7 @@ matrix, what had to be decoupled, and the phases.
 |---|---|
 | DP1 | `requireOwner` middleware: Bearer JWT from `/api/auth/verify` (Phantom `signMessage` of a server nonce), and the token's wallet must equal the wallet the request acts on. Applied to every route that reads a key, moves money, or starts a trader. |
 | DP2 | `VelocityHub`: one `PumpfunFeed` shared by N `Engine` instances; each engine has `dataDir = data/velocity/users/<wallet>`, a risk envelope built from `risk.example.json` with the user's bankroll source (`wallet`), aggression, and caps, and a `PumpfunLiveRouter` given the decrypted trading-wallet secret directly (never through `process.env`). |
-| DP3 | Fee at the final close of a position: `calculateFee(sol_spent, sol_received, wallet, tier)` from the existing fee engine (owner exempt, dust exempt, ladder for free tier, flat for Pro), paid by a `SystemProgram.transfer` from the user's trading wallet to `PLATFORM_WALLET`, recorded as `kind: "fee", scope: "platform"` in the user's ledger with the transfer signature. Partial exits accumulate `sol_received`; the fee is computed once, on the realized total. |
+| DP3 | Fee at the final close of a position: one flat rate on realized profit (`DEFAULT_FEE_PCT`, 5%), owner exempt, dust exempt, and **zero for anyone holding the house token** (`HolderWaiver`, checked against the user's Robinhood Chain wallet). There are no tiers: hold it or do not. Paid by a transfer from the user's trading wallet to `PLATFORM_WALLET` (ETH to `PLATFORM_EVM_WALLET` on PONS), recorded as `kind: "fee", scope: "platform"` in the user's ledger with the transfer signature; a waived fee is recorded too, with what it would have been. Partial exits accumulate `sol_received`; the fee is computed once, on the realized total. |
 | DP4 | `keyvault.mjs`: AES-256-GCM with `WALLET_ENCRYPTION_KEY`; `saveTradingWallet` seals, `getTradingWallet` opens, plaintext records migrate on first read. Without the key in production, wallet creation refuses. |
 | DP5 | `/api/velocity/status` returns the engine's `status()` plus the last decisions; `/api/velocity/decisions` streams the narration (`formatRecord`); `/api/velocity/halt` calls `halt("flatten")`. The panel is the existing auto-ape panel's shape with velocity's vocabulary. |
 | DP6 | The bondli server's radar is already the feed; the hub reads it in-process (no HTTP hop) through the same `parseScoredResponse` shape. |
