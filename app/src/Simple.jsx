@@ -38,10 +38,18 @@ function Pulse({ st, T }) {
   const c = dead ? T.rd : stale ? T.yl : T.gn;
   const what = dead ? "engine not responding" : stale ? "market feed stale" : s.halt?.mode ? (/user/.test(s.halt.reason || "") ? "paused by you" : "paused: " + s.halt.reason) : judged === 0 ? "waiting for the first token to qualify" : "watching for the next token";
   const dots = ".".repeat(1 + (Math.floor(now / 500) % 3));
-  return <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, fontFamily: M, fontSize: 11, color: T.ft }}>
-    <span style={{ display: "flex", alignItems: "center", gap: 6, color: c }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: c, animation: dead ? "none" : "gp 1.5s infinite" }} />{what}{dead || stale ? "" : dots}</span>
-    <span>{judged} judged · {gos} taken{last != null ? ` · last ${last < 60 ? Math.round(last) + "s" : Math.round(last / 60) + "m"} ago` : ""}</span>
-  </div>;
+  const f = st.funnel;
+  const GATE = { disqualifiers: "rug rules", viability: "too weak", confidence: "unsure", ev: "no edge", execution_window: "bad timing", governor: "paused", estimate: "no edge" };
+  return <>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, fontFamily: M, fontSize: 11, color: T.ft }}>
+      <span style={{ display: "flex", alignItems: "center", gap: 6, color: c }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: c, animation: dead ? "none" : "gp 1.5s infinite" }} />{what}{dead || stale ? "" : dots}</span>
+      <span>{judged} judged · {gos} taken{last != null ? ` · last ${last < 60 ? Math.round(last) + "s" : Math.round(last / 60) + "m"} ago` : ""}</span>
+    </div>
+    {f && f.judged > 0 && <div style={{ marginTop: 6, fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.5 }}>
+      last 10 min: {f.distinct} tokens, {f.judged} looks, {f.gos} go, {f.filled} filled{f.gos > f.filled && f.sized0 ? ` · no size: ${Object.keys(f.sized0).join(", ").toLowerCase().replace(/_/g, " ")}` : ""}{f.failed ? ` · failed: ${Object.keys(f.failed).join(", ").toLowerCase().replace(/_/g, " ")}` : ""}
+      <div>{Object.entries(f.gates).sort((a, b) => b[1] - a[1]).map(([g, n]) => <span key={g} style={{ marginRight: 10 }}>{GATE[g] || g} <b style={{ color: T.dm }}>{n}</b></span>)}</div>
+    </div>}
+  </>;
 }
 // The market as the bot sees it: newest launches, a sparkline, the score, and the bot's one-word verdict.
 const ago = ms => ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))}s` : ms < 3600_000 ? `${Math.round(ms / 60_000)}m` : `${Math.round(ms / 3600_000)}h`;
