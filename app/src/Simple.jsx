@@ -141,10 +141,12 @@ function Launch({ T }) {
       <div style={{ color: T.ft, fontSize: 13, lineHeight: 1.45, marginTop: 8 }}>{l.tagline}</div>
     </div>
     {live && <div style={{ position: "relative", zIndex: 1, marginTop: 14 }}>
-      {lv && <div style={{ display: "flex", gap: 14, fontFamily: M, fontSize: 13, alignItems: "baseline" }}>
+      {lv && <div style={{ display: "flex", gap: 14, fontFamily: M, fontSize: 13, alignItems: "baseline", flexWrap: "wrap" }}>
         <span><span style={{ color: T.ft, fontSize: 11 }}>mcap </span><b style={{ color: T.tx, fontSize: 18 }}>{kfmt(lv.mcapUsd || 0)}</b></span>
         {lv.buys != null && <span><span style={{ color: T.ft, fontSize: 11 }}>buys </span><b>{lv.buys}</b></span>}
         {lv.buyers != null && lv.buyers > 0 && <span><span style={{ color: T.ft, fontSize: 11 }}>holders </span><b>{lv.buyers}</b></span>}
+        {lv.liquidityUsd != null && <span><span style={{ color: T.ft, fontSize: 11 }}>liquidity </span><b>{kfmt(lv.liquidityUsd)}</b></span>}
+        {lv.lpBurnedPct != null && <span><span style={{ color: T.ft, fontSize: 11 }}>LP burned </span><b style={{ color: T.gn }}>{lv.lpBurnedPct}%</b></span>}
       </div>}
       {lv && lv.curvePct != null && <div style={{ marginTop: 8 }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontFamily: M, fontSize: 11, color: T.ft }}><span>{lv.graduated ? "graduated to the pool" : "bonding curve"}</span><span>{Math.round(lv.curvePct * 100)}%</span></div>
@@ -152,7 +154,8 @@ function Launch({ T }) {
       </div>}
       {l.address && <div onClick={copy} title="copy" style={{ fontFamily: M, fontSize: 11, color: T.dm, marginTop: 10, wordBreak: "break-all", cursor: "pointer", padding: "7px 9px", background: T.bg + "cc", borderRadius: 8, border: `1px solid ${T.bd}` }}>{l.address}{copied ? "  copied" : ""}</div>}
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-        {l.url && <a href={l.url} target="_blank" rel="noopener" style={{ flex: 1, textAlign: "center", padding: "11px 12px", borderRadius: 10, background: T.gn, color: "#000", fontWeight: 900, textDecoration: "none", fontSize: 14 }}>Buy on PONS</a>}
+        {l.url && <a href={l.url} target="_blank" rel="noopener" style={{ flex: 1, textAlign: "center", padding: "11px 12px", borderRadius: 10, background: T.gn, color: "#000", fontWeight: 900, textDecoration: "none", fontSize: 14 }}>{l.venue === "uniswap-v2" ? "Buy on Uniswap" : "Buy on PONS"}</a>}
+        {l.chart && l.venue === "uniswap-v2" && <a href={l.chart} target="_blank" rel="noopener" style={{ padding: "11px 14px", borderRadius: 10, border: `1px solid ${T.bd}`, color: T.tx, fontWeight: 800, textDecoration: "none", fontSize: 14 }}>Chart</a>}
         {l.links?.x && <a href={l.links.x} target="_blank" rel="noopener" style={{ padding: "11px 14px", borderRadius: 10, border: `1px solid ${T.bd}`, color: T.tx, fontWeight: 800, textDecoration: "none", fontSize: 14 }}>X</a>}
         {l.links?.telegram && <a href={l.links.telegram} target="_blank" rel="noopener" style={{ padding: "11px 14px", borderRadius: 10, border: `1px solid ${T.bd}`, color: T.tx, fontWeight: 800, textDecoration: "none", fontSize: 14 }}>Telegram</a>}
       </div>
@@ -160,7 +163,7 @@ function Launch({ T }) {
     {l.updates?.length > 0 && <div style={{ position: "relative", zIndex: 1, marginTop: 12, fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.6, borderTop: `1px solid ${T.bd}`, paddingTop: 8 }}>
       {l.updates.slice(0, 3).map((u, i) => <div key={i}><span style={{ color: T.dm }}>{new Date(u.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span> {u.text}</div>)}
     </div>}
-    <div style={{ position: "relative", zIndex: 1, marginTop: 10, fontSize: 11, color: T.dm }}>The bot judges this launch like any other. No favours, no auto-buy.</div>
+    <div style={{ position: "relative", zIndex: 1, marginTop: 10, fontSize: 11, color: T.dm }}>{l.venue === "uniswap-v2" ? "Plain ERC-20, no owner, no tax, no mint. Liquidity locked by burning the LP. The bot does not buy it for anyone." : "The bot judges this launch like any other. No favours, no auto-buy."}</div>
   </div>;
 }
 
