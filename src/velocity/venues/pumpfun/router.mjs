@@ -79,7 +79,7 @@ export const SOL_PRICE_MAX_AGE_MS = 10 * 60_000;
 /** SOL a buy of `solAmount` needs in the wallet. A SOL-denominated pump.fun buy may debit up to
  *  `slippagePct` more than the amount if the curve moves before it lands. `hasAccount` skips the
  *  token-account rent. */
-export function solNeededForBuy(solAmount, { priorityFeeSol = 0.0005, hasAccount = false, slippagePct = 0 } = {}) {
+export function solNeededForBuy(solAmount, { priorityFeeSol = 0.0003, hasAccount = false, slippagePct = 0 } = {}) {
   return solAmount * (1 + slippagePct / 100) * (1 + (PUMP_FEE_BPS + PUMP_PORTAL_FEE_BPS) / 1e4) + priorityFeeSol + BASE_FEE_SOL + (hasAccount ? 0 : RENT_ATA_SOL) + RENT_WALLET_MIN_SOL;
 }
 
@@ -99,7 +99,7 @@ export class PumpfunLiveRouter extends Router {
     // An order holds the engine queue while it waits, and no other position can exit meanwhile:
     // wait a normal confirmation's worth, then hand the signature to the sweep (buys) or the next
     // exit attempt (sells), which settle it from the chain without blocking anyone.
-    priorityFeeSol = Number(process.env.PRIORITY_FEE_SOL || 0.0005), confirmTimeoutMs = 12_000, lateConfirmMs = 0,
+    priorityFeeSol = Number(process.env.PRIORITY_FEE_SOL || 0.0003), confirmTimeoutMs = 12_000, lateConfirmMs = 0,
     tradeLocalUrl = "https://pumpportal.fun/api/trade-local", fetchImpl = globalThis.fetch, clock, sleep = ms => new Promise(r => setTimeout(r, ms)),
   } = {}) {
     super({ venue: "pumpfun", mode: "live", clock });
@@ -341,6 +341,33 @@ export class PumpfunLiveRouter extends Router {
     } catch (err) {
       return this._sendFailure({ id: position.id }, err, solPrice);
     }
+  }
+
+  /** Take back the rent on an emptied token account. Every new mint costs RENT_ATA_SOL (0.00203928 SOL,
+   *  about $0.41 at $200) to open an account for, and a sell leaves that account open with the rent
+   *  locked inside it. One small transaction closes it and returns the rent, for the price of a base
+   *  fee (0.000005 SOL). At a $25 stake that rent is 1.6% of the trade, so this is the single largest
+   *  cost the bot pays and the only one it can simply refuse to pay.
+   *
+   *  Only accounts whose balance is exactly zero are closed, so this can never destroy a holding: the
+   *  token program itself rejects closing a non-empty account, and the filter here means we never ask. */
+  async closeTokenAccount(mint) {
+    if (!this.ready) throw new Error("call init() first");
+    const { TOKEN_PROGRAM_ID, createCloseAccountInstruction } = await import("@solana/spl-token");
+    const res = await this.connection.getParsedTokenAccountsByOwner(this.keypair.publicKey, { mint: new this.web3.PublicKey(mint) });
+    const empty = (res?.value || []).filter(a => Number(a.account.data.parsed.info.tokenAmount.amount || 0) === 0);
+    if (!empty.length) return { closed: 0, reclaimed_sol: 0, sig: null };
+    const { Transaction } = this.web3;
+    const tx = new Transaction();
+    for (const a of empty.slice(0, 8)) tx.add(createCloseAccountInstruction(a.pubkey, this.keypair.publicKey, this.keypair.publicKey, [], TOKEN_PROGRAM_ID));
+    tx.feePayer = this.keypair.publicKey;
+    tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
+    tx.sign(this.keypair);
+    const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+    const st = await this._awaitStatus(sig, this.confirmTimeoutMs);
+    if (st.err) throw this._chainError(sig, st.err);
+    const n = Math.min(empty.length, 8);
+    return { closed: n, reclaimed_sol: +(n * RENT_ATA_SOL - BASE_FEE_SOL).toFixed(9), sig };
   }
 
   /** Plain SOL transfer from the trading wallet (the platform's performance fee). Returns the signature. */

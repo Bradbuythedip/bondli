@@ -156,6 +156,24 @@ export class Engine extends EventEmitter {
   // ── wallet as bankroll (bankroll_source: wallet) ──
   walletMode() { return this.env.bankroll_source === "wallet"; }
 
+  /** Close the emptied token account and take its rent back. Opening one costs 0.00203928 SOL on
+   *  every new mint, about $0.41, which is the largest fixed cost of a round trip and is simply left
+   *  behind unless it is claimed. Deliberately not awaited: the engine queue also drives every open
+   *  position's exit checks, and no stop loss should wait on a housekeeping transaction. */
+  reclaimRent(venue, instrument) {
+    const router = this.venues[venue]?.liveRouter;
+    if (!router?.closeTokenAccount || this.store.venueMode(venue) !== "live") return;
+    Promise.resolve()
+      .then(() => router.closeTokenAccount(instrument))
+      .then(r => {
+        if (!r?.closed) return;
+        this.ledger.append({ kind: "rent", venue, instrument, sol: r.reclaimed_sol, accounts: r.closed, venue_ref: r.sig || null, note: "token account closed, rent reclaimed" });
+        this.log("info", `rent back ${r.reclaimed_sol} SOL from ${instrument.slice(0, 8)}`);
+        this.refreshWallet().catch(() => {});
+      })
+      .catch(err => this.log("warn", `rent reclaim ${instrument.slice(0, 8)}: ${err.shortMessage || err.message}`));
+  }
+
   /** The last hundred closes, grouped by how they ended: where the money went. */
   review(limit = 100) {
     const outs = this.ledger.query({ kind: "outcome", limit }).filter(o => !o.paper);
@@ -651,6 +669,7 @@ export class Engine extends EventEmitter {
     if (done) {
       const pnl = +(p.proceeds_usd - p.cost_usd).toFixed(4);
       const held = (f.t_filled || this.clock()) - p.entryTime;
+      this.reclaimRent(venue, p.instrument); // the emptied token account's rent is ours again
       this.store.closePosition(p.id, { exitReason: reason, pnl_usd: pnl, remaining_qty: 0 });
       this.store.rollDay();
       this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4);

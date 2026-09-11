@@ -182,6 +182,29 @@ function LaunchChart({ pts, T, h = 54 }) {
   </div>;
 }
 
+/** The first second: the mark draws itself inside a sweeping ring while the wallet is read, then the
+ *  whole thing lifts away. Nothing waits on it — it is a cover over work already happening. */
+function Boot({ T, done }) {
+  const [gone, sGone] = useState(false);
+  // The ring gets one full turn even when the data is instant: a splash that flickers reads as a bug.
+  const [minUp, sMinUp] = useState(false);
+  useEffect(() => { const t = setTimeout(() => sMinUp(true), 1150); return () => clearTimeout(t); }, []);
+  const out = done && minUp;
+  useEffect(() => { if (!out) return; const t = setTimeout(() => sGone(true), 700); return () => clearTimeout(t); }, [out]);
+  if (gone) return null;
+  return <div data-boot style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 22, background: `radial-gradient(120% 90% at 50% 35%, ${T.sf} 0%, ${T.bg} 70%)`, animation: out ? "bootout .55s .1s cubic-bezier(.4,0,.2,1) forwards" : "none", pointerEvents: out ? "none" : "auto" }}>
+    <div style={{ position: "relative", width: 132, height: 132, display: "grid", placeItems: "center" }}>
+      <div style={{ position: "absolute", inset: 0, borderRadius: "50%", background: `conic-gradient(from 0deg, transparent 0deg, transparent 240deg, ${T.gn}00 250deg, ${T.gn} 340deg, ${T.gn}00 360deg)`, animation: "bootspin 1.15s linear infinite", mask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))", WebkitMask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))" }} />
+      <div style={{ position: "absolute", inset: 14, borderRadius: "50%", border: `1px solid ${T.bd}` }} />
+      <img src="/bondli-logo.svg" alt="" style={{ width: 58, animation: "bootrise .7s cubic-bezier(.2,.8,.2,1) both", filter: `drop-shadow(0 0 18px ${T.gn}55)` }} />
+    </div>
+    <div style={{ fontFamily: M, fontSize: 11, letterSpacing: ".08em", color: T.ft, animation: "bootword .8s .25s cubic-bezier(.2,.8,.2,1) both" }}>reading the chain…</div>
+    <div style={{ width: 150, height: 2, borderRadius: 2, background: T.bd, overflow: "hidden" }}>
+      <div style={{ width: "33%", height: "100%", background: T.gn, animation: "bootbar 1.25s cubic-bezier(.5,0,.5,1) infinite" }} />
+    </div>
+  </div>;
+}
+
 /** Bondli's own token, front and centre: the fly, the status, and when it is live the number, the
  *  curve, the address and the way in. State comes from the API every 15s, pushed by tools/launch-push.mjs. */
 function Launch({ T }) {
@@ -262,12 +285,14 @@ export default function Simple() {
   // A message clears itself (errors get longer) and on a tap.
   const say = (m, kind = "info") => { sMsg({ m, kind }); setTimeout(() => sMsg(x => (x?.m === m ? null : x)), kind === "error" ? 15000 : 6000); };
 
-  useEffect(() => { const p = phantom(); if (p?.isConnected && p.publicKey) sPk(p.publicKey.toString()); else p?.connect?.({ onlyIfTrusted: true }).then(r => sPk(r.publicKey.toString())).catch(() => {}); }, []);
+  const [booted, sBooted] = useState(false);
+  useEffect(() => { const p = phantom(); const settle = () => sBooted(true); if (p?.isConnected && p.publicKey) { sPk(p.publicKey.toString()); settle(); } else if (p?.connect) p.connect({ onlyIfTrusted: true }).then(r => { sPk(r.publicKey.toString()); }).catch(() => {}).finally(settle); else settle(); }, []);
+  useEffect(() => { const t = setTimeout(() => sBooted(true), 2500); return () => clearTimeout(t); }, []); // never hold the page on a wallet that never answers
   useEffect(() => { a.sw(pk); }, [pk]);
 
   const loadWallet = useCallback(async () => {
     if (!pk) return;
-    try { const r = await a.gtw(pk); sTw(r?.tradingWallet ? { pubkey: r.tradingWallet, solBalance: Number(r.solBalance ?? r.sol ?? 0), tokenValueSol: Number(r.tokenValueSol || 0), evmAddress: r.evmAddress || null, ethBalance: r.ethBalance == null ? null : Number(r.ethBalance) } : null); } catch { /* keep the last reading */ }
+    try { const r = await a.gtw(pk); sBooted(true); sTw(r?.tradingWallet ? { pubkey: r.tradingWallet, solBalance: Number(r.solBalance ?? r.sol ?? 0), tokenValueSol: Number(r.tokenValueSol || 0), evmAddress: r.evmAddress || null, ethBalance: r.ethBalance == null ? null : Number(r.ethBalance) } : null); } catch { sBooted(true); /* keep the last reading */ }
   }, [pk]);
   useEffect(() => { loadWallet(); const id = setInterval(loadWallet, running ? 15000 : 8000); return () => clearInterval(id); }, [loadWallet, running]);
   useEffect(() => {
@@ -349,13 +374,14 @@ export default function Simple() {
   // 1.75 SOL (~$350) is the first bankroll the arithmetic actually works at: the smallest stake that
   // can outrun its own costs is $25, the day's loss budget has to cover more than one of those, and
   // 15% of $350 is $52. Below this the bot either refuses every trade or gets one shot a day.
-  const MIN_BANKROLL_SOL = 1.75;
+  const MIN_BANKROLL_SOL = 0.5;   // the hard floor: below this the fees are most of the trade
+  const GOOD_BANKROLL_SOL = 2;    // what it actually wants: room for several $25 bets and a day's loss limit
   const funded = (tw?.solBalance || 0) >= MIN_BANKROLL_SOL;
   const wrap = { minHeight: "100vh", background: T.bg, color: T.tx, fontFamily: S, display: "flex", flexDirection: "column", alignItems: "center", padding: "48px 16px 32px", boxSizing: "border-box" };
   const card = { width: "100%", maxWidth: 440, background: T.sf, border: `1px solid ${running ? T.gn : T.bd}`, borderRadius: 16, padding: 20, boxSizing: "border-box" };
   const muted = { color: T.ft, fontSize: 13, lineHeight: 1.5 };
 
-  return <TC.Provider value={T}><style>{css(T)}</style><div style={wrap}>
+  return <TC.Provider value={T}><style>{css(T)}</style><Boot T={T} done={booted} /><div style={wrap}>
     <div style={{ textAlign: "center", marginBottom: 28 }}>
       <img src="/bondli-logo.svg" alt="Bondli" style={{ height: 72, marginBottom: 14 }} />
       <div style={{ fontSize: 34, fontWeight: 900, letterSpacing: "-.02em", lineHeight: 1.1 }}>A bot that trades memecoins for you.</div>
@@ -379,7 +405,8 @@ export default function Simple() {
           <span style={{ fontFamily: M, fontWeight: 800, fontSize: 22 }}>{tw.solBalance.toFixed(3)} SOL</span>
         </div>
         <div onClick={() => copy(tw.pubkey)} title="copy" style={{ fontFamily: M, fontSize: 12, color: T.dm, marginTop: 6, wordBreak: "break-all", cursor: "pointer", padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{tw.pubkey}{copied ? "  copied" : ""}</div>
-        {!funded && <div style={{ ...muted, marginTop: 8 }}>Send SOL to that address to begin. {MIN_BANKROLL_SOL} SOL is the smallest bankroll this works at — each trade has to clear about {dragPct(SIZES[0], st?.status?.solPrice || 0).toFixed(0)}% in fees before it earns anything, so smaller stakes lose to the costs and the day's loss limit only stretches to one of them.{(tw?.solBalance || 0) > 0 ? ` You have ${(tw.solBalance).toFixed(3)}.` : ""}</div>}
+        {!funded && <div style={{ ...muted, marginTop: 8 }}>Send SOL to that address to begin. {MIN_BANKROLL_SOL} SOL is the floor, {GOOD_BANKROLL_SOL} SOL is what it actually wants. Every trade pays a fixed cost before it earns anything, about {dragPct(SIZES[0], st?.status?.solPrice || 0).toFixed(0)}% at the smallest stake, so a thin bankroll forces small bets and small bets lose to the costs.{(tw?.solBalance || 0) > 0 ? ` You have ${(tw.solBalance).toFixed(3)}.` : ""}</div>}
+        {funded && (tw?.solBalance || 0) < GOOD_BANKROLL_SOL && <div style={{ ...muted, marginTop: 8, color: T.yl }}>This works at {(tw.solBalance).toFixed(2)} SOL but it is tight: it can hold one or two positions and the day's loss limit stops it early. {GOOD_BANKROLL_SOL} SOL gives it room.</div>}
         {tw.evmAddress && <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 14 }}>
             <span style={muted}>Bot wallet · Robinhood Chain</span>

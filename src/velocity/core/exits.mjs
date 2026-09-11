@@ -120,7 +120,7 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   if (r.action === "PARTIAL_SELL") {
     if (/^TP1|trailing|fade-trim|momentum-trim/.test(r.reason)) pos.tpHit = Math.max(pos.tpHit, 1);
     if (r.reason === "TP2") pos.tpHit = Math.max(pos.tpHit, 2);
-    if (r.reason === "TP3" || (r.reason === "TP-trail" && r.moonbag)) { pos.tpHit = 3; pos.isMoonbag = !!r.moonbag; }
+    if (r.reason === "TP3" || (/^(TP-trail|RIDE-trail)$/.test(r.reason) && r.moonbag)) { pos.tpHit = 3; pos.isMoonbag = !!r.moonbag; }
     if (r.reason === "SL1") pos.slHit = 1;
     return { action: "PARTIAL_SELL", pct: r.pct, reason: r.reason, layer: r.layer, detail: r.detail || null };
   }
