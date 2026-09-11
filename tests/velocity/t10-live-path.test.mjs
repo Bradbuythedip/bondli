@@ -833,6 +833,17 @@ test("T10: an EVM router is told what the wallet has traded, so a restart adopts
     const h = second.status().holdings.pons.list.find(x => x.instrument === "0xlost");
     assert.ok(h, "the wallet's holding is listed"); 
     assert.ok(second.store.openPositions("pons").some(p => p.instrument === "0xlost" && p.adopted), "adopted from the ledger fill");
+    // Prices are per venue: an ETH price on a pons event never becomes the SOL price, and the header
+    // P&L is the wallet's change in its own quote asset, so ETH moving is not "P&L".
+    second.quotePrice.pumpfun = 200;
+    await second.onEvent({ kind: "tick", venue: "pons", id: "0xheld", t_venue: Date.now(), payload: { solPrice: 4000, mcapUsd: 10_000 } });
+    assert.equal(second.quotePriceOf("pumpfun"), 200); assert.equal(second.quotePriceOf("pons"), 4000);
+    second.store.state.baseline = null; await second.refreshWallet();
+    const b = second.store.state.baseline; assert.ok(b && b.quote.pons === 0.05, "baseline keeps the ETH amount");
+    second.quotePrice.pons = 8000; // ETH doubles: nothing traded
+    assert.equal(second.truePnl().since_start_usd, 0);
+    live.preflight = async () => ({ wallet: "0xme", balanceSol: 0.06, quote: "ETH" }); await second.refreshWallet();
+    assert.equal(second.truePnl().since_start_usd, +(0.01 * 8000).toFixed(2), "0.01 ETH more in the wallet, at today's price");
   } finally { await second.stop(); }
 });
 

@@ -199,7 +199,7 @@ export class VelocityHub {
     const venue = position.venue || "pumpfun", quote = venue === "pons" ? "ETH" : "SOL";
     const feeWallet = venue === "pons" ? this.platformEvmWallet : (this.feeOk ? this.platformWallet : null);
     if (!feeWallet) { u.engine.log("warn", `platform fee ${f.fee.toFixed(6)} ${quote} not collected: ${venue === "pons" ? "PLATFORM_EVM_WALLET" : "PLATFORM_WALLET"} not set`); return { fee: f.fee, net: f.net, collected: false }; }
-    const solPrice = u.engine.solPriceHint || this.feed.solPrice || 0;
+    const solPrice = u.engine.quotePriceOf(venue) || (venue === "pons" ? this.ponsFeed?.solPrice : this.feed.solPrice) || 0;
     const sig = await u.engine.venues[venue].liveRouter.transferSol(feeWallet, f.fee);
     u.engine.ledger.append({ kind: "fee", venue: "pumpfun", instrument: position.instrument, positionId: position.id, scope: "platform", sol: +f.fee.toFixed(6), usd: +(f.fee * solPrice).toFixed(4), rate: f.rate ?? null, net_sol: f.net, venue_ref: sig, note: `performance fee ${f.rate ?? ""}% of ${f.net.toFixed(4)} SOL profit` });
     u.engine.store.save();
