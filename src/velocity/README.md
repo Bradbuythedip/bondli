@@ -111,6 +111,21 @@ dump threshold, how old a token can be (15 / 30 / 60 min), how far along the cur
 self-snipe, sybil, pump-and-dump, freeze authority, serial ruggers) never move. Read at start; restart
 after changing it.
 
+### Robinhood Chain (PONS)
+
+A second curve venue, `pons`: PONS V2 launches on Robinhood Chain (chain 4663, ETH quote). The feed
+(`venues/pons/feed.mjs`) polls the chain's logs for `TokenLaunched` on the factory and `CurveBuy` /
+`CurveSell` / `CurveCompleted` on every curve it has seen, keeps the same per-token state the pump.fun
+radar keeps, scores it with the same composite, and emits candidates with the same payload shape. The
+same gates, sizer, plans and exits judge it; `reference.solPrice` on this venue is the ETH price and
+`sol_spent` / `sol_received` are ETH. Two venue-specific rules: nothing is a candidate inside the
+60-second snipe-tax window (the factory can tax early buys at up to 99%), and curve progress comes
+from `token._curvePct` (real quote reserve over the graduation threshold), not from "vSol / 85".
+The live router (`venues/pons/router.mjs`) is an ethers wallet: `buy(quoteIn, minTokensOut, to)`
+with ETH value, `approve` + `sell(tokensIn, minQuoteOut, to)`, fills read from the receipt's curve
+log, gas counted in the quote spent. Hosted users get an ETH key beside their SOL key; the bot trades
+PONS when the ETH wallet holds more than 0.003 and the user leaves the chain on.
+
 ### Revivals
 
 The launch feed only sees the first hour. The radar also keeps a 72-hour window of 5-minute buckets

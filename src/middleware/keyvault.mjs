@@ -41,12 +41,14 @@ export function makeVault({ key = loadVaultKey(), production = process.env.NODE_
     sealRecord(tw) {
       if (Array.isArray(tw)) return tw.map(x => this.sealRecord(x));
       if (!tw || typeof tw !== "object") return tw;
-      return tw.secret == null ? tw : { ...tw, secret: this.seal(tw.secret) };
+      const out = tw.secret == null ? tw : { ...tw, secret: this.seal(tw.secret) };
+      return out.evmSecret == null ? out : { ...out, evmSecret: this.seal(out.evmSecret) };
     },
     openRecord(tw) {
       if (Array.isArray(tw)) return tw.map(x => this.openRecord(x));
       if (!tw || typeof tw !== "object") return tw;
-      return tw.secret == null ? tw : { ...tw, secret: this.open(tw.secret) };
+      const out = tw.secret == null ? tw : { ...tw, secret: this.open(tw.secret) };
+      return out.evmSecret == null ? out : { ...out, evmSecret: this.open(out.evmSecret) };
     },
   };
 }

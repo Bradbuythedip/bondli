@@ -32,7 +32,7 @@ export function checkExecutionWindow(token, tier, scoreTimestamp, opts = {}) {
   }
 
   // === BONDING CURVE POSITION ===
-  const curvePct = token.vSolInBondingCurve ? token.vSolInBondingCurve / 85 : 0;
+  const curvePct = token._curvePct != null ? Number(token._curvePct) : token.vSolInBondingCurve ? token.vSolInBondingCurve / 85 : 0;
   // Tier 1-2: Enter up to 60% of curve
   if (tier <= 2 && curvePct > curveMax) checks.push("CURVE_TOO_ADVANCED");
   // Tier 3: Enter up to 40% only

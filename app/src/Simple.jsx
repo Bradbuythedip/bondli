@@ -133,6 +133,7 @@ export default function Simple() {
   const [agg, sAgg] = useState(() => { try { const v = localStorage.getItem("bondli_agg"); return v == null ? 2 : Math.max(0, Math.min(3, Number(v) || 0)); } catch { return 2; } });
   const [size, sSize] = useState(() => { try { return Number(localStorage.getItem("bondli_size")) || 10; } catch { return 10; } });
   const [showKey, sShowKey] = useState(null);
+  const [chains, sChains] = useState(() => { try { return JSON.parse(localStorage.getItem("bondli_chains") || "null") || { pons: true }; } catch { return { pons: true }; } });
   const [copied, sCopied] = useState(false);
   const narRef = useRef(null);
   const running = !!st?.running;
@@ -144,7 +145,7 @@ export default function Simple() {
 
   const loadWallet = useCallback(async () => {
     if (!pk) return;
-    try { const r = await a.gtw(pk); sTw(r?.tradingWallet ? { pubkey: r.tradingWallet, solBalance: Number(r.solBalance ?? r.sol ?? 0), tokenValueSol: Number(r.tokenValueSol || 0) } : null); } catch { /* keep the last reading */ }
+    try { const r = await a.gtw(pk); sTw(r?.tradingWallet ? { pubkey: r.tradingWallet, solBalance: Number(r.solBalance ?? r.sol ?? 0), tokenValueSol: Number(r.tokenValueSol || 0), evmAddress: r.evmAddress || null, ethBalance: r.ethBalance == null ? null : Number(r.ethBalance) } : null); } catch { /* keep the last reading */ }
   }, [pk]);
   useEffect(() => { loadWallet(); const id = setInterval(loadWallet, running ? 15000 : 8000); return () => clearInterval(id); }, [loadWallet, running]);
   useEffect(() => {
@@ -164,7 +165,8 @@ export default function Simple() {
     sBusy("start");
     try {
       try { localStorage.setItem("bondli_agg", String(agg)); localStorage.setItem("bondli_size", String(size)); } catch {}
-      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round((tw?.solBalance || 0) * 200)) });
+      try { localStorage.setItem("bondli_chains", JSON.stringify(chains)); } catch {}
+      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round((tw?.solBalance || 0) * 200 + (tw?.ethBalance || 0) * 3000)), pons: !!chains.pons && (tw?.ethBalance || 0) > 0.003 });
       if (!r.ok) say(r.error || "Could not start", "error"); else sSt(r);
     } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
   };
@@ -172,10 +174,19 @@ export default function Simple() {
   const paused = !!s?.halt?.mode;
   const pause = async () => { sBusy("pause"); try { const r = await a.vpause(pk); if (r.ok) sSt(x => ({ ...x, ...r })); else say(r.error, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
   const resume = async () => { sBusy("pause"); try { const r = await a.vresume(pk); if (r.ok) sSt(x => ({ ...x, ...r })); else say(r.error, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
-  const withdraw = async () => { if (running) { say("Stop the bot first", "error"); return; } if (!confirm(`Send all SOL from the trading wallet back to ${pk.slice(0, 6)}…?`)) return; sBusy("withdraw"); try { const r = await a.wdr(pk, pk, "all"); say(`Sent ${r.sol.toFixed(4)} SOL`, "ok"); await loadWallet(); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
+  const withdraw = async () => {
+    if (running) { say("Stop the bot first", "error"); return; }
+    if (!confirm(`Send all SOL from the bot wallet back to ${pk.slice(0, 6)}…?`)) return;
+    sBusy("withdraw"); try { const r = await a.wdr(pk, pk, "all"); say(`Sent ${r.sol.toFixed(4)} SOL`, "ok"); await loadWallet(); } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
+  };
+  const withdrawEth = async () => {
+    if (running) { say("Stop the bot first", "error"); return; }
+    const to = prompt("Send all ETH on Robinhood Chain to which 0x address?"); if (!to) return;
+    sBusy("withdraw"); try { const r = await a.wdrEth(pk, to.trim()); say(`Sent ${r.eth.toFixed(5)} ETH`, "ok"); await loadWallet(); } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
+  };
   const exportKey = async () => {
     sBusy("key"); sMsg(null);
-    try { const r = await a.etw(pk); if (!r?.privateKey) throw new Error("The server returned no key (" + JSON.stringify(r).slice(0, 80) + ")"); sShowKey(r.privateKey); }
+    try { const r = await a.etw(pk); if (!r?.privateKey) throw new Error("The server returned no key (" + JSON.stringify(r).slice(0, 80) + ")"); sShowKey({ sol: r.privateKey, evm: r.evmPrivateKey || null }); }
     catch (e) { console.error("export key", e); say("Export failed: " + (e.message || String(e)), "error"); }
     finally { sBusy(null); }
   };
@@ -204,11 +215,19 @@ export default function Simple() {
       </>}
       {pk && tw && !running && <>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <span style={muted}>Bot wallet</span>
+          <span style={muted}>Bot wallet · Solana</span>
           <span style={{ fontFamily: M, fontWeight: 800, fontSize: 22 }}>{tw.solBalance.toFixed(3)} SOL</span>
         </div>
         <div onClick={() => copy(tw.pubkey)} title="copy" style={{ fontFamily: M, fontSize: 12, color: T.dm, marginTop: 6, wordBreak: "break-all", cursor: "pointer", padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{tw.pubkey}{copied ? "  copied" : ""}</div>
         {!funded && <div style={{ ...muted, marginTop: 8 }}>Send SOL to that address to begin. 0.5 SOL is a good start.</div>}
+        {tw.evmAddress && <>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 14 }}>
+            <span style={muted}>Bot wallet · Robinhood Chain</span>
+            <span style={{ fontFamily: M, fontWeight: 800, fontSize: 22 }}>{tw.ethBalance == null ? "…" : tw.ethBalance.toFixed(4)} ETH</span>
+          </div>
+          <div onClick={() => copy(tw.evmAddress)} title="copy" style={{ fontFamily: M, fontSize: 12, color: T.dm, marginTop: 6, wordBreak: "break-all", cursor: "pointer", padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{tw.evmAddress}{copied ? "  copied" : ""}</div>
+          {!(tw.ethBalance > 0.003) && <div style={{ ...muted, marginTop: 8 }}>Optional. Send ETH on Robinhood Chain to that address and the bot trades PONS launches too. 0.05 ETH is a good start.</div>}
+        </>}
 
         {/* 3. Two choices, then start */}
         {funded && <>
@@ -218,6 +237,11 @@ export default function Simple() {
           <div style={{ marginTop: 14, ...muted, marginBottom: 6 }}>Per trade</div>
           <div style={{ display: "flex", gap: 6 }}>{SIZES.map(v => <button key={v} onClick={() => sSize(v)} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1px solid ${size === v ? T.gn : T.bd}`, background: size === v ? T.gn + "22" : "transparent", color: size === v ? T.gn : T.dm, fontFamily: M, fontWeight: 800, cursor: "pointer" }}>${v}</button>)}</div>
           <div style={{ ...muted, marginTop: 10 }}>Up to 4 tokens at once. Stops for the day after ${Math.max(15, size * 3)} of losses.</div>
+          <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
+            {[["pump.fun", "Solana", true, true], ["PONS", "Robinhood Chain", !!chains.pons && (tw?.ethBalance || 0) > 0.003, (tw?.ethBalance || 0) > 0.003]].map(([l, sub, on, can]) => <div key={l} onClick={() => l === "PONS" && can && sChains(c => ({ ...c, pons: !c.pons }))} style={{ flex: 1, padding: "8px 10px", borderRadius: 10, border: `1px solid ${on ? T.gn : T.bd}`, background: on ? T.gn + "14" : "transparent", cursor: l === "PONS" && can ? "pointer" : "default", opacity: can ? 1 : .5 }}>
+              <div style={{ fontWeight: 800, fontSize: 13, color: on ? T.gn : T.dm }}>{l}</div><div style={{ ...muted, fontSize: 11 }}>{sub}{l === "PONS" && !can ? " · fund with ETH" : on ? " · on" : " · off"}</div>
+            </div>)}
+          </div>
           <div style={{ marginTop: 16 }}><Btn big T={T} onClick={start} disabled={busy === "start"}>{busy === "start" ? "Starting…" : "Start"}</Btn></div>
         </>}
       </>}
@@ -246,14 +270,18 @@ export default function Simple() {
 
     {/* Footer: the two ways out, and the one line about money */}
     {pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 14, display: "flex", gap: 8 }}>
-      <Btn ghost T={T} onClick={withdraw} disabled={busy === "withdraw" || running}>{busy === "withdraw" ? "Sending…" : "Withdraw"}</Btn>
+      <Btn ghost T={T} onClick={withdraw} disabled={busy === "withdraw" || running}>{busy === "withdraw" ? "Sending…" : "Withdraw SOL"}</Btn>
+      {tw.ethBalance > 0 && <Btn ghost T={T} onClick={withdrawEth} disabled={busy === "withdraw" || running}>Withdraw ETH</Btn>}
       <Btn ghost T={T} onClick={exportKey} disabled={busy === "key"}>{busy === "key" ? "Signing…" : "Export key"}</Btn>
     </div>}
     {msg && !running && pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 8, fontSize: 13, color: msg.kind === "error" ? T.rd : T.gn }}>{msg.m}</div>}
     {showKey && <div style={{ width: "100%", maxWidth: 440, marginTop: 10, background: T.sf, border: `1px solid ${T.yl}`, borderRadius: 12, padding: 14 }}>
-      <div style={{ ...muted, color: T.yl, marginBottom: 6 }}>Your bot wallet's private key. Anyone with it owns the wallet. Import it into Phantom to control the wallet directly.</div>
-      <div onClick={() => copy(showKey)} title="tap to copy" style={{ fontFamily: M, fontSize: 12, wordBreak: "break-all", cursor: "pointer", color: T.tx, padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{showKey}</div>
-      <div style={{ display: "flex", gap: 8, marginTop: 8 }}><Btn ghost T={T} onClick={() => copy(showKey)}>{copied ? "Copied" : "Copy"}</Btn><Btn ghost T={T} onClick={() => sShowKey(null)}>Hide</Btn></div>
+      <div style={{ ...muted, color: T.yl, marginBottom: 6 }}>Your bot wallet's private keys. Anyone with them owns the wallets. Solana key into Phantom; Robinhood Chain key into MetaMask or Rabby.</div>
+      <div style={{ ...muted, fontSize: 11, marginTop: 6 }}>Solana</div>
+      <div onClick={() => copy(showKey.sol)} title="tap to copy" style={{ fontFamily: M, fontSize: 12, wordBreak: "break-all", cursor: "pointer", color: T.tx, padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{showKey.sol}</div>
+      {showKey.evm && <><div style={{ ...muted, fontSize: 11, marginTop: 8 }}>Robinhood Chain</div>
+      <div onClick={() => copy(showKey.evm)} title="tap to copy" style={{ fontFamily: M, fontSize: 12, wordBreak: "break-all", cursor: "pointer", color: T.tx, padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{showKey.evm}</div></>}
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}><Btn ghost T={T} onClick={() => sShowKey(null)}>Hide</Btn></div>
     </div>}
     <Live T={T} agg={agg} />
     <div style={{ ...muted, fontSize: 12, marginTop: 28, textAlign: "center", maxWidth: 440 }}>Bondli keeps {FEE_PCT}% of each profitable trade, taken from the profit. Losing trades cost nothing. Memecoins can go to zero; only trade what you can lose.</div>

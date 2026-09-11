@@ -15,6 +15,7 @@ import { validateRisk, deepFreeze } from "./core/risk.mjs";
 import { formatRecord } from "./core/watch.mjs";
 import { makePumpfunEdge } from "./venues/pumpfun/edge.mjs";
 import { PumpfunPaperRouter, PumpfunLiveRouter } from "./venues/pumpfun/router.mjs";
+import { PonsLiveRouter, PonsPaperRouter } from "./venues/pons/router.mjs";
 
 /** The wallet whose key was pasted into a chat; fees must never be sent there. */
 export const EXPOSED_DEFAULT_PLATFORM_WALLET = "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
@@ -53,6 +54,7 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
     max_concurrent_positions: maxPositions, max_per_group: 1,
     venues: {
       pumpfun: { ...t.venues.pumpfun, max_exposure_usd: portfolio, max_concurrent: maxPositions, min_stake_usd: 5 },
+      pons: { ...t.venues.pons, max_exposure_usd: settings.pons ? portfolio : 0, max_concurrent: settings.pons ? maxPositions : 0, min_stake_usd: 5 },
       polymarket: { ...t.venues.polymarket, max_exposure_usd: 0 },
       perps: { ...t.venues.perps, max_exposure_usd: 0 },
     },
@@ -71,8 +73,9 @@ export class VelocityHub {
    * @param fee         { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser }
    * @param makeLiveRouter  ({ secret }) => router; tests inject a double
    */
-  constructor({ feed, rootDir, platformWallet, fee, feePct = null, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, clock = () => Date.now(), log = console }) {
-    this.feed = feed; this.rootDir = rootDir; this.platformWallet = platformWallet || null; this.fee = fee; this.rpcUrl = rpcUrl;
+  constructor({ feed, ponsFeed = null, rootDir, platformWallet, platformEvmWallet = null, fee, feePct = null, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, makePonsRouter = null, clock = () => Date.now(), log = console }) {
+    this.feed = feed; this.ponsFeed = ponsFeed; this.rootDir = rootDir; this.platformWallet = platformWallet || null; this.platformEvmWallet = platformEvmWallet || null; this.fee = fee; this.rpcUrl = rpcUrl;
+    this.makePonsRouter = makePonsRouter || (({ secret }) => new PonsLiveRouter({ secret, clock }));
     // A flat rate on realized profit (VELOCITY_FEE_PCT) replaces the site's ladder when set: one number, said plainly.
     this.feePct = feePct != null && feePct !== "" && Number.isFinite(Number(feePct)) && Number(feePct) >= 0 ? Number(feePct) : null;
     this.makeLiveRouter = makeLiveRouter || (({ secret }) => new PumpfunLiveRouter({ secret, rpcUrl, clock }));
@@ -86,16 +89,18 @@ export class VelocityHub {
   list() { return [...this.users.keys()]; }
 
   /** Start a user's engine on their trading wallet. Refuses when the wallet cannot cover one order. */
-  async start({ wallet, secret, settings = {} }) {
+  async start({ wallet, secret, evmSecret = null, settings = {} }) {
     if (!wallet || !secret) throw new Error("wallet and secret required");
     if (this.users.has(wallet)) return { ok: true, already: true, ...this.status(wallet) };
     const dataDir = path.join(this.rootDir, wallet);
     fs.mkdirSync(dataDir, { recursive: true });
-    const envelope = userEnvelope(settings);
+    const pons = !!settings.pons && !!this.ponsFeed && !!evmSecret; // Robinhood Chain: opted in, feed running, ETH key on file
+    const envelope = userEnvelope({ ...settings, pons });
     const aggression = Math.max(0, Math.min(3, Math.round(Number(settings.aggression) || 1)));
     const view = new SharedFeedView(this.feed, { clock: this.clock });
     const liveRouter = this.makeLiveRouter({ secret, wallet });
     const venues = { pumpfun: { mode: "paper", feed: view, edge: makePumpfunEdge({ aggression }), router: new PumpfunPaperRouter({ bookFile: path.join(dataDir, "paper-book-pumpfun.json"), clock: this.clock }), liveRouter } };
+    if (pons) venues.pons = { mode: "paper", feed: new SharedFeedView(this.ponsFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "pons", aggression }), router: new PonsPaperRouter({ bookFile: path.join(dataDir, "paper-book-pons.json"), clock: this.clock }), liveRouter: this.makePonsRouter({ secret: evmSecret, wallet }) };
     const engine = new Engine({ dataDir, envelope, venues, clock: this.clock });
     engine.alerter = new Alerter({ store: engine.store, ledger: engine.ledger, webhookUrl: null, statusUrl: null });
     engine.on("log", l => this.log.log?.(`[velocity ${wallet.slice(0, 8)}] ${l.level} ${l.text}`));
@@ -107,8 +112,9 @@ export class VelocityHub {
     if (engine.store.state.halt?.mode || engine.store.isHalted("pumpfun")) engine.resume("pumpfun", { by: "user" });
     const live = await engine.setVenueMode("pumpfun", "live", { override: true, by: "user" });
     if (!live.ok) { await engine.stop(); return { ok: false, error: live.error || "could not go live", preflight: live.preflight || null }; }
+    if (pons) { const l2 = await engine.setVenueMode("pons", "live", { override: true, by: "user" }); if (!l2.ok) engine.log("warn", `pons stays paper: ${l2.error || "could not go live"}`); }
     sup.start();
-    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression }, startedAt: this.clock() });
+    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, pons }, startedAt: this.clock() });
     // Once a minute, the funnel in the server log: what the candidates hit. The first place to look when nothing fills.
     const fun = setInterval(() => { try { const f = engine.funnel(); this.log.log?.(`[velocity ${wallet.slice(0, 8)}] funnel 10m: judged ${f.judged} (${f.distinct} tokens) go ${f.gos} filled ${f.filled} | ${Object.entries(f.gates).map(([g, n]) => `${g} ${n}`).join(", ") || "no rejects"} | top: ${f.top.map(x => `${x.k} ${x.n}`).join("; ")}${f.sized0 ? ` | no size: ${JSON.stringify(f.sized0)}` : ""}${f.failed ? ` | failed: ${JSON.stringify(f.failed)}` : ""}`); } catch {} }, 60_000);
     fun.unref?.(); this.users.get(wallet).fun = fun;
@@ -171,13 +177,15 @@ export class VelocityHub {
     const f = this.feePct != null ? this.flatFee(solIn, solOut, wallet) : this.fee.calculateFee(solIn, solOut, wallet, tier.tier);
     this.fee.recordTradeOutcome?.(wallet, f.net);
     if (!(f.fee > 0.0005)) return { fee: 0, net: f.net };
-    if (!this.feeOk) { u.engine.log("warn", `platform fee ${f.fee.toFixed(6)} SOL not collected: PLATFORM_WALLET not set`); return { fee: f.fee, net: f.net, collected: false }; }
+    const venue = position.venue || "pumpfun", quote = venue === "pons" ? "ETH" : "SOL";
+    const feeWallet = venue === "pons" ? this.platformEvmWallet : (this.feeOk ? this.platformWallet : null);
+    if (!feeWallet) { u.engine.log("warn", `platform fee ${f.fee.toFixed(6)} ${quote} not collected: ${venue === "pons" ? "PLATFORM_EVM_WALLET" : "PLATFORM_WALLET"} not set`); return { fee: f.fee, net: f.net, collected: false }; }
     const solPrice = u.engine.solPriceHint || this.feed.solPrice || 0;
-    const sig = await u.engine.venues.pumpfun.liveRouter.transferSol(this.platformWallet, f.fee);
+    const sig = await u.engine.venues[venue].liveRouter.transferSol(feeWallet, f.fee);
     u.engine.ledger.append({ kind: "fee", venue: "pumpfun", instrument: position.instrument, positionId: position.id, scope: "platform", sol: +f.fee.toFixed(6), usd: +(f.fee * solPrice).toFixed(4), rate: f.rate ?? null, net_sol: f.net, venue_ref: sig, note: `performance fee ${f.rate ?? ""}% of ${f.net.toFixed(4)} SOL profit` });
     u.engine.store.save();
     this.fee.recordGlobalFee?.(f.fee);
-    u.engine.log("info", `platform fee ${f.fee.toFixed(6)} SOL (${f.rate ?? "?"}% of ${f.net.toFixed(4)} profit) tx ${String(sig).slice(0, 10)}`);
+    u.engine.log("info", `platform fee ${f.fee.toFixed(6)} ${quote} (${f.rate ?? "?"}% of ${f.net.toFixed(4)} profit) tx ${String(sig).slice(0, 10)}`);
     return { fee: f.fee, net: f.net, collected: true, sig };
   }
 
@@ -199,7 +207,7 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
       const { wallet, settings } = req.body || {};
       const tw = await getTradingWallet(wallet);
       if (!tw?.secret) return res.status(400).json({ error: "No trading wallet; create one first" });
-      res.json(await hub.start({ wallet, secret: tw.secret, settings: settings || {} }));
+      res.json(await hub.start({ wallet, secret: tw.secret, evmSecret: tw.evmSecret || null, settings: settings || {} }));
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
   app.post("/api/velocity/stop", requireOwner, async (req, res) => { try { res.json(await hub.stop(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
@@ -207,5 +215,5 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
   app.post("/api/velocity/resume", requireOwner, (req, res) => { try { res.json(hub.resume(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/halt", requireOwner, async (req, res) => { try { res.json(await hub.halt(req.body.wallet, req.body.mode === "freeze" ? "freeze" : "flatten")); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.get("/api/velocity/status", requireOwner, (req, res) => res.json({ ok: true, ...hub.status(req.query.wallet), narration: hub.narration(req.query.wallet, 40) }));
-  app.get("/api/velocity/health", (req, res) => res.json({ ok: true, users: hub.list().length, feeConfigured: hub.feeOk, feed: hub.feed.status?.() || null }));
+  app.get("/api/velocity/health", (req, res) => res.json({ ok: true, users: hub.list().length, feeConfigured: hub.feeOk, feed: hub.feed.status?.() || null, pons: hub.ponsFeed ? { ...(hub.ponsFeed.status?.() || {}), tokens: hub.ponsFeed.tokens?.size ?? null, ethPrice: hub.ponsFeed.solPrice, feeConfigured: !!hub.platformEvmWallet } : null }));
 }

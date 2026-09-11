@@ -19,6 +19,11 @@ import { LatencyHistogram } from "./events.mjs";
 import { statsFromOutcomes } from "./stats.mjs";
 import { promotionGate } from "./promote.mjs";
 
+/** Venues that trade a bonding curve in a quote asset: pump.fun (SOL) and PONS on Robinhood Chain (ETH).
+ *  Positions are marked by market cap, plans are the tiered layers, fills carry sol_spent / sol_received
+ *  (the quote asset), and reference.solPrice is that quote asset's USD price. */
+export const CURVE_VENUES = new Set(["pumpfun", "pons"]);
+
 /** Gate-1 flags that describe the token, not the last minute: a reject on these stands. */
 export const FATAL_FLAGS = new Set(["SERIAL_LAUNCHER", "SERIAL_RUGGER", "DEV_SELF_SNIPE", "FREEZE_AUTHORITY", "STOLEN_ART", "TOO_LATE"]);
 
@@ -50,6 +55,7 @@ export class Engine extends EventEmitter {
     this.disqualified = new Map(); // instrument -> until; a gate-1 reject is not re-judged every poll (see FATAL_FLAGS)
     this.pendingBuys = new Map();  // instrument -> { sig, decision, orderId, stake, sizing, at }: sent, not yet confirmed
     this.wallet = { sol: null, usd: null, solPrice: null, at: 0, venue: null }; // last live wallet reading (bankroll_source: wallet)
+    this.wallets = {}; // venue -> reading; a hosted user trades pump.fun from a SOL wallet and PONS from an ETH wallet
     this._lastSweepTry = new Map();
     this.stats = statsFromOutcomes(this.ledger.query({ kind: "outcome", limit: 5000 }));
     this.checksums = checksumFiles();
@@ -125,8 +131,9 @@ export class Engine extends EventEmitter {
   noteWallet(venue, pre) {
     if (!pre || !(pre.balanceSol >= 0)) return;
     const solPrice = this.solPriceHint || this.venues[venue]?.feed?.solPrice || 0;
-    this.wallet = { sol: pre.balanceSol, usd: solPrice > 0 ? +(pre.balanceSol * solPrice).toFixed(2) : null, solPrice: solPrice || null, at: this.clock(), venue };
-    this.store.state.wallet = this.wallet;
+    this.wallet = { sol: pre.balanceSol, usd: solPrice > 0 ? +(pre.balanceSol * solPrice).toFixed(2) : null, solPrice: solPrice || null, at: this.clock(), venue, quote: pre.quote || "SOL" };
+    this.wallets[venue] = this.wallet;
+    this.store.state.wallet = this.wallet; this.store.state.wallets = this.wallets;
   }
 
   /** Re-read the live wallet; called after every live fill and periodically by the sweep. */
@@ -134,7 +141,6 @@ export class Engine extends EventEmitter {
     for (const [venue, v] of Object.entries(this.venues)) {
       if (this.store.venueMode(venue) !== "live" || !v.liveRouter?.ready || !v.liveRouter.preflight) continue;
       try { this.noteWallet(venue, await v.liveRouter.preflight()); } catch (err) { this.log("warn", `${venue}: wallet read failed: ${err.message}`); }
-      return;
     }
   }
 
@@ -321,16 +327,25 @@ export class Engine extends EventEmitter {
     // keep the fixed bankroll. No fresh reading means no order, not a guess.
     const anyLive = Object.keys(this.venues).some(v => this.store.venueMode(v) === "live");
     if (this.walletMode() && anyLive) {
-      const w = this.wallet;
-      const fresh = w.at && this.clock() - w.at <= this.cfg.walletMaxAgeMs;
-      const solPrice = this.solPriceHint || w.solPrice || 0;
-      if (!fresh || !(w.sol >= 0)) { snap.equity_usd = null; snap.equity_reason = "WALLET_UNKNOWN"; }
-      else if (!(solPrice > 0)) { snap.equity_usd = null; snap.equity_reason = "NO_SOL_PRICE"; }
+      // Every live venue's wallet, each in its own quote asset, summed in USD. One unreadable wallet
+      // means no order on any venue: a guess is not a bankroll.
+      let freeUsd = 0, reason = null;
+      const liveVenues = Object.keys(this.venues).filter(v => this.store.venueMode(v) === "live");
+      for (const venue of liveVenues) {
+        const w = this.wallets[venue] || (this.wallet.venue === venue ? this.wallet : null);
+        const fresh = w && w.at && this.clock() - w.at <= this.cfg.walletMaxAgeMs;
+        const price = (venue === "pumpfun" ? this.solPriceHint : 0) || w?.solPrice || this.venues[venue]?.feed?.solPrice || 0;
+        if (!fresh || !(w.sol >= 0)) { reason = "WALLET_UNKNOWN"; break; }
+        if (!(price > 0)) { reason = "NO_SOL_PRICE"; break; }
+        const reserve = venue === "pumpfun" ? (this.env.wallet_reserve_sol ?? 0.02) : (this.env.wallet_reserve_quote?.[venue] ?? 0.001);
+        freeUsd += Math.max(0, w.sol - reserve) * price;
+      }
+      if (reason) { snap.equity_usd = null; snap.equity_reason = reason; }
       else {
-        const freeUsd = Math.max(0, w.sol - (this.env.wallet_reserve_sol ?? 0.02)) * solPrice;
         const liveOpen = open.filter(p => !p.paper).reduce((s, p) => s + (p.notional_usd || 0), 0);
         snap.equity_usd = +(freeUsd + liveOpen).toFixed(2);
-        snap.wallet = { sol: w.sol, solPrice, free_usd: +freeUsd.toFixed(2), at: w.at };
+        const w = this.wallet;
+        snap.wallet = { sol: w.sol, solPrice: w.solPrice, free_usd: +freeUsd.toFixed(2), at: w.at, wallets: this.wallets };
       }
     }
     return snap;
@@ -394,14 +409,14 @@ export class Engine extends EventEmitter {
     const inst = decision.instrument;
     const fill = r.fill;
     this.latency[venue].confirm.record(fill.latency_ms || 0);
-    const key = venue === "pumpfun" ? (decision.plan_key || decision.tier) : decision.model;
+    const key = CURVE_VENUES.has(venue) ? (decision.plan_key || decision.tier) : decision.model;
     const plan = createPlan({ venue, key, entry: { score: decision.features ? Math.round((decision.features.apeScore || 0) * 100) : 0, price: fill.price } });
     const position = {
       id: `${venue}:${inst}:${fill.t_filled}`, venue, instrument: inst, model: decision.model, tier: decision.tier, group: decision.group,
       decisionId: decision.id, orderId, entryTime: fill.t_filled, entryPrice: fill.price, qty: fill.qty, notional_usd: fill.notional_usd, stake_usd: stake,
       // notional_usd is what left the wallet, fees included, for paper and live alike; fee_usd is informational.
       cost_usd: fill.notional_usd, proceeds_usd: 0, remaining_qty: fill.qty,
-      entryMark: venue === "pumpfun" ? (decision.reference?.mcapUsd || 0) : fill.price, mark: null, peak: null, changePct: 0,
+      entryMark: CURVE_VENUES.has(venue) ? (decision.reference?.mcapUsd || 0) : fill.price, mark: null, peak: null, changePct: 0,
       entryScore: decision.features ? Math.round((decision.features.apeScore || 0) * 100) : 0,
       worst_case_fraction: sizing.stop_fraction ?? decision.stop_fraction ?? 1, plan, status: "open",
       p_win: decision.p_win, confidence: decision.confidence, features: decision.features || null,
@@ -423,7 +438,7 @@ export class Engine extends EventEmitter {
   buildOrder(decision, orderId, stake, venue) {
     const v = this.venues[venue];
     const maxSlip = this.env.venues[venue].max_slippage_bps;
-    if (venue === "pumpfun") {
+    if (CURVE_VENUES.has(venue)) {
       if (!decision.reference?.solPrice) return null;
       return { id: orderId, decisionId: decision.id, venue, instrument: decision.instrument, side: "BUY", stake_usd: stake, max_slippage_bps: maxSlip, reference: decision.reference };
     }
@@ -477,7 +492,7 @@ export class Engine extends EventEmitter {
     const freshSol = tick?.payload?.solPrice || this.solPriceHint || p.reference?.solPrice || 0;
     // With no tick, a paper sell is priced at the last mark, not the entry curve: a token goes quiet
     // when it dies. (A live sell measures real proceeds; the reference only sizes the model check.)
-    const lastMark = venue === "pumpfun" && p.mark > 0 ? { mcapUsd: p.mark, mcapSol: undefined, vTokensInBondingCurve: undefined, vSolInBondingCurve: p.lastVSol || p.reference?.vSolInBondingCurve } : {};
+    const lastMark = CURVE_VENUES.has(venue) && p.mark > 0 ? { mcapUsd: p.mark, mcapSol: undefined, vTokensInBondingCurve: undefined, vSolInBondingCurve: p.lastVSol || p.reference?.vSolInBondingCurve } : {};
     const reference = tick?.payload?.book ? { book: tick.payload.book } : tick?.payload ? { ...p.reference, ...tick.payload, solPrice: freshSol } : { ...(p.reference || {}), ...lastMark, solPrice: freshSol };
     let r;
     if (action === "REDEEM") {
@@ -619,13 +634,13 @@ export class Engine extends EventEmitter {
         if (!f && !sent.has(inst)) { rep.unknown.push({ instrument: inst, qty: vp.qty }); continue; }
         const decision = f ? this.ledger.readAll(r => r.kind === "decision" && r.decisionId === f.decisionId)[0] : null;
         const tier = decision?.tier || 2;
-        const key = venue === "pumpfun" ? (tier >= 1 && tier <= 3 ? tier : 2) : (decision?.model || "resolved_fact");
+        const key = CURVE_VENUES.has(venue) ? (tier >= 1 && tier <= 3 ? tier : 2) : (decision?.model || "resolved_fact");
         const plan = createPlan({ venue, key, entry: { score: decision?.features ? Math.round(decision.features.apeScore * 100) : 0, price: f?.price || vp.avgPrice || 0 } });
         const position = {
           id: f?.positionId || `${venue}:${inst}:adopted:${this.clock()}`, venue, instrument: inst, model: decision?.model || "adopted", tier, group: decision?.group || null,
           decisionId: f?.decisionId || null, orderId: f?.orderId || null, entryTime: f?.ts || this.clock(), entryPrice: f?.price || vp.avgPrice || 0, qty: vp.qty, remaining_qty: vp.qty,
           notional_usd: f?.notional_usd || vp.notional_usd || sent.get(inst)?.stake_usd || 0, stake_usd: f?.notional_usd || vp.notional_usd || sent.get(inst)?.stake_usd || 0, cost_usd: f?.notional_usd || vp.notional_usd || sent.get(inst)?.stake_usd || 0, proceeds_usd: 0,
-          entryMark: venue === "pumpfun" ? decision?.reference?.mcapUsd || 0 : f?.price || vp.avgPrice || 0, mark: null, peak: null, changePct: 0, entryScore: decision?.features ? Math.round(decision.features.apeScore * 100) : 0,
+          entryMark: CURVE_VENUES.has(venue) ? decision?.reference?.mcapUsd || 0 : f?.price || vp.avgPrice || 0, mark: null, peak: null, changePct: 0, entryScore: decision?.features ? Math.round(decision.features.apeScore * 100) : 0,
           worst_case_fraction: decision?.stop_fraction ?? 1, plan, status: "open", p_win: decision?.p_win ?? null, confidence: decision?.confidence ?? null, features: decision?.features || null,
           reference: decision?.reference || null, legs: null, paper: mode === "paper", adopted: true,
         };
@@ -689,7 +704,7 @@ export class Engine extends EventEmitter {
       running: this.running, startedAt: s.startedAt, now: this.clock(), heartbeatAt: s.heartbeatAt, reconciledAt: s.reconciledAt,
       halt: s.halt, throttle: s.throttle, governor: s.governor, regime: s.regime,
       day: { ...s.day, limit_usd: this.env.daily_loss_limit_usd, used_pct: +((Math.max(0, -s.day.realizedUsd) / this.env.daily_loss_limit_usd) * 100).toFixed(1) },
-      bankroll: { source: this.walletMode() ? "wallet" : "fixed", fixed_usd: this.env.bankroll_usd, equity_usd: this.portfolioSnapshot().equity_usd ?? null, wallet: this.wallet.at ? this.wallet : null },
+      bankroll: { source: this.walletMode() ? "wallet" : "fixed", fixed_usd: this.env.bankroll_usd, equity_usd: this.portfolioSnapshot().equity_usd ?? null, wallet: this.wallet.at ? this.wallet : null, wallets: this.wallets },
       positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, tier: p.tier, model: p.model, notional_usd: p.notional_usd, mark: p.mark, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode }, entryTime: p.entryTime, adopted: !!p.adopted })),
       venues, weightsVersion: this.weights.current().version, lastDecisions: s.lastDecisions, alerts: s.alerts.slice(0, 10),
     };

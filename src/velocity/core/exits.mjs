@@ -7,12 +7,13 @@
 import { createExitPlan, runExitChecks } from "../../autoape/pipeline.js";
 import { planFor } from "./plans.mjs";
 import { withClock } from "./pipeline.mjs";
+const CURVE = v => v === "pumpfun" || v === "pons";
 
 export const PUMPFUN_EXIT_SETTINGS = Object.freeze({ momentumExit: true, sl1Sell: 80 });
 
 export function createPlan({ venue, key, entry = {} }) {
   const base = planFor(venue, key);
-  if (venue === "pumpfun") {
+  if (CURVE(venue)) {
     return {
       venue, key, mode: base.mode, worst_case_fraction: base.worst_case_fraction, max_hold_ms: base.max_hold_ms,
       bondli: { ...createExitPlan(base.tier ?? Number(key), Number(entry.score) || 0, base.stop_pct ? { ...PUMPFUN_EXIT_SETTINGS, sl2: base.stop_pct } : PUMPFUN_EXIT_SETTINGS), maxHoldMs: base.max_hold_ms },
@@ -39,7 +40,7 @@ export function assertHasPlan(position) {
 /** Update mark, peak and PnL from a tick. Returns the position. */
 export function markPosition(position, tick) {
   const p = tick.payload || {};
-  if (position.venue === "pumpfun") {
+  if (CURVE(position.venue)) {
     const mcap = Number(p.mcapUsd) || 0;
     if (mcap > 0) {
       position.mark = mcap;
@@ -68,7 +69,7 @@ export function markPosition(position, tick) {
 export function evaluateExit(position, tick, { now = tick.t_observed } = {}) {
   const plan = assertHasPlan(position);
   const held = now - (position.entryTime || now);
-  if (position.venue === "pumpfun") return evaluatePumpfun(position, tick, plan, now, held);
+  if (CURVE(position.venue)) return evaluatePumpfun(position, tick, plan, now, held);
   if (position.venue === "polymarket") return evaluatePolymarket(position, tick, plan, now, held);
   return null;
 }
