@@ -51,7 +51,7 @@ test("T11: a user's envelope is the template with their choices, validated", () 
   assert.equal(small.per_trade_max_usd, 30, "per-trade cannot exceed the bankroll"); assert.equal(small.max_concurrent_positions, 10);
 });
 
-test("T11: one feed, two users, isolated ledgers, fee paid on the profitable close and refused to the exposed wallet", async () => {
+test("T11: one feed, two users, isolated ledgers, fee paid on the profitable close; the original platform wallet is accepted", async () => {
   const root = tmp();
   const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
   feed.solPrice = 100;
@@ -96,7 +96,7 @@ test("T11: one feed, two users, isolated ledgers, fee paid on the profitable clo
   const feed2 = new ScriptedFeed({ venue: "pumpfun", script: [] }); feed2.solPrice = 100; await feed2.start();
   const deps2 = feeDeps("free");
   const hub2 = new VelocityHub({ feed: feed2, rootDir: tmp(), platformWallet: EXPOSED_DEFAULT_PLATFORM_WALLET, fee: deps2, makeLiveRouter: ({ secret, wallet }) => (routers[wallet] = new FakeLive({ secret, wallet, sellSol: 0.03 })), log: { log() {}, error() {}, warn() {} } });
-  assert.equal(hub2.feeOk, false);
+  assert.equal(hub2.feeOk, true, "the operator's choice of wallet stands");
   try {
     assert.equal((await hub2.start({ wallet: "UserC", secret: "sC", settings: {} })).ok, true);
     const now = Date.now();
@@ -111,8 +111,9 @@ test("T11: one feed, two users, isolated ledgers, fee paid on the profitable clo
     await new Promise(r => setTimeout(r, 50)); await hub2.users.get("UserC").engine.enqueue(() => {});
     feed2.emitEvent({ kind: "tick", id: "MintZ", payload: tickPayload("MintZ", 17_000, { dynamics: { scores: 5, velocity: -0.6, acceleration: -0.2, trend: "crashing" } }), t_venue: now + 1500 });
     await new Promise(r => setTimeout(r, 80)); await hub2.users.get("UserC").engine.enqueue(() => {}); await new Promise(r => setTimeout(r, 30));
-    assert.deepEqual(routers.UserC.transfers, [], "a profit is never sent to the exposed wallet");
-    assert.equal(hub2.users.get("UserC").engine.ledger.query({ kind: "fee", limit: 1 }).length, 0);
+    assert.equal(routers.UserC.transfers.length, 1, "the profit's fee goes to the configured wallet");
+    assert.equal(routers.UserC.transfers[0].to, EXPOSED_DEFAULT_PLATFORM_WALLET);
+    assert.equal(hub2.users.get("UserC").engine.ledger.query({ kind: "fee", limit: 1 }).length, 1);
   } finally { await hub2.stopAll(); await feed2.stop(); }
 
   // A wallet that cannot cover one order is refused at start.
