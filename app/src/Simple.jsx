@@ -45,6 +45,7 @@ function Pulse({ st, T }) {
       <span style={{ display: "flex", alignItems: "center", gap: 6, color: c }}><span style={{ width: 6, height: 6, borderRadius: "50%", background: c, animation: dead ? "none" : "gp 1.5s infinite" }} />{what}{dead || stale ? "" : dots}</span>
       <span>{judged} judged · {gos} taken{last != null ? ` · last ${last < 60 ? Math.round(last) + "s" : Math.round(last / 60) + "m"} ago` : ""}</span>
     </div>
+    {(s.throttle === 0 || s.halt?.mode) && s.governor?.reasons?.length > 0 && <div style={{ marginTop: 6, fontFamily: M, fontSize: 11, color: T.yl, lineHeight: 1.5 }}>governor: {s.governor.reasons.join(" · ")}</div>}
     {f && f.judged > 0 && <div style={{ marginTop: 6, fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.5 }}>
       last 10 min: {f.distinct} tokens, {f.judged} looks, {f.gos} go, {f.filled} filled{f.gos > f.filled && f.sized0 ? ` · no size: ${Object.keys(f.sized0).join(", ").toLowerCase().replace(/_/g, " ")}` : ""}{f.failed ? ` · failed: ${Object.keys(f.failed).join(", ").toLowerCase().replace(/_/g, " ")}` : ""}
       <div>{Object.entries(f.gates).sort((a, b) => b[1] - a[1]).map(([g, n]) => <span key={g} style={{ marginRight: 10 }}>{GATE[g] || g} <b style={{ color: T.dm }}>{n}</b></span>)}</div>
@@ -133,6 +134,7 @@ export default function Simple() {
   const [agg, sAgg] = useState(() => { try { const v = localStorage.getItem("bondli_agg"); return v == null ? 2 : Math.max(0, Math.min(3, Number(v) || 0)); } catch { return 2; } });
   const [size, sSize] = useState(() => { try { return Number(localStorage.getItem("bondli_size")) || 10; } catch { return 10; } });
   const [showKey, sShowKey] = useState(null);
+  const [openPos, sOpenPos] = useState(null);
   const [chains, sChains] = useState(() => { try { return JSON.parse(localStorage.getItem("bondli_chains") || "null") || { pons: true }; } catch { return { pons: true }; } });
   const [copied, sCopied] = useState(false);
   const narRef = useRef(null);
@@ -254,7 +256,19 @@ export default function Simple() {
         </div>
         <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span>today, {day?.trades || 0} trades</span><span>{(() => { const w = s?.bankroll?.wallets || {}; const parts = []; if (w.pumpfun?.sol != null) parts.push(Number(w.pumpfun.sol).toFixed(3) + " SOL"); if (w.pons?.sol != null) parts.push(Number(w.pons.sol).toFixed(4) + " ETH"); if (!parts.length && s?.bankroll?.wallet) parts.push(Number(s.bankroll.wallet.sol).toFixed(3) + " " + (s.bankroll.wallet.quote || "SOL")); return parts.join(" · "); })()}</span></div>
         {paused && <div style={{ color: T.yl, fontSize: 13, marginTop: 8 }}>{/user/.test(s.halt.reason || "") ? "Paused. Open positions still get sold on their plan; nothing new is bought." : `Paused by the bot: ${s.halt.reason}`}</div>}
-        {s?.positions?.length > 0 && <div style={{ marginTop: 12 }}>{s.positions.map(p => <div key={p.id} style={{ display: "flex", justifyContent: "space-between", fontFamily: M, fontSize: 13, padding: "5px 0", borderTop: `1px solid ${T.bd}` }}><span style={{ color: T.dm }}>{p.instrument.slice(0, 6)}…</span><span>{fmt(p.notional_usd)}</span><span style={{ color: (p.changePct || 0) >= 0 ? T.gn : T.rd }}>{p.changePct != null ? (p.changePct >= 0 ? "+" : "") + p.changePct.toFixed(1) + "%" : ""}</span></div>)}</div>}
+        {s?.positions?.length > 0 && <div style={{ marginTop: 12 }}>{s.positions.map(p => { const now = Date.now(); const tickAge = p.lastTickAt ? (now - p.lastTickAt) / 1000 : null; const stale = tickAge == null ? now - p.entryTime > 60_000 : tickAge > 60; const open = openPos === p.id; const url = p.venue === "pons" ? `https://www.ponsfamily.com/launchpad/${p.instrument}` : `https://pump.fun/coin/${p.instrument}`; const held = Math.round((now - p.entryTime) / 60000); return <div key={p.id} style={{ borderTop: `1px solid ${T.bd}` }}>
+          <div onClick={() => sOpenPos(open ? null : p.id)} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, alignItems: "baseline", fontFamily: M, fontSize: 13, padding: "6px 0", cursor: "pointer" }}>
+            <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><span style={{ fontWeight: 800, color: T.tx }}>{p.name || p.ticker || p.instrument.slice(0, 6) + "…"}</span> <span style={{ color: T.ft, fontSize: 11 }}>{p.venue === "pons" ? "RH" : "SOL"} · {held}m{stale ? " · no price" : ""}</span></span>
+            <span>{fmt(p.notional_usd)}</span>
+            <span style={{ color: stale ? T.yl : (p.changePct || 0) >= 0 ? T.gn : T.rd, minWidth: 52, textAlign: "right" }}>{p.changePct != null ? (p.changePct >= 0 ? "+" : "") + p.changePct.toFixed(1) + "%" : ""}</span>
+          </div>
+          {open && <div style={{ fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.6, padding: "2px 0 8px" }}>
+            <div>{p.instrument} <a href={url} target="_blank" rel="noopener" style={{ color: T.gn }}>open on {p.venue === "pons" ? "PONS" : "pump.fun"}</a></div>
+            <div>paid {fmt(p.stake_usd || p.notional_usd)} · entry mcap {kfmt(p.entryMark || 0)} · now {kfmt(p.mark || p.entryMark || 0)} · peak {kfmt(p.peak || p.entryMark || 0)}</div>
+            <div>tier {p.tier} · plan {String(p.plan?.key)} · targets hit {p.tpHit || 0}{p.plan?.stall_ms ? ` · stall check at ${Math.round(p.plan.stall_ms / 60000)}m` : ""}{p.plan?.max_hold_ms ? ` · out by ${Math.round(p.plan.max_hold_ms / 60000)}m` : ""}</div>
+            <div style={{ color: stale ? T.yl : T.ft }}>price updated {tickAge == null ? "never" : tickAge < 60 ? Math.round(tickAge) + "s ago" : Math.round(tickAge / 60) + "m ago"}{stale ? " · exits cannot fire without a price" : ""}</div>
+          </div>}
+        </div>; })}</div>}
         <div ref={narRef} style={{ marginTop: 14, fontFamily: M, fontSize: 11, lineHeight: 1.55, height: 200, overflowY: "auto", background: T.bg, border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 10px", color: T.ft }}>
           {(st.narration || []).map((n, i) => <div key={i} style={{ color: /FILLED|SOLD|P&L/.test(n.line) ? T.tx : /fee/.test(n.line) ? T.yl : T.ft, whiteSpace: "pre-wrap" }}>{n.line}</div>)}
           {!(st.narration || []).length && <div>watching every new token…</div>}
