@@ -932,3 +932,20 @@ test("T10: X verification turns a dead handle into no social link, and a week-ol
   const unchecked = { _socialsKnown: 1, _hasAnySocial: 1, _xFlags: null, _xScore: null };
   assert.ok(!has(unchecked, "NO_SOCIALS") && !has(unchecked, "FRESH_SOCIALS"));
 });
+
+test("T10: a refused X credential switches the checker off instead of spending the month on 401s", async () => {
+  const { XSocialIntel } = await import("../../src/engine/x-social-intel.mjs");
+  const x = new XSocialIntel("bad-token");
+  assert.equal(x.enabled, true, "a token that has not been tried yet is usable");
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return { ok: false, status: 401, text: async () => "Unauthorized" }; };
+  try {
+    const first = await x.analyze("https://x.com/someone");
+    assert.equal(first.flags[0], "account_not_found", "a refused call returns no profile");
+    assert.equal(x.enabled, false, "the checker turned itself off");
+    const second = await x.analyze("https://x.com/another");
+    assert.equal(second.flags[0], "no_x_api");
+    assert.equal(calls, 1, "the second token was never sent to the API");
+  } finally { globalThis.fetch = realFetch; }
+});

@@ -16,13 +16,14 @@ export class XSocialIntel {
   constructor(bearerToken = null) {
     this.bearerToken = bearerToken || process.env.X_BEARER_TOKEN || null;
     this.cache = new Map(); // username → { data, fetchedAt }
+    this.authFailed = false; // set on a 401/403: the credential is wrong, so stop spending quota on it
     this.requestCount = 0;
     this.monthlyLimit = 1500; // free tier
     this.resetAt = this._nextMonthReset();
   }
 
   get enabled() {
-    return !!this.bearerToken;
+    return !!this.bearerToken && !this.authFailed;
   }
 
   /**
@@ -92,6 +93,13 @@ export class XSocialIntel {
         return null;
       }
       if (resp.status === 404) return null;
+      // A rejected or unauthorised credential will be rejected every time. Stop calling rather than
+      // spending the month's quota on 401s and marking every token as checked with a useless answer.
+      if (resp.status === 401 || resp.status === 403) {
+        this.authFailed = true;
+        console.error(`[X-INTEL] X API ${resp.status}: the bearer token was refused. Social verification is off until it is replaced.`);
+        return null;
+      }
       throw new Error(`X API ${resp.status}: ${await resp.text()}`);
     }
 
