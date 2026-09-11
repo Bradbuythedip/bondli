@@ -13,6 +13,9 @@ export function checkDisqualifiers(token, qf, opts = {}) {
   // A link is not verification — anyone can paste a URL — so this removes the laziest launches, not
   // the deliberate ones.
   if (requireSocials && qf?._socialsKnown && !qf._hasAnySocial) flags.push("NO_SOCIALS");
+  // A twitter account created in the last week, for a token launched minutes ago, is part of the
+  // launch rather than evidence about it. Only fires when the X API actually answered.
+  if (requireSocials && qf?._xFlags?.includes("fresh_account")) flags.push("FRESH_SOCIALS");
 
   // === RUG SIGNALS (on-chain) ===
   // Dev wallet has 2+ prior rugs in last 30 days
@@ -184,5 +187,5 @@ export const FATAL_DISQUALIFIERS = new Set([
   "STAIRCASE_CHART", "STAIRCASE_FRESH", "FLATLINE_SPIKE", "FLATLINE_NO_SELLS", "FLATLINE_FRESH", "SMOOTH_GRIND", "NO_DIPS_GRIND", "LIQ_REMOVAL",
   "DEV_SELLING", "DEV_SELF_SNIPE", "DEV_SELF_PUMP", "DEV_PUMP_NO_SELLS", "FREEZE_AUTHORITY", "STOLEN_ART",
   "SYBIL_ATTACK", "PUMP_DUMP", "MCAP_CRASHING", "EARLY_DUMP", "BOT_FARM_VOLUME", "BOTTED_VOLUME", "FAKE_VOLUME_HIGH_SOL",
-  "TOO_LATE", "STALE", "TOO_FEW_BUYERS", "TOO_YOUNG", "NO_SOCIALS",
+  "TOO_LATE", "STALE", "TOO_FEW_BUYERS", "TOO_YOUNG", "NO_SOCIALS", "FRESH_SOCIALS",
 ]);

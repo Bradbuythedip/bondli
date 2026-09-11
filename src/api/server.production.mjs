@@ -2009,7 +2009,11 @@ function extractQuickFeatures(t) {
     // Whether the metadata has been read at all. Without this a gate cannot tell "this launch listed
     // no socials" from "we have not fetched its metadata yet", and would reject every young token.
     _socialsKnown: t._metaAt ? 1 : 0,
-    _hasAnySocial: (t.twitter || t.telegram || t.website) ? 1 : 0,
+    // A twitter handle the X API says does not exist does not count as a social link.
+    _hasAnySocial: ((t.twitter && !t._xSocial?.dead) || t.telegram || t.website) ? 1 : 0,
+    _xDeadHandle: t._xSocial?.dead ? 1 : 0,
+    _xScore: t._xSocial ? t._xSocial.score : null,
+    _xFlags: t._xSocial?.flags || null,
     // Rug detection (enhanced)
     rg_devSellSpeed: devSellSpeed,
     // The dev's share of supply still held: what one wallet can dump in a single transaction.
@@ -2047,8 +2051,11 @@ function extractQuickFeatures(t) {
     _rg_devSelfPumpScore: devSelfPumpScore,
     // Wallet age on-chain data (0 = all fresh wallets = bad, 1 = all aged = good)
     _walletAgeFresh: t._walletAgeData ? t._walletAgeData.freshRatio : freshWalletRugSignal,
-    // Whale bullish: aged whale wallets buying = smart money conviction
-    _whaleBullish: t._walletAgeData ? t._walletAgeData.whaleBullish : 0,
+    // Whale bullish: aged whale wallets buying = smart money conviction. NULL, not 0, when the wallet-age
+    // enrichment never ran: 0 asserts "no whale is buying", which is a claim we have not earned, and the
+    // learner's opt() only drops a feature from the weighted sum when it is null. As a literal 0 it entered
+    // at full weight and dragged every hosted candidate's confidence under the entry floor.
+    _whaleBullish: t._walletAgeData ? t._walletAgeData.whaleBullish : null,
     _whaleBuys: t._walletAgeData ? t._walletAgeData.whaleBuys : [],
     // Dev credibility: name uniqueness + dev wallet SOL + launch history
     _devCredScore: devCredScore,
@@ -7942,6 +7949,36 @@ app.get("/api/radar", (req, res) => {
 // bondli's own trader only ever gates tokens that passed its base filter: at least 3 buyers,
 // at least 1 sell, at least 5 buys (3 when DexScreener-boosted), 30s old, $4k market cap.
 // Serving the same population to external pipelines keeps the gates meaning what they mean there.
+// ── X verification: is the twitter link a real account, or a URL someone typed? ──
+// The free X tier is 1500 calls a month, about 50 a day, against roughly 1700 tokens judged an hour.
+// So this can never be a scoring feature evaluated on every candidate. It runs on the few tokens that
+// have already cleared the base filter and carry a link, at most once per handle, in the background,
+// and the answer is stamped on the token for the gates to read on a LATER tick. No decision ever waits
+// on it, and no decision is ever delayed by it: a token judged before the answer arrives is judged
+// without it, exactly as it is today.
+const X_DAILY_BUDGET = Number(process.env.X_DAILY_BUDGET) > 0 ? Number(process.env.X_DAILY_BUDGET) : 45;
+const xQueue = { seen: new Set(), spentAt: 0, spent: 0, inflight: 0 };
+function queueXCheck(t) {
+  if (!xSocial.enabled || !t?.twitter || t._xSocial !== undefined || xQueue.inflight >= 2) return;
+  const day = Math.floor(Date.now() / 86_400_000);
+  if (xQueue.spentAt !== day) { xQueue.spentAt = day; xQueue.spent = 0; }
+  if (xQueue.spent >= X_DAILY_BUDGET) return;
+  const handle = String(t.twitter).toLowerCase().replace(/[?#].*$/, "").replace(/\/$/, "");
+  if (xQueue.seen.has(handle)) return;              // one call per handle, ever, per process
+  xQueue.seen.add(handle); xQueue.spent++; xQueue.inflight++;
+  if (xQueue.seen.size > 5000) xQueue.seen.clear();
+  const ca = t.ca;
+  xSocial.analyze(t.twitter)
+    .then(r => {
+      const tok = radar.tokens.get(ca); if (!tok) return;
+      // A handle the API says does not exist is not a social link. Everything else is recorded as-is.
+      tok._xSocial = { score: r.score, flags: r.flags || [], dead: (r.flags || []).includes("account_not_found"), at: Date.now() };
+      if (tok._xSocial.dead) console.log(`[X-INTEL] ${ca.slice(0, 8)} lists ${handle} which does not exist`);
+    })
+    .catch(() => {})
+    .finally(() => { xQueue.inflight--; });
+}
+
 function passesTraderBaseFilter(t, now = Date.now(), loose = false) {
   const ub = t.uniqueBuyers?.size || 0, buys = t.buys || 0, sells = t.sells || 0, mc = t.mcapUsd || 0;
   const ageMin = (now - (t.createdAt || now)) / 60000;
@@ -8022,6 +8059,7 @@ function buildScoredResponse(query = {}) {
       // the token (rug gate or base filter) and its old score must not be served as current.
       if (!only && !all && (!t._scoredAt || now - t._scoredAt > 10_000)) continue;
       if (!only && !all && !passesTraderBaseFilter(t, now, loose)) continue;
+      queueXCheck(t); // background, budgeted, never awaited
     }
     if (!qf) { try { qf = extractQuickFeatures(t); } catch {} }
     // Stamped here, not only in judgeToken, so the row carries it to the live engine's own gates.
