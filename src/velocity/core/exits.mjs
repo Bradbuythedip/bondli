@@ -79,7 +79,8 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   const token = p.token ? { ...p.token, mcapUsd: Number(p.mcapUsd) || p.token.mcapUsd || 0, vSolInBondingCurve: Number(p.vSolInBondingCurve) || p.token.vSolInBondingCurve || 0 }
     : { mcapUsd: Number(p.mcapUsd) || 0, vSolInBondingCurve: Number(p.vSolInBondingCurve) || 0 };
   // The time stop needs no price: a token that left the radar or went to zero still gets sold.
-  if (held > plan.max_hold_ms) return { action: "SELL", pct: 100, reason: "MAX_HOLD", layer: 2, detail: `${Math.round(held / 60000)}min` };
+  // A moonbag has no time limit: it rides until it dies (-80%) or gives back its own trail.
+  if (held > plan.max_hold_ms && !position._bondli?.isMoonbag) return { action: "SELL", pct: 100, reason: "MAX_HOLD", layer: 2, detail: `${Math.round(held / 60000)}min` };
   if (!(token.mcapUsd > 0)) return null;
   const pos = position._bondli || (position._bondli = {
     entryMcap: position.entryMark, peakMcap: position.peak || position.entryMark, tier: Number(plan.key), entryScore: position.entryScore || 0,
@@ -119,7 +120,7 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   if (r.action === "PARTIAL_SELL") {
     if (/^TP1|trailing|fade-trim|momentum-trim/.test(r.reason)) pos.tpHit = Math.max(pos.tpHit, 1);
     if (r.reason === "TP2") pos.tpHit = Math.max(pos.tpHit, 2);
-    if (r.reason === "TP3") { pos.tpHit = 3; pos.isMoonbag = !!r.moonbag; }
+    if (r.reason === "TP3" || (r.reason === "TP-trail" && r.moonbag)) { pos.tpHit = 3; pos.isMoonbag = !!r.moonbag; }
     if (r.reason === "SL1") pos.slHit = 1;
     return { action: "PARTIAL_SELL", pct: r.pct, reason: r.reason, layer: r.layer, detail: r.detail || null };
   }

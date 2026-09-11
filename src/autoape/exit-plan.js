@@ -12,9 +12,10 @@ export function createExitPlan(tier, entryScore, settings) {
 
   // Tier-specific take profit levels
   const GRADUATED_TPS = {
+    // Every tier keeps a moonbag once a token has run: a runner is never sold to zero.
     1: { tp1: s.tp1 || 35, tp1Sell: 20, tp2: s.tp2 || 100, tp2Sell: 20, tp3: s.tp3 || 250, tp3Sell: 25, moonbagPct: 20, trailWidth: 40 },
-    2: { tp1: s.tp1 || 35, tp1Sell: s.tp1Sell || 30, tp2: s.tp2 || 100, tp2Sell: s.tp2Sell || 30, tp3: s.tp3 || 250, tp3Sell: s.tp3Sell || 40, moonbagPct: 0, trailWidth: 35 },
-    3: { tp1: Math.round((s.tp1 || 35) * 0.85), tp1Sell: 33, tp2: Math.round((s.tp2 || 100) * 0.75), tp2Sell: 33, tp3: 0, tp3Sell: 34, moonbagPct: 0, trailWidth: 25 }, // Tier 3 never holds moonbag
+    2: { tp1: s.tp1 || 35, tp1Sell: s.tp1Sell || 30, tp2: s.tp2 || 100, tp2Sell: s.tp2Sell || 30, tp3: s.tp3 || 250, tp3Sell: s.tp3Sell || 40, moonbagPct: 15, trailWidth: 35 },
+    3: { tp1: Math.round((s.tp1 || 35) * 0.85), tp1Sell: 33, tp2: Math.round((s.tp2 || 100) * 0.75), tp2Sell: 33, tp3: 200, tp3Sell: 34, moonbagPct: 10, trailWidth: 25 },
   };
 
   return {
@@ -122,12 +123,12 @@ export function checkTrailingExit(pos, changePct, fromPeak, settings) {
     return null;
   }
 
-  // TP3: Runner — sell tp3Sell%, rest = moonbag
+  // TP3: Runner — sell everything but the moonbag once the run gives back its trail
   if ((pos.tpHit || 0) < 3 && tp.tp3 > 0 && changePct >= tp.tp3) {
     // Trailing stop widening for big runners
     const trailPct = changePct >= 4900 ? 25 : changePct >= 900 ? 30 : changePct >= 400 ? 35 : changePct >= 200 ? 40 : 50;
     if (fromPeak >= trailPct) {
-      return { action: "PARTIAL_SELL", pct: tp.tp3Sell, reason: "TP3", layer: 3, moonbag: true };
+      return { action: "PARTIAL_SELL", pct: Math.max(tp.tp3Sell, 100 - (tp.moonbagPct || 0)), reason: "TP3", layer: 3, moonbag: (tp.moonbagPct || 0) > 0 };
     }
     // Still within trail — hold
     return null;
@@ -137,7 +138,13 @@ export function checkTrailingExit(pos, changePct, fromPeak, settings) {
   // all the way back. The wider the run, the more room it gets; a 10x may breathe 30% off its peak.
   if ((pos.tpHit || 0) >= 2 && (tp.tp3 <= 0 || changePct < tp.tp3) && changePct > 20) {
     const trailPct = changePct >= 900 ? 30 : changePct >= 400 ? 26 : 22;
-    if (fromPeak >= trailPct) return { action: "SELL", pct: 100, reason: "TP-trail", layer: 3, detail: `+${changePct.toFixed(0)}%, ${fromPeak.toFixed(0)}% off peak` };
+    if (fromPeak >= trailPct) {
+      // A token that reached 3x keeps its moonbag when the trail fires; the rest is sold.
+      const peakPct = pos.peakMcap > 0 && pos.entryMcap > 0 ? ((pos.peakMcap - pos.entryMcap) / pos.entryMcap) * 100 : changePct;
+      const keep = peakPct >= 200 && tp.moonbagPct > 0 ? tp.moonbagPct : 0;
+      return keep ? { action: "PARTIAL_SELL", pct: 100 - keep, reason: "TP-trail", layer: 3, moonbag: true, detail: `+${changePct.toFixed(0)}%, ${fromPeak.toFixed(0)}% off peak, ${keep}% moonbag kept` }
+                  : { action: "SELL", pct: 100, reason: "TP-trail", layer: 3, detail: `+${changePct.toFixed(0)}%, ${fromPeak.toFixed(0)}% off peak` };
+    }
   }
 
   // TP2: Second target
