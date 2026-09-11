@@ -99,6 +99,7 @@ export class PonsFeed extends Feed {
     this.priceFn = priceFn; this.solPrice = ethPrice || 0; this.solPriceAt = ethPrice ? this.clock() : 0; // "solPrice" = quote (ETH) price in USD, by the engine's convention
     this.tokens = new Map(); this.byCurve = new Map(); this.dyn = new Dynamics();
     this._lastEmitted = new Map(); this._timers = []; this._block = null; this.errors = 0; this.reemitMs = rest.reemitMs ?? 30_000;
+    this.lastError = null; this.hydrateErrors = 0; this.lastHydrateError = null; this.ticks = 0; this.candidates = 0; this.polls = 0;
   }
 
   token(ca) { return this.tokens.get(String(ca).toLowerCase()) || null; }
@@ -150,7 +151,7 @@ export class PonsFeed extends Feed {
       if (meta) { t.name = meta.name || t.name; t.ticker = meta.symbol || t.ticker; }
       t._pending = false; t._hydratedAt = this.clock();
       this._remark(t);
-    } catch (err) { t._hydrateError = err.message; }
+    } catch (err) { t._hydrateError = err.message; this.hydrateErrors++; this.lastHydrateError = `${t.ca.slice(0, 10)}: ${err.message}`.slice(0, 200); }
   }
 
   payloadFor(t, now = this.clock()) {
@@ -201,12 +202,13 @@ export class PonsFeed extends Feed {
       if (t.native === false) continue; // the curve says its quote is an ERC-20 after all
       if (!(t.mcapUsd > 0) || !(this.solPrice > 0)) continue;
       const payload = this.payloadFor(t, now);
-      if (this.watched.has(t.ca)) this.emitEvent({ kind: "tick", id: t.ca, payload: { ...payload, source: "pons" }, t_venue: now });
+      if (this.watched.has(t.ca)) { this.emitEvent({ kind: "tick", id: t.ca, payload: { ...payload, source: "pons" }, t_venue: now }); this.ticks++; }
       if (now - t.createdAt < SNIPE_TAX_WINDOW_MS) continue; // a buy in the snipe-tax window is a donation: not even a candidate
       if (t.uniqueBuyers.size < 2 || t.buys < 3) continue; // the pump.fun base filter's floor: two people and three buys before anyone is asked to judge it
       if (!this._changed(t, payload, now)) continue;
-      this.emitEvent({ kind: "candidate", id: t.ca, payload, t_venue: now }); emitted++;
+      this.emitEvent({ kind: "candidate", id: t.ca, payload, t_venue: now }); emitted++; this.candidates++;
     }
+    this.polls++;
     this.touch();
     this.markHealth(true, `block ${to}, ${this.tokens.size} tokens, ${emitted} candidates`);
     return emitted;
@@ -216,10 +218,12 @@ export class PonsFeed extends Feed {
     this.running = true;
     const tick = async () => {
       if (!this.running) return;
-      try { await this.pollOnce(); this.errors = 0; } catch (err) { this.errors++; this.markHealth(false, err.message); }
+      try { await this.pollOnce(); this.errors = 0; } catch (err) { this.errors++; this.lastError = `${new Date(this.clock()).toISOString()} ${err.message}`.slice(0, 300); this.markHealth(false, err.message); }
       if (this.running) this._timers.push(setTimeout(tick, this.pollMs));
     };
     tick();
   }
   async stop() { this.running = false; for (const t of this._timers) clearTimeout(t); this._timers = []; this.markHealth(false, "stopped"); }
+  /** The base status plus what a poll is doing: how many, how many failed, what the last failure said. */
+  status() { return { ...super.status(), polls: this.polls, candidates: this.candidates, ticks: this.ticks, watched: this.watched.size, block: this._block, errors: this.errors, lastError: this.lastError, hydrateErrors: this.hydrateErrors, lastHydrateError: this.lastHydrateError, skippedQuote: this.skippedQuote || 0 }; }
 }

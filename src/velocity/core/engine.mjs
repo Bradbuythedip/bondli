@@ -174,7 +174,7 @@ export class Engine extends EventEmitter {
         const list = (await v.liveRouter.positions()).map(p => ({ instrument: p.instrument, qty: p.qty }));
         this._holdings[venue] = { at: this.clock(), list };
         const open = new Set(this.store.openPositions(venue).map(p => p.instrument));
-        const untracked = list.filter(h => !open.has(h.instrument) && h.qty > 0);
+        const untracked = list.filter(h => !open.has(h.instrument) && h.qty >= 1); // dust left by a sell is not a holding
         if (untracked.length && this.clock() - this._lastHoldingsReconcile > 2 * 60_000) {
           this._lastHoldingsReconcile = this.clock();
           this.log("warn", `${venue}: wallet holds ${untracked.length} token(s) the store does not track (${untracked.map(u => u.instrument.slice(0, 8)).join(", ")}); reconciling`);
