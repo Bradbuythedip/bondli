@@ -31,8 +31,8 @@ cd launch/notafruitfly && npm i            # ethers (or run from the repo root, 
 echo 'PRIVATE_KEY=0x…' >> .env; echo 'PONS_RPC_URL=https://robinhood-mainnet.g.alchemy.com/v2/<NEW key>' >> .env
 node pons-launch.mjs abi                   # ABIs from Blockscout into pons-abi/
 node pons-launch.mjs inspect               # the launch struct as it will be filled, canLaunch(wallet), the router function
-node pons-launch.mjs template              # trace the latest launch -> pons-template.json (needs debug_traceTransaction: Alchemy Growth)
-node pons-launch.mjs mine                  # proof against the deployer, then grind; salt + CA -> pons-state.json
+node pons-launch.mjs template              # optional: trace the latest launch -> pons-template.json (needs debug_traceTransaction, which the public RPC lacks)
+node pons-launch.mjs mine                  # on chain (no template): every try is a predictLaunchAddresses call, batched. offline (template): proof against the deployer first, then grind on every core
 node pons-launch.mjs launch --dry-run      # re-checks the CA today, simulates the launch-and-buy
 node pons-launch.mjs launch                # type LAUNCH
 node ../../tools/launch-push.mjs --venue pons --address 0x…  --update "We are live."
@@ -46,8 +46,23 @@ wrong field is caught before any hashing, and `launch` re-checks the address on 
 Set `LOGO` to the image URL you will upload (the fly is at https://bondli.fun/fly.png once Vercel
 deploys) and the socials before mining; changing any of them afterwards changes the address.
 
-Vanity cost on the token address: each try hashes the whole token init code (a few KB), roughly
-2,000 tries per second per core. `f00d` alone is seconds; five characters is minutes; six is one to two hours.
+Two ways to mine, chosen by whether pons-template.json exists (or FLY_MINE_MODE):
+- **on chain** (default, nothing to get wrong): each try is one `predictLaunchAddresses` eth_call, 50
+  per JSON-RPC batch, six batches in flight. A few hundred tries a second on Alchemy: four characters
+  (65k tries) in minutes, five (1M) in about an hour. Alchemy compute units are the only cost.
+- **offline** (needs the trace template): each try hashes the token init code locally, roughly 2,000 a
+  second per core; five characters in minutes, six in an hour or two. The template must come from a
+  launch whose creatorTaxBps and buybackEnabled equal ours; the script refuses otherwise.
+
+What the launch call sends: `launchAndBuy(params, launchConfigId, pairToken=ETH, quoteIn, minTokensOut=0,
+recipient, snipeTaxExemptions=[])` with `msg.value = launchFee + quoteIn`. The launch fee is read from
+the factory (or set `FLY_LAUNCH_FEE_WEI`). `expectedEconomics` is pinned to `previewLaunchEconomics`
+so a fee-config change between mining and launch reverts instead of landing on another address.
+
+Baked into the address (frozen once `mine` runs): name, symbol, logo, description, the five socials
+(TWITTER, TELEGRAM, DISCORD, WEBSITE, FARCASTER), creatorFeeRecipient (the launch wallet),
+creatorTaxBps, buybackEnabled, pairToken, the launch config's economics, the wallet, the salt.
+Not baked: the dev buy, minTokensOut, recipient, exemptions, the launch fee.
 
 Announce the CA ahead of time once `mine` has it: nobody else can take it, and the 5-second opening
 tax makes sniping pointless.
