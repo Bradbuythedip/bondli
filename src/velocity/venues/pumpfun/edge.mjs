@@ -126,7 +126,11 @@ export function makePumpfunEdge({
     ],
 
     estimate(c, ctx = {}) {
-      const stats = ctx.stats?.pumpfun?.[c.tier];
+      // This judge serves PONS as well as pump.fun, so it must read the record of the venue it is
+      // actually judging. Keyed to "pumpfun" it priced Robinhood Chain entries with pump.fun's win
+      // rate and payoff -- a different chain, launchpad, fee schedule and crowd -- while the PONS
+      // statistics modeStats computes were never read by anything.
+      const stats = ctx.stats?.[venue]?.[c.tier];
       const prior = priors[c.tier] || priors[3];
       const useStats = stats && stats.n >= minOutcomesForStats && stats.p_win > 0 && stats.payoff > 0;
       const p_win = useStats ? stats.p_win : prior.p_win;
@@ -136,7 +140,10 @@ export function makePumpfunEdge({
       // when there are enough of them; before that the tier's designed stop, which is what the exit
       // plan is actually aiming to lose.
       const lossFraction = useStats && stats.loss_fraction > 0 ? stats.loss_fraction : (prior.loss_fraction ?? 0.12);
-      const weights = ctx.weights?.pumpfun || DEFAULT_WEIGHTS.pumpfun;
+      // Ranking weights are still pump.fun's: the learner only trains that set, and the features are
+      // the same shape on both venues. Unlike the statistics above, this is a shared prior rather
+      // than one venue's record being read as another's.
+      const weights = ctx.weights?.[venue] || ctx.weights?.pumpfun || DEFAULT_WEIGHTS.pumpfun;
       const features = pumpfunFeatures(c);
       const ranked = scoreFeatures(features, weights);
       const confidence = Math.min(0.95, ranked + (c.tier === 1 ? 0.15 : c.tier === 2 ? 0.05 : 0));

@@ -154,3 +154,23 @@ test("T8: realized statistics age out, so a tier the EV gate closed can reopen",
   assert.equal(e.modeStats().pumpfun?.[3], undefined, "the window is empty, so the tier falls back to priors and can probe again");
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("T8: the shared judge reads the record of the venue it is judging", async () => {
+  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const cand = { tier: 3, instrument: "X", token: { ca: "X", uniqueBuyers: { size: 9 }, buys: 12, sells: 2, createdAt: Date.now() - 120_000, mcapUsd: 9000, trades: [] }, qf: {}, scores: { apeScore: 50 }, reference: {} };
+  // Two very different records under the same tier, one per venue.
+  const stats = {
+    pumpfun: { 3: { n: 100, p_win: 0.60, payoff: 4, loss_fraction: 0.05 } },
+    pons:    { 3: { n: 100, p_win: 0.10, payoff: 1.2, loss_fraction: 0.20 } },
+  };
+  const onPump = makePumpfunEdge({ venue: "pumpfun", aggression: 1 }).estimate(cand, { stats });
+  const onPons = makePumpfunEdge({ venue: "pons", aggression: 1 }).estimate(cand, { stats });
+  assert.equal(onPump.p_win, 0.60);
+  assert.equal(onPons.p_win, 0.10, "Robinhood Chain is not priced with pump.fun's win rate");
+  assert.equal(onPons.loss_fraction, 0.20);
+  assert.equal(onPons.on_priors, false, "and its own record is what makes it stop using priors");
+  // A venue with no record of its own still falls back to priors rather than borrowing another's.
+  const noRecord = makePumpfunEdge({ venue: "pons", aggression: 1 }).estimate(cand, { stats: { pumpfun: stats.pumpfun } });
+  assert.equal(noRecord.on_priors, true);
+  assert.equal(noRecord.p_win, 0.30);
+});
