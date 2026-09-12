@@ -240,6 +240,33 @@ export class PumpfunLiveRouter extends Router {
   }
 
   /** A signature sent earlier: did it land? Used for buys and sells that outlived their timeout. */
+  /** The wallet holds none of a mint and the engine has no pending signature for it. Before that is
+   *  booked as a total loss, look for the sale on chain: a manual sell, or one of ours whose
+   *  signature we lost, still put SOL in the wallet. Scans the mint's own token account history, so
+   *  it reads a handful of transactions rather than the whole wallet.
+   *  Returns { sig, solReceived, qty, at } for the most recent outgoing transfer since `since`, or
+   *  null when nothing explains where the tokens went. */
+  async findRecentSale(mint, { since = 0, limit = 25 } = {}) {
+    if (!this.ready) return null;
+    const { getAssociatedTokenAddressSync } = await import("@solana/spl-token");
+    let ata;
+    try { ata = getAssociatedTokenAddressSync(new this.web3.PublicKey(mint), this.keypair.publicKey, true); }
+    catch { return null; }
+    let sigs;
+    try { sigs = await this.connection.getSignaturesForAddress(ata, { limit }); } catch { return null; }
+    // Newest first, and only what happened after we bought: an older sale is a different position.
+    for (const s of sigs || []) {
+      if (s.err) continue;
+      const at = s.blockTime ? s.blockTime * 1000 : null;
+      if (since && at && at < since) break;
+      const d = await this._txDeltas(s.signature, mint).catch(() => null);
+      if (!d || d.err) continue;
+      if (!(d.tokenDelta < 0)) continue; // a buy, or the account being closed
+      return { sig: s.signature, solReceived: Math.max(0, d.solDelta), qty: -d.tokenDelta, at: at || this.clock() };
+    }
+    return null;
+  }
+
   async resolvePending({ instrument, side, sig, at, reference = {}, qtyHint = 0, stakeUsd = 0 }) {
     if (!this.ready) return failure({ id: sig }, "NOT_READY", "call init() first");
     const st = await this._awaitStatus(sig, 0, { history: true });
