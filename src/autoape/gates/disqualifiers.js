@@ -5,7 +5,7 @@
 // (src/velocity/venues/pumpfun/edge.mjs AGGRESSION); defaults are the designed rules.
 import { curvePctOf } from "./curve.js";
 export function checkDisqualifiers(token, qf, opts = {}) {
-  const { coordDump = 0.5, staleMin = 15, tooLateCurve = 0.80, concentrationMax = 0.7, minAgeMin = 0.5, momentum = null, devHoldMax = 0.10, requireSocials = false } = opts;
+  const { coordDump = 0.5, staleMin = 15, tooLateCurve = 0.80, concentrationMax = 0.7, minAgeMin = 0.5, momentum = null, devHoldMax = 0.10, requireSocials = false, maxRoundTripBps = 800 } = opts;
   const flags = [];
 
   // A launch that lists no twitter, no telegram and no website is someone who did not intend to be
@@ -14,6 +14,17 @@ export function checkDisqualifiers(token, qf, opts = {}) {
   // A link is not verification — anyone can paste a URL — so this removes the laziest launches, not
   // the deliberate ones.
   if (requireSocials && qf?._socialsKnown && !qf._hasAnySocial) flags.push("NO_SOCIALS");
+
+  // === WHAT THE VENUE CHARGES ===
+  // On a PONS curve the creator sets a tax on top of the curve's own fee, and both are paid on the
+  // way in and the way out. A 10% tax is a 22% round trip: no price move recovers that, and it is
+  // not a judgement about the token but arithmetic about the venue. Twenty-five such trades cost one
+  // operator $52 while the gate, reading an unfetched tax as zero, thought each one cost 20 cents.
+  // Only fires once the curve has actually been read -- before that the cost model assumes the worst
+  // and the EV gate does the refusing.
+  const feeBps = Number(token.curve?.feeBps ?? token.feeBps);
+  const taxBps = Number(token.curve?.creatorTaxBps ?? token.creatorTaxBps);
+  if (Number.isFinite(feeBps) && Number.isFinite(taxBps) && 2 * (feeBps + taxBps) > maxRoundTripBps) flags.push("FEE_TOO_HIGH");
   // A twitter account created in the last week, for a token launched minutes ago, is part of the
   // launch rather than evidence about it. Only fires when the X API actually answered.
   if (requireSocials && qf?._xFlags?.includes("fresh_account")) flags.push("FRESH_SOCIALS");
@@ -184,6 +195,8 @@ export const MOMENTUM_WAIVABLE = new Set(["QUICK_FLIP", "COORDINATED_DUMP", "EXT
 
 /** Never waived by momentum (documentation of the intent; the allow-list above is what runs). */
 export const FATAL_DISQUALIFIERS = new Set([
+  // What a curve charges does not change minute to minute: re-judging it is wasted work.
+  "FEE_TOO_HIGH",
   "DEV_HOLDS_SUPPLY", "LINEAR_PUMP", "BOT_PUMP", "ZERO_SELLS", "ZERO_SELLS_FAKE_CHART", "ALL_BUYS_NO_SELLS", "FRESH_WALLET_RUG",
   "STAIRCASE_CHART", "STAIRCASE_FRESH", "FLATLINE_SPIKE", "FLATLINE_NO_SELLS", "FLATLINE_FRESH", "SMOOTH_GRIND", "NO_DIPS_GRIND", "LIQ_REMOVAL",
   "DEV_SELLING", "DEV_SELF_SNIPE", "DEV_SELF_PUMP", "DEV_PUMP_NO_SELLS", "FREEZE_AUTHORITY", "STOLEN_ART",

@@ -187,3 +187,42 @@ test("T12: a funded Robinhood Chain wallet is judged in ETH, not against Solana'
   assert.equal(mk(1, 3500).quoteReserve("pumpfun"), 0.02);
   fsx.rmSync(dir, { recursive: true, force: true });
 });
+
+test("T12: a curve's own fees are priced honestly, and an unread tax is not free", async () => {
+  const { makePumpfunEdge, AGGRESSION } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const { checkDisqualifiers } = await import("../../src/autoape/gates/disqualifiers.js");
+  const pons = makePumpfunEdge({ venue: "pons", aggression: 1 });
+  const cand = (curve) => ({ solPrice: 3500, reference: { solPrice: 3500, vSolInBondingCurve: 3, curve } });
+
+  // A curve the feed has read: its real numbers are used. 1% fee + 5% creator tax = 12% round trip.
+  const known = pons.costs(cand({ feeBps: 100, creatorTaxBps: 500 }), 10);
+  assert.equal(+known.detail.feeFractionRoundTrip.toFixed(4), 0.12);
+  // And a cheap curve is priced cheaply -- this is not a flat penalty on the venue.
+  assert.equal(+pons.costs(cand({ feeBps: 100, creatorTaxBps: 0 }), 10).detail.feeFractionRoundTrip.toFixed(4), 0.02);
+
+  // Not read yet. The feed's placeholders are null, and null must not read as "no tax": that is what
+  // let 25 trades through at an assumed 2% while they really cost about 22%.
+  const unread = pons.costs(cand({ feeBps: null, creatorTaxBps: null }), 10);
+  assert.equal(+unread.detail.feeFractionRoundTrip.toFixed(4), 0.12, "an unknown tax is assumed expensive");
+  assert.equal(+pons.costs(cand(undefined), 10).detail.feeFractionRoundTrip.toFixed(4), 0.12, "and so is no curve at all");
+  // It must never fall through to pump.fun's flat 3%, which is a number from the other chain.
+  assert.notEqual(+pons.costs(cand(undefined), 10).detail.feeFractionRoundTrip.toFixed(4), 0.03);
+  // pump.fun itself is untouched.
+  assert.equal(+makePumpfunEdge({ aggression: 1 }).costs({ solPrice: 200, reference: { solPrice: 200 } }, 10).detail.feeFractionRoundTrip.toFixed(4), 0.03);
+
+  // The hard cap: a round trip past the dial's limit is refused outright, whatever the token does.
+  const tok = (taxBps) => ({ ca: "0xa", createdAt: Date.now() - 5 * 60_000, buys: 20, sells: 4, uniqueBuyers: { size: 12 }, trades: [], spark: [], curve: { feeBps: 100, creatorTaxBps: taxBps } });
+  assert.equal(AGGRESSION[1].maxRoundTripBps, 600);
+  assert.ok(checkDisqualifiers(tok(500), {}, AGGRESSION[1]).flags.includes("FEE_TOO_HIGH"), "1% + 5% = 12% round trip");
+  assert.ok(!checkDisqualifiers(tok(100), {}, AGGRESSION[1]).flags.includes("FEE_TOO_HIGH"), "1% + 1% = 4% is fine");
+  // Degen tolerates more, and still not a 10% tax.
+  assert.equal(AGGRESSION[3].maxRoundTripBps, 1000);
+  assert.ok(!checkDisqualifiers(tok(300), {}, AGGRESSION[3]).flags.includes("FEE_TOO_HIGH"));
+  assert.ok(checkDisqualifiers(tok(1000), {}, AGGRESSION[3]).flags.includes("FEE_TOO_HIGH"));
+  // Unread economics are not a reason to refuse here -- the cost model already assumes the worst.
+  assert.ok(!checkDisqualifiers(tok(null), {}, AGGRESSION[1]).flags.includes("FEE_TOO_HIGH"));
+
+  // pump.fun has no curve fees of its own and must never trip this rule.
+  const solTok = { ca: "M", createdAt: Date.now() - 5 * 60_000, buys: 20, sells: 4, uniqueBuyers: { size: 12 }, trades: [], spark: [] };
+  assert.ok(!checkDisqualifiers(solTok, {}, AGGRESSION[1]).flags.includes("FEE_TOO_HIGH"));
+});
