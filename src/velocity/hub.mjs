@@ -142,7 +142,16 @@ export class VelocityHub {
     const venues = { pumpfun: { mode: "paper", feed: view, edge: makePumpfunEdge({ aggression }), router: new PumpfunPaperRouter({ bookFile: path.join(dataDir, "paper-book-pumpfun.json"), clock: this.clock }), liveRouter } };
     if (pons) venues.pons = { mode: "paper", feed: new SharedFeedView(this.ponsFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "pons", aggression }), router: new PonsPaperRouter({ bookFile: path.join(dataDir, "paper-book-pons.json"), clock: this.clock }), liveRouter: this.makePonsRouter({ secret: evmSecret, wallet }) };
     const engine = new Engine({ dataDir, envelope, venues, clock: this.clock });
-    engine.alerter = new Alerter({ store: engine.store, ledger: engine.ledger, webhookUrl: null, statusUrl: null });
+    // Everything the engine considers worth waking someone for -- a live router that failed to
+    // initialise, a flatten that left positions open, a position booked as a total loss, the governor
+    // freezing entries, gate files changed on disk -- went to a webhook that was hard-coded null, so
+    // it reached the ledger and the status page and nowhere a person would see it. ALERT_WEBHOOK_URL
+    // (a Slack/Discord/ntfy endpoint) is now honoured, and the message carries a link back.
+    engine.alerter = new Alerter({
+      store: engine.store, ledger: engine.ledger,
+      webhookUrl: process.env.ALERT_WEBHOOK_URL || null,
+      statusUrl: process.env.PUBLIC_URL || process.env.BONDLI_URL || "",
+    });
     engine.on("log", l => this.log.log?.(`[velocity ${wallet.slice(0, 8)}] ${l.level} ${l.text}`));
     engine.on("outcome", ({ position }) => { this.settleFee(wallet, position).catch(err => this.log.error?.(`[VELOCITY-HUB] fee ${wallet.slice(0, 8)}: ${err.message}`)); });
     const sup = new Supervisor({ engine, dataDir, alerter: engine.alerter, clock: this.clock });
