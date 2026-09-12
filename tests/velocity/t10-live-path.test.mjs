@@ -955,6 +955,7 @@ test("T10: the token account's rent comes back when a position leaves for good, 
   const engine = mkEngine(dir, { envelope: env, mode: "paper", live, config: { reentryCooldownMs: 0, saveMs: 600_000, governorMs: 600_000, sweepMs: 600_000 } });
   try {
     await engine.start({ reconcile: false });
+    engine.quotePrice.pumpfun = 200; // going live needs a price for the quote asset, or the wallet cannot be judged
     await engine.setVenueMode("pumpfun", "live", { override: true });
     const plan = createPlan({ venue: "pumpfun", key: 2, entry: { score: 66 } });
     const mk = (id, over = {}) => ({ id, venue: "pumpfun", instrument: "MintR", status: "open", paper: false, qty: 1000, remaining_qty: 1000, cost_usd: 25, notional_usd: 25, stake_usd: 25, proceeds_usd: 0, entryTime: Date.now() - 60_000, entryMark: 10_000, tier: 2, model: "bondli_gates", plan, reference: { solPrice: 200 }, ...over });
