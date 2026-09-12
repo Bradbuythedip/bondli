@@ -1039,3 +1039,28 @@ test("T10: curve progress subtracts the virtual reserve, so a new launch reads 0
     assert.ok(!checkExecutionWindow(fresh, 3, Date.now(), AGGRESSION[level]).checks.includes("CURVE_TOO_ADVANCED_SPEC"),
       `aggression ${level}: a fresh launch is not "too advanced"`);
 });
+
+test("T10: a candidate the engine cannot enter is screened before the gates, and logged once per window", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const engine = mkEngine(dir, { envelope: env, mode: "paper", config: { rejudgeMs: 30_000 } });
+  let now = Date.now(); engine.clock = () => now;
+  const runner = engine.venues.pumpfun.runner;
+  let gateRuns = 0;
+  const realRun = runner.run.bind(runner);
+  runner.run = (...a) => { gateRuns++; return realRun(...a); };
+  try {
+    await engine.start({ reconcile: false });
+    await engine.enqueue(() => engine.onEvent(cand("MintHeld", now)));
+    assert.equal(engine.store.openPositions("pumpfun").length, 1);
+    const afterEntry = gateRuns;
+    // The feed keeps offering the same mint every couple of seconds while it is held.
+    for (let i = 1; i <= 5; i++) { now += 2000; await engine.enqueue(() => engine.onEvent(cand("MintHeld", now))); }
+    assert.equal(gateRuns, afterEntry, "the gate pipeline does not run on a mint we already hold");
+    const blocked = engine.ledger.query({ kind: "order" }).filter(o => o.screened);
+    assert.equal(blocked.length, 1, "one line per rejudge window, not one per tick");
+    assert.equal(blocked[0].reason, "ALREADY_IN_OR_INFLIGHT");
+    // Past the window it says so again, so a mint stuck like this is still visible.
+    now += 31_000; await engine.enqueue(() => engine.onEvent(cand("MintHeld", now)));
+    assert.equal(engine.ledger.query({ kind: "order" }).filter(o => o.screened).length, 2);
+  } finally { await engine.stop(); }
+});

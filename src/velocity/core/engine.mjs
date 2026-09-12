@@ -62,6 +62,7 @@ export class Engine extends EventEmitter {
     this.inflight = new Set();  // instruments with an order in flight
     this.cooldown = new Map();  // instrument -> until
     this.disqualified = new Map(); // instrument -> until; a gate-1 reject is not re-judged every poll (see FATAL_FLAGS)
+    this._entryBlockedLogged = new Map(); // instrument -> until; one "already in / cooling down" line per window, not one per tick
     this.pendingBuys = new Map();  // instrument -> { sig, decision, orderId, stake, sizing, at }: sent, not yet confirmed
     this.wallet = { sol: null, usd: null, solPrice: null, at: 0, venue: null }; // last live wallet reading (bankroll_source: wallet)
     this.wallets = {}; // venue -> reading; a hosted user trades pump.fun from a SOL wallet and PONS from an ETH wallet
@@ -422,6 +423,12 @@ export class Engine extends EventEmitter {
     const gov = this.governorContext(venue);
     const t0 = performance.now();
     if (event.kind === "candidate" && (this.disqualified.get(event.id) || 0) > event.t_observed) return;
+    // Nothing can be entered twice, so judging a candidate we already hold, have in flight, or are
+    // cooling down on is work that can only end in ALREADY_IN_OR_INFLIGHT or REENTRY_COOLDOWN. It is
+    // not free: the whole gate pipeline runs on this one serialised queue, ahead of every other
+    // position's stop loss, and each throwaway GO is written to the ledger and counted in the
+    // funnel the operator reads. A held mint tickles this every couple of seconds.
+    if (event.kind === "candidate" && this.cannotEnter(venue, event.id, event.t_observed)) return this.noteBlockedEntry(venue, event);
     const decisions = v.runner.run(event, { governor: gov, stats: this.stats, minStakeUsd: this.env.venues[venue]?.min_stake_usd ?? null, weights: { pumpfun: this.weights.current().weights } });
     const decideMs = performance.now() - t0;
     for (const d of decisions) {
@@ -493,6 +500,23 @@ export class Engine extends EventEmitter {
   }
 
   // ── entry ──
+  /** Record why a candidate was screened out before the gates, but at most once per rejudge window:
+   *  the operator still sees that the bot wanted back in, without a line every two seconds. */
+  noteBlockedEntry(venue, event) {
+    const inst = event.id, at = event.t_observed;
+    if ((this._entryBlockedLogged.get(inst) || 0) > at) return;
+    this._entryBlockedLogged.set(inst, at + this.cfg.rejudgeMs);
+    const held = this.inflight.has(inst) || this.pendingBuys.has(inst) || this.store.openPositions(venue).some(p => p.instrument === inst);
+    this.ledger.append({ kind: "order", venue, orderId: `${venue}:${inst}:blocked`, instrument: inst, stage: "failed", reason: held ? "ALREADY_IN_OR_INFLIGHT" : "REENTRY_COOLDOWN", screened: true });
+  }
+
+  /** True when this instrument could not be entered even with a perfect score. */
+  cannotEnter(venue, instrument, at) {
+    return this.inflight.has(instrument) || this.pendingBuys.has(instrument)
+      || (this.cooldown.get(instrument) || 0) > at
+      || this.store.openPositions(venue).some(p => p.instrument === instrument);
+  }
+
   async enter(decision, event) {
     const venue = decision.venue;
     const v = this.venues[venue];
@@ -501,6 +525,8 @@ export class Engine extends EventEmitter {
       return this.ledger.append({ kind: "order", venue, orderId: `${decision.id}:o`, decisionId: decision.id, stage: "failed", reason: "ALREADY_IN_OR_INFLIGHT" });
     if ((this.cooldown.get(inst) || 0) > event.t_observed)
       return this.ledger.append({ kind: "order", venue, orderId: `${decision.id}:o`, decisionId: decision.id, stage: "failed", reason: "REENTRY_COOLDOWN" });
+    // (onEvent screens candidates before the gates run; these two remain as the last word, because a
+    // decision can also arrive from a tick-driven re-judge and the queue can change under it.)
 
     const sizing = this.sizer.size({ decision, portfolio: this.portfolioSnapshot(), throttle: this.verdict.throttle, halted: !!this.store.isHalted(venue) });
     const liveCap = this.store.venueMode(venue) === "live" ? (v.liveStartCapUsd ?? this.store.state.venues[venue]?.liveStartCapUsd ?? null) : null;
