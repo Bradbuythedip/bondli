@@ -5,6 +5,12 @@
 // an action for the engine to route through DP4.
 
 import { createExitPlan, runExitChecks } from "../../autoape/pipeline.js";
+
+// A repeated plan adjustment may move the plan this far from the one the position was opened with,
+// and no further. Below MIN_STOP_PCT a "stop loss" is just the spread.
+const MAX_STOP_TIGHTEN = 0.5;  // never tighter than half the designed stop
+const MIN_STOP_PCT = 4;        // nor tighter than 4% in absolute terms
+const MAX_TP_WIDEN = 3;        // nor a target more than 3x its designed level
 import { planFor } from "./plans.mjs";
 import { withClock } from "./pipeline.mjs";
 const CURVE = v => v === "pumpfun" || v === "pons";
@@ -84,7 +90,12 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   if (!(token.mcapUsd > 0)) return null;
   const pos = position._bondli || (position._bondli = {
     entryMcap: position.entryMark, peakMcap: position.peak || position.entryMark, tier: Number(plan.key), entryScore: position.entryScore || 0,
-    entryTime: position.entryTime, tpHit: 0, slHit: 0, isMoonbag: false, exitPlan: plan.bondli,
+    entryTime: position.entryTime, tpHit: 0, slHit: 0, isMoonbag: false,
+    // A COPY of the plan, not the plan. Plan adjustments mutate exitPlan in place; sharing the object
+    // meant they also rewrote position.plan.bondli, so the record of the plan the position was opened
+    // with was silently edited by the position itself -- and any bound measured against "the designed
+    // plan" was measured against a value that had already moved.
+    exitPlan: { ...plan.bondli, tpLevels: { ...plan.bondli.tpLevels } },
   });
   // The engine marks the position on every tick, including ticks that never reach this evaluator;
   // its peak is the truth the trailing stops measure from.
@@ -112,14 +123,21 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   const r = withClock(now, () => runExitChecks(pos, token, p.dynamics || null, plan.settings));
   position.peak = pos.peakMcap;
   if (!r) return null;
+  // Both adjustments fire on a CONDITION, not an event, so they repeat on every tick the condition
+  // holds and compound. Unbounded, a score that sits 10 points below entry takes a 10% stop to 0.32%
+  // in twelve ticks, and a trend that reads "rising" takes a 35% target past 200%. Each is bounded
+  // against the plan the position was opened with: the plan may be adjusted, not replaced.
+  const designed = position.plan?.bondli;
   if (r.action === "WIDEN_TPS") {
-    const tp = pos.exitPlan.tpLevels; const m = r.multiplier || 1.25;
-    pos.exitPlan.tpLevels = { ...tp, tp1: Math.round(tp.tp1 * m), tp2: Math.round(tp.tp2 * m), tp3: tp.tp3 ? Math.round(tp.tp3 * m) : 0 };
+    const tp = pos.exitPlan.tpLevels, d = designed?.tpLevels || tp, m = r.multiplier || 1.25;
+    const cap = (v, base) => Math.min(Math.round(v * m), Math.round((base || v) * MAX_TP_WIDEN));
+    pos.exitPlan.tpLevels = { ...tp, tp1: cap(tp.tp1, d.tp1), tp2: cap(tp.tp2, d.tp2), tp3: tp.tp3 ? cap(tp.tp3, d.tp3) : 0 };
     position.planAdjustments = (position.planAdjustments || []).concat({ at: now, ...r });
     return null;
   }
   if (r.action === "TIGHTEN_SLS") {
-    pos.exitPlan.stopLoss = +(pos.exitPlan.stopLoss * (r.multiplier || 0.75)).toFixed(2);
+    const floor = Math.max(MIN_STOP_PCT, (designed?.stopLoss || pos.exitPlan.stopLoss) * MAX_STOP_TIGHTEN);
+    pos.exitPlan.stopLoss = +Math.max(floor, pos.exitPlan.stopLoss * (r.multiplier || 0.75)).toFixed(2);
     position.planAdjustments = (position.planAdjustments || []).concat({ at: now, ...r });
     return null;
   }

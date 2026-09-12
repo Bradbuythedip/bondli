@@ -183,3 +183,33 @@ test("T5: a runner keeps its moonbag, and the moonbag outlives the time limit", 
   assert.equal(r3?.reason, "RIDE-trail"); assert.equal(r3.pct, 100);
 });
 
+
+test("T5: a plan adjustment does not cancel the exit checks, and cannot compound away the stop", () => {
+  // A dying position: the live score sits well below the entry score, which makes layer 1 return
+  // TIGHTEN_SLS on every tick. That must not stop layer 2 from seeing that the price is 30% down.
+  const pos = pumpPos();
+  // A 12-point drop off an entry score of 66: enough for TIGHTEN_SLS (10), short of momentum-trim
+  // (25) and momentum-exit (30), so layer 1's only output is the adjustment.
+  const weak = { token: { buys: 40, trades: [] }, scores: { apeScore: 54 }, dynamics: { scores: 3, velocity: -0.02, acceleration: 0, trend: "fading" } };
+  const r = evaluateExit(pos, tick(7_000, weak));
+  assert.ok(r, "the stop loss is still reached with a plan adjustment pending");
+  assert.equal(r.reason, "SL2");
+
+  // With nothing else to do, the adjustment is applied as before.
+  const drifting = pumpPos();
+  assert.equal(evaluateExit(drifting, tick(9_900, weak)), null, "an adjustment returns no order");
+  assert.equal(drifting.planAdjustments.length, 1);
+  assert.ok(drifting._bondli.exitPlan.stopLoss < 12, "and it did tighten the stop");
+
+  // Tick after tick after tick: the stop converges to a floor instead of to zero.
+  const p2 = pumpPos();
+  for (let i = 0; i < 40; i++) evaluateExit(p2, tick(9_900 - i, weak));
+  const sl = p2._bondli.exitPlan.stopLoss;
+  assert.ok(sl >= 6, `a tier-2 12% stop cannot tighten past half of itself, got ${sl}`);
+  // The same for the other direction: a "rocket" cannot walk the targets to the moon.
+  const p3 = pumpPos();
+  const hot = { token: { buys: 40, trades: [] }, scores: { apeScore: 90 }, dynamics: { scores: 6, velocity: 0.5, acceleration: 0.1, trend: "rocket" } };
+  const tp1Before = p3.plan.bondli.tpLevels.tp1;
+  for (let i = 0; i < 40; i++) evaluateExit(p3, tick(10_050 + i, hot));
+  assert.ok(p3._bondli.exitPlan.tpLevels.tp1 <= tp1Before * 3, `targets are capped at 3x, got ${p3._bondli.exitPlan.tpLevels.tp1}`);
+});

@@ -185,11 +185,22 @@ export function runExitChecks(pos, token, dynamics, settings) {
     delete pos._bradExitEval;
   }
 
-  // Layer 1: Derivative exits (highest priority, leading indicators)
+  // Layer 1: Derivative exits (highest priority, leading indicators).
+  //
+  // Only an ACTUAL EXIT may return from here. checkDerivativeExit also emits two plan adjustments,
+  // WIDEN_TPS and TIGHTEN_SLS, and returning those the same way meant that on any tick where the
+  // live score sat 10 points below the entry score -- which is to say, on every tick of a position
+  // that is dying -- the stop loss, the trail, the graduation exit and the volume exit were all
+  // skipped. The one layer that could still fire was layer 1 itself, which is why a real run of forty
+  // closes contains fourteen crash-exits and not a single SL1 or SL2.
+  //
+  // An adjustment is a change to the plan, so it is held and returned only if nothing else fires.
+  let adjustment = null;
   const hasRadarData = token.buys != null && token.trades != null;
   if (settings.momentumExit && hasRadarData && !pos.isMoonbag) {
     const deriv = checkDerivativeExit(pos, dynamics, changePct, settings);
-    if (deriv) return { ...deriv, changePct, fromPeak, currentMcap };
+    if (deriv && (deriv.action === "SELL" || deriv.action === "PARTIAL_SELL")) return { ...deriv, changePct, fromPeak, currentMcap };
+    if (deriv) adjustment = deriv;
   }
 
   // Sell-into-volume
@@ -209,6 +220,8 @@ export function runExitChecks(pos, token, dynamics, settings) {
   const thresh = checkThresholdExit(pos, changePct, settings);
   if (thresh) return { ...thresh, changePct, fromPeak, currentMcap };
 
+  // Nothing wants out: now the plan may be adjusted.
+  if (adjustment) return { ...adjustment, changePct, fromPeak, currentMcap };
   return null;
 }
 
