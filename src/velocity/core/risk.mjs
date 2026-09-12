@@ -163,13 +163,27 @@ export class Sizer {
     cap("DAILY_LOSS_BUDGET", budget / stop);
 
     stake = Math.floor(stake * 100) / 100;
-    if (stake > 0 && stake < vc.min_stake_usd && t >= 0.5) {
-      // A small bankroll: fractional Kelly on $50 lands under the venue's minimum viable order.
-      // Trade the minimum when every cap still admits it; otherwise trade nothing. A stake the
-      // governor has halved still trades the minimum (half of a minimum order does not exist);
-      // a stake it has cut further than half is not floored back up: that shrink means not trading.
+    if (stake > 0 && stake < vc.min_stake_usd) {
+      // A small bankroll: fractional Kelly lands under the venue's minimum viable order. Trade the
+      // minimum when every cap still admits it.
+      //
+      // This used to require throttle >= 0.5, reading a harder cut as "do not trade". That turned
+      // the governor's own words -- "sizes cut to a quarter", entries still happen -- into no
+      // entries at all, and made it permanent: a throttle of 0.25 refused every order, no orders
+      // meant no outcomes, no outcomes meant the win rate that caused the throttle never moved. A
+      // real account sat at 286 GO decisions and 0 fills with nothing in the log but
+      // BELOW_MIN_STAKE. A governor that can only ever tighten is not a governor.
+      //
+      // So the throttle is honoured where it still can be. Size cannot go below one order, but the
+      // NUMBER of orders can: at a quarter throttle the bot holds a quarter of the slots. Exposure
+      // falls by the same factor the governor asked for, and trading continues, which is the only
+      // way the statistics that lift the throttle ever arrive.
       const room = Math.min(env.per_trade_max_usd, vc.max_exposure_usd - venueOpen, env.portfolio_max_exposure_usd - totalOpen, budget / stop);
       if (vc.min_stake_usd <= room) {
+        if (t < 1) {
+          const slots = Math.max(1, Math.round(env.max_concurrent_positions * t));
+          if (open.length >= slots) return zero(`THROTTLED_TO_${slots}_OF_${env.max_concurrent_positions}_SLOTS`);
+        }
         // The envelope's caps are in `room`; the MODEL's own cap deliberately is not. A model asking
         // for 40% of the maximum on a small account can ask for less than the venue's minimum order,
         // and there is no such order -- so the choice is the minimum or nothing, and for a probe,

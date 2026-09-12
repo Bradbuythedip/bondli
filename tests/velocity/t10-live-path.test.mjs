@@ -484,15 +484,27 @@ test("T10: a signature survives an RPC that drops the reply; a zero read is re-r
   assert.equal(est.ok, true); assert.equal(est.fill.estimated, true); assert.ok(est.fill.notional_usd > 0);
 });
 
-test("T10: a half-throttled stake trades the minimum, a quarter-throttled one does not; a failed startup freeze lifts on a good restart; stopping opens no new risk", async () => {
+test("T10: a throttled bot at the minimum order trades fewer positions, not none; a failed startup freeze lifts on a good restart; stopping opens no new risk", async () => {
   const dir = tmp(); const env = smallEnvelope(dir);
   const sizer = new Sizer(env);
   const d = { venue: "pumpfun", p_win: 0.45, payoff: 3, stop_fraction: 1 };
-  assert.equal(sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: 0 }, throttle: 1 }).stake_usd, 5);
-  const halved = sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: 0 }, throttle: 0.5 });
-  assert.equal(halved.stake_usd, 5, "half of a minimum order does not exist: the minimum trades"); assert.ok(halved.caps.includes("MIN_STAKE_FLOOR"));
-  const shrunk = sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: 0 }, throttle: 0.25 });
-  assert.equal(shrunk.stake_usd, 0); assert.match(shrunk.reasons[0], /BELOW_MIN_STAKE/, "cut past half means not trading at this bankroll");
+  const pos = n => Array.from({ length: n }, () => ({ venue: "pumpfun", notional_usd: 5, worst_case_fraction: 1 }));
+  const at = (throttle, open = 0) => sizer.size({ decision: d, portfolio: { open: pos(open), realized_today_usd: 0 }, throttle });
+  assert.equal(env.max_concurrent_positions, 4);
+  assert.equal(at(1).stake_usd, 5);
+  const halved = at(0.5);
+  assert.equal(halved.stake_usd, 5, "half of a minimum order does not exist: the minimum trades");
+  assert.ok(halved.caps.includes("MIN_STAKE_FLOOR"));
+
+  // Size cannot go below one order, so the throttle is honoured in the NUMBER of orders instead.
+  // A quarter throttle holds one slot of four: the same quarter of the exposure, and -- unlike
+  // refusing outright -- the bot keeps producing the outcomes that would let the throttle lift.
+  assert.equal(at(0.25, 0).stake_usd, 5, "a quarter-throttled bot still opens its first position");
+  assert.match(at(0.25, 1).reasons[0], /THROTTLED_TO_1_OF_4_SLOTS/);
+  assert.equal(at(0.25, 1).stake_usd, 0);
+  assert.equal(at(0.5, 1).stake_usd, 5, "half throttle holds two of the four");
+  assert.match(at(0.5, 2).reasons[0], /THROTTLED_TO_2_OF_4_SLOTS/);
+  assert.equal(at(1, 2).stake_usd, 5, "unthrottled, the envelope's own cap is the only limit");
 
   const first = mkEngine(dir, { envelope: env, mode: "paper", live: new FakeLive({ failInit: true }) });
   first.store.setVenueMode("pumpfun", "live");
