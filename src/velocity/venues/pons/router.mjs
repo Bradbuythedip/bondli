@@ -3,7 +3,7 @@
 // spent and received, gas included, and reference.solPrice is the ETH price in USD.
 import { Wallet, JsonRpcProvider, Contract, MaxUint256, Interface } from "ethers";
 import { PaperRouter, Router, failure } from "../../core/router.mjs";
-import { EXPLORER, FACTORY, FACTORY_ABI, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, CHAIN_ID, curveBuyQuote, curveSellQuote, decodeLog, toEth, toWei, toTokens, TOKEN_DECIMALS } from "./chain.mjs";
+import { EXPLORER, FACTORY, FACTORY_ABI, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, CHAIN_ID, TOPICS, curveBuyQuote, curveSellQuote, decodeLog, toEth, toWei, toTokens, TOKEN_DECIMALS } from "./chain.mjs";
 
 const PRICE_MAX_AGE_MS = 5 * 60_000;
 const DEFAULT_RESERVES = { quoteReserve: 3, tokenReserve: 1_000_000_000, feeBps: 100, creatorTaxBps: 0 };
@@ -291,6 +291,37 @@ export class PonsLiveRouter extends Router {
     } catch (err) {
       return failure({ id: position.id }, "SEND_FAILED", (err.reason || err.shortMessage || err.message || String(err)).slice(0, 300), hash ? { venue_ref: hash, t_sent } : {});
     }
+  }
+
+  /** The wallet holds none of a token and the engine has no pending signature for it. Before that is
+   *  booked as a total loss, look for the sale on chain: the curve emits CurveSell with the exact
+   *  quote it paid out.
+   *
+   *  pump.fun has had this since a phantom -$25.62 was traced to a sale that really landed. PONS did
+   *  not, so the same phantom came back on Robinhood Chain as "doa:flat at venue -$10.00" -- the
+   *  whole stake written off on a position that may well have been sold.
+   *
+   *  Returns { sig, solReceived, qty, at } for the most recent sale by this wallet since `since`. */
+  async findRecentSale(instrument, { since = 0, blocks = 5000 } = {}) {
+    if (!this.ready) return null;
+    const curveAddr = await this._curveFor(instrument).catch(() => null);
+    if (!curveAddr) return null;
+    let logs;
+    try {
+      const head = await this.provider.getBlockNumber();
+      logs = await this.provider.getLogs({ address: curveAddr, topics: [TOPICS.CurveSell], fromBlock: Math.max(0, head - blocks), toBlock: head });
+    } catch { return null; }
+    const me = String(this.address).toLowerCase();
+    // Newest first: the sale that emptied the wallet is the last one, not the first.
+    for (const log of (logs || []).slice().reverse()) {
+      const r = decodeLog(log);
+      if (!r || r.kind !== "sell" || r.wallet !== me) continue;
+      let at = null;
+      try { const b = await this.provider.getBlock(log.blockNumber); at = b?.timestamp ? b.timestamp * 1000 : null; } catch {}
+      if (since && at && at < since) break;
+      return { sig: r.tx, solReceived: Math.max(0, r.quote), qty: r.tokens, at: at || this.clock() };
+    }
+    return null;
   }
 
   /** A transaction sent earlier: did it land? Reads the receipt and books what it carried. */
