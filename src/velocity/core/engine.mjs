@@ -857,7 +857,10 @@ export class Engine extends EventEmitter {
     p.proceeds_usd = (p.proceeds_usd || 0) + proceeds;
     if (f.sol_received > 0) p.sol_received = (p.sol_received || 0) + f.sol_received;
     p.remaining_qty = Math.max(0, (p.remaining_qty ?? p.qty) - (f.qty || 0));
-    const done = !!(pct >= 100 || p.remaining_qty <= 1e-9 || action === "REDEEM" || (p.legs && p.legs.length));
+    // What actually filled, not what was asked for. A router that sells a position in chunks can stop
+    // part-way and still succeed; closing on the requested percentage abandoned the rest.
+    const filledPct = Number.isFinite(f.pct_filled) ? f.pct_filled : pct;
+    const done = !!(filledPct >= 100 || p.remaining_qty <= 1e-9 || action === "REDEEM" || (p.legs && p.legs.length));
     this.ledger.append({ kind: "exit", venue, positionId: p.id, decisionId: p.decisionId, instrument: p.instrument, pct, reason, layer, detail, price: f.price, qty: f.qty, proceeds_usd: proceeds, fee_usd: f.fee_usd || 0, latency_ms: f.latency_ms, venue_ref: f.venue_ref, sol_received: f.sol_received ?? null, exact: f.exact ?? null, final: done, by });
     if (done) {
       const pnl = +(p.proceeds_usd - p.cost_usd).toFixed(4);

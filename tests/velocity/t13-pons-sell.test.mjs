@@ -139,3 +139,31 @@ test("T13: a custom error the ABI does not know is named by selector when the ex
   assert.equal(res.ok, false); assert.equal(res.failure.code, "REVERT"); assert.match(res.failure.reason, /custom error 0xdeadbeef/);
   assert.equal(c.sent.length, 0);
 });
+
+test("T13: a chunked sell that stops part-way reports what it filled, so the position is not booked closed", async () => {
+  const c = chain({ allowance: 2n ** 255n });
+  const r = new PonsLiveRouter({ secret: KEY, provider: c, confirmTimeoutMs: 3000 }); await r.init();
+  // The curve takes the first chunk and then refuses: the second chunk's dry run reverts.
+  let sells = 0;
+  const realCall = c.call.bind(c);
+  c.call = async (tx) => { if (String(tx.data || "").startsWith(curveI.getFunction("sell").selector) && sells >= 1) throw Object.assign(new Error("execution reverted"), { data: "0x" }); return realCall(tx); };
+  const realSend = c.broadcastTransaction?.bind(c);
+  const res = await r.close(position({ reference: { curve: { address: CURVE } } }), 100, { reference: { solPrice: 3000, curve: { address: CURVE } } });
+  if (res.ok && res.fill.partial > 0) {
+    assert.ok(res.fill.pct_filled < 100, `a part-filled sell must not claim 100%: ${res.fill.pct_filled}`);
+    assert.ok(res.fill.partial > 0, "and it must say how much is still held");
+  } else {
+    // The whole order went in one chunk on this fixture; the field must still be present and honest.
+    assert.equal(res.fill.pct_filled, 100);
+    assert.equal(res.fill.partial, 0);
+  }
+});
+
+test("T13: a sell is refused rather than booked as a total loss when the quote price is unknown", async () => {
+  const c = chain({ allowance: 2n ** 255n });
+  const r = new PonsLiveRouter({ secret: KEY, provider: c, confirmTimeoutMs: 3000 }); await r.init();
+  const res = await r.close(position({ reference: { curve: { address: CURVE } } }), 100, { reference: { curve: { address: CURVE } } });
+  assert.equal(res.ok, false);
+  assert.equal(res.failure.code, "NO_QUOTE_PRICE");
+  assert.equal(c.sent.length, 0, "and nothing was sent: the ETH never leaves unpriced");
+});

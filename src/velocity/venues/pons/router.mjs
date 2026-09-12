@@ -190,6 +190,13 @@ export class PonsLiveRouter extends Router {
   async close(position, pct = 100, ctx = {}) {
     if (!this.ready) return failure({ id: position.id }, "NOT_READY", "call init() first");
     const ref = ctx.reference || position.reference || {}, price = Number(ref.solPrice) || 0;
+    // Without a quote price the proceeds of a real sale are booked as $0, which is a 100% loss on
+    // money that actually arrived -- and that number goes on to drive the daily loss limit, the
+    // governor, the learner and the performance fee. The engine offers the tick price, the venue's
+    // last price and the position's own reference, so a zero here means the ETH feed has never
+    // produced a price, and a venue in that state should not be trading at all. Refusing is
+    // recoverable and loud; booking a total loss on a profitable sale is neither.
+    if (!(price > 0)) return failure({ id: position.id }, "NO_QUOTE_PRICE", "no ETH price yet; refusing to sell into a book that cannot be priced (the sale would be booked as a total loss)");
     let curveAddr = ref.curve?.address || position.curve || null;
     const t_sent = this.clock();
     let hash = null;
@@ -253,7 +260,14 @@ export class PonsLiveRouter extends Router {
       }
       const t_filled = this.clock();
       const got = Math.max(0, gotQuote - gasEth);
-      return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "pons", instrument: position.instrument, side: "SELL", price: qtySold > 0 ? (got * price) / qtySold : 0, qty: qtySold, notional_usd: +(got * price).toFixed(4), slippage_bps: null, fee_usd: +((feeQuote + gasEth) * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: lastHash, sol_received: got, exact, held_before: held, chunks, partial: leftUnits > 0n ? toTokens(leftUnits) : 0, shape: shape.note } };
+      // The loop stops early when a chunk reverts, times out, or hits the chunk limit, and the tokens
+      // it did not reach are still in the wallet. Say how much of the ORDER actually filled: the
+      // engine closes a position on the percentage it asked for, so returning ok on a 100% request
+      // that sold 60% booked the position closed and abandoned the rest -- which is how a wallet ends
+      // up holding tokens no position knows about.
+      const unsold = leftUnits > 0n ? toTokens(leftUnits) : 0;
+      const pctFilled = units > 0n ? Math.min(100, (Number(units - leftUnits) / Number(units)) * 100) : 0;
+      return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "pons", instrument: position.instrument, side: "SELL", price: qtySold > 0 ? (got * price) / qtySold : 0, qty: qtySold, notional_usd: +(got * price).toFixed(4), slippage_bps: null, fee_usd: +((feeQuote + gasEth) * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: lastHash, sol_received: got, exact, held_before: held, chunks, partial: unsold, pct_filled: +pctFilled.toFixed(2), shape: shape.note } };
     } catch (err) {
       return failure({ id: position.id }, "SEND_FAILED", (err.reason || err.shortMessage || err.message || String(err)).slice(0, 300), hash ? { venue_ref: hash, t_sent } : {});
     }
