@@ -549,7 +549,7 @@ export class Engine extends EventEmitter {
     const pending = [...this.pendingBuys.values()].map(pb => ({ venue: pb.venue, group: pb.decision?.group || null, notional_usd: pb.stake, worst_case_fraction: 1, pending: true }));
     const snap = {
       open: [...open.map(p => ({ venue: p.venue, group: p.group, notional_usd: p.notional_usd, worst_case_fraction: p.worst_case_fraction ?? 1 })), ...pending],
-      realized_today_usd: this.store.state.day.realizedUsd,
+      realized_today_usd: this.realizedToday(),
     };
     // Wallet mode: the bankroll is what the wallet holds. Free SOL (less the fee reserve) at the
     // current price, plus what is already open, is the equity the sizer works from. Paper venues
@@ -647,8 +647,10 @@ export class Engine extends EventEmitter {
   /** A fee the venue charged for nothing (a send that failed on chain) is real money: the day sees it. */
   chargeFee(venue, instrument, usd, note) {
     this.store.rollDay();
-    this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd - usd).toFixed(4);
-    this.ledger.append({ kind: "fee", venue, instrument, usd: +usd.toFixed(4), note });
+    const paper = this.store.venueMode(venue) === "paper";
+    if (paper) this.store.state.day.paperRealizedUsd = +(this.store.state.day.paperRealizedUsd - usd).toFixed(4);
+    else this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd - usd).toFixed(4);
+    this.ledger.append({ kind: "fee", venue, instrument, usd: +usd.toFixed(4), note, paper });
   }
 
   _openPosition(decision, orderId, stake, sizing, r) {
@@ -814,8 +816,12 @@ export class Engine extends EventEmitter {
       this.reclaimRent(venue, p.instrument); // the emptied token account's rent is ours again
       this.store.closePosition(p.id, { exitReason: reason, pnl_usd: pnl, remaining_qty: 0 });
       this.store.rollDay();
-      this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4);
-      this.store.state.day.trades++;
+      // Simulated money must not spend the real daily loss budget, nor raise it. The reconcile path
+      // has always guarded this; the main exit path did not, so a paper venue running beside a live
+      // one could halt live trading with imaginary losses -- or, worse, size real trades up on
+      // imaginary gains.
+      if (f.paper) { this.store.state.day.paperRealizedUsd = +(this.store.state.day.paperRealizedUsd + pnl).toFixed(4); this.store.state.day.paperTrades++; }
+      else { this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4); this.store.state.day.trades++; }
       this.ledger.append({ kind: "outcome", venue, instrument: p.instrument, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: held, reason, features: p.features, paper: !!f.paper, by, flat_at_venue: flat || undefined });
       this.cooldown.set(p.instrument, this.clock() + this.cfg.reentryCooldownMs);
       this.venues[venue].feed?.unwatch(p.instrument);
@@ -832,6 +838,17 @@ export class Engine extends EventEmitter {
   }
 
   // ── governor (DP7) ──
+  /** True when real money is at stake at any venue. */
+  anyLiveVenue() { return Object.keys(this.venues).some(v => this.store.venueMode(v) === "live"); }
+
+  /** The day's realized P&L that the loss limit and the governor act on: the live number whenever a
+   *  live venue exists, and otherwise the paper number, so an all-paper run still exercises the limit
+   *  and the promote gate means something. */
+  realizedToday() {
+    const d = this.store.state.day;
+    return this.anyLiveVenue() ? d.realizedUsd : (d.paperRealizedUsd || 0);
+  }
+
   evaluateGovernor() {
     const snap = this.portfolioSnapshot();
     const verdict = this.governor.evaluate({ regime: this.store.state.regime, realized_today_usd: snap.realized_today_usd, open: this.store.openPositions().map(p => ({ ...p })) });
@@ -972,7 +989,7 @@ export class Engine extends EventEmitter {
       running: this.running, startedAt: s.startedAt, now: this.clock(), heartbeatAt: s.heartbeatAt, reconciledAt: s.reconciledAt,
       halt: s.halt, throttle: s.throttle, governor: s.governor, regime: s.regime,
       pnl: this.truePnl(),
-      day: { ...s.day, limit_usd: this.env.daily_loss_limit_usd, used_pct: +((Math.max(0, -s.day.realizedUsd) / this.env.daily_loss_limit_usd) * 100).toFixed(1) },
+      day: { ...s.day, limit_usd: this.env.daily_loss_limit_usd, counted_usd: this.realizedToday(), counting: this.anyLiveVenue() ? "live" : "paper", used_pct: +((Math.max(0, -this.realizedToday()) / this.env.daily_loss_limit_usd) * 100).toFixed(1) },
       bankroll: { source: this.walletMode() ? "wallet" : "fixed", fixed_usd: this.env.bankroll_usd, equity_usd: this.portfolioSnapshot().equity_usd ?? null, wallet: this.wallet.at ? this.wallet : null, wallets: this.wallets },
       positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, name: p.reference?.name || "", ticker: p.reference?.ticker || "", tier: p.tier, model: p.model, notional_usd: p.notional_usd, stake_usd: p.stake_usd, mark: p.mark, entryMark: p.entryMark, peak: p.peak, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode, stall_ms: p.plan?.stall_ms ?? null, max_hold_ms: p.plan?.max_hold_ms ?? null }, tpHit: p._bondli?.tpHit ?? 0, entryTime: p.entryTime, lastTickAt: p.lastTickAt || null, curve: p.reference?.curve?.address || null, adopted: !!p.adopted, sizing: p.sizing || null, lastExitError: p.lastExitError || null })),
       review: this.review(),

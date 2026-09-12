@@ -90,3 +90,43 @@ test("T7: regime caps, overconfidence, revenge, and never above 1", () => {
   assert.ok(r.blindSpots.revenge_trading?.triggered);
   assert.equal(r.throttle, 0.5);
 });
+
+test("T7: a paper venue's losses cannot halt live trading, nor fund it", async () => {
+  const { Engine } = await import("../../src/velocity/core/engine.mjs");
+  const { loadRiskEnvelope } = await import("../../src/velocity/core/risk.mjs");
+  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const { PumpfunPaperRouter } = await import("../../src/velocity/venues/pumpfun/router.mjs");
+  const os = await import("node:os"); const fs = await import("node:fs"); const path = await import("node:path");
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paperlive-"));
+  const base = JSON.parse(fs.readFileSync(path.resolve("src/velocity/config/risk.example.json"), "utf8"));
+  const cfg = { ...base, bankroll_usd: 200, per_trade_max_usd: 25, portfolio_max_exposure_usd: 100, daily_loss_limit_usd: 20, max_concurrent_positions: 4 };
+  cfg.venues = { ...base.venues, pumpfun: { ...base.venues.pumpfun, max_exposure_usd: 100, min_stake_usd: 5 }, polymarket: { ...base.venues.polymarket, max_exposure_usd: 0 } };
+  fs.writeFileSync(path.join(dir, "risk.json"), JSON.stringify(cfg));
+  const env = loadRiskEnvelope(path.join(dir, "risk.json"));
+  const edge = makePumpfunEdge({ aggression: 1 });
+  const mk = () => new Engine({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), "pl-")), envelope: env,
+    venues: { pumpfun: { mode: "paper", edge, router: new PumpfunPaperRouter({ bookFile: path.join(dir, "b.json"), latencyMs: 0 }) } } });
+
+  const e = mk();
+  const book = (pnl, paper) => e._bookExit(
+    { id: `p${Math.abs(pnl)}${paper}`, venue: "pumpfun", instrument: "M", status: "open", paper, qty: 1, remaining_qty: 1,
+      cost_usd: 25, proceeds_usd: 0, stake_usd: 25, entryTime: 0, plan: { key: 2 } },
+    { ok: true, fill: { price: 1, qty: 1, notional_usd: 25 + pnl, fee_usd: 0, t_filled: 1, paper } }, 100, "TEST");
+
+  // A simulated $30 loss is more than the whole $20 daily limit.
+  book(-30, true);
+  assert.equal(e.store.state.day.realizedUsd, 0, "no real money lost");
+  assert.equal(e.store.state.day.paperRealizedUsd, -30);
+  // Nothing is live, so the simulation runs against its own limit -- the promote gate needs that.
+  assert.equal(e.realizedToday(), -30);
+  // Turn a venue live: the real budget is untouched by what the simulation did.
+  e.store.setVenueMode?.("pumpfun", "live");
+  if (e.store.venueMode("pumpfun") === "live") {
+    assert.equal(e.realizedToday(), 0, "a live venue counts only real money");
+    book(-5, false);
+    assert.equal(e.realizedToday(), -5);
+    assert.equal(e.store.state.day.paperRealizedUsd, -30, "the paper tally is kept, just not spent");
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
