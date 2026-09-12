@@ -293,8 +293,20 @@ export class Engine extends EventEmitter {
       const quiet = now - (p.lastTickAt || p.entryTime);
       // A moonbag outlives the plan's time limit; only a moonbag whose token has gone silent for six hours is swept.
       const holdLimit = p._bondli?.isMoonbag ? Math.max(maxHold || 0, 6 * 3_600_000) : maxHold;
-      if (holdLimit && now - p.entryTime > holdLimit && quiet > (p._bondli?.isMoonbag ? 6 * 3_600_000 : this.cfg.tickSilenceMs) && due(p.id))
+      if (holdLimit && now - p.entryTime > holdLimit && quiet > (p._bondli?.isMoonbag ? 6 * 3_600_000 : this.cfg.tickSilenceMs) && due(p.id)) {
         await this.closePosition(p, 100, "MAX_HOLD", { by: "timer", detail: `${Math.round((now - p.entryTime) / 60000)}min, no tick for ${Math.round(quiet / 1000)}s` });
+        continue;
+      }
+      // The stall exit lives in the tick evaluator, so a token that stops ticking never reaches it:
+      // "no movement" means no ticks means no evaluation, and the position sits to max hold holding a
+      // slot. Silence is the strongest form of the same evidence the stall looks for -- nobody is
+      // trading it at all -- so the timer enforces it here. A position whose peak armed the trail is
+      // left alone: that one is the trail's to manage, and a quiet feed is not a reason to give it up.
+      const stall = p.plan?.stall_ms;
+      const peakPct = p.entryMark > 0 ? (((p.peak || p.entryMark) - p.entryMark) / p.entryMark) * 100 : 0;
+      const armed = peakPct >= (p.plan?.stall_band_pct ?? 8) * 1.5;
+      if (stall && !p._bondli?.isMoonbag && !(p._bondli?.tpHit > 0) && !armed && now - p.entryTime > stall && quiet > this.cfg.tickSilenceMs && due(p.id))
+        await this.closePosition(p, 100, "STALL", { by: "timer", detail: `${Math.round((now - p.entryTime) / 60000)}min, no tick for ${Math.round(quiet / 1000)}s, peak +${peakPct.toFixed(0)}%` });
     }
   }
 
