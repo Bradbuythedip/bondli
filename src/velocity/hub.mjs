@@ -233,6 +233,21 @@ export class VelocityHub {
     return { ok: true, ...this.status(wallet) };
   }
 
+  /** Give up on a position the venue will not let us sell. No P&L is booked; the tokens stay in the
+   *  wallet and reappear as an untracked holding the user can sell by hand. */
+  async release(wallet, positionId, note = null) {
+    const u = this.users.get(wallet);
+    if (!u) return { ok: false, error: "not running" };
+    return u.engine.enqueue(() => u.engine.releasePosition(positionId, { by: "user", note }));
+  }
+
+  /** Clear the "sell failed" banner on a position. The failure stays in the ledger. */
+  async clearExitError(wallet, positionId) {
+    const u = this.users.get(wallet);
+    if (!u) return { ok: false, error: "not running" };
+    return u.engine.enqueue(() => u.engine.clearExitError(positionId));
+  }
+
   /** Sell everything the user holds and stop their engine. */
   async stop(wallet, { flatten = true } = {}) {
     const u = this.users.get(wallet);
@@ -589,6 +604,10 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
   app.post("/api/velocity/close", requireOwner, async (req, res) => { try { res.json(await hub.closePosition(req.body.wallet, req.body.positionId, req.body.pct)); } catch (e) { res.status(500).json({ error: e.message }); } });
+  // Give up on a position that cannot be sold: it leaves the book, the tokens stay in the wallet.
+  app.post("/api/velocity/release", requireOwner, async (req, res) => { try { res.json(await hub.release(req.body.wallet, req.body.positionId, req.body.note || null)); } catch (e) { res.status(500).json({ error: e.message }); } });
+  // Dismiss a stale "sell failed" banner without touching the position.
+  app.post("/api/velocity/clear-error", requireOwner, async (req, res) => { try { res.json(await hub.clearExitError(req.body.wallet, req.body.positionId)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/halt", requireOwner, async (req, res) => { try { res.json(await hub.halt(req.body.wallet, req.body.mode === "freeze" ? "freeze" : "flatten")); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.get("/api/velocity/status", requireOwner, (req, res) => res.json({ ok: true, ...hub.status(req.query.wallet), narration: hub.narration(req.query.wallet, 40) }));
   app.get("/api/velocity/health", (req, res) => res.json({ ok: true, users: hub.list().length, feeConfigured: hub.feeOk, feed: hub.feed.status?.() || null, pons: hub.ponsFeed ? { ...(hub.ponsFeed.status?.() || {}), tokens: hub.ponsFeed.tokens?.size ?? null, ethPrice: hub.ponsFeed.solPrice, feeConfigured: !!hub.platformEvmWallet } : null }));

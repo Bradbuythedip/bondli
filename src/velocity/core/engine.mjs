@@ -235,6 +235,50 @@ export class Engine extends EventEmitter {
   get solPriceHint() { return this.quotePriceOf("pumpfun"); }
   set solPriceHint(v) { this.quotePrice.pumpfun = v; }
 
+  /** Stop tracking a position the venue will not let us sell, without pretending it was a trade.
+   *
+   *  A curve that reverts every sell -- graduated, paused, a token with a transfer restriction --
+   *  leaves a position that can never close, holding one of a handful of slots for as long as the
+   *  bot runs, with a red error nobody can clear. The operator needs a way to say "I will deal with
+   *  this by hand".
+   *
+   *  It books NO profit and loss. Nothing was realized: the money was spent and the tokens are still
+   *  in the wallet. Writing a 100% loss here would be the FLAT_AT_VENUE mistake again, and writing a
+   *  gain would be worse. The position leaves the book, the tokens reappear under "also in the
+   *  wallets" where they can be sold by hand or by the sweep, and the ledger records why. */
+  releasePosition(id, { by = "user", note = null } = {}) {
+    const p = this.store.state.positions[id];
+    if (!p) return { ok: false, error: "no such position" };
+    if (p.status !== "open") return { ok: false, error: "position is not open" };
+    if (this.exiting.has(id)) return { ok: false, error: "a sell for this position is in flight; try again in a moment" };
+    const held = p.remaining_qty ?? p.qty;
+    this.ledger.append({
+      kind: "exit", venue: p.venue, positionId: p.id, decisionId: p.decisionId, instrument: p.instrument,
+      pct: 100, reason: "RELEASED", detail: note || p.lastExitError?.reason || null,
+      price: null, qty: held, proceeds_usd: 0, fee_usd: 0, final: true, released: true, by,
+    });
+    this.store.closePosition(p.id, { exitReason: "RELEASED", pnl_usd: null, remaining_qty: 0, released: true });
+    // No outcome record: an abandoned position is not a result, and counting it as a loss would
+    // teach the learner and the governor something that did not happen.
+    this._knownForeign.delete(p.venue + ":" + p.instrument); // so it shows up as a wallet holding again
+    this.venues[p.venue]?.feed?.unwatch(p.instrument);
+    this.cooldown.set(p.instrument, this.clock() + this.cfg.reentryCooldownMs);
+    this.log("warn", `RELEASED ${p.venue} ${p.instrument}: ${note || p.lastExitError?.reason || "by the operator"}; ${held} tokens stay in the wallet`);
+    this.store.save();
+    return { ok: true, instrument: p.instrument, venue: p.venue, qty: held };
+  }
+
+  /** Forget the last failed sell on a position. The failure stays in the ledger; this only clears
+   *  the banner, and a further failure puts a fresh one back. */
+  clearExitError(id) {
+    const p = this.store.state.positions[id];
+    if (!p) return { ok: false, error: "no such position" };
+    const had = !!p.lastExitError;
+    delete p.lastExitError;
+    this.store.save();
+    return { ok: true, cleared: had };
+  }
+
   /** Record a wallet reading (from a router preflight) in USD at the freshest SOL price known. */
   noteWallet(venue, pre) {
     if (!pre || !(pre.balanceSol >= 0)) return;

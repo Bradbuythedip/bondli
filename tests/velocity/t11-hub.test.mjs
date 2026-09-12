@@ -409,3 +409,49 @@ test("T11: Robinhood Chain can be traded on its own, with no SOL funded at all",
   assert.match(sizer.size({ decision: d("pumpfun"), portfolio: port, throttle: 1 }).reasons[0], /VENUE_DISABLED/);
   assert.ok(sizer.size({ decision: d("pons"), portfolio: port, throttle: 1 }).stake_usd > 0);
 });
+
+test("T11: a position the venue will not sell can be given up on, and the banner dismissed", async () => {
+  const { Engine } = await import("../../src/velocity/core/engine.mjs");
+  const { loadRiskEnvelope } = await import("../../src/velocity/core/risk.mjs");
+  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const { PumpfunPaperRouter } = await import("../../src/velocity/venues/pumpfun/router.mjs");
+  const fsx = await import("node:fs"), osx = await import("node:os"), px = await import("node:path");
+  const dir = fsx.mkdtempSync(px.join(osx.tmpdir(), "rel-"));
+  const base = JSON.parse(fsx.readFileSync(px.resolve("src/velocity/config/risk.example.json"), "utf8"));
+  const cfg = { ...base, bankroll_usd: 200, per_trade_max_usd: 25, portfolio_max_exposure_usd: 100, daily_loss_limit_usd: 100, max_concurrent_positions: 2 };
+  cfg.venues = { ...base.venues, pumpfun: { ...base.venues.pumpfun, max_exposure_usd: 100, min_stake_usd: 10 }, polymarket: { ...base.venues.polymarket, max_exposure_usd: 0 } };
+  fsx.writeFileSync(px.join(dir, "r.json"), JSON.stringify(cfg));
+  const e = new Engine({ dataDir: dir, envelope: loadRiskEnvelope(px.join(dir, "r.json")),
+    venues: { pumpfun: { mode: "paper", edge: makePumpfunEdge({ aggression: 1 }), router: new PumpfunPaperRouter({ bookFile: px.join(dir, "b.json"), latencyMs: 0 }) } } });
+  let now = Date.now(); e.clock = () => now;
+  await e.start({ reconcile: false });
+  try {
+    e.store.upsertPosition({ id: "stuck", venue: "pumpfun", instrument: "MintStuck", status: "open", paper: false,
+      qty: 156551, remaining_qty: 156551, cost_usd: 10, notional_usd: 10, stake_usd: 10, proceeds_usd: 0,
+      entryTime: now - 240_000, entryMark: 9000, tier: 2,
+      lastExitError: { code: "REVERT", reason: "sell would revert (custom error 0x42301c23)", tried: "USER_SELL", at: now, count: 2 } });
+
+    // Dismissing the banner touches nothing else: the position is still open and still held.
+    assert.deepEqual(e.clearExitError("stuck"), { ok: true, cleared: true });
+    assert.equal(e.store.state.positions.stuck.lastExitError, undefined);
+    assert.equal(e.store.state.positions.stuck.status, "open");
+    assert.deepEqual(e.clearExitError("stuck"), { ok: true, cleared: false }, "dismissing twice is harmless");
+
+    // Giving up frees the slot without inventing a result.
+    const before = e.store.state.day.realizedUsd;
+    const r = e.releasePosition("stuck", { by: "user", note: "curve refuses every sell" });
+    assert.deepEqual({ ok: r.ok, qty: r.qty, instrument: r.instrument }, { ok: true, qty: 156551, instrument: "MintStuck" });
+    assert.equal(e.store.openPositions("pumpfun").length, 0, "the slot is free");
+    assert.equal(e.store.state.day.realizedUsd, before, "no profit or loss is booked: nothing was realized");
+    assert.equal(e.ledger.query({ kind: "outcome" }).length, 0, "and it is not counted as a trade");
+    const exit = e.ledger.query({ kind: "exit", limit: 1 })[0];
+    assert.equal(exit.reason, "RELEASED"); assert.equal(exit.released, true);
+    assert.equal(exit.proceeds_usd, 0); assert.equal(exit.qty, 156551);
+    assert.equal(exit.detail, "curve refuses every sell");
+    // The statistics the governor and the learner read must not see it at all.
+    assert.equal(Object.keys(e.modeStats()).length, 0);
+
+    assert.equal(e.releasePosition("stuck").ok, false, "releasing twice is refused");
+    assert.equal(e.releasePosition("nope").ok, false);
+  } finally { await e.stop(); fsx.rmSync(dir, { recursive: true, force: true }); }
+});

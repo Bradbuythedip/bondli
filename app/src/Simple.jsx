@@ -351,6 +351,16 @@ export default function Simple() {
   const persistHidden = (set) => { sHidden(new Set(set)); try { localStorage.setItem("bondli_hide_holdings", JSON.stringify([...set])); } catch {} };
   const hideOne = (k) => { const n = new Set(hidden); n.add(k); persistHidden(n); };
   const hideAll = (rows) => { const n = new Set(hidden); for (const r of rows) n.add(r.venue + r.instrument); persistHidden(n); };
+  // Dismiss a stale banner, and give up on a position the venue will not let us sell. Giving up
+  // books no profit or loss -- nothing was realized -- so the tokens simply reappear in the
+  // "also in the wallets" list, where the Sell button already works.
+  const refreshStatus = async () => { try { const r = await a.vstat(pk); sSt(r); } catch {} };
+  const clearErr = async (p) => { try { await a.vclearErr(pk, p.id); await refreshStatus(); } catch (e) { say(e.message, "error"); } };
+  const releasePos = async (p) => {
+    if (!confirm(`Stop tracking ${p.instrument.slice(0, 10)}…?\n\nThe venue is refusing every sell. This removes it from your open positions and frees the slot. No profit or loss is recorded — the tokens stay in your wallet and will show up below to sell by hand.`)) return;
+    try { const r = await a.vrelease(pk, p.id); say(r.ok ? `Stopped tracking ${p.instrument.slice(0, 8)}…; ${Math.round(r.qty || 0).toLocaleString()} tokens are still in the wallet` : r.error, r.ok ? "ok" : "error"); await refreshStatus(); loadWallet(); }
+    catch (e) { say(e.message, "error"); }
+  };
   const [selling, sSelling] = useState(null);
   const sellHolding = async (venue, instrument) => {
     sSelling(venue + instrument);
@@ -498,7 +508,15 @@ export default function Simple() {
             <div>tier {p.tier} · plan {String(p.plan?.key)} · targets hit {p.tpHit || 0}{p.plan?.stall_ms ? ` · stall check at ${Math.round(p.plan.stall_ms / 60000)}m` : ""}{p.plan?.max_hold_ms ? ` · out by ${Math.round(p.plan.max_hold_ms / 60000)}m` : ""}</div>
             <div style={{ color: stale ? T.yl : T.ft }}>price updated {tickAge == null ? "never" : tickAge < 60 ? Math.round(tickAge) + "s ago" : Math.round(tickAge / 60) + "m ago"}{stale ? " · exits cannot fire without a price" : ""}</div>
           </div>}
-          {p.lastExitError && <div style={{ fontFamily: M, fontSize: 11, color: T.rd, padding: "0 0 8px", lineHeight: 1.4 }}>sell failed ×{p.lastExitError.count} ({p.lastExitError.tried}): {p.lastExitError.code ? p.lastExitError.code + " " : ""}{p.lastExitError.reason}</div>}
+          {p.lastExitError && <div style={{ fontFamily: M, fontSize: 11, color: T.rd, padding: "0 0 8px", lineHeight: 1.4, display: "flex", gap: 8, alignItems: "flex-start" }}>
+            <span style={{ flex: 1, minWidth: 0 }}>sell failed ×{p.lastExitError.count} ({p.lastExitError.tried}): {p.lastExitError.code ? p.lastExitError.code + " " : ""}{p.lastExitError.reason}
+              {p.lastExitError.count >= 2 && <span style={{ display: "block", color: T.dm, marginTop: 3 }}>The venue is refusing every sell. Give up on it and the tokens stay in your wallet to sell by hand.</span>}
+            </span>
+            <span style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+              {p.lastExitError.count >= 2 && <span onClick={() => releasePos(p)} style={{ cursor: "pointer", color: T.yl, textDecoration: "underline" }}>give up</span>}
+              <span onClick={() => clearErr(p)} title="dismiss" style={{ cursor: "pointer", color: T.dm }}>&times;</span>
+            </span>
+          </div>}
         </div>; })}</div>}
         {(() => { const h = s?.holdings || {}; const rows = Object.entries(h).flatMap(([venue, x]) => (x.list || []).filter(i => !i.tracked && i.qty >= 1 && !hidden.has(venue + i.instrument)).map(i => ({ ...i, venue }))); if (!rows.length) return null; return <div style={{ marginTop: 10, fontFamily: M, fontSize: 11, color: T.yl, lineHeight: 1.6 }}>
           <div style={{ display: "flex", justifyContent: "space-between" }}><span>also in the wallets, not bought by this run:</span><span onClick={() => hideAll(rows)} style={{ cursor: "pointer", color: T.dm }}>hide all</span></div>
