@@ -179,7 +179,8 @@ export class VelocityHub {
     const u = this.users.get(wallet);
     if (!u) return { ok: false, error: "not running" };
     let result = null;
-    if (flatten) result = await u.engine.halt("flatten", "user stop", { by: "user" });
+    // Through the engine queue: off it, this flatten races the tick-driven exits already running on it.
+    if (flatten) result = await u.engine.enqueue(() => u.engine.halt("flatten", "user stop", { by: "user" }));
     u.sup.stop(); clearInterval(u.fun);
     await u.engine.stop();
     this.users.delete(wallet);
@@ -189,14 +190,14 @@ export class VelocityHub {
   async halt(wallet, mode = "flatten") {
     const u = this.users.get(wallet);
     if (!u) return { ok: false, error: "not running" };
-    return { ok: true, ...(await u.engine.halt(mode, "user halt", { by: "user" })) };
+    return { ok: true, ...(await u.engine.enqueue(() => u.engine.halt(mode, "user halt", { by: "user" }))) };
   }
 
   /** Pause: no new entries, open positions keep their exit plans. Resume lifts it. */
   async pause(wallet) {
     const u = this.users.get(wallet);
     if (!u) return { ok: false, error: "not running" };
-    await u.engine.halt("freeze", "paused by user", { by: "user" });
+    await u.engine.enqueue(() => u.engine.halt("freeze", "paused by user", { by: "user" }));
     return { ok: true, ...this.status(wallet) };
   }
   resume(wallet) {

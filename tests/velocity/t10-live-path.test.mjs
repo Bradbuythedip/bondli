@@ -1117,3 +1117,35 @@ test("T10: the header P&L starts at zero, not at the value of the wallet", async
     assert.equal(engine.truePnl().since_start_usd, 15, "measured in SOL, priced today");
   } finally { await engine.stop(); }
 });
+
+test("T10: two callers cannot sell the same position at once", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const live = new FakeLive();
+  let sells = 0, release;
+  const gate = new Promise(r => { release = r; });
+  live.closeImpl = async (p) => {
+    sells++;
+    await gate; // the first sell is still on the wire
+    const t = Date.now();
+    return { ok: true, fill: { price: 0.005, qty: 1000, notional_usd: 5, fee_usd: 0, t_sent: t, t_filled: t, latency_ms: 0, venue_ref: `SIG${sells}`, sol_received: 0.025 } };
+  };
+  const engine = mkEngine(dir, { envelope: env, mode: "live", live });
+  const now = Date.now(); engine.clock = () => now;
+  engine.store.upsertPosition({ id: "dup", venue: "pumpfun", instrument: "MintDup", status: "open", paper: false, qty: 1000,
+    remaining_qty: 1000, cost_usd: 5.2, notional_usd: 5.2, stake_usd: 5, proceeds_usd: 0, entryTime: now - 60_000, entryMark: 9000,
+    tier: 2, model: "bondli_gates", plan: createPlan({ venue: "pumpfun", key: 2, entry: { score: 60 } }), reference: { solPrice: 200 } });
+  try {
+    await engine.start({ reconcile: false });
+    const p = engine.store.state.positions.dup;
+    // The user's flatten and a tick-driven stop loss, at the same moment.
+    const a = engine.closePosition(p, 100, "FLATTEN", { by: "user" });
+    const b = engine.closePosition(p, 100, "SL2");
+    release();
+    const [ra, rb] = await Promise.all([a, b]);
+    assert.equal(sells, 1, "one position, one sell");
+    const loser = ra.ok ? rb : ra;
+    assert.equal(loser.failure.code, "EXIT_IN_FLIGHT");
+    assert.equal(engine.store.state.positions.dup.status, "closed");
+    assert.equal(engine.ledger.query({ kind: "outcome" }).length, 1, "and one outcome, not two");
+  } finally { await engine.stop(); }
+});

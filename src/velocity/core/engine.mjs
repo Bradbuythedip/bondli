@@ -62,7 +62,8 @@ export class Engine extends EventEmitter {
     this.latency = {};
     for (const venue of Object.keys(this.venues)) this.latency[venue] = { decide: new LatencyHistogram(10_000, 1), send: new LatencyHistogram(), confirm: new LatencyHistogram() };
     this.blocked = {};          // venue -> reason from the supervisor (feed stale, router down)
-    this.inflight = new Set();  // instruments with an order in flight
+    this.inflight = new Set();  // instruments with an ENTRY in flight
+    this.exiting = new Set();   // position ids with a SELL in flight (see closePosition)
     this.cooldown = new Map();  // instrument -> until
     // instrument -> { until, at, mcap, gate, reasons, tier, peak, missed }. Two jobs: a gate-1 reject
     // is not re-judged every poll (see FATAL_FLAGS), and the token is kept under observation
@@ -755,8 +756,20 @@ export class Engine extends EventEmitter {
     }
   }
 
-  async closePosition(p, pct, reason, { action = "SELL", layer = null, detail = null, tick = null, by = "plan" } = {}) {
+  async closePosition(p, pct, reason, opts = {}) {
     if (p.status !== "open") return { ok: false, failure: { code: "ALREADY_CLOSED", reason: "position is not open" } };
+    // A position's status only changes once its sell has come back, so two callers that reach here
+    // while the first sell is in flight both see it open and both send one. The engine queue is not
+    // enough on its own: hub.stop and hub.halt call halt("flatten") straight through, off the queue,
+    // while a tick-driven stop loss is running on it. Two real sells for one position: the second
+    // finds an empty wallet, and two sweep intervals later the position is booked as a total loss.
+    if (this.exiting.has(p.id)) return { ok: false, failure: { code: "EXIT_IN_FLIGHT", reason: `a sell for ${p.instrument} is already in flight` } };
+    this.exiting.add(p.id);
+    try { return await this._closePosition(p, pct, reason, opts); }
+    finally { this.exiting.delete(p.id); }
+  }
+
+  async _closePosition(p, pct, reason, { action = "SELL", layer = null, detail = null, tick = null, by = "plan" } = {}) {
     const venue = p.venue;
     const router = this.routerFor(venue);
     if (!router) return { ok: false, failure: { reason: "NO_ROUTER" } };
