@@ -23,6 +23,7 @@
  */
 
 import { loraClient } from './lora-client.mjs';
+import { pumpCurvePct } from '../autoape/gates/curve.js';
 
 // ═══ FEATURE EXTRACTION ═══
 // Converts raw token data into a normalized feature vector
@@ -546,9 +547,9 @@ function extractFeatures(token) {
   f.cs_reflexivity = mcRising && buyAccel > 1.2 ? Math.min(1, (buyAccel - 1) * 0.8) : 0;
 
   // Bonding curve velocity: how fast is the curve filling?
-  // vSolInBondingCurve / 85 SOL = % to graduation
+  // Progress to graduation from the virtual SOL reserve (see gates/curve.js).
   // Track rate of change: dPct/dMinute
-  const curveProgress = t.vSolInBondingCurve ? t.vSolInBondingCurve / 85 : 0;
+  const curveProgress = pumpCurvePct(t.vSolInBondingCurve);
   const curveVelocity = ageMin > 0 ? curveProgress / ageMin : 0;
   // Sweet spot: 0.5-2% per minute = healthy graduation trajectory
   f.cs_curveVelocity = Math.min(1, curveVelocity * 30); // 3.3%/min → 1.0
@@ -594,7 +595,7 @@ function extractFeatures(token) {
   // Tokens at 80%+ bonding curve progress with active cascade = near-guaranteed graduation
   // 15-30% premium available by frontrunning graduation on Raydium
   {
-    const curveProgress = t.vSolInBondingCurve ? t.vSolInBondingCurve / 85 : 0;
+    const curveProgress = pumpCurvePct(t.vSolInBondingCurve);
     f.gf_curveProgress = Math.min(1, curveProgress);
     // Frontrun signal: curve > 80% AND (cascade active OR strong buy pressure)
     const cascadeActive = f.cs_cascadeOnset > 0.3;

@@ -5,6 +5,12 @@
 // an action for the engine to route through DP4.
 
 import { createExitPlan, runExitChecks } from "../../autoape/pipeline.js";
+
+// A repeated plan adjustment may move the plan this far from the one the position was opened with,
+// and no further. Below MIN_STOP_PCT a "stop loss" is just the spread.
+const MAX_STOP_TIGHTEN = 0.5;  // never tighter than half the designed stop
+const MIN_STOP_PCT = 4;        // nor tighter than 4% in absolute terms
+const MAX_TP_WIDEN = 3;        // nor a target more than 3x its designed level
 import { planFor } from "./plans.mjs";
 import { withClock } from "./pipeline.mjs";
 const CURVE = v => v === "pumpfun" || v === "pons";
@@ -84,7 +90,12 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   if (!(token.mcapUsd > 0)) return null;
   const pos = position._bondli || (position._bondli = {
     entryMcap: position.entryMark, peakMcap: position.peak || position.entryMark, tier: Number(plan.key), entryScore: position.entryScore || 0,
-    entryTime: position.entryTime, tpHit: 0, slHit: 0, isMoonbag: false, exitPlan: plan.bondli,
+    entryTime: position.entryTime, tpHit: 0, slHit: 0, isMoonbag: false,
+    // A COPY of the plan, not the plan. Plan adjustments mutate exitPlan in place; sharing the object
+    // meant they also rewrote position.plan.bondli, so the record of the plan the position was opened
+    // with was silently edited by the position itself -- and any bound measured against "the designed
+    // plan" was measured against a value that had already moved.
+    exitPlan: { ...plan.bondli, tpLevels: { ...plan.bondli.tpLevels } },
   });
   // The engine marks the position on every tick, including ticks that never reach this evaluator;
   // its peak is the truth the trailing stops measure from.
@@ -112,23 +123,36 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   const r = withClock(now, () => runExitChecks(pos, token, p.dynamics || null, plan.settings));
   position.peak = pos.peakMcap;
   if (!r) return null;
+  // Both adjustments fire on a CONDITION, not an event, so they repeat on every tick the condition
+  // holds and compound. Unbounded, a score that sits 10 points below entry takes a 10% stop to 0.32%
+  // in twelve ticks, and a trend that reads "rising" takes a 35% target past 200%. Each is bounded
+  // against the plan the position was opened with: the plan may be adjusted, not replaced.
+  const designed = position.plan?.bondli;
   if (r.action === "WIDEN_TPS") {
-    const tp = pos.exitPlan.tpLevels; const m = r.multiplier || 1.25;
-    pos.exitPlan.tpLevels = { ...tp, tp1: Math.round(tp.tp1 * m), tp2: Math.round(tp.tp2 * m), tp3: tp.tp3 ? Math.round(tp.tp3 * m) : 0 };
+    const tp = pos.exitPlan.tpLevels, d = designed?.tpLevels || tp, m = r.multiplier || 1.25;
+    const cap = (v, base) => Math.min(Math.round(v * m), Math.round((base || v) * MAX_TP_WIDEN));
+    pos.exitPlan.tpLevels = { ...tp, tp1: cap(tp.tp1, d.tp1), tp2: cap(tp.tp2, d.tp2), tp3: tp.tp3 ? cap(tp.tp3, d.tp3) : 0 };
     position.planAdjustments = (position.planAdjustments || []).concat({ at: now, ...r });
     return null;
   }
   if (r.action === "TIGHTEN_SLS") {
-    pos.exitPlan.stopLoss = +(pos.exitPlan.stopLoss * (r.multiplier || 0.75)).toFixed(2);
+    const floor = Math.max(MIN_STOP_PCT, (designed?.stopLoss || pos.exitPlan.stopLoss) * MAX_STOP_TIGHTEN);
+    pos.exitPlan.stopLoss = +Math.max(floor, pos.exitPlan.stopLoss * (r.multiplier || 0.75)).toFixed(2);
     position.planAdjustments = (position.planAdjustments || []).concat({ at: now, ...r });
     return null;
   }
   if (r.action === "PARTIAL_SELL") {
-    if (/^TP1|trailing|fade-trim|momentum-trim/.test(r.reason)) pos.tpHit = Math.max(pos.tpHit, 1);
-    if (r.reason === "TP2") pos.tpHit = Math.max(pos.tpHit, 2);
-    if (r.reason === "TP3" || (/^(TP-trail|RIDE-trail)$/.test(r.reason) && r.moonbag)) { pos.tpHit = 3; pos.isMoonbag = !!r.moonbag; }
-    if (r.reason === "SL1") pos.slHit = 1;
-    return { action: "PARTIAL_SELL", pct: r.pct, reason: r.reason, layer: r.layer, detail: r.detail || null };
+    // These stamps describe a position that has been REDUCED, so they are handed to the caller to
+    // apply once the sell actually lands (see applyExitStamp). Stamping them here marked a position
+    // that still holds everything: isMoonbag turns off the stop loss, the max hold, the sweeper's
+    // time stop and the stall, so a RIDE-trail partial that failed to send left the FULL position
+    // with no way out short of -80%.
+    const stamp = {};
+    if (/^TP1|trailing|fade-trim|momentum-trim/.test(r.reason)) stamp.tpHit = Math.max(pos.tpHit, 1);
+    if (r.reason === "TP2") stamp.tpHit = Math.max(pos.tpHit, 2);
+    if (r.reason === "TP3" || (/^(TP-trail|RIDE-trail)$/.test(r.reason) && r.moonbag)) { stamp.tpHit = 3; stamp.isMoonbag = !!r.moonbag; }
+    if (r.reason === "SL1") stamp.slHit = 1;
+    return { action: "PARTIAL_SELL", pct: r.pct, reason: r.reason, layer: r.layer, detail: r.detail || null, stamp };
   }
   return { action: "SELL", pct: 100, reason: r.reason, layer: r.layer, detail: r.detail || null };
 }
@@ -141,4 +165,13 @@ function evaluatePolymarket(position, tick, plan, now, held) {
   if (plan.target_price != null && price > 0 && price >= plan.target_price) return { action: "SELL", pct: 100, reason: "TARGET", layer: 3, detail: `${price} >= ${plan.target_price}` };
   if (held > plan.max_hold_ms) return { action: plan.mode === "hold_to_redeem" ? "SELL" : "SELL", pct: 100, reason: "MAX_HOLD", layer: 2, detail: `${Math.round(held / 3_600_000)}h` };
   return null;
+}
+
+/** Apply the marks a partial exit earns, once its sell has actually landed. */
+export function applyExitStamp(position, stamp) {
+  if (!stamp || !position?._bondli) return;
+  const pos = position._bondli;
+  if (stamp.tpHit != null) pos.tpHit = Math.max(pos.tpHit || 0, stamp.tpHit);
+  if (stamp.slHit != null) pos.slHit = Math.max(pos.slHit || 0, stamp.slHit);
+  if (stamp.isMoonbag != null) pos.isMoonbag = !!stamp.isMoonbag;
 }

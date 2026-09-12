@@ -3,6 +3,7 @@
 
 // opts: freezeAuthority, isRecoveryPlay, and the aggression profile's gate-1 knobs
 // (src/velocity/venues/pumpfun/edge.mjs AGGRESSION); defaults are the designed rules.
+import { curvePctOf } from "./curve.js";
 export function checkDisqualifiers(token, qf, opts = {}) {
   const { coordDump = 0.5, staleMin = 15, tooLateCurve = 0.80, concentrationMax = 0.7, minAgeMin = 0.5, momentum = null, devHoldMax = 0.10, requireSocials = false } = opts;
   const flags = [];
@@ -130,7 +131,7 @@ export function checkDisqualifiers(token, qf, opts = {}) {
 
   // === AGE / TIMING ===
   // Bonding curve >80% = too late
-  const curvePct = token._curvePct != null ? Number(token._curvePct) : token.vSolInBondingCurve ? token.vSolInBondingCurve / 85 : 0; // pump.fun: 85 SOL graduates; other venues say where they are
+  const curvePct = curvePctOf(token); // pump.fun maths here; other venues say where they are
   if (curvePct > tooLateCurve) flags.push("TOO_LATE");
   // Token >15 min old and score just now appearing = missed it
   if (ageMin > staleMin && !opts.isRecoveryPlay) flags.push("STALE");

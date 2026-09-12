@@ -12,7 +12,7 @@ import { Ledger } from "./ledger.mjs";
 import { Store } from "./store.mjs";
 import { GateRunner } from "./pipeline.mjs";
 import { Sizer } from "./risk.mjs";
-import { createPlan, evaluateExit, markPosition } from "./exits.mjs";
+import { createPlan, evaluateExit, markPosition, applyExitStamp } from "./exits.mjs";
 import { Governor } from "./governor.mjs";
 import { WeightStore, checksumFiles, verifyChecksums, retrain } from "./learner.mjs";
 import { LatencyHistogram } from "./events.mjs";
@@ -42,7 +42,12 @@ export class Engine extends EventEmitter {
     this.dataDir = dataDir;
     this.env = envelope;
     this.clock = clock;
-    this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000, failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000, ...config };
+    this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000, failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000,
+      // How far a refused token has to run before the refusal counts as a miss, and for how long
+      // after the refusal it stays under observation.
+      missMultiple: 1.6, missWatchMs: 10 * 60_000,
+      // How far back realized statistics look. See modeStats: without a window they never revise.
+      statsWindowMs: 14 * 24 * 60 * 60_000, ...config };
     this.ledger = new Ledger(path.join(dataDir, "ledger.jsonl"), { now: clock });
     this.store = new Store(path.join(dataDir, "state.json"), { now: clock });
     this.weights = new WeightStore(path.join(dataDir, "weights"));
@@ -59,9 +64,14 @@ export class Engine extends EventEmitter {
     this.latency = {};
     for (const venue of Object.keys(this.venues)) this.latency[venue] = { decide: new LatencyHistogram(10_000, 1), send: new LatencyHistogram(), confirm: new LatencyHistogram() };
     this.blocked = {};          // venue -> reason from the supervisor (feed stale, router down)
-    this.inflight = new Set();  // instruments with an order in flight
+    this.inflight = new Set();  // instruments with an ENTRY in flight
+    this.exiting = new Set();   // position ids with a SELL in flight (see closePosition)
     this.cooldown = new Map();  // instrument -> until
-    this.disqualified = new Map(); // instrument -> until; a gate-1 reject is not re-judged every poll (see FATAL_FLAGS)
+    // instrument -> { until, at, mcap, gate, reasons, tier, peak, missed }. Two jobs: a gate-1 reject
+    // is not re-judged every poll (see FATAL_FLAGS), and the token is kept under observation
+    // afterwards so a rule that refused a runner leaves a record. See noteRejected/watchRejected.
+    this.disqualified = new Map();
+    this._entryBlockedLogged = new Map(); // instrument -> until; one "already in / cooling down" line per window, not one per tick
     this.pendingBuys = new Map();  // instrument -> { sig, decision, orderId, stake, sizing, at }: sent, not yet confirmed
     this.wallet = { sol: null, usd: null, solPrice: null, at: 0, venue: null }; // last live wallet reading (bankroll_source: wallet)
     this.wallets = {}; // venue -> reading; a hosted user trades pump.fun from a SOL wallet and PONS from an ETH wallet
@@ -179,8 +189,15 @@ export class Engine extends EventEmitter {
    *  outcomes booked in the mode it is in now, so paper still calibrates itself and live only ever
    *  hears from live. */
   modeStats() {
+    // A ROLLING window, not all history. Without one the statistics are an absorbing state: a tier
+    // that loses money over its first thirty trades makes the EV gate refuse it, refusing it stops
+    // new outcomes arriving, and the stats that closed it can never be revised -- the tier is off
+    // for the life of the account, whatever the market does afterwards. Ageing the window lets a
+    // closed tier fall back to priors and probe again at a reduced size.
+    const cutoff = this.clock() - this.cfg.statsWindowMs;
     const outs = this.ledger.query({ kind: "outcome", limit: 5000 })
-      .filter(o => o && o.venue && !!o.paper === (this.store.venueMode(o.venue) === "paper"));
+      .filter(o => o && o.venue && !!o.paper === (this.store.venueMode(o.venue) === "paper"))
+      .filter(o => !(o.ts > 0) || o.ts >= cutoff);
     return statsFromOutcomes(outs);
   }
 
@@ -211,7 +228,22 @@ export class Engine extends EventEmitter {
     this.store.state.wallet = this.wallet; this.store.state.wallets = this.wallets;
     // The first full reading after a start (every live wallet read since Start) is the baseline the
     // header P&L is measured from, kept in quote units so a move in SOL or ETH itself is not "P&L".
-    if (!this.store.state.baseline) { const b = this.truePnl(); if (b.wallet_usd != null && b.all_since_start) this.store.state.baseline = { wallet_usd: b.wallet_usd, open_usd: b.open_usd, quote: b.quote, at: this.clock() }; }
+    //
+    // It must cover at least one live venue. setVenueMode calls this while the venue is still paper,
+    // so truePnl skipped every venue and returned wallet_usd 0 with an empty quote map -- a baseline
+    // of nothing, against which the header P&L came out as the user's entire wallet balance.
+    if (!this.store.state.baseline) {
+      const b = this.truePnl();
+      if (b.wallet_usd != null && b.all_since_start && Object.keys(b.quote).length > 0)
+        this.store.state.baseline = { wallet_usd: b.wallet_usd, open_usd: b.open_usd, quote: b.quote, at: this.clock() };
+    }
+    // A venue that goes live later has produced no P&L yet, so its balance joins the baseline rather
+    // than appearing as profit the moment it is funded.
+    const base = this.store.state.baseline;
+    if (base && this.store.venueMode(venue) === "live" && base.quote && base.quote[venue] == null) {
+      base.quote[venue] = pre.balanceSol;
+      base.wallet_usd = +(base.wallet_usd + (solPrice > 0 ? pre.balanceSol * solPrice : 0)).toFixed(2);
+    }
   }
 
   /** What the user actually has, against what they had when they pressed start: every live wallet in
@@ -235,9 +267,13 @@ export class Engine extends EventEmitter {
     const out = { wallet_usd: known ? +walletUsd.toFixed(2) : null, open_usd: +openUsd.toFixed(2), unrealized_usd: +unrealized.toFixed(2), realized_today_usd: this.store.state.day.realizedUsd, baseline: b, since_start_usd: null, quote, all_since_start: allSinceStart };
     if (b && known) {
       // Each wallet's change in its own quote asset, at today's price: SOL and ETH moving is not trading.
-      let diff = 0, ok = true;
-      for (const [venue, now] of Object.entries(quote)) { const base = b.quote?.[venue]; if (base == null) { ok = false; break; } diff += (now - base) * prices[venue]; }
-      out.since_start_usd = +((ok ? diff : walletUsd - b.wallet_usd) + openUsd - b.open_usd).toFixed(2);
+      // A live venue the baseline has never seen contributes nothing rather than everything: its
+      // whole balance is new money in, not a gain. (noteWallet folds it into the baseline on the next
+      // reading.) The old fallback subtracted the baseline's total from the wallet's total, which
+      // reported a newly funded wallet as profit.
+      let diff = 0;
+      for (const [venue, now] of Object.entries(quote)) { const base = b.quote?.[venue]; if (base == null) continue; diff += (now - base) * prices[venue]; }
+      out.since_start_usd = +(diff + openUsd - b.open_usd).toFixed(2);
     }
     return out;
   }
@@ -271,6 +307,7 @@ export class Engine extends EventEmitter {
   async sweep() {
     const now = this.clock();
     const due = key => { if (now - (this._lastSweepTry.get(key) || 0) < this.cfg.sweepRetryMs) return false; this._lastSweepTry.set(key, now); return true; };
+    this.pruneMemos(now);
     if (this.walletMode() && now - (this.wallet.at || 0) >= this.cfg.walletRefreshMs) await this.refreshWallet();
     for (const [inst, pb] of [...this.pendingBuys]) {
       const router = this.routerFor(pb.venue);
@@ -395,6 +432,8 @@ export class Engine extends EventEmitter {
       else if (!gate.ok) this.log("info", `${venue}: live by the user's start; the paper gate would still say ${gate.items.filter(i => !i.ok).map(i => i.name).join(", ")}`);
     }
     this.store.setVenueMode(venue, mode, mode === "live" ? { liveStartCapUsd } : {});
+    // Now that the venue is live, the wallet reading taken above can become a real baseline.
+    if (mode === "live" && preflight) this.noteWallet(venue, preflight);
     this.ledger.append({ kind: "venue", venue, mode, by, override: !!override, gateOk: mode === "live" ? this.promotion(venue).ok : null, preflight, liveStartCapUsd });
     this.store.save();
     return { ok: true, mode, liveStartCapUsd: liveStartCapUsd || null, override: !!override, preflight };
@@ -421,7 +460,18 @@ export class Engine extends EventEmitter {
     if (!v.runner) return;
     const gov = this.governorContext(venue);
     const t0 = performance.now();
-    if (event.kind === "candidate" && (this.disqualified.get(event.id) || 0) > event.t_observed) return;
+    if (event.kind === "candidate") {
+      // A refused token keeps arriving. That is the only free measurement of what the rules cost, so
+      // read it before deciding whether to re-judge.
+      this.watchRejected(event);
+      if ((this.disqualified.get(event.id)?.until || 0) > event.t_observed) return;
+    }
+    // Nothing can be entered twice, so judging a candidate we already hold, have in flight, or are
+    // cooling down on is work that can only end in ALREADY_IN_OR_INFLIGHT or REENTRY_COOLDOWN. It is
+    // not free: the whole gate pipeline runs on this one serialised queue, ahead of every other
+    // position's stop loss, and each throwaway GO is written to the ledger and counted in the
+    // funnel the operator reads. A held mint tickles this every couple of seconds.
+    if (event.kind === "candidate" && this.cannotEnter(venue, event.id, event.t_observed)) return this.noteBlockedEntry(venue, event);
     const decisions = v.runner.run(event, { governor: gov, stats: this.stats, minStakeUsd: this.env.venues[venue]?.min_stake_usd ?? null, weights: { pumpfun: this.weights.current().weights } });
     const decideMs = performance.now() - t0;
     for (const d of decisions) {
@@ -430,16 +480,85 @@ export class Engine extends EventEmitter {
       // minute is when they are noisiest: a token rejected for QUICK_FLIP at 40 seconds is re-judged
       // rejudgeMs later, when it has the trades to be judged on. A 5-minute blacklist here was the
       // difference between seeing a runner and missing it.
-      if (d.action === "REJECT" && d.gate === "disqualifiers") {
-        const fatal = (d.reasons || []).some(r => FATAL_FLAGS.has(String(r)));
-        this.disqualified.set(d.instrument, event.t_observed + (fatal ? this.cfg.disqualifyMs : this.cfg.rejudgeMs));
-      }
+      if (d.action === "REJECT") this.noteRejected(d, event);
       this.latency[venue].decide.record(decideMs);
       d.decide_ms = +decideMs.toFixed(3);
       this.ledger.append({ kind: "decision", venue, id: d.id, decisionId: d.id, ...d });
       this.store.noteDecision(d);
       if (d.action === "GO") await this.enter(d, event);
     }
+  }
+
+  /** These maps take an entry per instrument the radar has ever shown us, and the radar is a
+   *  firehose. Without this a long-running engine leaks a few hundred bytes per token, forever. */
+  pruneMemos(now) {
+    for (const [k, r] of this.disqualified) if (now > (r.expires || r.until || 0)) this.disqualified.delete(k);
+    for (const [k, until] of this.cooldown) if (now > until) this.cooldown.delete(k);
+    for (const [k, until] of this._entryBlockedLogged) if (now > until) this._entryBlockedLogged.delete(k);
+    for (const [k, at] of this._lastSweepTry) if (now - at > 60 * 60_000) this._lastSweepTry.delete(k);
+  }
+
+  /** Remember a refusal: which rule, and where the token was when the rule fired.
+   *
+   *  Without this the ledger records that a rule said no and nothing else, so no amount of data can
+   *  ever show that the rule was wrong. A rule that blocks every runner is indistinguishable from a
+   *  rule that blocks every rug -- both look like a large REJECT count. */
+  noteRejected(d, event) {
+    const inst = d.instrument;
+    // Only gate 1 stops a token being re-judged. The other gates are readings that change minute to
+    // minute, and a governor veto is not a judgement about the token at all -- blocking on one would
+    // keep refusing a token for thirty seconds after the halt that caused it had lifted.
+    const fatal = d.gate === "disqualifiers" && (d.reasons || []).some(r => FATAL_FLAGS.has(String(r)));
+    const blockMs = d.gate === "disqualifiers" ? (fatal ? this.cfg.disqualifyMs : this.cfg.rejudgeMs) : 0;
+    const prev = this.disqualified.get(inst);
+    const mcap = Number(event.payload?.mcapUsd) || Number(event.payload?.token?.mcapUsd) || 0;
+    this.disqualified.set(inst, {
+      until: Math.max(prev?.until || 0, blockMs ? event.t_observed + blockMs : 0),
+      // The first refusal is the one that matters: it is the price of the rule. A later re-refusal
+      // of a token that has already doubled must not reset the mark and hide the miss.
+      at: prev?.at ?? event.t_observed,
+      mcap: prev?.mcap || mcap,
+      gate: prev?.gate ?? d.gate,
+      reasons: prev?.reasons ?? (d.reasons || []).map(String),
+      tier: prev?.tier ?? d.tier ?? 0,
+      peak: Math.max(prev?.peak || 0, mcap),
+      missed: prev?.missed || false,
+      expires: event.t_observed + this.cfg.missWatchMs,
+    });
+  }
+
+  /** A refused token that ran anyway. Recorded once, with the rule that refused it and the multiple
+   *  it reached, so the cost of every rule is countable instead of invisible. */
+  watchRejected(event) {
+    const r = this.disqualified.get(event.id);
+    if (!r || r.missed || !(r.mcap > 0)) return;
+    if (event.t_observed > r.expires) return;
+    const mcap = Number(event.payload?.mcapUsd) || Number(event.payload?.token?.mcapUsd) || 0;
+    if (!(mcap > 0)) return;
+    if (mcap > r.peak) r.peak = mcap;
+    const mult = mcap / r.mcap;
+    if (mult < this.cfg.missMultiple) return;
+    r.missed = true;
+    this.ledger.append({
+      kind: "miss", venue: event.venue, instrument: event.id, gate: r.gate, reasons: r.reasons,
+      tier: r.tier, mcap_at_reject: Math.round(r.mcap), mcap_now: Math.round(mcap),
+      multiple: +mult.toFixed(2), held_ms: event.t_observed - r.at,
+    });
+    this.log("info", `MISS ${event.id} ${mult.toFixed(2)}x after ${r.gate}: ${r.reasons.join(", ")}`);
+  }
+
+  /** What every rule has refused, and what those refusals would have been worth. */
+  misses({ limit = 500 } = {}) {
+    const rows = this.ledger.query({ kind: "miss", limit });
+    const by = new Map();
+    for (const m of rows) {
+      for (const reason of (m.reasons?.length ? m.reasons : [m.gate || "unknown"])) {
+        const s = by.get(reason) || { reason, n: 0, best: 0, sumMult: 0 };
+        s.n++; s.sumMult += m.multiple || 0; s.best = Math.max(s.best, m.multiple || 0);
+        by.set(reason, s);
+      }
+    }
+    return [...by.values()].map(s => ({ ...s, avgMult: +(s.sumMult / s.n).toFixed(2) })).sort((a, b) => b.n - a.n);
   }
 
   governorContext(venue) {
@@ -454,19 +573,24 @@ export class Engine extends EventEmitter {
 
   portfolioSnapshot() {
     this.store.rollDay();
-    const open = this.store.openPositions();
+    // Only positions of the kind the caps are protecting. equity_usd is built from live wallets and
+    // live positions, but `open` was every position, paper included -- so with pump.fun live and PONS
+    // in paper (anyone who has funded SOL but not ETH) a simulated position held a real concurrency
+    // slot and ate the real exposure cap. With nothing live the paper book stands in, so an all-paper
+    // run still exercises the caps and the promote gate keeps its meaning.
+    const anyLive = this.anyLiveVenue();
+    const open = this.store.openPositions().filter(p => (anyLive ? !p.paper : true));
     // A buy that was sent but not confirmed may still land: until the sweep settles it, its whole
     // stake is open risk, or every candidate inside the confirmation window is sized against the
     // full daily budget.
     const pending = [...this.pendingBuys.values()].map(pb => ({ venue: pb.venue, group: pb.decision?.group || null, notional_usd: pb.stake, worst_case_fraction: 1, pending: true }));
     const snap = {
       open: [...open.map(p => ({ venue: p.venue, group: p.group, notional_usd: p.notional_usd, worst_case_fraction: p.worst_case_fraction ?? 1 })), ...pending],
-      realized_today_usd: this.store.state.day.realizedUsd,
+      realized_today_usd: this.realizedToday(),
     };
     // Wallet mode: the bankroll is what the wallet holds. Free SOL (less the fee reserve) at the
     // current price, plus what is already open, is the equity the sizer works from. Paper venues
     // keep the fixed bankroll. No fresh reading means no order, not a guess.
-    const anyLive = Object.keys(this.venues).some(v => this.store.venueMode(v) === "live");
     if (this.walletMode() && anyLive) {
       // Every live venue's wallet, each in its own quote asset, summed in USD. One unreadable wallet
       // means no order on any venue: a guess is not a bankroll.
@@ -483,7 +607,7 @@ export class Engine extends EventEmitter {
       }
       if (reason) { snap.equity_usd = null; snap.equity_reason = reason; }
       else {
-        const liveOpen = open.filter(p => !p.paper).reduce((s, p) => s + (p.notional_usd || 0), 0);
+        const liveOpen = open.reduce((s, p) => s + (p.notional_usd || 0), 0); // `open` is already live-only here
         snap.equity_usd = +(freeUsd + liveOpen).toFixed(2);
         const w = this.wallet;
         snap.wallet = { sol: w.sol, solPrice: w.solPrice, free_usd: +freeUsd.toFixed(2), at: w.at, wallets: this.wallets };
@@ -493,6 +617,23 @@ export class Engine extends EventEmitter {
   }
 
   // ── entry ──
+  /** Record why a candidate was screened out before the gates, but at most once per rejudge window:
+   *  the operator still sees that the bot wanted back in, without a line every two seconds. */
+  noteBlockedEntry(venue, event) {
+    const inst = event.id, at = event.t_observed;
+    if ((this._entryBlockedLogged.get(inst) || 0) > at) return;
+    this._entryBlockedLogged.set(inst, at + this.cfg.rejudgeMs);
+    const held = this.inflight.has(inst) || this.pendingBuys.has(inst) || this.store.openPositions(venue).some(p => p.instrument === inst);
+    this.ledger.append({ kind: "order", venue, orderId: `${venue}:${inst}:blocked`, instrument: inst, stage: "failed", reason: held ? "ALREADY_IN_OR_INFLIGHT" : "REENTRY_COOLDOWN", screened: true });
+  }
+
+  /** True when this instrument could not be entered even with a perfect score. */
+  cannotEnter(venue, instrument, at) {
+    return this.inflight.has(instrument) || this.pendingBuys.has(instrument)
+      || (this.cooldown.get(instrument) || 0) > at
+      || this.store.openPositions(venue).some(p => p.instrument === instrument);
+  }
+
   async enter(decision, event) {
     const venue = decision.venue;
     const v = this.venues[venue];
@@ -501,6 +642,8 @@ export class Engine extends EventEmitter {
       return this.ledger.append({ kind: "order", venue, orderId: `${decision.id}:o`, decisionId: decision.id, stage: "failed", reason: "ALREADY_IN_OR_INFLIGHT" });
     if ((this.cooldown.get(inst) || 0) > event.t_observed)
       return this.ledger.append({ kind: "order", venue, orderId: `${decision.id}:o`, decisionId: decision.id, stage: "failed", reason: "REENTRY_COOLDOWN" });
+    // (onEvent screens candidates before the gates run; these two remain as the last word, because a
+    // decision can also arrive from a tick-driven re-judge and the queue can change under it.)
 
     const sizing = this.sizer.size({ decision, portfolio: this.portfolioSnapshot(), throttle: this.verdict.throttle, halted: !!this.store.isHalted(venue) });
     const liveCap = this.store.venueMode(venue) === "live" ? (v.liveStartCapUsd ?? this.store.state.venues[venue]?.liveStartCapUsd ?? null) : null;
@@ -540,8 +683,10 @@ export class Engine extends EventEmitter {
   /** A fee the venue charged for nothing (a send that failed on chain) is real money: the day sees it. */
   chargeFee(venue, instrument, usd, note) {
     this.store.rollDay();
-    this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd - usd).toFixed(4);
-    this.ledger.append({ kind: "fee", venue, instrument, usd: +usd.toFixed(4), note });
+    const paper = this.store.venueMode(venue) === "paper";
+    if (paper) this.store.state.day.paperRealizedUsd = +(this.store.state.day.paperRealizedUsd - usd).toFixed(4);
+    else this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd - usd).toFixed(4);
+    this.ledger.append({ kind: "fee", venue, instrument, usd: +usd.toFixed(4), note, paper });
   }
 
   _openPosition(decision, orderId, stake, sizing, r) {
@@ -621,12 +766,24 @@ export class Engine extends EventEmitter {
       try { action = evaluateExit(p, tick, { now: event.t_observed }); }
       catch (err) { this.log("error", `exit eval ${p.id}: ${err.message}`); continue; }
       if (!action) continue;
-      await this.closePosition(p, action.pct, action.reason, { action: action.action, layer: action.layer, detail: action.detail, tick });
+      await this.closePosition(p, action.pct, action.reason, { action: action.action, layer: action.layer, detail: action.detail, tick, stamp: action.stamp || null });
     }
   }
 
-  async closePosition(p, pct, reason, { action = "SELL", layer = null, detail = null, tick = null, by = "plan" } = {}) {
+  async closePosition(p, pct, reason, opts = {}) {
     if (p.status !== "open") return { ok: false, failure: { code: "ALREADY_CLOSED", reason: "position is not open" } };
+    // A position's status only changes once its sell has come back, so two callers that reach here
+    // while the first sell is in flight both see it open and both send one. The engine queue is not
+    // enough on its own: hub.stop and hub.halt call halt("flatten") straight through, off the queue,
+    // while a tick-driven stop loss is running on it. Two real sells for one position: the second
+    // finds an empty wallet, and two sweep intervals later the position is booked as a total loss.
+    if (this.exiting.has(p.id)) return { ok: false, failure: { code: "EXIT_IN_FLIGHT", reason: `a sell for ${p.instrument} is already in flight` } };
+    this.exiting.add(p.id);
+    try { return await this._closePosition(p, pct, reason, opts); }
+    finally { this.exiting.delete(p.id); }
+  }
+
+  async _closePosition(p, pct, reason, { action = "SELL", layer = null, detail = null, tick = null, by = "plan", stamp = null } = {}) {
     const venue = p.venue;
     const router = this.routerFor(venue);
     if (!router) return { ok: false, failure: { reason: "NO_ROUTER" } };
@@ -680,7 +837,7 @@ export class Engine extends EventEmitter {
     if (p.pendingExit) { pct = r.fill.pending_pct ?? pct; delete p.pendingExit; }
     if (p.flatSeenAt) delete p.flatSeenAt;
     if (p.lastExitError) delete p.lastExitError;
-    return this._bookExit(p, r, pct, reason, { action, layer, detail, by });
+    return this._bookExit(p, r, pct, reason, { action, layer, detail, by, stamp });
   }
 
   /** The venue holds none of this instrument and no pending sell explains it: the tokens left the
@@ -692,14 +849,18 @@ export class Engine extends EventEmitter {
     return this._bookExit(p, { ok: true, fill, flat: true }, 100, why, { action: "SELL", layer: null, detail: r.failure.reason, by, flat: true });
   }
 
-  _bookExit(p, r, pct, reason, { action = "SELL", layer = null, detail = null, by = "plan", flat = false } = {}) {
+  _bookExit(p, r, pct, reason, { action = "SELL", layer = null, detail = null, by = "plan", flat = false, stamp = null } = {}) {
     const venue = p.venue;
     const f = r.fill;
+    applyExitStamp(p, stamp); // the sell landed, so the marks a reduced position earns are now true
     const proceeds = f.notional_usd;
     p.proceeds_usd = (p.proceeds_usd || 0) + proceeds;
     if (f.sol_received > 0) p.sol_received = (p.sol_received || 0) + f.sol_received;
     p.remaining_qty = Math.max(0, (p.remaining_qty ?? p.qty) - (f.qty || 0));
-    const done = !!(pct >= 100 || p.remaining_qty <= 1e-9 || action === "REDEEM" || (p.legs && p.legs.length));
+    // What actually filled, not what was asked for. A router that sells a position in chunks can stop
+    // part-way and still succeed; closing on the requested percentage abandoned the rest.
+    const filledPct = Number.isFinite(f.pct_filled) ? f.pct_filled : pct;
+    const done = !!(filledPct >= 100 || p.remaining_qty <= 1e-9 || action === "REDEEM" || (p.legs && p.legs.length));
     this.ledger.append({ kind: "exit", venue, positionId: p.id, decisionId: p.decisionId, instrument: p.instrument, pct, reason, layer, detail, price: f.price, qty: f.qty, proceeds_usd: proceeds, fee_usd: f.fee_usd || 0, latency_ms: f.latency_ms, venue_ref: f.venue_ref, sol_received: f.sol_received ?? null, exact: f.exact ?? null, final: done, by });
     if (done) {
       const pnl = +(p.proceeds_usd - p.cost_usd).toFixed(4);
@@ -707,8 +868,12 @@ export class Engine extends EventEmitter {
       this.reclaimRent(venue, p.instrument); // the emptied token account's rent is ours again
       this.store.closePosition(p.id, { exitReason: reason, pnl_usd: pnl, remaining_qty: 0 });
       this.store.rollDay();
-      this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4);
-      this.store.state.day.trades++;
+      // Simulated money must not spend the real daily loss budget, nor raise it. The reconcile path
+      // has always guarded this; the main exit path did not, so a paper venue running beside a live
+      // one could halt live trading with imaginary losses -- or, worse, size real trades up on
+      // imaginary gains.
+      if (f.paper) { this.store.state.day.paperRealizedUsd = +(this.store.state.day.paperRealizedUsd + pnl).toFixed(4); this.store.state.day.paperTrades++; }
+      else { this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4); this.store.state.day.trades++; }
       this.ledger.append({ kind: "outcome", venue, instrument: p.instrument, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: held, reason, features: p.features, paper: !!f.paper, by, flat_at_venue: flat || undefined });
       this.cooldown.set(p.instrument, this.clock() + this.cfg.reentryCooldownMs);
       this.venues[venue].feed?.unwatch(p.instrument);
@@ -725,6 +890,17 @@ export class Engine extends EventEmitter {
   }
 
   // ── governor (DP7) ──
+  /** True when real money is at stake at any venue. */
+  anyLiveVenue() { return Object.keys(this.venues).some(v => this.store.venueMode(v) === "live"); }
+
+  /** The day's realized P&L that the loss limit and the governor act on: the live number whenever a
+   *  live venue exists, and otherwise the paper number, so an all-paper run still exercises the limit
+   *  and the promote gate means something. */
+  realizedToday() {
+    const d = this.store.state.day;
+    return this.anyLiveVenue() ? d.realizedUsd : (d.paperRealizedUsd || 0);
+  }
+
   evaluateGovernor() {
     const snap = this.portfolioSnapshot();
     const verdict = this.governor.evaluate({ regime: this.store.state.regime, realized_today_usd: snap.realized_today_usd, open: this.store.openPositions().map(p => ({ ...p })) });
@@ -865,10 +1041,11 @@ export class Engine extends EventEmitter {
       running: this.running, startedAt: s.startedAt, now: this.clock(), heartbeatAt: s.heartbeatAt, reconciledAt: s.reconciledAt,
       halt: s.halt, throttle: s.throttle, governor: s.governor, regime: s.regime,
       pnl: this.truePnl(),
-      day: { ...s.day, limit_usd: this.env.daily_loss_limit_usd, used_pct: +((Math.max(0, -s.day.realizedUsd) / this.env.daily_loss_limit_usd) * 100).toFixed(1) },
+      day: { ...s.day, limit_usd: this.env.daily_loss_limit_usd, counted_usd: this.realizedToday(), counting: this.anyLiveVenue() ? "live" : "paper", used_pct: +((Math.max(0, -this.realizedToday()) / this.env.daily_loss_limit_usd) * 100).toFixed(1) },
       bankroll: { source: this.walletMode() ? "wallet" : "fixed", fixed_usd: this.env.bankroll_usd, equity_usd: this.portfolioSnapshot().equity_usd ?? null, wallet: this.wallet.at ? this.wallet : null, wallets: this.wallets },
       positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, name: p.reference?.name || "", ticker: p.reference?.ticker || "", tier: p.tier, model: p.model, notional_usd: p.notional_usd, stake_usd: p.stake_usd, mark: p.mark, entryMark: p.entryMark, peak: p.peak, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode, stall_ms: p.plan?.stall_ms ?? null, max_hold_ms: p.plan?.max_hold_ms ?? null }, tpHit: p._bondli?.tpHit ?? 0, entryTime: p.entryTime, lastTickAt: p.lastTickAt || null, curve: p.reference?.curve?.address || null, adopted: !!p.adopted, sizing: p.sizing || null, lastExitError: p.lastExitError || null })),
       review: this.review(),
+      misses: this.misses({ limit: 300 }).slice(0, 12), // what the rules refused that then ran
       venues, weightsVersion: this.weights.current().version, lastDecisions: s.lastDecisions, alerts: s.alerts.slice(0, 10),
       holdings: Object.fromEntries(Object.entries(this._holdings).map(([venue, h]) => { const open = new Set(this.store.openPositions(venue).map(p => p.instrument)); return [venue, { at: h.at, list: h.list.map(x => ({ ...x, tracked: open.has(x.instrument) })) }]; })),
     };

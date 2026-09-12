@@ -22,6 +22,10 @@ export function statsFromOutcomes(outcomes) {
       const avgLoss = losses ? s.lossSum / losses : 1;
       s.p_win = s.n ? s.wins / s.n : 0;
       s.payoff = avgLoss > 0 ? avgWin / avgLoss : avgWin;
+      // payoff is a RATIO of average win to average loss, so it is denominated in "one average loss"
+      // (one R), not in stake. Anything that wants to compare it against a cost -- which is a
+      // fraction of stake -- needs to know how big one R actually is.
+      s.loss_fraction = losses ? avgLoss : 0;
       s.expectancy = s.n ? s.pnlSum / s.n : 0;
     }
   }

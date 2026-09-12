@@ -157,6 +157,7 @@ export const GATE_FILES = Object.freeze([
   path.resolve(here, "../../autoape/gates/viability.js"),
   path.resolve(here, "../../autoape/gates/confidence.js"),
   path.resolve(here, "../../autoape/gates/execution-window.js"),
+  path.resolve(here, "../../autoape/gates/curve.js"), // four kill gates compare against this arithmetic
   path.resolve(here, "pipeline.mjs"),
   path.resolve(here, "risk.mjs"),
   path.resolve(here, "../venues/pumpfun/edge.mjs"),

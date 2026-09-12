@@ -91,7 +91,12 @@ test("T9: paper mode end to end writes every stage and blocks entries on a stale
   const outcome = engine.ledger.query({ kind: "outcome", limit: 1 })[0];
   assert.ok(Number.isFinite(outcome.pnl_usd));
   assert.ok(outcome.features, "outcome carries the entry features for the learner");
-  assert.equal(engine.store.state.day.trades, 1);
+  // Paper mode: the trade is counted, but against the paper ledger, not the real daily loss budget.
+  assert.equal(engine.store.state.day.paperTrades, 1);
+  assert.equal(engine.store.state.day.trades, 0, "no real money moved");
+  assert.equal(engine.store.state.day.realizedUsd, 0);
+  // With no live venue, the limit and the governor still act on the simulated number.
+  assert.equal(engine.realizedToday(), engine.store.state.day.paperRealizedUsd);
 
   // Stale feed blocks new entries; a halt freezes; flatten closes.
   feed.lastEventAt = Date.now() - 60_000; feed.eventsEmitted = 1;

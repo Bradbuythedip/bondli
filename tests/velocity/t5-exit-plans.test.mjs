@@ -1,7 +1,7 @@
 // T5: every entry gets a plan; each layer fires in simulation at its trigger.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPlan, evaluateExit, markPosition, assertHasPlan } from "../../src/velocity/core/exits.mjs";
+import { createPlan, evaluateExit, markPosition, assertHasPlan, applyExitStamp } from "../../src/velocity/core/exits.mjs";
 import { makeEvent } from "../../src/velocity/core/events.mjs";
 import { EXIT_PLANS } from "../../src/velocity/core/plans.mjs";
 
@@ -57,9 +57,12 @@ test("T5: pump.fun layers fire at their triggers", () => {
   pos = pumpPos();
   r = evaluateExit(pos, tick(8_700));
   assert.equal(r.action, "PARTIAL_SELL"); assert.equal(r.reason, "SL1");
-  // Layer 4: graduation
+  // Layer 4: graduation. Progress is (vSol - 30) / 85, so >90% needs vSol past 106.5, not 76.5:
+  // at vSol 80 the token is only 59% of the way and must not be force-sold.
   pos = pumpPos();
-  r = evaluateExit(pos, tick(11_000, { curve: 80, token: { vSolInBondingCurve: 80 } }));
+  assert.equal(evaluateExit(pos, tick(11_000, { curve: 80, token: { vSolInBondingCurve: 80 } })), null, "59% along is not graduating");
+  pos = pumpPos();
+  r = evaluateExit(pos, tick(11_000, { curve: 108, token: { vSolInBondingCurve: 108 } }));
   assert.equal(r.layer, 4);
   // Max hold from the static table
   pos = pumpPos();
@@ -167,6 +170,12 @@ test("T5: a runner keeps its moonbag, and the moonbag outlives the time limit", 
   const r = evaluateExit(pos, tick(24_000));
   assert.equal(r?.reason, "RIDE-trail"); assert.equal(r.action, "PARTIAL_SELL");
   assert.equal(r.pct, 85, "tier 2 keeps 15%");
+  // The mark follows the SELL, not the decision: until 85% has actually left the wallet the position
+  // is still a full one, and a full position must keep its stop loss and its time limit.
+  assert.deepEqual(r.stamp, { tpHit: 3, isMoonbag: true });
+  assert.equal(pos._bondli.isMoonbag, false, "not a moonbag until the sell lands");
+  assert.equal(evaluateExit(pos, tick(24_000, {}, T0 + 26 * 60_000))?.reason, "MAX_HOLD", "and the time limit still applies to it");
+  applyExitStamp(pos, r.stamp);
   assert.equal(pos._bondli.isMoonbag, true, "the position is now a moonbag");
   // the moonbag is not sold at the plan's time limit
   assert.equal(evaluateExit(pos, tick(24_000, {}, T0 + 26 * 60_000)), null);
@@ -180,3 +189,55 @@ test("T5: a runner keeps its moonbag, and the moonbag outlives the time limit", 
   assert.equal(r3?.reason, "RIDE-trail"); assert.equal(r3.pct, 100);
 });
 
+
+test("T5: a plan adjustment does not cancel the exit checks, and cannot compound away the stop", () => {
+  // A dying position: the live score sits well below the entry score, which makes layer 1 return
+  // TIGHTEN_SLS on every tick. That must not stop layer 2 from seeing that the price is 30% down.
+  const pos = pumpPos();
+  // A 12-point drop off an entry score of 66: enough for TIGHTEN_SLS (10), short of momentum-trim
+  // (25) and momentum-exit (30), so layer 1's only output is the adjustment.
+  const weak = { token: { buys: 40, trades: [] }, scores: { apeScore: 54 }, dynamics: { scores: 3, velocity: -0.02, acceleration: 0, trend: "fading" } };
+  const r = evaluateExit(pos, tick(7_000, weak));
+  assert.ok(r, "the stop loss is still reached with a plan adjustment pending");
+  assert.equal(r.reason, "SL2");
+
+  // With nothing else to do, the adjustment is applied as before.
+  const drifting = pumpPos();
+  assert.equal(evaluateExit(drifting, tick(9_900, weak)), null, "an adjustment returns no order");
+  assert.equal(drifting.planAdjustments.length, 1);
+  assert.ok(drifting._bondli.exitPlan.stopLoss < 12, "and it did tighten the stop");
+
+  // Tick after tick after tick: the stop converges to a floor instead of to zero.
+  const p2 = pumpPos();
+  for (let i = 0; i < 40; i++) evaluateExit(p2, tick(9_900 - i, weak));
+  const sl = p2._bondli.exitPlan.stopLoss;
+  assert.ok(sl >= 6, `a tier-2 12% stop cannot tighten past half of itself, got ${sl}`);
+  // The same for the other direction: a "rocket" cannot walk the targets to the moon.
+  const p3 = pumpPos();
+  const hot = { token: { buys: 40, trades: [] }, scores: { apeScore: 90 }, dynamics: { scores: 6, velocity: 0.5, acceleration: 0.1, trend: "rocket" } };
+  const tp1Before = p3.plan.bondli.tpLevels.tp1;
+  for (let i = 0; i < 40; i++) evaluateExit(p3, tick(10_050 + i, hot));
+  assert.ok(p3._bondli.exitPlan.tpLevels.tp1 <= tp1Before * 3, `targets are capped at 3x, got ${p3._bondli.exitPlan.tpLevels.tp1}`);
+});
+
+test("T5: a partial sell that never lands leaves a full position with its stop loss intact", () => {
+  const pos = pumpPos();
+  markPosition(pos, tick(40_000));            // +300%
+  const r = evaluateExit(pos, tick(24_000));  // RIDE-trail: sell 85%, keep a moonbag
+  assert.equal(r.action, "PARTIAL_SELL");
+  // The sell fails -- no balance, an unconfirmed signature, a revert. Nothing is applied.
+  assert.equal(pos._bondli.isMoonbag, false);
+  assert.equal(pos._bondli.tpHit, 0);
+  // The position still holds everything, so every protection a full position has must still work.
+  // 40% down. A real moonbag sits here doing nothing until -80%; a full position must not.
+  const out = evaluateExit(pos, tick(6_000));
+  assert.ok(out, "a full position 40% down still has an exit");
+  assert.ok(!/^moonbag/.test(out.reason), `and it is not being treated as a moonbag: ${out.reason}`);
+  const p2 = pumpPos();
+  markPosition(p2, tick(40_000)); evaluateExit(p2, tick(24_000));
+  assert.equal(evaluateExit(p2, tick(24_000, {}, T0 + 26 * 60_000))?.reason, "MAX_HOLD", "and so does the time limit");
+  // The trail is still willing to try again.
+  const p3 = pumpPos();
+  markPosition(p3, tick(40_000)); evaluateExit(p3, tick(24_000));
+  assert.equal(evaluateExit(p3, tick(24_000))?.reason, "RIDE-trail", "and the exit is retried");
+});

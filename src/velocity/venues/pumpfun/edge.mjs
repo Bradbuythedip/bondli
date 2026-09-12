@@ -29,9 +29,11 @@ export function pumpfunFeatures(c) {
 // that would replace the prior: the old tier-3 prior (0.25 x 3.0) had EV -0.05 after costs, which
 // silently refused every speculative entry.
 export const PUMPFUN_PRIORS = Object.freeze({
-  1: Object.freeze({ p_win: 0.45, payoff: 3.0 }),   // EV +0.80 before costs
-  2: Object.freeze({ p_win: 0.35, payoff: 3.0 }),   // EV +0.40
-  3: Object.freeze({ p_win: 0.30, payoff: 3.0 }),   // EV +0.20
+  // loss_fraction is the tier's designed stop loss: how much of the stake one average loss costs,
+  // and therefore the unit that `payoff` is measured in. See stats.mjs.
+  1: Object.freeze({ p_win: 0.45, payoff: 3.0, loss_fraction: 0.15 }),
+  2: Object.freeze({ p_win: 0.35, payoff: 3.0, loss_fraction: 0.12 }),
+  3: Object.freeze({ p_win: 0.30, payoff: 3.0, loss_fraction: 0.10 }),
 });
 
 /** One knob for how far past the designed floors gates 2 and 3 let a token in. Gate 1 (the rug
@@ -124,18 +126,30 @@ export function makePumpfunEdge({
     ],
 
     estimate(c, ctx = {}) {
-      const stats = ctx.stats?.pumpfun?.[c.tier];
+      // This judge serves PONS as well as pump.fun, so it must read the record of the venue it is
+      // actually judging. Keyed to "pumpfun" it priced Robinhood Chain entries with pump.fun's win
+      // rate and payoff -- a different chain, launchpad, fee schedule and crowd -- while the PONS
+      // statistics modeStats computes were never read by anything.
+      const stats = ctx.stats?.[venue]?.[c.tier];
       const prior = priors[c.tier] || priors[3];
       const useStats = stats && stats.n >= minOutcomesForStats && stats.p_win > 0 && stats.payoff > 0;
       const p_win = useStats ? stats.p_win : prior.p_win;
       const payoff = useStats ? stats.payoff : prior.payoff;
-      const weights = ctx.weights?.pumpfun || DEFAULT_WEIGHTS.pumpfun;
+      // How much one average loss is worth, as a fraction of the stake. payoff is a ratio measured in
+      // these units, so without it the EV gate cannot compare an edge against a cost. Realized losses
+      // when there are enough of them; before that the tier's designed stop, which is what the exit
+      // plan is actually aiming to lose.
+      const lossFraction = useStats && stats.loss_fraction > 0 ? stats.loss_fraction : (prior.loss_fraction ?? 0.12);
+      // Ranking weights are still pump.fun's: the learner only trains that set, and the features are
+      // the same shape on both venues. Unlike the statistics above, this is a shared prior rather
+      // than one venue's record being read as another's.
+      const weights = ctx.weights?.[venue] || ctx.weights?.pumpfun || DEFAULT_WEIGHTS.pumpfun;
       const features = pumpfunFeatures(c);
       const ranked = scoreFeatures(features, weights);
       const confidence = Math.min(0.95, ranked + (c.tier === 1 ? 0.15 : c.tier === 2 ? 0.05 : 0));
       const plan = planFor(venue, c.revival ? "revival" : c.tier);
       return {
-        p_win, payoff, confidence, tier: c.tier,
+        p_win, payoff, loss_fraction: lossFraction, on_priors: !useStats, outcomes_seen: stats?.n || 0, confidence, tier: c.tier,
         plan_key: plan.key, stake_cap_fraction: plan.stake_cap_fraction ?? null,
         stop_fraction: plan.worst_case_fraction,
         group: c.token.devWallet || null,

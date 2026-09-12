@@ -55,13 +55,21 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
   // producing a bot that runs and never fills.
   const bankroll = Math.max(MIN_STAKE_USD, Math.min(100_000, Number(settings.bankrollUsd) || 100));
   const perTrade = Math.max(MIN_STAKE_USD, Math.min(bankroll, Number(settings.perTradeMaxUsd) || MIN_STAKE_USD));
-  const maxPositions = Math.max(1, Math.min(10, Math.round(Number(settings.maxPositions) || 4)));
-  const portfolio = Math.min(bankroll, perTrade * maxPositions);
+  let maxPositions = Math.max(1, Math.min(10, Math.round(Number(settings.maxPositions) || 4)));
   // The day's loss budget also caps a single stake (worst_case_fraction is 1.0 on a memecoin: the
   // whole position can go). A budget smaller than one stake therefore means the bot runs and never
   // fills, which is the worst of both. One minimum stake is the floor; a bankroll too small to
   // afford that is refused at start rather than quietly idling.
   const daily = Math.max(MIN_STAKE_USD, Math.min(bankroll, Number(settings.dailyLossUsd) || Math.round(bankroll * 0.15)));
+  // The sizer treats a memecoin position as able to lose all of itself (worst_case_fraction 1.0), so
+  // the day's budget is also a concurrency limit: with a $15 budget and $25 stakes, ONE open position
+  // exhausts it and every later candidate is refused DAILY_BUDGET_EXHAUSTED until tomorrow. The
+  // setting said four positions and the budget allowed one, with nothing anywhere saying so. Make
+  // the two agree, and report it, rather than letting the budget quietly overrule the setting.
+  const affordable = Math.max(1, Math.floor(daily / perTrade));
+  const positionsAsked = maxPositions;
+  if (affordable < maxPositions) maxPositions = affordable;
+  const portfolio = Math.min(bankroll, perTrade * maxPositions);
   // Degen apes heavier: the Kelly fraction scales with the dial (0.75x safe, 1x, 1.5x, 2x), capped at half Kelly.
   const level = Math.max(0, Math.min(3, Math.round(settings.aggression == null || settings.aggression === "" ? 1 : Number(settings.aggression) || 0)));
   const kellyMult = { 0: 0.75, 1: 1, 2: 1.5, 3: 2 }[level] || 1;
@@ -84,6 +92,8 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
   delete cfg._comment;
   const v = validateRisk(cfg);
   if (!v.ok) throw new Error(`risk settings rejected: ${v.errors.join("; ")}`);
+  // Recorded, not hidden: the panel says "4 positions" and the envelope allows one.
+  if (maxPositions < positionsAsked) cfg.positions_capped_by_daily_budget = { asked: positionsAsked, allowed: maxPositions, daily_loss_limit_usd: daily, per_trade_max_usd: perTrade };
   return deepFreeze(cfg);
 }
 
@@ -142,7 +152,16 @@ export class VelocityHub {
     const venues = { pumpfun: { mode: "paper", feed: view, edge: makePumpfunEdge({ aggression }), router: new PumpfunPaperRouter({ bookFile: path.join(dataDir, "paper-book-pumpfun.json"), clock: this.clock }), liveRouter } };
     if (pons) venues.pons = { mode: "paper", feed: new SharedFeedView(this.ponsFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "pons", aggression }), router: new PonsPaperRouter({ bookFile: path.join(dataDir, "paper-book-pons.json"), clock: this.clock }), liveRouter: this.makePonsRouter({ secret: evmSecret, wallet }) };
     const engine = new Engine({ dataDir, envelope, venues, clock: this.clock });
-    engine.alerter = new Alerter({ store: engine.store, ledger: engine.ledger, webhookUrl: null, statusUrl: null });
+    // Everything the engine considers worth waking someone for -- a live router that failed to
+    // initialise, a flatten that left positions open, a position booked as a total loss, the governor
+    // freezing entries, gate files changed on disk -- went to a webhook that was hard-coded null, so
+    // it reached the ledger and the status page and nowhere a person would see it. ALERT_WEBHOOK_URL
+    // (a Slack/Discord/ntfy endpoint) is now honoured, and the message carries a link back.
+    engine.alerter = new Alerter({
+      store: engine.store, ledger: engine.ledger,
+      webhookUrl: process.env.ALERT_WEBHOOK_URL || null,
+      statusUrl: process.env.PUBLIC_URL || process.env.BONDLI_URL || "",
+    });
     engine.on("log", l => this.log.log?.(`[velocity ${wallet.slice(0, 8)}] ${l.level} ${l.text}`));
     engine.on("outcome", ({ position }) => { this.settleFee(wallet, position).catch(err => this.log.error?.(`[VELOCITY-HUB] fee ${wallet.slice(0, 8)}: ${err.message}`)); });
     const sup = new Supervisor({ engine, dataDir, alerter: engine.alerter, clock: this.clock });
@@ -170,7 +189,8 @@ export class VelocityHub {
     const u = this.users.get(wallet);
     if (!u) return { ok: false, error: "not running" };
     let result = null;
-    if (flatten) result = await u.engine.halt("flatten", "user stop", { by: "user" });
+    // Through the engine queue: off it, this flatten races the tick-driven exits already running on it.
+    if (flatten) result = await u.engine.enqueue(() => u.engine.halt("flatten", "user stop", { by: "user" }));
     u.sup.stop(); clearInterval(u.fun);
     await u.engine.stop();
     this.users.delete(wallet);
@@ -180,14 +200,14 @@ export class VelocityHub {
   async halt(wallet, mode = "flatten") {
     const u = this.users.get(wallet);
     if (!u) return { ok: false, error: "not running" };
-    return { ok: true, ...(await u.engine.halt(mode, "user halt", { by: "user" })) };
+    return { ok: true, ...(await u.engine.enqueue(() => u.engine.halt(mode, "user halt", { by: "user" }))) };
   }
 
   /** Pause: no new entries, open positions keep their exit plans. Resume lifts it. */
   async pause(wallet) {
     const u = this.users.get(wallet);
     if (!u) return { ok: false, error: "not running" };
-    await u.engine.halt("freeze", "paused by user", { by: "user" });
+    await u.engine.enqueue(() => u.engine.halt("freeze", "paused by user", { by: "user" }));
     return { ok: true, ...this.status(wallet) };
   }
   resume(wallet) {

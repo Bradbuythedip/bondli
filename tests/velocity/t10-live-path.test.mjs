@@ -649,14 +649,15 @@ test("T10: the risk dial moves gates 1, 2 and 3 together; the designed rules are
   const { checkExecutionWindow } = await import("../../src/autoape/gates/execution-window.js");
   const { classifyConfidence } = await import("../../src/autoape/gates/confidence.js");
   const now = Date.now();
-  const token = { ca: "M", createdAt: now - 3 * 60000, buys: 20, sells: 6, uniqueBuyers: { size: 12 }, mcapUsd: 9000, volumeSol: 8, vSolInBondingCurve: 55, spark: [5000, 6000, 7000, 8000, 8500, 9000], _apeScore: 40 };
+  const token = { ca: "M", createdAt: now - 3 * 60000, buys: 20, sells: 6, uniqueBuyers: { size: 12 }, mcapUsd: 9000, volumeSol: 8, vSolInBondingCurve: 85, spark: [5000, 6000, 7000, 8000, 8500, 9000], _apeScore: 40 };
   const qf = { _rg_sybilScore: 0.45, _rg_freshWalletRatio: 0.5, ch_healthScore: 0.6 };
   const dyn = { scores: 4, velocity: 0.1, acceleration: 0.01, trend: "rising" };
   // Score 40 with sybil 0.45: refused as designed, admitted at aggression 2.
   assert.deepEqual(checkViability(token, qf, { apeScore: 40 }, dyn, AGGRESSION[1]).checks, ["SCORE_BELOW_FLOOR", "HIGH_SYBIL_RISK"]);
   assert.equal(checkViability(token, qf, { apeScore: 40 }, dyn, AGGRESSION[2]).pass, true);
   assert.equal(checkViability(token, qf, { apeScore: 40 }, dyn).pass, false, "no opts means the designed floors");
-  // 65% along the curve: too advanced for tier 2 as designed, inside the window at aggression 2.
+  // vSol 85 is 65% along -- (85 - 30) / 85, the virtual reserve subtracted -- so it is too advanced
+  // for tier 2 as designed and inside the window at aggression 2.
   assert.ok(checkExecutionWindow(token, 2, now, AGGRESSION[1]).checks.includes("CURVE_TOO_ADVANCED"));
   assert.ok(!checkExecutionWindow(token, 2, now, AGGRESSION[2]).checks.includes("CURVE_TOO_ADVANCED"));
   assert.ok(checkExecutionWindow(token, 2, now, AGGRESSION[3]).pass, "degen takes it up to 80%");
@@ -678,7 +679,7 @@ test("T10: the risk dial moves gates 1, 2 and 3 together; the designed rules are
   assert.ok(checkDisqualifiers(dumping, dump).flags.includes("COORDINATED_DUMP"));
   assert.ok(!checkDisqualifiers(dumping, dump, AGGRESSION[2]).flags.includes("COORDINATED_DUMP"), "a 0.6 burst is not a dump on normal");
   assert.ok(checkDisqualifiers(dumping, { rg_coordDumpScore: 0.9, rg_sellWaveDetect: 0.9 }, AGGRESSION[3]).flags.includes("COORDINATED_DUMP"), "a 0.9 burst is a dump even on degen");
-  const late = { ...token, vSolInBondingCurve: 85 * 0.85, uniqueBuyers: { size: 12 } };
+  const late = { ...token, vSolInBondingCurve: 30 + 85 * 0.85, uniqueBuyers: { size: 12 } }; // 85% along: the reserve starts at 30
   assert.ok(checkDisqualifiers(late, {}).flags.includes("TOO_LATE"));
   assert.ok(!checkDisqualifiers(late, {}, AGGRESSION[2]).flags.includes("TOO_LATE"));
   // Gate 2: 4 buyers at 3 minutes is dead on arrival as designed, alive on normal; no dynamics is only fine on degen.
@@ -748,8 +749,15 @@ test("T10: a production-shaped candidate (no enrichment, tier 3) is a GO; missin
   assert.equal(pumpfunFeatures({ token: p.token, qf: { ...p.qf, _whaleBullish: 0 }, scores: p.scores }).whaleBullish, 0, "a real zero is still a zero");
   const withFalseZero = scoreFeatures({ ...f, whaleBullish: 0 }, DEFAULT_WEIGHTS.pumpfun);
   assert.ok(ranked - withFalseZero > 0.04, `a false zero costs ${(ranked - withFalseZero).toFixed(3)} of confidence against a 0.50 floor`);
-  // Every tier's prior clears a 5% cost, so a tier can earn the outcomes that replace its prior.
-  for (const t of [1, 2, 3]) assert.ok(expectedValue({ ...PUMPFUN_PRIORS[t], costs: 0.06 }) > 0, `tier ${t} prior EV`);
+  // In R units every tier's prior looks like a clear edge -- but payoff is a RATIO of average win to
+  // average loss, so that edge is denominated in one average loss, while the cost is a fraction of the
+  // stake. Converted honestly, the tier-3 prior does NOT clear a 3.5% round trip: at a 10% stop, a 3x
+  // payoff needs a 33.75% win rate and the prior assumes 30%.
+  for (const t of [1, 2, 3]) assert.ok(expectedValue({ ...PUMPFUN_PRIORS[t], costs: 0.035 }) > 0, `tier ${t} prior edge in R`);
+  const evOf = (t, costs) => expectedValue({ p_win: PUMPFUN_PRIORS[t].p_win, payoff: PUMPFUN_PRIORS[t].payoff, lossFraction: PUMPFUN_PRIORS[t].loss_fraction, costs });
+  assert.ok(evOf(1, 0.035) > 0, "tier 1 prior clears its costs");
+  assert.ok(evOf(3, 0.035) < 0, "tier 3 prior does not: 30% win rate is below the 33.75% break-even");
+  assert.ok(evOf(3, 0) > 0, "and it is the costs that kill it, not the edge -- which is why tier 3 probes");
   // Through the whole runner at Normal: a GO, not a confidence or EV reject.
   const edge = makePumpfunEdge({ aggression: 2 });
   const runner = new GateRunner({ venue: "pumpfun", edge });
@@ -1016,4 +1024,128 @@ test("T10: a website that does not answer stops counting as a social link", asyn
   assert.ok(!noSocials({ _socialsKnown: 1, _hasAnySocial: 1 }));
   // both dead: refused
   assert.ok(noSocials({ _socialsKnown: 1, _hasAnySocial: 0, _siteDead: 1, _xDeadHandle: 1 }));
+});
+
+test("T10: curve progress subtracts the virtual reserve, so a new launch reads 0% and not 35%", async () => {
+  const { pumpCurvePct, curvePctOf } = await import("../../src/autoape/gates/curve.js");
+  const { checkExecutionWindow } = await import("../../src/autoape/gates/execution-window.js");
+  const { AGGRESSION } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  // pump.fun's reserve starts at 30 SOL with nothing raised and ends near 115.
+  assert.equal(pumpCurvePct(30), 0, "a brand-new launch has raised nothing");
+  assert.equal(+pumpCurvePct(30 + 85 / 2).toFixed(4), 0.5);
+  assert.equal(pumpCurvePct(115), 1);
+  assert.equal(pumpCurvePct(200), 1, "clamped");
+  assert.equal(pumpCurvePct(0), 0);
+  assert.equal(pumpCurvePct(undefined), 0);
+  // A feed that knows its own progress (PONS) is believed over the pump.fun arithmetic.
+  assert.equal(curvePctOf({ _curvePct: 0.42, vSolInBondingCurve: 99 }), 0.42);
+  // The regression this guards: at the strictest dial, curveMaxSpec 0.30 was BELOW the 30/85 = 35%
+  // a brand-new token read, so no tier-3 launch could ever clear the window.
+  const fresh = { ca: "M", createdAt: Date.now() - 60_000, vSolInBondingCurve: 30.5, mcapUsd: 5000, spark: [] };
+  for (const level of [0, 1, 2, 3])
+    assert.ok(!checkExecutionWindow(fresh, 3, Date.now(), AGGRESSION[level]).checks.includes("CURVE_TOO_ADVANCED_SPEC"),
+      `aggression ${level}: a fresh launch is not "too advanced"`);
+});
+
+test("T10: a candidate the engine cannot enter is screened before the gates, and logged once per window", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const engine = mkEngine(dir, { envelope: env, mode: "paper", config: { rejudgeMs: 30_000 } });
+  let now = Date.now(); engine.clock = () => now;
+  const runner = engine.venues.pumpfun.runner;
+  let gateRuns = 0;
+  const realRun = runner.run.bind(runner);
+  runner.run = (...a) => { gateRuns++; return realRun(...a); };
+  try {
+    await engine.start({ reconcile: false });
+    await engine.enqueue(() => engine.onEvent(cand("MintHeld", now)));
+    assert.equal(engine.store.openPositions("pumpfun").length, 1);
+    const afterEntry = gateRuns;
+    // The feed keeps offering the same mint every couple of seconds while it is held.
+    for (let i = 1; i <= 5; i++) { now += 2000; await engine.enqueue(() => engine.onEvent(cand("MintHeld", now))); }
+    assert.equal(gateRuns, afterEntry, "the gate pipeline does not run on a mint we already hold");
+    const blocked = engine.ledger.query({ kind: "order" }).filter(o => o.screened);
+    assert.equal(blocked.length, 1, "one line per rejudge window, not one per tick");
+    assert.equal(blocked[0].reason, "ALREADY_IN_OR_INFLIGHT");
+    // Past the window it says so again, so a mint stuck like this is still visible.
+    now += 31_000; await engine.enqueue(() => engine.onEvent(cand("MintHeld", now)));
+    assert.equal(engine.ledger.query({ kind: "order" }).filter(o => o.screened).length, 2);
+  } finally { await engine.stop(); }
+});
+
+test("T10: expected value converts the payoff ratio into stake before charging costs", async () => {
+  const { expectedValue, GateRunner } = await import("../../src/velocity/core/pipeline.mjs");
+  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  // payoff is avgWin/avgLoss, so p*payoff - (1-p) is an edge in units of one average loss. A cost is
+  // a fraction of the stake. At a 5% average loss, a 3.5% round trip is 0.7 of one loss, not 0.035.
+  const p = 0.4, payoff = 3, costs = 0.035, lossFraction = 0.05;
+  assert.equal(+expectedValue({ p_win: p, payoff, costs }).toFixed(4), 0.565, "unconverted: an 0.6 R edge charged 0.035 R of cost");
+  assert.equal(+expectedValue({ p_win: p, payoff, costs, lossFraction }).toFixed(4), -0.005, "converted: 0.6 R is 3% of stake, and the round trip is 3.5%");
+  // With no loss size supplied the old form is kept rather than silently rescaled.
+  assert.equal(expectedValue({ p_win: p, payoff, costs, lossFraction: 0 }), expectedValue({ p_win: p, payoff, costs }));
+  assert.equal(expectedValue({ p_win: p, payoff, costs, lossFraction: null }), expectedValue({ p_win: p, payoff, costs }));
+  // A bigger stop makes each loss cost more, so the same ratio is worth more per trade.
+  assert.ok(expectedValue({ p_win: p, payoff, costs, lossFraction: 0.15 }) > expectedValue({ p_win: p, payoff, costs, lossFraction: 0.05 }));
+
+  // The probe: a tier judged on priors whose edge is positive before costs is taken small, not refused.
+  const edge = makePumpfunEdge({ aggression: 2 });
+  const runner = new GateRunner({ venue: "pumpfun", edge });
+  assert.equal(runner.probeStakeFraction, 0.4);
+  const strict = new GateRunner({ venue: "pumpfun", edge, probeStakeFraction: 0 });
+  assert.equal(strict.probeStakeFraction, 0, "probing can be switched off");
+});
+
+test("T10: the header P&L starts at zero, not at the value of the wallet", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const live = new FakeLive(); live.balanceSol = 1.12;
+  const engine = mkEngine(dir, { envelope: env, mode: "paper", live });
+  let now = Date.now(); engine.clock = () => now;
+  engine.quotePrice.pumpfun = 100; // 1.12 SOL = $112 in the wallet, and no trades yet
+  try {
+    await engine.start({ reconcile: false });
+    await engine.setVenueMode("pumpfun", "live", { override: true, by: "user" });
+    const p = engine.truePnl();
+    assert.equal(p.wallet_usd, 112);
+    assert.equal(p.since_start_usd, 0, "a funded wallet is not a profit");
+    assert.equal(engine.store.state.baseline.quote.pumpfun, 1.12, "the baseline saw the live venue");
+
+    // Real movement is real P&L: 0.1 SOL earned is $10.
+    engine.noteWallet("pumpfun", { balanceSol: 1.22, quote: "SOL" });
+    assert.equal(engine.truePnl().since_start_usd, 10);
+    // And a move in SOL itself is not: the same 1.22 SOL at a higher price is still +$10.
+    engine.quotePrice.pumpfun = 150;
+    engine.noteWallet("pumpfun", { balanceSol: 1.22, quote: "SOL" });
+    assert.equal(engine.truePnl().since_start_usd, 15, "measured in SOL, priced today");
+  } finally { await engine.stop(); }
+});
+
+test("T10: two callers cannot sell the same position at once", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const live = new FakeLive();
+  let sells = 0, release;
+  const gate = new Promise(r => { release = r; });
+  live.closeImpl = async (p) => {
+    sells++;
+    await gate; // the first sell is still on the wire
+    const t = Date.now();
+    return { ok: true, fill: { price: 0.005, qty: 1000, notional_usd: 5, fee_usd: 0, t_sent: t, t_filled: t, latency_ms: 0, venue_ref: `SIG${sells}`, sol_received: 0.025 } };
+  };
+  const engine = mkEngine(dir, { envelope: env, mode: "live", live });
+  const now = Date.now(); engine.clock = () => now;
+  engine.store.upsertPosition({ id: "dup", venue: "pumpfun", instrument: "MintDup", status: "open", paper: false, qty: 1000,
+    remaining_qty: 1000, cost_usd: 5.2, notional_usd: 5.2, stake_usd: 5, proceeds_usd: 0, entryTime: now - 60_000, entryMark: 9000,
+    tier: 2, model: "bondli_gates", plan: createPlan({ venue: "pumpfun", key: 2, entry: { score: 60 } }), reference: { solPrice: 200 } });
+  try {
+    await engine.start({ reconcile: false });
+    const p = engine.store.state.positions.dup;
+    // The user's flatten and a tick-driven stop loss, at the same moment.
+    const a = engine.closePosition(p, 100, "FLATTEN", { by: "user" });
+    const b = engine.closePosition(p, 100, "SL2");
+    release();
+    const [ra, rb] = await Promise.all([a, b]);
+    assert.equal(sells, 1, "one position, one sell");
+    const loser = ra.ok ? rb : ra;
+    assert.equal(loser.failure.code, "EXIT_IN_FLIGHT");
+    assert.equal(engine.store.state.positions.dup.status, "closed");
+    assert.equal(engine.ledger.query({ kind: "outcome" }).length, 1, "and one outcome, not two");
+  } finally { await engine.stop(); }
 });
