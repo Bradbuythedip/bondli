@@ -361,20 +361,23 @@ test("T10: no ticks is not no exit: the time stop fires on a quiet position and 
     await engine.enqueue(() => engine.onEvent(cand("MintQuiet", now)));
     const p = engine.store.openPositions("pumpfun")[0];
     assert.ok(p, "paper position opened");
-    now += 60_000; await engine.sweep();
-    assert.equal(engine.store.openPositions("pumpfun").length, 1, "inside the stall window: nothing");
-    // Silence past the stall window is the stall: no ticks is the strongest "nobody is buying".
-    now += p.plan.stall_ms; await engine.sweep();
-    assert.equal(engine.store.openPositions("pumpfun").length, 0, "quiet and never armed: sold at the stall, not at max hold");
-    assert.equal(engine.ledger.query({ kind: "outcome", limit: 1 })[0].reason, "STALL");
+    // Not one trade since the fill. That is the strongest form of "nobody followed us in", and the
+    // tick-side DOA test can never see it, because a token nobody trades produces no ticks.
+    now += 5_000; await engine.sweep();
+    assert.equal(engine.store.openPositions("pumpfun").length, 1, "5s: too young to call");
+    now += p.plan.doa_ms; await engine.sweep();
+    assert.equal(engine.store.openPositions("pumpfun").length, 0, "silent past doa_ms: out in seconds, not minutes");
+    assert.equal(engine.ledger.query({ kind: "outcome", limit: 1 })[0].reason, "DOA");
     assert.equal(engine.ledger.query({ kind: "exit", limit: 1 })[0].by, "timer");
+    // And it is a "not yet", not a verdict: the mint may be bought again in 45s, not 5 minutes.
+    assert.equal(engine.cooldown.get("MintQuiet") - now, engine.cfg.retryCooldownMs);
 
     // A position that ran far enough to arm the trail is the trail's, not the stall's: a quiet feed
     // is not a reason to give it up, so it waits for max hold.
     const q = { ...p, id: "ran", instrument: "MintRan", status: "open", entryTime: now, peak: p.entryMark * 1.5, remaining_qty: p.qty };
     engine.store.upsertPosition(q);
     now += q.plan.stall_ms + 60_000; await engine.sweep();
-    assert.equal(engine.store.openPositions("pumpfun").length, 1, "armed: the stall leaves it alone");
+    assert.equal(engine.store.openPositions("pumpfun").length, 1, "armed: neither DOA nor the stall takes a position that ran");
     now += q.plan.max_hold_ms; await engine.sweep();
     assert.equal(engine.ledger.query({ kind: "exit", limit: 1 })[0].reason, "MAX_HOLD", "past max hold it goes, armed or not");
     engine.store.closePosition("ran", { exitReason: "MAX_HOLD", pnl_usd: 0, remaining_qty: 0 }); // the paper book never held it
@@ -1147,5 +1150,23 @@ test("T10: two callers cannot sell the same position at once", async () => {
     assert.equal(loser.failure.code, "EXIT_IN_FLIGHT");
     assert.equal(engine.store.state.positions.dup.status, "closed");
     assert.equal(engine.ledger.query({ kind: "outcome" }).length, 1, "and one outcome, not two");
+  } finally { await engine.stop(); }
+});
+
+test("T10: a DOA exit is a not-yet, so the mint can be bought back in seconds", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const engine = mkEngine(dir, { envelope: env, mode: "paper" });
+  let now = Date.now(); engine.clock = () => now;
+  const book = (reason) => engine._bookExit(
+    { id: "p:" + reason, venue: "pumpfun", instrument: "M" + reason, status: "open", paper: true, qty: 1, remaining_qty: 1,
+      cost_usd: 25, proceeds_usd: 0, stake_usd: 25, entryTime: 0, plan: { key: 2 } },
+    { ok: true, fill: { price: 1, qty: 1, notional_usd: 24, fee_usd: 0, t_filled: now, paper: true } }, 100, reason);
+  try {
+    await engine.start({ reconcile: false });
+    // "Nothing was happening yet" -- step aside cheaply, keep the right to come back.
+    for (const r of ["DOA", "STALL"]) { book(r); assert.equal(engine.cooldown.get("M" + r) - now, engine.cfg.retryCooldownMs, r); }
+    // "This token is bad" -- stay out.
+    for (const r of ["SL2", "crash-exit", "MAX_HOLD"]) { book(r); assert.equal(engine.cooldown.get("M" + r) - now, engine.cfg.reentryCooldownMs, r); }
+    assert.ok(engine.cfg.retryCooldownMs < engine.cfg.reentryCooldownMs / 4, "and the difference is worth having");
   } finally { await engine.stop(); }
 });

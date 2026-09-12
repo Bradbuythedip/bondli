@@ -25,7 +25,24 @@ export const EXPOSED_DEFAULT_PLATFORM_WALLET = "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g
 /** The one rate, for everyone who does not hold the house token. The site states the same number. */
 export const DEFAULT_FEE_PCT = 5;
 /** The smallest stake whose costs do not eat the trade. See the venue envelope below. */
-export const MIN_STAKE_USD = Number(process.env.MIN_STAKE_USD) > 0 ? Number(process.env.MIN_STAKE_USD) : 25;
+// The smallest trade worth making, from the router's own cost constants at SOL $200.
+//
+// This was 25 when a round trip cost $0.61 in fixed fees: two priority fees at 0.0005 SOL and the
+// token account's rent, which was paid and never recovered. Both of those are gone -- the priority
+// fee is 0.0003 and the rent comes back when the account is closed -- so the fixed cost is $0.12 and
+// the drag curve is almost flat above $10:
+//
+//   stake   fixed    variable   total drag   break-even win rate*
+//   $5      2.46%    3.0%       5.46%        36.6%
+//   $10     1.23%    3.0%       4.23%        32.4%
+//   $25     0.49%    3.0%       3.49%        29.9%
+//   $40     0.31%    3.0%       3.31%        29.3%
+//   * at the observed payoff shape: average win +24.1%, average loss -5.3%
+//
+// $10 costs 0.74 points of drag against $25 and buys two and a half times the diversification on the
+// same money. Below it the fixed cost starts to bite again. The EV gate prices costs at the smallest
+// stake the sizer could return, so a trade that cannot clear its own drag is still refused.
+export const MIN_STAKE_USD = Number(process.env.MIN_STAKE_USD) > 0 ? Number(process.env.MIN_STAKE_USD) : 10;
 
 /** A per-engine view of one shared feed: same events, own watch list, no own poller. */
 export class SharedFeedView extends Feed {
@@ -60,7 +77,18 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
   // whole position can go). A budget smaller than one stake therefore means the bot runs and never
   // fills, which is the worst of both. One minimum stake is the floor; a bankroll too small to
   // afford that is refused at start rather than quietly idling.
-  const daily = Math.max(MIN_STAKE_USD, Math.min(bankroll, Number(settings.dailyLossUsd) || Math.round(bankroll * 0.15)));
+  // The day's budget, when the user has not named one. 15% of the bankroll was a risk number chosen
+  // without reference to the position count, and because a memecoin position can lose all of itself
+  // the budget is ALSO the concurrency limit -- so 15% quietly funded one position on any account
+  // under $667 while the panel promised four.
+  //
+  // Fund the positions actually asked for, and cap the day at 35% of the account. 35% is the point
+  // where three maximally bad days in a row still leave a quarter of the bankroll; past that a
+  // recovery stops being plausible. It is a LIMIT on the worst case where every open position rugs
+  // at once, not an expectation: the observed loss per losing trade is about 5% of stake.
+  const DAILY_MAX_FRACTION = 0.35;
+  const daily = Math.max(MIN_STAKE_USD, Math.min(bankroll,
+    Number(settings.dailyLossUsd) || Math.min(Math.round(bankroll * DAILY_MAX_FRACTION), perTrade * maxPositions)));
   // The sizer treats a memecoin position as able to lose all of itself (worst_case_fraction 1.0), so
   // the day's budget is also a concurrency limit: with a $15 budget and $25 stakes, ONE open position
   // exhausts it and every later candidate is refused DAILY_BUDGET_EXHAUSTED until tomorrow. The
@@ -79,10 +107,8 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
     per_trade_max_usd: perTrade, portfolio_max_exposure_usd: portfolio, daily_loss_limit_usd: daily,
     max_concurrent_positions: maxPositions, max_per_group: 1,
     venues: {
-      // The floor is what a round trip has to be worth to be worth taking at all. Two priority fees and
-      // the token account's rent are about $0.61 whatever the size, so at $5 the fixed cost alone is 12%
-      // and the venue's 3% sits on top: the trade needed a +15% move to return the stake. At $25 the
-      // whole drag is 5.4%. Sizing below this is not a small bet, it is a donation, so it is refused.
+      // min_stake_usd: the floor a round trip has to clear to be worth taking. See MIN_STAKE_USD above
+      // for the arithmetic behind it; the short version is 4.2% of drag at $10 against 3.5% at $25.
       pumpfun: { ...t.venues.pumpfun, max_exposure_usd: portfolio, max_concurrent: maxPositions, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.pumpfun.kelly_fraction) },
       pons: { ...t.venues.pons, max_exposure_usd: settings.pons ? portfolio : 0, max_concurrent: settings.pons ? maxPositions : 0, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.pons.kelly_fraction) },
       polymarket: { ...t.venues.polymarket, max_exposure_usd: 0 },

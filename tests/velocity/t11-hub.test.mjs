@@ -44,15 +44,18 @@ function feeDeps(tier = "pro") {
 
 test("T11: a user's envelope is the template with their choices, validated", async () => {
   const { MIN_STAKE_USD } = await import("../../src/velocity/hub.mjs");
-  assert.equal(MIN_STAKE_USD, 25);
-  // $400 at the default 15% is a $60 day. A memecoin position can lose all of itself, so $60 funds
-  // ONE $40 stake, not four: the envelope now says one rather than promising four and refusing the
-  // second (see the budget test below). Exposure follows the real count.
+  // The floor comes from the router's cost constants, not a round number: with the ATA rent
+  // reclaimed and the priority fee at 0.0003 the fixed cost of a round trip is $0.12, so the drag
+  // is 4.2% at $10 against 3.5% at $25 and the extra diversification is worth more than the gap.
+  assert.equal(MIN_STAKE_USD, 10);
+  // $400, four positions of $40: the day's budget defaults to what those positions can lose, $160,
+  // which is under the 35%-of-bankroll ceiling ($140)... so the ceiling binds and funds three.
   const e = userEnvelope({ bankrollUsd: 400, perTradeMaxUsd: 40, maxPositions: 4 });
-  assert.equal(e.bankroll_source, "wallet"); assert.equal(e.per_trade_max_usd, 40); assert.equal(e.portfolio_max_exposure_usd, 40);
-  assert.equal(e.max_concurrent_positions, 1);
-  assert.equal(e.daily_loss_limit_usd, 60); assert.equal(e.venues.pumpfun.max_exposure_usd, 40); assert.equal(e.venues.polymarket.max_exposure_usd, 0);
-  // Four positions at $40 need a $160 day, which the user can simply ask for.
+  assert.equal(e.bankroll_source, "wallet"); assert.equal(e.per_trade_max_usd, 40);
+  assert.equal(e.daily_loss_limit_usd, 140, "35% of the account is the most it will risk in a day unasked");
+  assert.equal(e.max_concurrent_positions, 3); assert.equal(e.portfolio_max_exposure_usd, 120);
+  assert.equal(e.venues.pumpfun.max_exposure_usd, 120); assert.equal(e.venues.polymarket.max_exposure_usd, 0);
+  // The user can still ask for the fourth explicitly.
   const four = userEnvelope({ bankrollUsd: 400, perTradeMaxUsd: 40, maxPositions: 4, dailyLossUsd: 160 });
   assert.equal(four.max_concurrent_positions, 4); assert.equal(four.portfolio_max_exposure_usd, 160);
   assert.ok(Object.isFrozen(e) && Object.isFrozen(e.venues.pumpfun));
@@ -69,9 +72,9 @@ test("T11: a user's envelope is the template with their choices, validated", asy
 
   const small = userEnvelope({ bankrollUsd: 30, perTradeMaxUsd: 50, maxPositions: 20 });
   assert.equal(small.per_trade_max_usd, 30, "per-trade cannot exceed the bankroll");
-  // 20 is clamped to the hard maximum of 10, and a $30 bankroll's $25 day then funds one of them.
+  // 20 is clamped to the hard maximum of 10, and 35% of a $30 bankroll then funds one of them.
   assert.equal(small.max_concurrent_positions, 1);
-  assert.deepEqual(small.positions_capped_by_daily_budget, { asked: 10, allowed: 1, daily_loss_limit_usd: 25, per_trade_max_usd: 30 });
+  assert.deepEqual(small.positions_capped_by_daily_budget, { asked: 10, allowed: 1, daily_loss_limit_usd: 11, per_trade_max_usd: 30 });
 });
 
 test("T11: one feed, two users, isolated ledgers, fee paid on the profitable close; the original platform wallet is accepted", async () => {
@@ -299,18 +302,68 @@ test("T11: the daily loss budget cannot silently overrule the position count", a
   // On a $100 bankroll the default 15% budget is $25 -- exactly one $25 stake. Asking for four
   // positions used to leave the envelope saying four and the sizer refusing the second with
   // DAILY_BUDGET_EXHAUSTED, which reads like a bug rather than a setting.
-  const small = userEnvelope({ bankrollUsd: 100, perTradeMaxUsd: 25, maxPositions: 4 });
-  assert.equal(small.daily_loss_limit_usd, 25);
-  assert.equal(small.max_concurrent_positions, 1, "the envelope says what the budget can actually fund");
-  assert.deepEqual(small.positions_capped_by_daily_budget, { asked: 4, allowed: 1, daily_loss_limit_usd: 25, per_trade_max_usd: 25 });
-  assert.equal(small.portfolio_max_exposure_usd, 25, "exposure follows the real position count");
+  // $100 at $25 a trade: the day defaults to what four could lose ($100), capped at 35% ($35), which
+  // funds one. A $25 stake is a quarter of this account -- the constraint is the stake, not the rule.
+  const chunky = userEnvelope({ bankrollUsd: 100, perTradeMaxUsd: 25, maxPositions: 4 });
+  assert.equal(chunky.daily_loss_limit_usd, 35);
+  assert.equal(chunky.max_concurrent_positions, 1, "the envelope says what the budget can actually fund");
+  assert.deepEqual(chunky.positions_capped_by_daily_budget, { asked: 4, allowed: 1, daily_loss_limit_usd: 35, per_trade_max_usd: 25 });
+  assert.equal(chunky.portfolio_max_exposure_usd, 25, "exposure follows the real position count");
+
+  // The same $100 at the $10 floor gets three positions for $30 of exposure -- more diversification
+  // than the single $25 bet above, on less money at risk. That is what lowering the floor bought.
+  const small = userEnvelope({ bankrollUsd: 100, maxPositions: 4 });
+  assert.equal(small.per_trade_max_usd, 10);
+  assert.equal(small.max_concurrent_positions, 3);
+  assert.equal(small.portfolio_max_exposure_usd, 30);
 
   // Enough budget for the positions asked: nothing is capped and nothing is reported.
   const ok = userEnvelope({ bankrollUsd: 1000, perTradeMaxUsd: 25, maxPositions: 4 });
+  assert.equal(ok.daily_loss_limit_usd, 100, "four $25 stakes, well under 35% of $1000");
   assert.equal(ok.max_concurrent_positions, 4);
   assert.equal(ok.positions_capped_by_daily_budget, undefined);
 
-  // Raising the day's budget is the lever, and it works without touching anything else.
+  // Naming a budget still overrides the default in both directions.
   const raised = userEnvelope({ bankrollUsd: 100, perTradeMaxUsd: 25, maxPositions: 4, dailyLossUsd: 100 });
   assert.equal(raised.max_concurrent_positions, 4);
+  const tight = userEnvelope({ bankrollUsd: 1000, perTradeMaxUsd: 25, maxPositions: 4, dailyLossUsd: 30 });
+  assert.equal(tight.max_concurrent_positions, 1);
+});
+
+test("T11: an alert reaches whatever the operator pasted, and a flaky receiver does not lose it", async () => {
+  const { Alerter } = await import("../../src/velocity/core/alerts.mjs");
+  const posts = [];
+  const alerter = new Alerter({
+    store: { alert: (level, text) => ({ level, text }) },
+    ledger: { append: r => posts.push({ ledger: r }) },
+    webhookUrl: "https://hooks.example.com/T000/B000",
+    statusUrl: "https://bondli.up.railway.app",
+    sleepImpl: async () => {},
+    fetchImpl: async (url, opts) => { posts.push({ url, body: JSON.parse(opts.body) }); return { ok: true }; },
+  });
+  const r = await alerter.send("error", "pumpfun is live but its router failed to initialize");
+  assert.equal(r.delivered, true);
+  const sent = posts.find(p => p.url).body;
+  // Slack reads text, Discord reads content, ntfy reads message: one paste, any of the three.
+  assert.ok(sent.text.includes("pumpfun is live"));
+  assert.equal(sent.content, sent.text);
+  assert.equal(sent.message, sent.text);
+  assert.match(sent.text, /^\u{1F534} ERROR:/u, "an operator reading this on a phone sees the severity first");
+  assert.ok(sent.text.includes("https://bondli.up.railway.app/halt"), "and can actually stop the bot from it");
+
+  // A receiver that is briefly down: retried, not dropped.
+  let calls = 0;
+  const flaky = new Alerter({
+    store: { alert: () => ({}) }, ledger: { append: () => {} },
+    webhookUrl: "https://hooks.example.com/x", statusUrl: "", sleepImpl: async () => {},
+    fetchImpl: async () => { calls++; if (calls < 3) throw new Error("ECONNRESET"); return { ok: true }; },
+  });
+  assert.equal((await flaky.send("warn", "governor froze entries")).delivered, true);
+  assert.equal(calls, 3);
+
+  // No URL configured: the alert still reaches the ledger, and says it was not delivered.
+  const offline = new Alerter({ store: { alert: () => ({}) }, ledger: { append: r => posts.push({ ledger: r }) }, webhookUrl: null });
+  const off = await offline.send("error", "flatten left 2 positions open");
+  assert.equal(off.delivered, false);
+  assert.equal(posts.at(-1).ledger.text, "flatten left 2 positions open");
 });
