@@ -131,14 +131,15 @@ test("T5: the old partial ladder is still there when ride is switched off", asyn
 
 test("T5: dead money is sold: three minutes flat with no buyers is a STALL exit on a tier-3 plan", () => {
   const plan3 = createPlan({ venue: "pumpfun", key: 3, entry: { score: 60 } });
-  assert.equal(plan3.stall_ms, 3 * 60_000);
+  assert.equal(plan3.stall_ms, 2 * 60_000);
   const pos = pumpPos({ plan: plan3 });
   const quiet = { token: { trades: [{ side: "buy", time: T0 + 60_000 }, { side: "sell", time: T0 + 170_000 }] } };
-  // two minutes in, flat, quiet: hold (not old enough)
-  assert.equal(evaluateExit(pos, tick(10_300, quiet, T0 + 2 * 60_000)), null);
-  // three minutes in and +3%: flat is not a reason to pay a round trip, so it is held
-  assert.equal(evaluateExit(pos, tick(10_300, quiet, T0 + 3 * 60_000 + 1000)), null, "flat and quiet is still held");
-  // three minutes in, drifting down, one buy in the last minute: STALL
+  // one minute in, flat, quiet: hold (not old enough)
+  assert.equal(evaluateExit(pos, tick(10_300, quiet, T0 + 60_000)), null);
+  // past the stall window and going nowhere: the slot is worth more than the drift, so it is sold
+  const flat = evaluateExit(pumpPos({ plan: plan3 }), tick(10_300, quiet, T0 + 3 * 60_000 + 1000));
+  assert.equal(flat?.reason, "STALL", "flat and quiet no longer holds a slot to max hold");
+  // same, drifting down: STALL
   const r = evaluateExit(pos, tick(9_400, quiet, T0 + 3 * 60_000 + 1000));
   assert.equal(r?.action, "SELL"); assert.equal(r.reason, "STALL"); assert.equal(r.pct, 100);
   // three minutes in but buying is alive: hold

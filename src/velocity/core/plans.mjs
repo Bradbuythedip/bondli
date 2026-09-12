@@ -10,12 +10,12 @@ export const EXIT_PLANS = Object.freeze({
     // bondli's createExitPlan(tier) supplies stop/targets; these add the sizing-side worst case.
     // stall_ms / stall_band_pct: a position this old that never left the band around entry, with
     // buying dried up, is dead money and is sold to free the slot (the "STALL" exit).
-    1: Object.freeze({ key: 1, label: "GOD_CANDLE", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 30 * MIN, stall_ms: 5 * MIN, stall_band_pct: 10 }),
-    2: Object.freeze({ key: 2, label: "STRONG", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 15 * MIN, stall_ms: 4 * MIN, stall_band_pct: 8 }),
-    3: Object.freeze({ key: 3, label: "SPECULATIVE", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 10 * MIN, stall_ms: 3 * MIN, stall_band_pct: 8 }),
+    1: Object.freeze({ key: 1, label: "GOD_CANDLE", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 30 * MIN, stall_ms: 4 * MIN, stall_band_pct: 10 }),
+    2: Object.freeze({ key: 2, label: "STRONG", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 15 * MIN, stall_ms: 3 * MIN, stall_band_pct: 8 }),
+    3: Object.freeze({ key: 3, label: "SPECULATIVE", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 10 * MIN, stall_ms: 2 * MIN, stall_band_pct: 8 }),
     // A revival moves faster on the way down than a launch: tier-3 layers with a tighter stop, a
     // shorter hold, and half the per-trade cap (stake_cap_fraction is read by the sizer).
-    revival: Object.freeze({ key: "revival", label: "REVIVAL", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 6 * MIN, stop_pct: 8, tier: 3, stake_cap_fraction: 0.5, stall_ms: 2 * MIN, stall_band_pct: 8 }),
+    revival: Object.freeze({ key: "revival", label: "REVIVAL", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 6 * MIN, stop_pct: 8, tier: 3, stake_cap_fraction: 0.5, stall_ms: 1.5 * MIN, stall_band_pct: 8 }),
   }),
   polymarket: Object.freeze({
     // A wrong fact loses the whole stake: worst case is 1.0 even though the plan is hold-to-redeem.
