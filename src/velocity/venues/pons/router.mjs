@@ -160,7 +160,7 @@ export class PonsLiveRouter extends Router {
 
   /** A custom error the ABI in this file does not know: the verified contract on the explorer does.
    *  Cached per curve; the explorer being down leaves the raw selector. */
-  async _explainRevert(curveAddr, err) {
+  async _explainRevert(curveAddr, err, tokenAddr = null) {
     const data = err?.data || err?.info?.error?.data || null;
     const plain = err?.reason || err?.shortMessage || err?.message || "reverted";
     if (!data || typeof data !== "string" || data.length < 10 || err?.reason || /^0x(08c379a0|4e487b71)/i.test(data)) return plain.slice(0, 160); // Error(string) and Panic decode by themselves
@@ -169,7 +169,10 @@ export class PonsLiveRouter extends Router {
     try {
       if (!this._abis.has(key)) {
         const abis = [];
-        for (const addr of [key]) {
+        // The curve AND the token. A sell calls curve.sell(), which pulls tokens with transferFrom,
+        // so the revert can come from the token's own code -- a transfer restriction, a blacklist, a
+        // pause. Reading only the curve's ABI left those as a bare selector nobody could act on.
+        for (const addr of [key, tokenAddr && String(tokenAddr).toLowerCase()].filter(Boolean)) {
           const res = await fetch(`${EXPLORER}/api/v2/smart-contracts/${addr}`, { headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) bondli/1.0" }, signal: AbortSignal.timeout(6000) });
           if (!res.ok) throw new Error(`explorer ${res.status}`);
           const j = await res.json();
@@ -179,7 +182,11 @@ export class PonsLiveRouter extends Router {
         this._abis.set(key, abis.map(a => new Interface(a.filter(x => x.type === "error"))));
       }
       for (const iface of this._abis.get(key)) { const e = iface.parseError(data); if (e) return `${e.name}${e.args?.length ? `(${e.args.map(String).join(", ")})` : ""}`; }
-      return `custom error ${data.slice(0, 10)}`;
+      // Neither contract declares it. A public signature database usually knows the selector, and a
+      // name -- "CurveGraduated", "TransferPaused" -- is the difference between an error the
+      // operator can act on and eight hex digits they cannot.
+      const named = await this._lookupSelector(data.slice(0, 10));
+      return named ? `${named} (${data.slice(0, 10)})` : `custom error ${data.slice(0, 10)}`;
     } catch (e2) { return `custom error ${data.slice(0, 10)}, explorer ${e2.message.slice(0, 40)}`; }
   }
 
@@ -187,6 +194,19 @@ export class PonsLiveRouter extends Router {
    *  by one unit would revert), quotes from the curve as it is now (not a stale reference), dry-runs
    *  the sell before paying gas so a revert comes back with its reason instead of a burned fee,
    *  and lets the node estimate gas. */
+  /** Name a 4-byte error selector from a public signature database. Cached, best effort, never fatal. */
+  async _lookupSelector(sel) {
+    if (!this._selectors) this._selectors = new Map();
+    if (this._selectors.has(sel)) return this._selectors.get(sel);
+    let name = null;
+    try {
+      const r = await fetch(`https://api.openchain.xyz/signature-database/v1/lookup?function=${sel}&filter=true`, { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(4000) });
+      if (r.ok) { const j = await r.json(); name = j?.result?.function?.[sel]?.[0]?.name || null; }
+    } catch {}
+    this._selectors.set(sel, name);
+    return name;
+  }
+
   async close(position, pct = 100, ctx = {}) {
     if (!this.ready) return failure({ id: position.id }, "NOT_READY", "call init() first");
     const ref = ctx.reference || position.reference || {}, price = Number(ref.solPrice) || 0;
@@ -234,7 +254,7 @@ export class PonsLiveRouter extends Router {
       // the dry run accepts is what gets sent, chunk by chunk until the wallet is empty or one fails.
       const shape = await this._sellShape(curve, units, r);
       if (!shape.ok) {
-        const why = await this._explainRevert(curveAddr, shape.err);
+        const why = await this._explainRevert(curveAddr, shape.err, position.instrument);
         const ready = await curve.readyToGraduate().catch(() => null);
         const hint = ready ? "; the curve is full and waiting to graduate, sell on the pool once it has" : "";
         return failure({ id: position.id }, "REVERT", `sell would revert (${why})${hint}`.slice(0, 300));
