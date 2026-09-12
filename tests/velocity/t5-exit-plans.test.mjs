@@ -57,9 +57,12 @@ test("T5: pump.fun layers fire at their triggers", () => {
   pos = pumpPos();
   r = evaluateExit(pos, tick(8_700));
   assert.equal(r.action, "PARTIAL_SELL"); assert.equal(r.reason, "SL1");
-  // Layer 4: graduation
+  // Layer 4: graduation. Progress is (vSol - 30) / 85, so >90% needs vSol past 106.5, not 76.5:
+  // at vSol 80 the token is only 59% of the way and must not be force-sold.
   pos = pumpPos();
-  r = evaluateExit(pos, tick(11_000, { curve: 80, token: { vSolInBondingCurve: 80 } }));
+  assert.equal(evaluateExit(pos, tick(11_000, { curve: 80, token: { vSolInBondingCurve: 80 } })), null, "59% along is not graduating");
+  pos = pumpPos();
+  r = evaluateExit(pos, tick(11_000, { curve: 108, token: { vSolInBondingCurve: 108 } }));
   assert.equal(r.layer, 4);
   // Max hold from the static table
   pos = pumpPos();

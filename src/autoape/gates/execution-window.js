@@ -2,6 +2,7 @@
 // By the time we've scored and decided, the opportunity may have passed.
 
 // opts: the aggression profile (src/velocity/venues/pumpfun/edge.mjs AGGRESSION); defaults are the designed window.
+import { curvePctOf } from "./curve.js";
 export function checkExecutionWindow(token, tier, scoreTimestamp, opts = {}) {
   const { curveMax = 0.60, curveMaxSpec = 0.40, spikeSlope = 0.15, blockDecel = true, requireStable = true } = opts;
   const checks = [];
@@ -32,7 +33,7 @@ export function checkExecutionWindow(token, tier, scoreTimestamp, opts = {}) {
   }
 
   // === BONDING CURVE POSITION ===
-  const curvePct = token._curvePct != null ? Number(token._curvePct) : token.vSolInBondingCurve ? token.vSolInBondingCurve / 85 : 0;
+  const curvePct = curvePctOf(token);
   // Tier 1-2: Enter up to 60% of curve
   if (tier <= 2 && curvePct > curveMax) checks.push("CURVE_TOO_ADVANCED");
   // Tier 3: Enter up to 40% only

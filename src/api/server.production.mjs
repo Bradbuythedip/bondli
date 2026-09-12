@@ -24,6 +24,7 @@
 
 import path from "node:path";
 import express from "express";
+import { pumpCurvePct } from "../autoape/gates/curve.js";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { createClient as createRedisClient } from "redis";
@@ -2082,9 +2083,9 @@ function extractQuickFeatures(t) {
     sir_recoveryRate: Math.max(0, 1 - Math.min(1, sells / Math.max(1, ageMin) / 5)),
 
     // ═══ GRADUATION FRONTRUNNING ═══
-    gf_curveProgress: t.vSolInBondingCurve ? Math.min(1, t.vSolInBondingCurve / 85) : 0,
+    gf_curveProgress: pumpCurvePct(t.vSolInBondingCurve),
     gf_frontrunSignal: (() => {
-      const cp = t.vSolInBondingCurve ? t.vSolInBondingCurve / 85 : 0;
+      const cp = pumpCurvePct(t.vSolInBondingCurve);
       if (cp < 0.6) return 0;
       const bv = Math.min(1, (buys / Math.max(1, Math.min(5, ageMin))) / 20);
       if (cp >= 0.8) {
@@ -6649,7 +6650,7 @@ function startAutoTrader(wallet, settings) {
               const sig = await fastSend(connection, tx, [kp]);
               // Snapshot features at entry for survivorship bias learning
               const _entryFeatures = typeof extractQuickFeatures === "function" ? extractQuickFeatures(t) : null;
-              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: tradeSol, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0, sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, entryBuyVel: buyVelTrend, entryFeatures: _entryFeatures, tier: t._pipelineTier || 2, exitPlan: t._pipelineExitPlan || createExitPlan(2, t._apeScore || 0, state.settings) });
+              state.positions.set(t.ca, { entryMcap: t.mcapUsd, entrySol: tradeSol, entryTime: Date.now(), peakMcap: t.mcapUsd, entryScore: t._apeScore || 0, liveScore: t._apeScore || 0, entryBuys: t.buys||0, entrySells: t.sells||0, entryUB: t.uniqueBuyers?.size||0, entryAge: (Date.now()-t.createdAt)/60000, entryTrend: t._scoreTrend||"new", entryBondPct: Math.round(pumpCurvePct(t.vSolInBondingCurve) * 100), sizeMult: +(tradeSol / state.settings.solPerTrade).toFixed(2), entryPhase: pricePhase, entryBuyVel: buyVelTrend, entryFeatures: _entryFeatures, tier: t._pipelineTier || 2, exitPlan: t._pipelineExitPlan || createExitPlan(2, t._apeScore || 0, state.settings) });
               // Track entry timestamp for rate limiting
               if (!state._entryTimestamps) state._entryTimestamps = [];
               state._entryTimestamps.push(Date.now());
@@ -7282,7 +7283,7 @@ app.get("/api/auto-trade/export-session", requireOwner, (req, res) => {
     radarSnapshot.push({
       ca, name: t.name, mcap: t.mcapUsd, buys: t.buys, sells: t.sells,
       uniqueBuyers: t.uniqueBuyers?.size || 0, age: Math.round((Date.now() - t.createdAt) / 60000),
-      bondPct: t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve / 85 * 100) : 0,
+      bondPct: Math.round(pumpCurvePct(t.vSolInBondingCurve) * 100),
       graduated: !!t.graduated, twitter: !!t.twitter, website: !!t.website,
     });
   }
@@ -9853,7 +9854,7 @@ app.post("/api/brad/chat", express.json(), async (req, res) => {
       const pressure = t.buys > 0 ? Math.round(t.buys / Math.max(1, t.buys + (t.sells||0)) * 100) : 0;
       const ub = t.uniqueBuyers?.size || 0;
       const rugFlags = t._rugFlags || [];
-      const pctGrad = t.graduated ? 100 : (t.vSolInBondingCurve ? Math.round(t.vSolInBondingCurve/85*100) : 0);
+      const pctGrad = t.graduated ? 100 : Math.round(pumpCurvePct(t.vSolInBondingCurve) * 100);
       let line = `${t.name||t.ca?.slice(0,8)} ($${t.ticker||"?"}): score=${t._apeScore||0}`;
       line += ` trend=${dyn?.trend||"new"}${dyn?.velocity>0?" ↑"+(dyn.velocity).toFixed(2):dyn?.velocity<0?" ↓"+Math.abs(dyn.velocity).toFixed(2):""}`;
       line += ` MC=$${Math.round(t.mcapUsd||0)} chart=${sparkDir}`;
@@ -10144,7 +10145,7 @@ ${posContext}
           "Score: " + (tok._apeScore || 0) + " | trend: " + (dyn?.trend || "unknown") + " | vel: " + (dyn?.velocity?.toFixed(3) || "0") + (dyn?.velocity > 0 ? " (accelerating)" : dyn?.velocity < 0 ? " (decelerating)" : ""),
           "MC: $" + Math.round(tok.mcapUsd || 0) + " | chart: " + sparkDir + " | buy pressure: " + pressure + "%",
           "Buys: " + (tok.buys || 0) + " | sells: " + (tok.sells || 0) + " | UB: " + (tok.uniqueBuyers?.size || 0) + " | last 2min: " + recentBuys + " buys, " + recentSells + " sells",
-          "Age: " + ageMin + "min | bonding curve: " + (tok.vSolInBondingCurve ? Math.round(tok.vSolInBondingCurve / 85 * 100) : 0) + "% | vol: " + (tok.volumeSol?.toFixed(1)||0) + " SOL",
+          "Age: " + ageMin + "min | bonding curve: " + Math.round(pumpCurvePct(tok.vSolInBondingCurve) * 100) + "% | vol: " + (tok.volumeSol?.toFixed(1)||0) + " SOL",
         ];
 
         const rugFlags = tok._rugFlags || [];

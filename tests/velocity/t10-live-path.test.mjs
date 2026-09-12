@@ -649,14 +649,15 @@ test("T10: the risk dial moves gates 1, 2 and 3 together; the designed rules are
   const { checkExecutionWindow } = await import("../../src/autoape/gates/execution-window.js");
   const { classifyConfidence } = await import("../../src/autoape/gates/confidence.js");
   const now = Date.now();
-  const token = { ca: "M", createdAt: now - 3 * 60000, buys: 20, sells: 6, uniqueBuyers: { size: 12 }, mcapUsd: 9000, volumeSol: 8, vSolInBondingCurve: 55, spark: [5000, 6000, 7000, 8000, 8500, 9000], _apeScore: 40 };
+  const token = { ca: "M", createdAt: now - 3 * 60000, buys: 20, sells: 6, uniqueBuyers: { size: 12 }, mcapUsd: 9000, volumeSol: 8, vSolInBondingCurve: 85, spark: [5000, 6000, 7000, 8000, 8500, 9000], _apeScore: 40 };
   const qf = { _rg_sybilScore: 0.45, _rg_freshWalletRatio: 0.5, ch_healthScore: 0.6 };
   const dyn = { scores: 4, velocity: 0.1, acceleration: 0.01, trend: "rising" };
   // Score 40 with sybil 0.45: refused as designed, admitted at aggression 2.
   assert.deepEqual(checkViability(token, qf, { apeScore: 40 }, dyn, AGGRESSION[1]).checks, ["SCORE_BELOW_FLOOR", "HIGH_SYBIL_RISK"]);
   assert.equal(checkViability(token, qf, { apeScore: 40 }, dyn, AGGRESSION[2]).pass, true);
   assert.equal(checkViability(token, qf, { apeScore: 40 }, dyn).pass, false, "no opts means the designed floors");
-  // 65% along the curve: too advanced for tier 2 as designed, inside the window at aggression 2.
+  // vSol 85 is 65% along -- (85 - 30) / 85, the virtual reserve subtracted -- so it is too advanced
+  // for tier 2 as designed and inside the window at aggression 2.
   assert.ok(checkExecutionWindow(token, 2, now, AGGRESSION[1]).checks.includes("CURVE_TOO_ADVANCED"));
   assert.ok(!checkExecutionWindow(token, 2, now, AGGRESSION[2]).checks.includes("CURVE_TOO_ADVANCED"));
   assert.ok(checkExecutionWindow(token, 2, now, AGGRESSION[3]).pass, "degen takes it up to 80%");
@@ -678,7 +679,7 @@ test("T10: the risk dial moves gates 1, 2 and 3 together; the designed rules are
   assert.ok(checkDisqualifiers(dumping, dump).flags.includes("COORDINATED_DUMP"));
   assert.ok(!checkDisqualifiers(dumping, dump, AGGRESSION[2]).flags.includes("COORDINATED_DUMP"), "a 0.6 burst is not a dump on normal");
   assert.ok(checkDisqualifiers(dumping, { rg_coordDumpScore: 0.9, rg_sellWaveDetect: 0.9 }, AGGRESSION[3]).flags.includes("COORDINATED_DUMP"), "a 0.9 burst is a dump even on degen");
-  const late = { ...token, vSolInBondingCurve: 85 * 0.85, uniqueBuyers: { size: 12 } };
+  const late = { ...token, vSolInBondingCurve: 30 + 85 * 0.85, uniqueBuyers: { size: 12 } }; // 85% along: the reserve starts at 30
   assert.ok(checkDisqualifiers(late, {}).flags.includes("TOO_LATE"));
   assert.ok(!checkDisqualifiers(late, {}, AGGRESSION[2]).flags.includes("TOO_LATE"));
   // Gate 2: 4 buyers at 3 minutes is dead on arrival as designed, alive on normal; no dynamics is only fine on degen.
@@ -1016,4 +1017,25 @@ test("T10: a website that does not answer stops counting as a social link", asyn
   assert.ok(!noSocials({ _socialsKnown: 1, _hasAnySocial: 1 }));
   // both dead: refused
   assert.ok(noSocials({ _socialsKnown: 1, _hasAnySocial: 0, _siteDead: 1, _xDeadHandle: 1 }));
+});
+
+test("T10: curve progress subtracts the virtual reserve, so a new launch reads 0% and not 35%", async () => {
+  const { pumpCurvePct, curvePctOf } = await import("../../src/autoape/gates/curve.js");
+  const { checkExecutionWindow } = await import("../../src/autoape/gates/execution-window.js");
+  const { AGGRESSION } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  // pump.fun's reserve starts at 30 SOL with nothing raised and ends near 115.
+  assert.equal(pumpCurvePct(30), 0, "a brand-new launch has raised nothing");
+  assert.equal(+pumpCurvePct(30 + 85 / 2).toFixed(4), 0.5);
+  assert.equal(pumpCurvePct(115), 1);
+  assert.equal(pumpCurvePct(200), 1, "clamped");
+  assert.equal(pumpCurvePct(0), 0);
+  assert.equal(pumpCurvePct(undefined), 0);
+  // A feed that knows its own progress (PONS) is believed over the pump.fun arithmetic.
+  assert.equal(curvePctOf({ _curvePct: 0.42, vSolInBondingCurve: 99 }), 0.42);
+  // The regression this guards: at the strictest dial, curveMaxSpec 0.30 was BELOW the 30/85 = 35%
+  // a brand-new token read, so no tier-3 launch could ever clear the window.
+  const fresh = { ca: "M", createdAt: Date.now() - 60_000, vSolInBondingCurve: 30.5, mcapUsd: 5000, spark: [] };
+  for (const level of [0, 1, 2, 3])
+    assert.ok(!checkExecutionWindow(fresh, 3, Date.now(), AGGRESSION[level]).checks.includes("CURVE_TOO_ADVANCED_SPEC"),
+      `aggression ${level}: a fresh launch is not "too advanced"`);
 });

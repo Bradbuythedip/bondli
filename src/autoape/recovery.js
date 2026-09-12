@@ -2,6 +2,7 @@
 // Handles watchlist promotion, missed opportunity re-entry, and post-exit re-entry.
 
 // Check if a watchlisted token should be promoted
+import { curvePctOf } from "./gates/curve.js";
 export function checkWatchlistPromotion(token, dynamics, scores) {
   const apeScore = scores.apeScore || 0;
   const dyn = dynamics;
@@ -31,7 +32,7 @@ export function checkMissedReentry(token, dynamics, qf) {
 
   // Criteria: price pulled back 15%+, score still strong, community holding
   const isRecovering = dyn.trend === "rising" || dyn.trend === "rocket";
-  const curvePct = token.vSolInBondingCurve ? token.vSolInBondingCurve / 85 : 0;
+  const curvePct = curvePctOf(token);
 
   if (isRecovering && dippedFromPeak >= 15 && mc > 5000 && curvePct < 0.70) {
     return {

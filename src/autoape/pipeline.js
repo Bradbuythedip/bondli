@@ -8,6 +8,7 @@
 // Gate 4: Portfolio Constraints (bankroll, exposure, correlation, <5ms)
 // Gate 5: Timing & Execution Window (is the window still open?, <5ms)
 
+import { curvePctOf } from "./gates/curve.js";
 import { checkDisqualifiers } from "./gates/disqualifiers.js";
 import { checkViability } from "./gates/viability.js";
 import { classifyConfidence } from "./gates/confidence.js";
@@ -196,7 +197,7 @@ export function runExitChecks(pos, token, dynamics, settings) {
   if (volExit) return { ...volExit, changePct, fromPeak, currentMcap };
 
   // Layer 4: Graduation exit (check before trailing — graduation is time-critical)
-  const curvePct = token._curvePct != null ? Number(token._curvePct) : token.vSolInBondingCurve ? token.vSolInBondingCurve / 85 : 0;
+  const curvePct = curvePctOf(token);
   const gradExit = checkGraduationExit(pos, changePct, curvePct);
   if (gradExit) return { ...gradExit, changePct, fromPeak, currentMcap };
 
