@@ -45,16 +45,27 @@ export const PUMPFUN_PRIORS = Object.freeze({
 // (+11) in gate 1; DEAD_ON_ARRIVAL (63%) and INSUFFICIENT_DATA (22%) in gate 2; WATCHLIST in gate 3.
 export const AGGRESSION = Object.freeze({
   0: Object.freeze({ scoreFloor: 50, tier3Floor: 55, sybilMax: 0.35, freshWalletMax: 0.70, curveMax: 0.50, curveMaxSpec: 0.30, spikeSlope: 0.10, blockDecel: true,  requireStable: true,
-                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.55, momentum: null, kellyMult: 0.75, mcapFloor: 4000, devHoldMax: 0.08, requireSocials: true }),
+                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.55, momentum: null, kellyMult: 0.75, mcapFloor: 4000, devHoldMax: 0.08, requireSocials: true, maxRoundTripBps: 500 }),
   1: Object.freeze({ scoreFloor: 45, tier3Floor: 50, sybilMax: 0.40, freshWalletMax: 0.80, curveMax: 0.60, curveMaxSpec: 0.40, spikeSlope: 0.15, blockDecel: true,  requireStable: true,
-                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.50, momentum: null, kellyMult: 1, mcapFloor: 4000, devHoldMax: 0.10, requireSocials: true }),
+                     coordDump: 0.5, staleMin: 15, tooLateCurve: 0.80, concentrationMax: 0.70, doaBuyers: 5, minScores: 2, enterWatchlist: false, minConfidence: 0.50, momentum: null, kellyMult: 1, mcapFloor: 4000, devHoldMax: 0.10, requireSocials: true, maxRoundTripBps: 600 }),
   2: Object.freeze({ scoreFloor: 38, tier3Floor: 42, sybilMax: 0.50, freshWalletMax: 0.90, curveMax: 0.70, curveMaxSpec: 0.55, spikeSlope: 0.25, blockDecel: false, requireStable: false,
                      coordDump: 0.7, staleMin: 30, tooLateCurve: 0.90, concentrationMax: 0.80, doaBuyers: 4, minScores: 1, enterWatchlist: true, minConfidence: 0.40,
-                     momentum: { buyers: 15, ageMaxMin: 3, sellShareMax: 0.40 }, kellyMult: 1.5, mcapFloor: 3000, devHoldMax: 0.12, requireSocials: true }),
+                     momentum: { buyers: 15, ageMaxMin: 3, sellShareMax: 0.40 }, kellyMult: 1.5, mcapFloor: 3000, devHoldMax: 0.12, requireSocials: true, maxRoundTripBps: 800 }),
   3: Object.freeze({ scoreFloor: 32, tier3Floor: 35, sybilMax: 0.60, freshWalletMax: 1.00, curveMax: 0.80, curveMaxSpec: 0.65, spikeSlope: 0.40, blockDecel: false, requireStable: false,
                      coordDump: 0.85, staleMin: 60, tooLateCurve: 0.95, concentrationMax: 0.90, doaBuyers: 3, minScores: 0, enterWatchlist: true, minConfidence: 0.30,
-                     momentum: { buyers: 10, ageMaxMin: 5, sellShareMax: 0.45 }, kellyMult: 2, mcapFloor: 2500, devHoldMax: 0.15, requireSocials: true }),
+                     momentum: { buyers: 10, ageMaxMin: 5, sellShareMax: 0.45 }, kellyMult: 2, mcapFloor: 2500, devHoldMax: 0.15, requireSocials: true, maxRoundTripBps: 1000 }),
 });
+
+// What a PONS curve is assumed to charge before its economics have actually been read. The point is
+// that an unread number must not look free: at these values a round trip costs 12%, which the EV
+// gate will refuse for anything but a strong edge -- and the moment the real figures arrive, they
+// are used instead. Erring high delays an entry; erring low buys a token that cannot be sold back
+// at a profit however it moves.
+const PONS_ASSUMED_FEE_BPS = 100;
+const PONS_ASSUMED_TAX_BPS = 500;
+// null and undefined mean "not read yet" and must take the fallback. Number(null) is 0, which is
+// finite, so a plain isFinite check would call an unread tax zero -- the exact bug this guards.
+const numOr = (v, fallback) => (v == null || v === "" || !Number.isFinite(Number(v)) ? fallback : Number(v));
 
 export function makePumpfunEdge({
   venue = "pumpfun",               // "pons": the same judge on Robinhood Chain; snipe-tax window refused
@@ -173,8 +184,18 @@ export function makePumpfunEdge({
       // Fixed cost per side: priority fee + tip on Solana; L2 gas on Robinhood Chain (a few cents).
       const fixedQuote = pons ? 0.00003 : fixedCostSol;
       const fixed = quotePrice > 0 ? (2 * fixedQuote * quotePrice + (pons ? 0 : 0.000005 * quotePrice)) / stakeAt : 0.02;
-      // Round-trip fee: pump.fun 1% + 1%; PONS the curve's own feeBps + creator tax, each way.
-      const feeRT = pons && c.reference?.curve ? 2 * (((Number(c.reference.curve.feeBps) || 100) + (Number(c.reference.curve.creatorTaxBps) || 0)) / 1e4) : feeFractionRoundTrip;
+      // Round-trip fee. pump.fun is 1% + 1% and the same for everyone. PONS is not: each curve sets
+      // its own feeBps, and the creator sets a tax on top that they choose. A 10% creator tax is a
+      // 22% round trip, and no price move recovers that.
+      //
+      // Two ways this used to read as cheap. A curve whose economics had not been fetched yet
+      // carried the placeholders feeBps 100 / creatorTaxBps 0, so an unread tax was priced as no
+      // tax; those are null now, and null here means "assume the worst until it is read". And with
+      // no curve object at all it fell through to pump.fun's flat 3% -- a number from the other
+      // chain entirely. Neither silently under-prices a PONS trade any more.
+      const feeRT = pons
+        ? 2 * ((numOr(c.reference?.curve?.feeBps, PONS_ASSUMED_FEE_BPS) + numOr(c.reference?.curve?.creatorTaxBps, PONS_ASSUMED_TAX_BPS)) / 1e4)
+        : feeFractionRoundTrip;
       return { fraction: feeRT + impact + fixed, detail: { feeFractionRoundTrip: feeRT, impact, fixed, stake_usd: stakeAt } };
     },
   };

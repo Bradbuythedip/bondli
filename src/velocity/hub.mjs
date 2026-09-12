@@ -277,8 +277,13 @@ export class VelocityHub {
   resume(wallet) {
     const u = this.users.get(wallet);
     if (!u) return { ok: false, error: "not running" };
-    u.engine.resume("pumpfun", { by: "user" });
-    return { ok: true, ...this.status(wallet) };
+    // Every venue the engine has, not just pump.fun. Resume did nothing at all for someone trading
+    // Robinhood Chain alone. It re-runs the governor, so a halt whose cause still stands -- the
+    // day's loss limit, most of all -- comes straight back, which is the point.
+    for (const v of Object.keys(u.engine.venues)) u.engine.resume(v, { by: "user" });
+    const s = this.status(wallet);
+    const still = u.engine.store.state.halt?.mode ? u.engine.store.state.halt : null;
+    return { ok: true, ...s, stillHalted: still ? { reason: still.reason } : null };
   }
 
   /** Sell some or all of one open position now, by the user's hand. Runs on the engine's queue. */

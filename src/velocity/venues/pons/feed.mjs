@@ -212,7 +212,10 @@ export class PonsFeed extends Feed {
       if (rec.pairToken && rec.pairToken !== "0x0000000000000000000000000000000000000000") { this.skippedQuote = (this.skippedQuote || 0) + 1; return; }
       const t = { ca: rec.token, curve: rec.curve, name: "", ticker: "", devWallet: rec.deployer, createdAt: now, block: rec.block, graduationThreshold: rec.graduationThreshold, pairToken: rec.pairToken,
         buys: 0, sells: 0, uniqueBuyers: new Set(), trades: [], spark: [], volumeQuote: 0, volumeUsd: 0, devInitialQuote: 0,
-        quoteReserve: 0, tokenReserve: 0, realQuoteReserve: 0, feeBps: 100, creatorTaxBps: 0, mcapQuote: 0, mcapUsd: 0, progress: 0, graduated: false, _curvePct: 0, _source: "pons", _apeScore: 0, _scoredAt: 0, _pending: true };
+        // null, not 0. These are placeholders until _hydrate reads the curve, and a creator tax of
+        // "not known yet" priced as "none" is how the EV gate approved tokens that charged 10% a
+        // side. Everything downstream must be able to tell ignorance from a reading.
+        quoteReserve: 0, tokenReserve: 0, realQuoteReserve: 0, feeBps: null, creatorTaxBps: null, mcapQuote: 0, mcapUsd: 0, progress: 0, graduated: false, _curvePct: 0, _source: "pons", _apeScore: 0, _scoredAt: 0, _pending: true };
       this.tokens.set(rec.token, t); this.byCurve.set(rec.curve, t);
       if (this.tokens.size > this.maxTokens) { const oldest = [...this.tokens.values()].sort((a, b) => a.createdAt - b.createdAt)[0]; this.tokens.delete(oldest.ca); this.byCurve.delete(oldest.curve); }
       return t;
