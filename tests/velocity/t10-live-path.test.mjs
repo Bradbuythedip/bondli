@@ -258,6 +258,48 @@ test("T10: sells settle from the transaction, a pending sell is never sent twice
   assert.equal(stale.connection.sent, 0);
 });
 
+test("T10: a wallet that holds none of a mint is checked against the chain before it is written off", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const live = new FakeLive();
+  live.findRecentSale = async (mint, { since }) => (mint === "Sold" ? { sig: "SIGMANUAL", solReceived: 0.04, qty: 1000, at: since + 30_000 } : null);
+  const engine = mkEngine(dir, { envelope: env, mode: "live", live });
+  let now = Date.now(); engine.clock = () => now;
+  const mk = (id) => ({ id, venue: "pumpfun", instrument: id, status: "open", paper: false, qty: 1000, remaining_qty: 1000, cost_usd: 5.2, notional_usd: 5.2, stake_usd: 5, proceeds_usd: 0, entryTime: now - 60_000, entryMark: 9000, tier: 2, model: "bondli_gates", plan: createPlan({ venue: "pumpfun", key: 2, entry: { score: 60 } }), reference: { solPrice: 200 } });
+  engine.store.upsertPosition(mk("Sold")); engine.store.upsertPosition(mk("Rugged"));
+  try {
+    await engine.start({ reconcile: false });
+    for (const id of ["Sold", "Rugged"]) { await engine.closePosition(engine.store.state.positions[id], 100, "SL1"); }
+    now += 20_000;
+    // Sold by hand: the SOL is really in the wallet, so the trade books its real proceeds.
+    const rec = await engine.closePosition(engine.store.state.positions.Sold, 100, "SL1");
+    assert.equal(rec.ok, true); assert.equal(rec.fill.recovered, true); assert.equal(rec.fill.notional_usd, 8);
+    const o1 = engine.ledger.query({ kind: "outcome", limit: 1 })[0];
+    assert.equal(o1.reason, "SL1:RECOVERED"); assert.equal(o1.pnl_usd, 2.8); assert.equal(o1.flat_at_venue, undefined);
+    // Nothing on chain explains where the tokens went: still a total loss.
+    const flat = await engine.closePosition(engine.store.state.positions.Rugged, 100, "SL1");
+    assert.equal(flat.flat, true);
+    assert.equal(engine.ledger.query({ kind: "outcome", limit: 1 })[0].pnl_usd, -5.2);
+  } finally { await engine.stop(); }
+});
+
+test("T10: findRecentSale reads the mint's own account history and ignores buys and older trades", async () => {
+  const { PublicKey } = await import("@solana/web3.js");
+  const { getAssociatedTokenAddressSync } = await import("@solana/spl-token");
+  const owner = PublicKey.unique(), mint = PublicKey.unique();
+  const ata = getAssociatedTokenAddressSync(mint, owner, true).toBase58();
+  const M = mint.toBase58();
+  const conn = fakeConn({ txs: { SIGBUY: meta(-0.05, 1000, M), SIGSELL: meta(0.04, -1000, M), SIGOLD: meta(0.09, -1000, M) } });
+  let asked = null;
+  conn.getSignaturesForAddress = async (addr) => { asked = addr.toBase58(); return [{ signature: "SIGBUY", blockTime: 1_500 }, { signature: "SIGSELL", blockTime: 1_400 }, { signature: "SIGOLD", blockTime: 900 }]; };
+  const r = liveRouter(conn);
+  r.web3 = { PublicKey }; r.keypair = { publicKey: owner };
+  const sale = await r.findRecentSale(M, { since: 1_000_000 });
+  assert.equal(asked, ata, "scans the token account, not the whole wallet");
+  assert.deepEqual({ sig: sale.sig, sol: sale.solReceived, qty: sale.qty }, { sig: "SIGSELL", sol: 0.04, qty: 1000 });
+  // A sale from before this position was opened is not this position's exit.
+  assert.equal(await r.findRecentSale(M, { since: 1_600_000 }), null);
+});
+
 test("T10: the engine finalizes a live position the wallet no longer holds, and remembers a pending sell", async () => {
   const dir = tmp(); const env = smallEnvelope(dir);
   const live = new FakeLive();

@@ -643,7 +643,20 @@ export class Engine extends EventEmitter {
       if (r.failure.fee_usd > 0) this.chargeFee(venue, p.instrument, r.failure.fee_usd, `failed sell ${r.failure.venue_ref || ""}`);
       if (code === "NO_POSITION" && !p.paper && this.store.venueMode(venue) === "live") {
         // One empty wallet read is not proof; two, a retry interval apart, are.
-        if (p.flatSeenAt && this.clock() - p.flatSeenAt >= this.cfg.sweepRetryMs) return this.finalizeFlat(p, reason, r, by);
+        if (p.flatSeenAt && this.clock() - p.flatSeenAt >= this.cfg.sweepRetryMs) {
+          // The tokens are gone, but "gone" is not the same as "lost": a manual sell, or one of ours
+          // whose signature we dropped, put real SOL in the wallet. Read the chain before booking a
+          // 100% loss, or one recovered trade is written off at its full cost.
+          const sale = router.findRecentSale ? await router.findRecentSale(p.instrument, { since: p.entryTime }).catch(() => null) : null;
+          if (sale) {
+            const px = freshSol || this.quotePriceOf(venue) || 0;
+            const fill = { venue, instrument: p.instrument, side: "SELL", price: sale.qty > 0 ? (sale.solReceived * px) / sale.qty : 0, qty: sale.qty, notional_usd: +(sale.solReceived * px).toFixed(4), fee_usd: 0, t_sent: sale.at, t_filled: sale.at, latency_ms: 0, venue_ref: sale.sig, sol_received: sale.solReceived, paper: false, recovered: true };
+            delete p.flatSeenAt; delete p.pendingExit; delete p.lastExitError;
+            this.log("info", `RECOVERED SALE ${p.instrument} ${sale.sig} ${sale.solReceived.toFixed(6)} SOL`);
+            return this._bookExit(p, { ok: true, fill }, 100, `${reason}:RECOVERED`, { action: "SELL", layer: null, detail: sale.sig, by });
+          }
+          return this.finalizeFlat(p, reason, r, by);
+        }
         if (!p.flatSeenAt) p.flatSeenAt = this.clock();
       } else if (p.flatSeenAt) delete p.flatSeenAt;
       this.ledger.append({ kind: "exit", venue, positionId: p.id, instrument: p.instrument, pct, reason, failed: true, error: r.failure.reason, code, venue_ref: r.failure.venue_ref || null });
