@@ -218,7 +218,22 @@ export class Engine extends EventEmitter {
     this.store.state.wallet = this.wallet; this.store.state.wallets = this.wallets;
     // The first full reading after a start (every live wallet read since Start) is the baseline the
     // header P&L is measured from, kept in quote units so a move in SOL or ETH itself is not "P&L".
-    if (!this.store.state.baseline) { const b = this.truePnl(); if (b.wallet_usd != null && b.all_since_start) this.store.state.baseline = { wallet_usd: b.wallet_usd, open_usd: b.open_usd, quote: b.quote, at: this.clock() }; }
+    //
+    // It must cover at least one live venue. setVenueMode calls this while the venue is still paper,
+    // so truePnl skipped every venue and returned wallet_usd 0 with an empty quote map -- a baseline
+    // of nothing, against which the header P&L came out as the user's entire wallet balance.
+    if (!this.store.state.baseline) {
+      const b = this.truePnl();
+      if (b.wallet_usd != null && b.all_since_start && Object.keys(b.quote).length > 0)
+        this.store.state.baseline = { wallet_usd: b.wallet_usd, open_usd: b.open_usd, quote: b.quote, at: this.clock() };
+    }
+    // A venue that goes live later has produced no P&L yet, so its balance joins the baseline rather
+    // than appearing as profit the moment it is funded.
+    const base = this.store.state.baseline;
+    if (base && this.store.venueMode(venue) === "live" && base.quote && base.quote[venue] == null) {
+      base.quote[venue] = pre.balanceSol;
+      base.wallet_usd = +(base.wallet_usd + (solPrice > 0 ? pre.balanceSol * solPrice : 0)).toFixed(2);
+    }
   }
 
   /** What the user actually has, against what they had when they pressed start: every live wallet in
@@ -242,9 +257,13 @@ export class Engine extends EventEmitter {
     const out = { wallet_usd: known ? +walletUsd.toFixed(2) : null, open_usd: +openUsd.toFixed(2), unrealized_usd: +unrealized.toFixed(2), realized_today_usd: this.store.state.day.realizedUsd, baseline: b, since_start_usd: null, quote, all_since_start: allSinceStart };
     if (b && known) {
       // Each wallet's change in its own quote asset, at today's price: SOL and ETH moving is not trading.
-      let diff = 0, ok = true;
-      for (const [venue, now] of Object.entries(quote)) { const base = b.quote?.[venue]; if (base == null) { ok = false; break; } diff += (now - base) * prices[venue]; }
-      out.since_start_usd = +((ok ? diff : walletUsd - b.wallet_usd) + openUsd - b.open_usd).toFixed(2);
+      // A live venue the baseline has never seen contributes nothing rather than everything: its
+      // whole balance is new money in, not a gain. (noteWallet folds it into the baseline on the next
+      // reading.) The old fallback subtracted the baseline's total from the wallet's total, which
+      // reported a newly funded wallet as profit.
+      let diff = 0;
+      for (const [venue, now] of Object.entries(quote)) { const base = b.quote?.[venue]; if (base == null) continue; diff += (now - base) * prices[venue]; }
+      out.since_start_usd = +(diff + openUsd - b.open_usd).toFixed(2);
     }
     return out;
   }
@@ -403,6 +422,8 @@ export class Engine extends EventEmitter {
       else if (!gate.ok) this.log("info", `${venue}: live by the user's start; the paper gate would still say ${gate.items.filter(i => !i.ok).map(i => i.name).join(", ")}`);
     }
     this.store.setVenueMode(venue, mode, mode === "live" ? { liveStartCapUsd } : {});
+    // Now that the venue is live, the wallet reading taken above can become a real baseline.
+    if (mode === "live" && preflight) this.noteWallet(venue, preflight);
     this.ledger.append({ kind: "venue", venue, mode, by, override: !!override, gateOk: mode === "live" ? this.promotion(venue).ok : null, preflight, liveStartCapUsd });
     this.store.save();
     return { ok: true, mode, liveStartCapUsd: liveStartCapUsd || null, override: !!override, preflight };

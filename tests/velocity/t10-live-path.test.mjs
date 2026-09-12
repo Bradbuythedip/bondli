@@ -1093,3 +1093,27 @@ test("T10: expected value converts the payoff ratio into stake before charging c
   const strict = new GateRunner({ venue: "pumpfun", edge, probeStakeFraction: 0 });
   assert.equal(strict.probeStakeFraction, 0, "probing can be switched off");
 });
+
+test("T10: the header P&L starts at zero, not at the value of the wallet", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const live = new FakeLive(); live.balanceSol = 1.12;
+  const engine = mkEngine(dir, { envelope: env, mode: "paper", live });
+  let now = Date.now(); engine.clock = () => now;
+  engine.quotePrice.pumpfun = 100; // 1.12 SOL = $112 in the wallet, and no trades yet
+  try {
+    await engine.start({ reconcile: false });
+    await engine.setVenueMode("pumpfun", "live", { override: true, by: "user" });
+    const p = engine.truePnl();
+    assert.equal(p.wallet_usd, 112);
+    assert.equal(p.since_start_usd, 0, "a funded wallet is not a profit");
+    assert.equal(engine.store.state.baseline.quote.pumpfun, 1.12, "the baseline saw the live venue");
+
+    // Real movement is real P&L: 0.1 SOL earned is $10.
+    engine.noteWallet("pumpfun", { balanceSol: 1.22, quote: "SOL" });
+    assert.equal(engine.truePnl().since_start_usd, 10);
+    // And a move in SOL itself is not: the same 1.22 SOL at a higher price is still +$10.
+    engine.quotePrice.pumpfun = 150;
+    engine.noteWallet("pumpfun", { balanceSol: 1.22, quote: "SOL" });
+    assert.equal(engine.truePnl().since_start_usd, 15, "measured in SOL, priced today");
+  } finally { await engine.stop(); }
+});
