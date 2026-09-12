@@ -45,9 +45,16 @@ function feeDeps(tier = "pro") {
 test("T11: a user's envelope is the template with their choices, validated", async () => {
   const { MIN_STAKE_USD } = await import("../../src/velocity/hub.mjs");
   assert.equal(MIN_STAKE_USD, 25);
+  // $400 at the default 15% is a $60 day. A memecoin position can lose all of itself, so $60 funds
+  // ONE $40 stake, not four: the envelope now says one rather than promising four and refusing the
+  // second (see the budget test below). Exposure follows the real count.
   const e = userEnvelope({ bankrollUsd: 400, perTradeMaxUsd: 40, maxPositions: 4 });
-  assert.equal(e.bankroll_source, "wallet"); assert.equal(e.per_trade_max_usd, 40); assert.equal(e.portfolio_max_exposure_usd, 160);
-  assert.equal(e.daily_loss_limit_usd, 60); assert.equal(e.venues.pumpfun.max_exposure_usd, 160); assert.equal(e.venues.polymarket.max_exposure_usd, 0);
+  assert.equal(e.bankroll_source, "wallet"); assert.equal(e.per_trade_max_usd, 40); assert.equal(e.portfolio_max_exposure_usd, 40);
+  assert.equal(e.max_concurrent_positions, 1);
+  assert.equal(e.daily_loss_limit_usd, 60); assert.equal(e.venues.pumpfun.max_exposure_usd, 40); assert.equal(e.venues.polymarket.max_exposure_usd, 0);
+  // Four positions at $40 need a $160 day, which the user can simply ask for.
+  const four = userEnvelope({ bankrollUsd: 400, perTradeMaxUsd: 40, maxPositions: 4, dailyLossUsd: 160 });
+  assert.equal(four.max_concurrent_positions, 4); assert.equal(four.portfolio_max_exposure_usd, 160);
   assert.ok(Object.isFrozen(e) && Object.isFrozen(e.venues.pumpfun));
 
   // Nothing is sized below what a round trip costs to make and unmake. A per-trade cap under the
@@ -61,7 +68,10 @@ test("T11: a user's envelope is the template with their choices, validated", asy
   assert.ok(tiny.daily_loss_limit_usd >= MIN_STAKE_USD, `daily ${tiny.daily_loss_limit_usd}`);
 
   const small = userEnvelope({ bankrollUsd: 30, perTradeMaxUsd: 50, maxPositions: 20 });
-  assert.equal(small.per_trade_max_usd, 30, "per-trade cannot exceed the bankroll"); assert.equal(small.max_concurrent_positions, 10);
+  assert.equal(small.per_trade_max_usd, 30, "per-trade cannot exceed the bankroll");
+  // 20 is clamped to the hard maximum of 10, and a $30 bankroll's $25 day then funds one of them.
+  assert.equal(small.max_concurrent_positions, 1);
+  assert.deepEqual(small.positions_capped_by_daily_budget, { asked: 10, allowed: 1, daily_loss_limit_usd: 25, per_trade_max_usd: 30 });
 });
 
 test("T11: one feed, two users, isolated ledgers, fee paid on the profitable close; the original platform wallet is accepted", async () => {
@@ -281,4 +291,26 @@ test("T11: requireOwner will not act for a wallet the caller did not sign in as"
   const mod = await import("../../src/middleware/wallet-auth.mjs");
   assert.equal(mod.requireVerifiedWallet, undefined);
   assert.equal(mod.requireStrictAuth, undefined);
+});
+
+test("T11: the daily loss budget cannot silently overrule the position count", async () => {
+  const { userEnvelope } = await import("../../src/velocity/hub.mjs");
+  // worst_case_fraction is 1.0 on a memecoin, so the day's budget is also a concurrency limit.
+  // On a $100 bankroll the default 15% budget is $25 -- exactly one $25 stake. Asking for four
+  // positions used to leave the envelope saying four and the sizer refusing the second with
+  // DAILY_BUDGET_EXHAUSTED, which reads like a bug rather than a setting.
+  const small = userEnvelope({ bankrollUsd: 100, perTradeMaxUsd: 25, maxPositions: 4 });
+  assert.equal(small.daily_loss_limit_usd, 25);
+  assert.equal(small.max_concurrent_positions, 1, "the envelope says what the budget can actually fund");
+  assert.deepEqual(small.positions_capped_by_daily_budget, { asked: 4, allowed: 1, daily_loss_limit_usd: 25, per_trade_max_usd: 25 });
+  assert.equal(small.portfolio_max_exposure_usd, 25, "exposure follows the real position count");
+
+  // Enough budget for the positions asked: nothing is capped and nothing is reported.
+  const ok = userEnvelope({ bankrollUsd: 1000, perTradeMaxUsd: 25, maxPositions: 4 });
+  assert.equal(ok.max_concurrent_positions, 4);
+  assert.equal(ok.positions_capped_by_daily_budget, undefined);
+
+  // Raising the day's budget is the lever, and it works without touching anything else.
+  const raised = userEnvelope({ bankrollUsd: 100, perTradeMaxUsd: 25, maxPositions: 4, dailyLossUsd: 100 });
+  assert.equal(raised.max_concurrent_positions, 4);
 });

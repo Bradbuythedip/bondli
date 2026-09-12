@@ -55,13 +55,21 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
   // producing a bot that runs and never fills.
   const bankroll = Math.max(MIN_STAKE_USD, Math.min(100_000, Number(settings.bankrollUsd) || 100));
   const perTrade = Math.max(MIN_STAKE_USD, Math.min(bankroll, Number(settings.perTradeMaxUsd) || MIN_STAKE_USD));
-  const maxPositions = Math.max(1, Math.min(10, Math.round(Number(settings.maxPositions) || 4)));
-  const portfolio = Math.min(bankroll, perTrade * maxPositions);
+  let maxPositions = Math.max(1, Math.min(10, Math.round(Number(settings.maxPositions) || 4)));
   // The day's loss budget also caps a single stake (worst_case_fraction is 1.0 on a memecoin: the
   // whole position can go). A budget smaller than one stake therefore means the bot runs and never
   // fills, which is the worst of both. One minimum stake is the floor; a bankroll too small to
   // afford that is refused at start rather than quietly idling.
   const daily = Math.max(MIN_STAKE_USD, Math.min(bankroll, Number(settings.dailyLossUsd) || Math.round(bankroll * 0.15)));
+  // The sizer treats a memecoin position as able to lose all of itself (worst_case_fraction 1.0), so
+  // the day's budget is also a concurrency limit: with a $15 budget and $25 stakes, ONE open position
+  // exhausts it and every later candidate is refused DAILY_BUDGET_EXHAUSTED until tomorrow. The
+  // setting said four positions and the budget allowed one, with nothing anywhere saying so. Make
+  // the two agree, and report it, rather than letting the budget quietly overrule the setting.
+  const affordable = Math.max(1, Math.floor(daily / perTrade));
+  const positionsAsked = maxPositions;
+  if (affordable < maxPositions) maxPositions = affordable;
+  const portfolio = Math.min(bankroll, perTrade * maxPositions);
   // Degen apes heavier: the Kelly fraction scales with the dial (0.75x safe, 1x, 1.5x, 2x), capped at half Kelly.
   const level = Math.max(0, Math.min(3, Math.round(settings.aggression == null || settings.aggression === "" ? 1 : Number(settings.aggression) || 0)));
   const kellyMult = { 0: 0.75, 1: 1, 2: 1.5, 3: 2 }[level] || 1;
@@ -84,6 +92,8 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
   delete cfg._comment;
   const v = validateRisk(cfg);
   if (!v.ok) throw new Error(`risk settings rejected: ${v.errors.join("; ")}`);
+  // Recorded, not hidden: the panel says "4 positions" and the envelope allows one.
+  if (maxPositions < positionsAsked) cfg.positions_capped_by_daily_budget = { asked: positionsAsked, allowed: maxPositions, daily_loss_limit_usd: daily, per_trade_max_usd: perTrade };
   return deepFreeze(cfg);
 }
 
