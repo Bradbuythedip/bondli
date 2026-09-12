@@ -361,12 +361,23 @@ test("T10: no ticks is not no exit: the time stop fires on a quiet position and 
     await engine.enqueue(() => engine.onEvent(cand("MintQuiet", now)));
     const p = engine.store.openPositions("pumpfun")[0];
     assert.ok(p, "paper position opened");
-    now += 5 * 60_000; await engine.sweep();
-    assert.equal(engine.store.openPositions("pumpfun").length, 1, "inside the hold: nothing");
-    now += p.plan.max_hold_ms; await engine.sweep();
-    assert.equal(engine.store.openPositions("pumpfun").length, 0, "past the hold with no ticks: sold");
-    assert.equal(engine.ledger.query({ kind: "outcome", limit: 1 })[0].reason, "MAX_HOLD");
+    now += 60_000; await engine.sweep();
+    assert.equal(engine.store.openPositions("pumpfun").length, 1, "inside the stall window: nothing");
+    // Silence past the stall window is the stall: no ticks is the strongest "nobody is buying".
+    now += p.plan.stall_ms; await engine.sweep();
+    assert.equal(engine.store.openPositions("pumpfun").length, 0, "quiet and never armed: sold at the stall, not at max hold");
+    assert.equal(engine.ledger.query({ kind: "outcome", limit: 1 })[0].reason, "STALL");
     assert.equal(engine.ledger.query({ kind: "exit", limit: 1 })[0].by, "timer");
+
+    // A position that ran far enough to arm the trail is the trail's, not the stall's: a quiet feed
+    // is not a reason to give it up, so it waits for max hold.
+    const q = { ...p, id: "ran", instrument: "MintRan", status: "open", entryTime: now, peak: p.entryMark * 1.5, remaining_qty: p.qty };
+    engine.store.upsertPosition(q);
+    now += q.plan.stall_ms + 60_000; await engine.sweep();
+    assert.equal(engine.store.openPositions("pumpfun").length, 1, "armed: the stall leaves it alone");
+    now += q.plan.max_hold_ms; await engine.sweep();
+    assert.equal(engine.ledger.query({ kind: "exit", limit: 1 })[0].reason, "MAX_HOLD", "past max hold it goes, armed or not");
+    engine.store.closePosition("ran", { exitReason: "MAX_HOLD", pnl_usd: 0, remaining_qty: 0 }); // the paper book never held it
 
     // Flatten that fails once is retried by the sweep until it succeeds.
     // The gates judge freshness from the event's own timestamps; the engine clock is 20 minutes ahead by now.
