@@ -142,11 +142,17 @@ function evaluatePumpfun(position, tick, plan, now, held) {
     return null;
   }
   if (r.action === "PARTIAL_SELL") {
-    if (/^TP1|trailing|fade-trim|momentum-trim/.test(r.reason)) pos.tpHit = Math.max(pos.tpHit, 1);
-    if (r.reason === "TP2") pos.tpHit = Math.max(pos.tpHit, 2);
-    if (r.reason === "TP3" || (/^(TP-trail|RIDE-trail)$/.test(r.reason) && r.moonbag)) { pos.tpHit = 3; pos.isMoonbag = !!r.moonbag; }
-    if (r.reason === "SL1") pos.slHit = 1;
-    return { action: "PARTIAL_SELL", pct: r.pct, reason: r.reason, layer: r.layer, detail: r.detail || null };
+    // These stamps describe a position that has been REDUCED, so they are handed to the caller to
+    // apply once the sell actually lands (see applyExitStamp). Stamping them here marked a position
+    // that still holds everything: isMoonbag turns off the stop loss, the max hold, the sweeper's
+    // time stop and the stall, so a RIDE-trail partial that failed to send left the FULL position
+    // with no way out short of -80%.
+    const stamp = {};
+    if (/^TP1|trailing|fade-trim|momentum-trim/.test(r.reason)) stamp.tpHit = Math.max(pos.tpHit, 1);
+    if (r.reason === "TP2") stamp.tpHit = Math.max(pos.tpHit, 2);
+    if (r.reason === "TP3" || (/^(TP-trail|RIDE-trail)$/.test(r.reason) && r.moonbag)) { stamp.tpHit = 3; stamp.isMoonbag = !!r.moonbag; }
+    if (r.reason === "SL1") stamp.slHit = 1;
+    return { action: "PARTIAL_SELL", pct: r.pct, reason: r.reason, layer: r.layer, detail: r.detail || null, stamp };
   }
   return { action: "SELL", pct: 100, reason: r.reason, layer: r.layer, detail: r.detail || null };
 }
@@ -159,4 +165,13 @@ function evaluatePolymarket(position, tick, plan, now, held) {
   if (plan.target_price != null && price > 0 && price >= plan.target_price) return { action: "SELL", pct: 100, reason: "TARGET", layer: 3, detail: `${price} >= ${plan.target_price}` };
   if (held > plan.max_hold_ms) return { action: plan.mode === "hold_to_redeem" ? "SELL" : "SELL", pct: 100, reason: "MAX_HOLD", layer: 2, detail: `${Math.round(held / 3_600_000)}h` };
   return null;
+}
+
+/** Apply the marks a partial exit earns, once its sell has actually landed. */
+export function applyExitStamp(position, stamp) {
+  if (!stamp || !position?._bondli) return;
+  const pos = position._bondli;
+  if (stamp.tpHit != null) pos.tpHit = Math.max(pos.tpHit || 0, stamp.tpHit);
+  if (stamp.slHit != null) pos.slHit = Math.max(pos.slHit || 0, stamp.slHit);
+  if (stamp.isMoonbag != null) pos.isMoonbag = !!stamp.isMoonbag;
 }

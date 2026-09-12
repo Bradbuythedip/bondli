@@ -1,7 +1,7 @@
 // T5: every entry gets a plan; each layer fires in simulation at its trigger.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPlan, evaluateExit, markPosition, assertHasPlan } from "../../src/velocity/core/exits.mjs";
+import { createPlan, evaluateExit, markPosition, assertHasPlan, applyExitStamp } from "../../src/velocity/core/exits.mjs";
 import { makeEvent } from "../../src/velocity/core/events.mjs";
 import { EXIT_PLANS } from "../../src/velocity/core/plans.mjs";
 
@@ -170,6 +170,12 @@ test("T5: a runner keeps its moonbag, and the moonbag outlives the time limit", 
   const r = evaluateExit(pos, tick(24_000));
   assert.equal(r?.reason, "RIDE-trail"); assert.equal(r.action, "PARTIAL_SELL");
   assert.equal(r.pct, 85, "tier 2 keeps 15%");
+  // The mark follows the SELL, not the decision: until 85% has actually left the wallet the position
+  // is still a full one, and a full position must keep its stop loss and its time limit.
+  assert.deepEqual(r.stamp, { tpHit: 3, isMoonbag: true });
+  assert.equal(pos._bondli.isMoonbag, false, "not a moonbag until the sell lands");
+  assert.equal(evaluateExit(pos, tick(24_000, {}, T0 + 26 * 60_000))?.reason, "MAX_HOLD", "and the time limit still applies to it");
+  applyExitStamp(pos, r.stamp);
   assert.equal(pos._bondli.isMoonbag, true, "the position is now a moonbag");
   // the moonbag is not sold at the plan's time limit
   assert.equal(evaluateExit(pos, tick(24_000, {}, T0 + 26 * 60_000)), null);
@@ -212,4 +218,26 @@ test("T5: a plan adjustment does not cancel the exit checks, and cannot compound
   const tp1Before = p3.plan.bondli.tpLevels.tp1;
   for (let i = 0; i < 40; i++) evaluateExit(p3, tick(10_050 + i, hot));
   assert.ok(p3._bondli.exitPlan.tpLevels.tp1 <= tp1Before * 3, `targets are capped at 3x, got ${p3._bondli.exitPlan.tpLevels.tp1}`);
+});
+
+test("T5: a partial sell that never lands leaves a full position with its stop loss intact", () => {
+  const pos = pumpPos();
+  markPosition(pos, tick(40_000));            // +300%
+  const r = evaluateExit(pos, tick(24_000));  // RIDE-trail: sell 85%, keep a moonbag
+  assert.equal(r.action, "PARTIAL_SELL");
+  // The sell fails -- no balance, an unconfirmed signature, a revert. Nothing is applied.
+  assert.equal(pos._bondli.isMoonbag, false);
+  assert.equal(pos._bondli.tpHit, 0);
+  // The position still holds everything, so every protection a full position has must still work.
+  // 40% down. A real moonbag sits here doing nothing until -80%; a full position must not.
+  const out = evaluateExit(pos, tick(6_000));
+  assert.ok(out, "a full position 40% down still has an exit");
+  assert.ok(!/^moonbag/.test(out.reason), `and it is not being treated as a moonbag: ${out.reason}`);
+  const p2 = pumpPos();
+  markPosition(p2, tick(40_000)); evaluateExit(p2, tick(24_000));
+  assert.equal(evaluateExit(p2, tick(24_000, {}, T0 + 26 * 60_000))?.reason, "MAX_HOLD", "and so does the time limit");
+  // The trail is still willing to try again.
+  const p3 = pumpPos();
+  markPosition(p3, tick(40_000)); evaluateExit(p3, tick(24_000));
+  assert.equal(evaluateExit(p3, tick(24_000))?.reason, "RIDE-trail", "and the exit is retried");
 });

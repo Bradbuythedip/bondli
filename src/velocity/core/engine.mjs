@@ -12,7 +12,7 @@ import { Ledger } from "./ledger.mjs";
 import { Store } from "./store.mjs";
 import { GateRunner } from "./pipeline.mjs";
 import { Sizer } from "./risk.mjs";
-import { createPlan, evaluateExit, markPosition } from "./exits.mjs";
+import { createPlan, evaluateExit, markPosition, applyExitStamp } from "./exits.mjs";
 import { Governor } from "./governor.mjs";
 import { WeightStore, checksumFiles, verifyChecksums, retrain } from "./learner.mjs";
 import { LatencyHistogram } from "./events.mjs";
@@ -766,7 +766,7 @@ export class Engine extends EventEmitter {
       try { action = evaluateExit(p, tick, { now: event.t_observed }); }
       catch (err) { this.log("error", `exit eval ${p.id}: ${err.message}`); continue; }
       if (!action) continue;
-      await this.closePosition(p, action.pct, action.reason, { action: action.action, layer: action.layer, detail: action.detail, tick });
+      await this.closePosition(p, action.pct, action.reason, { action: action.action, layer: action.layer, detail: action.detail, tick, stamp: action.stamp || null });
     }
   }
 
@@ -783,7 +783,7 @@ export class Engine extends EventEmitter {
     finally { this.exiting.delete(p.id); }
   }
 
-  async _closePosition(p, pct, reason, { action = "SELL", layer = null, detail = null, tick = null, by = "plan" } = {}) {
+  async _closePosition(p, pct, reason, { action = "SELL", layer = null, detail = null, tick = null, by = "plan", stamp = null } = {}) {
     const venue = p.venue;
     const router = this.routerFor(venue);
     if (!router) return { ok: false, failure: { reason: "NO_ROUTER" } };
@@ -837,7 +837,7 @@ export class Engine extends EventEmitter {
     if (p.pendingExit) { pct = r.fill.pending_pct ?? pct; delete p.pendingExit; }
     if (p.flatSeenAt) delete p.flatSeenAt;
     if (p.lastExitError) delete p.lastExitError;
-    return this._bookExit(p, r, pct, reason, { action, layer, detail, by });
+    return this._bookExit(p, r, pct, reason, { action, layer, detail, by, stamp });
   }
 
   /** The venue holds none of this instrument and no pending sell explains it: the tokens left the
@@ -849,9 +849,10 @@ export class Engine extends EventEmitter {
     return this._bookExit(p, { ok: true, fill, flat: true }, 100, why, { action: "SELL", layer: null, detail: r.failure.reason, by, flat: true });
   }
 
-  _bookExit(p, r, pct, reason, { action = "SELL", layer = null, detail = null, by = "plan", flat = false } = {}) {
+  _bookExit(p, r, pct, reason, { action = "SELL", layer = null, detail = null, by = "plan", flat = false, stamp = null } = {}) {
     const venue = p.venue;
     const f = r.fill;
+    applyExitStamp(p, stamp); // the sell landed, so the marks a reduced position earns are now true
     const proceeds = f.notional_usd;
     p.proceeds_usd = (p.proceeds_usd || 0) + proceeds;
     if (f.sol_received > 0) p.sol_received = (p.sol_received || 0) + f.sol_received;
