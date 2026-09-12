@@ -564,7 +564,13 @@ export class Engine extends EventEmitter {
 
   portfolioSnapshot() {
     this.store.rollDay();
-    const open = this.store.openPositions();
+    // Only positions of the kind the caps are protecting. equity_usd is built from live wallets and
+    // live positions, but `open` was every position, paper included -- so with pump.fun live and PONS
+    // in paper (anyone who has funded SOL but not ETH) a simulated position held a real concurrency
+    // slot and ate the real exposure cap. With nothing live the paper book stands in, so an all-paper
+    // run still exercises the caps and the promote gate keeps its meaning.
+    const anyLive = this.anyLiveVenue();
+    const open = this.store.openPositions().filter(p => (anyLive ? !p.paper : true));
     // A buy that was sent but not confirmed may still land: until the sweep settles it, its whole
     // stake is open risk, or every candidate inside the confirmation window is sized against the
     // full daily budget.
@@ -576,7 +582,6 @@ export class Engine extends EventEmitter {
     // Wallet mode: the bankroll is what the wallet holds. Free SOL (less the fee reserve) at the
     // current price, plus what is already open, is the equity the sizer works from. Paper venues
     // keep the fixed bankroll. No fresh reading means no order, not a guess.
-    const anyLive = Object.keys(this.venues).some(v => this.store.venueMode(v) === "live");
     if (this.walletMode() && anyLive) {
       // Every live venue's wallet, each in its own quote asset, summed in USD. One unreadable wallet
       // means no order on any venue: a guess is not a bankroll.
@@ -593,7 +598,7 @@ export class Engine extends EventEmitter {
       }
       if (reason) { snap.equity_usd = null; snap.equity_reason = reason; }
       else {
-        const liveOpen = open.filter(p => !p.paper).reduce((s, p) => s + (p.notional_usd || 0), 0);
+        const liveOpen = open.reduce((s, p) => s + (p.notional_usd || 0), 0); // `open` is already live-only here
         snap.equity_usd = +(freeUsd + liveOpen).toFixed(2);
         const w = this.wallet;
         snap.wallet = { sol: w.sol, solPrice: w.solPrice, free_usd: +freeUsd.toFixed(2), at: w.at, wallets: this.wallets };

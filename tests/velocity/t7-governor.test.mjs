@@ -130,3 +130,31 @@ test("T7: a paper venue's losses cannot halt live trading, nor fund it", async (
   }
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("T7: a simulated position does not hold a real concurrency slot", async () => {
+  const { Engine } = await import("../../src/velocity/core/engine.mjs");
+  const { loadRiskEnvelope } = await import("../../src/velocity/core/risk.mjs");
+  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const { PumpfunPaperRouter } = await import("../../src/velocity/venues/pumpfun/router.mjs");
+  const os = await import("node:os"); const fs = await import("node:fs"); const path = await import("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "slots-"));
+  const base = JSON.parse(fs.readFileSync(path.resolve("src/velocity/config/risk.example.json"), "utf8"));
+  const cfg = { ...base, bankroll_usd: 200, per_trade_max_usd: 25, portfolio_max_exposure_usd: 100, daily_loss_limit_usd: 50, max_concurrent_positions: 2 };
+  cfg.venues = { ...base.venues, pumpfun: { ...base.venues.pumpfun, max_exposure_usd: 100, min_stake_usd: 5 }, polymarket: { ...base.venues.polymarket, max_exposure_usd: 0 } };
+  fs.writeFileSync(path.join(dir, "risk.json"), JSON.stringify(cfg));
+  const edge = makePumpfunEdge({ aggression: 1 });
+  const e = new Engine({ dataDir: dir, envelope: loadRiskEnvelope(path.join(dir, "risk.json")),
+    venues: { pumpfun: { mode: "paper", edge, router: new PumpfunPaperRouter({ bookFile: path.join(dir, "b.json"), latencyMs: 0 }) } } });
+
+  const add = (id, paper) => e.store.upsertPosition({ id, venue: "pumpfun", instrument: id, status: "open", paper,
+    qty: 1, remaining_qty: 1, notional_usd: 25, cost_usd: 25, stake_usd: 25, entryTime: 0, worst_case_fraction: 1 });
+  add("sim1", true); add("sim2", true);
+  // Everything is paper: the simulation is held to the same caps, or the promote gate means nothing.
+  assert.equal(e.portfolioSnapshot().open.length, 2);
+  // One venue goes live. The two simulated positions must not be occupying its two slots.
+  e.store.setVenueMode("pumpfun", "live");
+  assert.equal(e.portfolioSnapshot().open.length, 0, "no real money is at risk, so no real slot is taken");
+  add("real1", false);
+  assert.equal(e.portfolioSnapshot().open.length, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
