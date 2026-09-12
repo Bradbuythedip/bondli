@@ -42,7 +42,10 @@ export class Engine extends EventEmitter {
     this.dataDir = dataDir;
     this.env = envelope;
     this.clock = clock;
-    this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000, failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000,
+    this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000,
+      // After a DOA or STALL exit: we left because nothing was happening, not because it was bad.
+      retryCooldownMs: 45_000,
+      failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000,
       // How far a refused token has to run before the refusal counts as a miss, and for how long
       // after the refusal it stays under observation.
       missMultiple: 1.6, missWatchMs: 10 * 60_000,
@@ -342,6 +345,16 @@ export class Engine extends EventEmitter {
       const stall = p.plan?.stall_ms;
       const peakPct = p.entryMark > 0 ? (((p.peak || p.entryMark) - p.entryMark) / p.entryMark) * 100 : 0;
       const armed = peakPct >= (p.plan?.stall_band_pct ?? 8) * 1.5;
+      // Dead on arrival, the strongest form: not one tick since the fill. The tick evaluator's DOA
+      // test needs a tick to run on, and a launch nobody is trading produces none -- so the position
+      // that most deserves cutting is the one that check can never see. Silence for the whole window
+      // IS the absence of participation it looks for.
+      const doa = p.plan?.doa_ms;
+      const age = now - p.entryTime;
+      if (doa && !p._bondli?.isMoonbag && !(p._bondli?.tpHit > 0) && !armed && age >= doa && quiet >= doa && due(p.id)) {
+        await this.closePosition(p, 100, "DOA", { by: "timer", detail: `${Math.round(age / 1000)}s, no trade since the fill` });
+        continue;
+      }
       if (stall && !p._bondli?.isMoonbag && !(p._bondli?.tpHit > 0) && !armed && now - p.entryTime > stall && quiet > this.cfg.tickSilenceMs && due(p.id))
         await this.closePosition(p, 100, "STALL", { by: "timer", detail: `${Math.round((now - p.entryTime) / 60000)}min, no tick for ${Math.round(quiet / 1000)}s, peak +${peakPct.toFixed(0)}%` });
     }
@@ -875,7 +888,14 @@ export class Engine extends EventEmitter {
       if (f.paper) { this.store.state.day.paperRealizedUsd = +(this.store.state.day.paperRealizedUsd + pnl).toFixed(4); this.store.state.day.paperTrades++; }
       else { this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4); this.store.state.day.trades++; }
       this.ledger.append({ kind: "outcome", venue, instrument: p.instrument, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: held, reason, features: p.features, paper: !!f.paper, by, flat_at_venue: flat || undefined });
-      this.cooldown.set(p.instrument, this.clock() + this.cfg.reentryCooldownMs);
+      // How long before this mint may be bought again depends on WHY we left. A stop loss, a crash or
+      // a rug is a judgement that the token is bad, and five minutes is right. DOA and STALL are not:
+      // they say nothing was happening YET. Holding those out for five minutes turns a cheap step
+      // aside into a permanent forfeit of the token, and the whole case for cutting fast is that
+      // stepping aside is cheap and reversible -- 3.5% to keep the right to come back when the crowd
+      // arrives. The miss ledger records what these cost, so the number is checkable.
+      const notYet = /^(DOA|STALL)/.test(reason);
+      this.cooldown.set(p.instrument, this.clock() + (notYet ? this.cfg.retryCooldownMs : this.cfg.reentryCooldownMs));
       this.venues[venue].feed?.unwatch(p.instrument);
       for (const l of p.legs || []) this.venues[venue].feed?.unwatch(l.instrument);
       this.stats = this.modeStats();

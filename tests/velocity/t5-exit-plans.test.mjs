@@ -12,7 +12,11 @@ function pumpPos(over = {}) {
   return { id: "p1", venue: "pumpfun", instrument: "MintA", entryTime: T0, entryMark: 10_000, peak: 10_000, notional_usd: 20, entryScore: 66, plan, ...over };
 }
 function tick(mcapUsd, over = {}, at = T0 + 60_000) {
-  const token = { ca: "MintA", buys: 50, sells: 10, trades: [], volumeSol: 20, createdAt: T0 - 120_000, uniqueBuyers: { size: 30 }, mcapUsd, vSolInBondingCurve: 20, ...over.token };
+  // A normally traded token: 50 buys, and people still arriving after we filled. A fixture with an
+  // empty trade list is a token nobody is trading, which is what the DOA test is for -- tests that
+  // want that case pass their own list.
+  const trades = [{ side: "buy", time: T0 + 500 }, { side: "buy", time: T0 + 3_000 }, { side: "buy", time: T0 + 8_000 }, { side: "sell", time: T0 + 9_000 }, { side: "buy", time: T0 + 20_000 }];
+  const token = { ca: "MintA", buys: 50, sells: 10, trades, volumeSol: 20, createdAt: T0 - 120_000, uniqueBuyers: { size: 30 }, mcapUsd, vSolInBondingCurve: 20, ...over.token };
   return makeEvent({ venue: "pumpfun", kind: "tick", id: "MintA", t_venue: at - 100, t_observed: at, payload: { mcapUsd, token, dynamics: over.dynamics || { scores: 5, velocity: 0.05, acceleration: 0, trend: "stable" }, scores: over.scores || { apeScore: 66 }, vSolInBondingCurve: over.curve ?? 20 } });
 }
 
@@ -136,8 +140,11 @@ test("T5: dead money is sold: three minutes flat with no buyers is a STALL exit 
   const plan3 = createPlan({ venue: "pumpfun", key: 3, entry: { score: 60 } });
   assert.equal(plan3.stall_ms, 2 * 60_000);
   const pos = pumpPos({ plan: plan3 });
-  const quiet = { token: { trades: [{ side: "buy", time: T0 + 60_000 }, { side: "sell", time: T0 + 170_000 }] } };
-  // one minute in, flat, quiet: hold (not old enough)
+  // A token people DID join -- so DOA, which is only about nobody arriving, does not own it -- but
+  // where the buying then dried up. That is the distinction between the two exits: DOA is "nobody is
+  // trading this", STALL is "people are trading it and it is going nowhere".
+  const quiet = { token: { trades: [{ side: "buy", time: T0 + 4_000 }, { side: "buy", time: T0 + 9_000 }, { side: "buy", time: T0 + 60_000 }, { side: "sell", time: T0 + 170_000 }] } };
+  // one minute in, flat, still being traded: hold (not old enough for the stall)
   assert.equal(evaluateExit(pos, tick(10_300, quiet, T0 + 60_000)), null);
   // past the stall window and going nowhere: the slot is worth more than the drift, so it is sold
   const flat = evaluateExit(pumpPos({ plan: plan3 }), tick(10_300, quiet, T0 + 3 * 60_000 + 1000));
@@ -196,7 +203,8 @@ test("T5: a plan adjustment does not cancel the exit checks, and cannot compound
   const pos = pumpPos();
   // A 12-point drop off an entry score of 66: enough for TIGHTEN_SLS (10), short of momentum-trim
   // (25) and momentum-exit (30), so layer 1's only output is the adjustment.
-  const weak = { token: { buys: 40, trades: [] }, scores: { apeScore: 54 }, dynamics: { scores: 3, velocity: -0.02, acceleration: 0, trend: "fading" } };
+  const joinedIn = [{ side: "buy", time: T0 + 2_000 }, { side: "buy", time: T0 + 5_000 }, { side: "buy", time: T0 + 30_000 }];
+  const weak = { token: { buys: 40, trades: joinedIn }, scores: { apeScore: 54 }, dynamics: { scores: 3, velocity: -0.02, acceleration: 0, trend: "fading" } };
   const r = evaluateExit(pos, tick(7_000, weak));
   assert.ok(r, "the stop loss is still reached with a plan adjustment pending");
   assert.equal(r.reason, "SL2");
@@ -240,4 +248,37 @@ test("T5: a partial sell that never lands leaves a full position with its stop l
   const p3 = pumpPos();
   markPosition(p3, tick(40_000)); evaluateExit(p3, tick(24_000));
   assert.equal(evaluateExit(p3, tick(24_000))?.reason, "RIDE-trail", "and the exit is retried");
+});
+
+test("T5: dead on arrival — nobody follows us in, so we leave in seconds", () => {
+  const plan3 = createPlan({ venue: "pumpfun", key: 3, entry: { score: 60 } });
+  assert.equal(plan3.doa_ms, 12_000);
+  const at = ms => T0 + ms;
+  // Our own fill, and nothing after it.
+  const alone = { token: { trades: [{ side: "buy", time: T0 + 200 }] } };
+
+  // Too young: the price at five seconds is our own impact, and that is not evidence either way.
+  assert.equal(evaluateExit(pumpPos({ plan: plan3 }), tick(10_050, alone, at(5_000))), null);
+  // Twelve seconds in, one buy (ours), price flat: gone.
+  const r = evaluateExit(pumpPos({ plan: plan3 }), tick(10_050, alone, at(12_500)));
+  assert.equal(r?.reason, "DOA"); assert.equal(r.pct, 100);
+  assert.match(r.detail, /^13s, 1 joined/);
+
+  // The crowd arrived: held, whatever the price is doing.
+  const joined = { token: { trades: [{ side: "buy", time: T0 + 200 }, { side: "buy", time: T0 + 4_000 }, { side: "buy", time: T0 + 9_000 }] } };
+  assert.equal(evaluateExit(pumpPos({ plan: plan3 }), tick(10_050, joined, at(12_500))), null, "three buyers is participation");
+
+  // Nobody joined, but it is moving on its own: held. This is the case a blanket time cut would kill.
+  assert.equal(evaluateExit(pumpPos({ plan: plan3 }), tick(11_500, alone, at(12_500))), null, "+15% is not dead");
+
+  // A position that already peaked past the band is the trail's, not DOA's.
+  const ran = pumpPos({ plan: plan3 });
+  markPosition(ran, tick(11_000, alone, at(6_000)));
+  assert.notEqual(evaluateExit(ran, tick(10_050, alone, at(12_500)))?.reason, "DOA");
+
+  // Conviction buys time: tier 1 gets 30 seconds where tier 3 got 12.
+  const plan1 = createPlan({ venue: "pumpfun", key: 1, entry: { score: 90 } });
+  assert.equal(plan1.doa_ms, 30_000);
+  assert.equal(evaluateExit(pumpPos({ plan: plan1 }), tick(10_050, alone, at(12_500))), null);
+  assert.equal(evaluateExit(pumpPos({ plan: plan1 }), tick(10_050, alone, at(31_000)))?.reason, "DOA");
 });

@@ -21,7 +21,8 @@ export function createPlan({ venue, key, entry = {} }) {
   const base = planFor(venue, key);
   if (CURVE(venue)) {
     return {
-      venue, key, mode: base.mode, worst_case_fraction: base.worst_case_fraction, max_hold_ms: base.max_hold_ms, stall_ms: base.stall_ms ?? null, stall_band_pct: base.stall_band_pct ?? 8,
+      venue, key, mode: base.mode, worst_case_fraction: base.worst_case_fraction, max_hold_ms: base.max_hold_ms,
+      doa_ms: base.doa_ms ?? null, stall_ms: base.stall_ms ?? null, stall_band_pct: base.stall_band_pct ?? 8,
       bondli: { ...createExitPlan(base.tier ?? Number(key), Number(entry.score) || 0, base.stop_pct ? { ...PUMPFUN_EXIT_SETTINGS, sl2: base.stop_pct } : PUMPFUN_EXIT_SETTINGS), maxHoldMs: base.max_hold_ms },
       settings: { ...PUMPFUN_EXIT_SETTINGS },
     };
@@ -103,6 +104,29 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   // PONS: once the curve completes, sells go to a Uniswap V4 pool the router does not speak. Everything
   // is sold at 85% progress, whatever the P&L, because a token held through graduation cannot be sold by the bot.
   if (position.venue === "pons" && Number(token._curvePct) >= 0.85 && !token.graduated) return { action: "SELL", pct: 100, reason: "pre-graduation-exit", layer: 4, detail: `curve ${Math.round(Number(token._curvePct) * 100)}%: the bot cannot sell after graduation` };
+  // Dead on arrival: nobody followed us in.
+  //
+  // Seconds after a fill the price is mostly our own impact, so it is not evidence. Whether anyone
+  // ELSE has bought since is, and a launch nobody joins in its first seconds is not about to be
+  // joined. This is the cheap half of the trade-off: cutting one of these flat costs a round trip
+  // (3.5% of a $25 stake), where letting it turn into a crash-exit cost 7.2% on average over the last
+  // forty closes. What it must never do is cut a winner, so it needs an ABSENCE of participation and
+  // a price that has not moved -- a blanket time cut here would take the average win from +24% to
+  // nothing and flip the edge negative.
+  // It owns the position only from doa_ms until the stall window opens; after that the slower test,
+  // with its longer view of the trade flow, is the better judge and the more accurate label.
+  if (plan.doa_ms && held >= plan.doa_ms && held < (plan.stall_ms ?? Infinity) && (pos.tpHit || 0) === 0) {
+    const band = plan.stall_band_pct;
+    const chg = position.entryMark > 0 ? ((token.mcapUsd - position.entryMark) / position.entryMark) * 100 : 0;
+    const peakPct = position.entryMark > 0 ? ((pos.peakMcap - position.entryMark) / position.entryMark) * 100 : 0;
+    // Buys that landed after ours. One is allowed for our own fill appearing in the feed.
+    const joined = (token.trades || []).filter(t => t.side === "buy" && (t.time || 0) > position.entryTime).length;
+    // Inside the band on BOTH sides. A position already well under water is a loser, and the stop
+    // loss is the right thing to handle it and the right name to book it under; DOA is specifically
+    // for the case where nothing at all has happened.
+    if (joined <= 1 && Math.abs(chg) <= band && peakPct < band)
+      return { action: "SELL", pct: 100, reason: "DOA", layer: 2, detail: `${Math.round(held / 1000)}s, ${joined} joined, ${chg.toFixed(1)}%` };
+  }
   // Dead money: old enough, never left the band around entry (peak included), and nobody is buying.
   // A token that does not move in its first minutes on a curve is not about to; the slot is worth more.
   if (plan.stall_ms && held >= plan.stall_ms && (pos.tpHit || 0) === 0) {
