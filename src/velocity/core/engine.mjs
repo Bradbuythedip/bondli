@@ -42,7 +42,10 @@ export class Engine extends EventEmitter {
     this.dataDir = dataDir;
     this.env = envelope;
     this.clock = clock;
-    this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000, failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000, ...config };
+    this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000, failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000,
+      // How far a refused token has to run before the refusal counts as a miss, and for how long
+      // after the refusal it stays under observation.
+      missMultiple: 1.6, missWatchMs: 10 * 60_000, ...config };
     this.ledger = new Ledger(path.join(dataDir, "ledger.jsonl"), { now: clock });
     this.store = new Store(path.join(dataDir, "state.json"), { now: clock });
     this.weights = new WeightStore(path.join(dataDir, "weights"));
@@ -61,7 +64,10 @@ export class Engine extends EventEmitter {
     this.blocked = {};          // venue -> reason from the supervisor (feed stale, router down)
     this.inflight = new Set();  // instruments with an order in flight
     this.cooldown = new Map();  // instrument -> until
-    this.disqualified = new Map(); // instrument -> until; a gate-1 reject is not re-judged every poll (see FATAL_FLAGS)
+    // instrument -> { until, at, mcap, gate, reasons, tier, peak, missed }. Two jobs: a gate-1 reject
+    // is not re-judged every poll (see FATAL_FLAGS), and the token is kept under observation
+    // afterwards so a rule that refused a runner leaves a record. See noteRejected/watchRejected.
+    this.disqualified = new Map();
     this._entryBlockedLogged = new Map(); // instrument -> until; one "already in / cooling down" line per window, not one per tick
     this.pendingBuys = new Map();  // instrument -> { sig, decision, orderId, stake, sizing, at }: sent, not yet confirmed
     this.wallet = { sol: null, usd: null, solPrice: null, at: 0, venue: null }; // last live wallet reading (bankroll_source: wallet)
@@ -272,6 +278,7 @@ export class Engine extends EventEmitter {
   async sweep() {
     const now = this.clock();
     const due = key => { if (now - (this._lastSweepTry.get(key) || 0) < this.cfg.sweepRetryMs) return false; this._lastSweepTry.set(key, now); return true; };
+    this.pruneMemos(now);
     if (this.walletMode() && now - (this.wallet.at || 0) >= this.cfg.walletRefreshMs) await this.refreshWallet();
     for (const [inst, pb] of [...this.pendingBuys]) {
       const router = this.routerFor(pb.venue);
@@ -422,7 +429,12 @@ export class Engine extends EventEmitter {
     if (!v.runner) return;
     const gov = this.governorContext(venue);
     const t0 = performance.now();
-    if (event.kind === "candidate" && (this.disqualified.get(event.id) || 0) > event.t_observed) return;
+    if (event.kind === "candidate") {
+      // A refused token keeps arriving. That is the only free measurement of what the rules cost, so
+      // read it before deciding whether to re-judge.
+      this.watchRejected(event);
+      if ((this.disqualified.get(event.id)?.until || 0) > event.t_observed) return;
+    }
     // Nothing can be entered twice, so judging a candidate we already hold, have in flight, or are
     // cooling down on is work that can only end in ALREADY_IN_OR_INFLIGHT or REENTRY_COOLDOWN. It is
     // not free: the whole gate pipeline runs on this one serialised queue, ahead of every other
@@ -437,16 +449,85 @@ export class Engine extends EventEmitter {
       // minute is when they are noisiest: a token rejected for QUICK_FLIP at 40 seconds is re-judged
       // rejudgeMs later, when it has the trades to be judged on. A 5-minute blacklist here was the
       // difference between seeing a runner and missing it.
-      if (d.action === "REJECT" && d.gate === "disqualifiers") {
-        const fatal = (d.reasons || []).some(r => FATAL_FLAGS.has(String(r)));
-        this.disqualified.set(d.instrument, event.t_observed + (fatal ? this.cfg.disqualifyMs : this.cfg.rejudgeMs));
-      }
+      if (d.action === "REJECT") this.noteRejected(d, event);
       this.latency[venue].decide.record(decideMs);
       d.decide_ms = +decideMs.toFixed(3);
       this.ledger.append({ kind: "decision", venue, id: d.id, decisionId: d.id, ...d });
       this.store.noteDecision(d);
       if (d.action === "GO") await this.enter(d, event);
     }
+  }
+
+  /** These maps take an entry per instrument the radar has ever shown us, and the radar is a
+   *  firehose. Without this a long-running engine leaks a few hundred bytes per token, forever. */
+  pruneMemos(now) {
+    for (const [k, r] of this.disqualified) if (now > (r.expires || r.until || 0)) this.disqualified.delete(k);
+    for (const [k, until] of this.cooldown) if (now > until) this.cooldown.delete(k);
+    for (const [k, until] of this._entryBlockedLogged) if (now > until) this._entryBlockedLogged.delete(k);
+    for (const [k, at] of this._lastSweepTry) if (now - at > 60 * 60_000) this._lastSweepTry.delete(k);
+  }
+
+  /** Remember a refusal: which rule, and where the token was when the rule fired.
+   *
+   *  Without this the ledger records that a rule said no and nothing else, so no amount of data can
+   *  ever show that the rule was wrong. A rule that blocks every runner is indistinguishable from a
+   *  rule that blocks every rug -- both look like a large REJECT count. */
+  noteRejected(d, event) {
+    const inst = d.instrument;
+    // Only gate 1 stops a token being re-judged. The other gates are readings that change minute to
+    // minute, and a governor veto is not a judgement about the token at all -- blocking on one would
+    // keep refusing a token for thirty seconds after the halt that caused it had lifted.
+    const fatal = d.gate === "disqualifiers" && (d.reasons || []).some(r => FATAL_FLAGS.has(String(r)));
+    const blockMs = d.gate === "disqualifiers" ? (fatal ? this.cfg.disqualifyMs : this.cfg.rejudgeMs) : 0;
+    const prev = this.disqualified.get(inst);
+    const mcap = Number(event.payload?.mcapUsd) || Number(event.payload?.token?.mcapUsd) || 0;
+    this.disqualified.set(inst, {
+      until: Math.max(prev?.until || 0, blockMs ? event.t_observed + blockMs : 0),
+      // The first refusal is the one that matters: it is the price of the rule. A later re-refusal
+      // of a token that has already doubled must not reset the mark and hide the miss.
+      at: prev?.at ?? event.t_observed,
+      mcap: prev?.mcap || mcap,
+      gate: prev?.gate ?? d.gate,
+      reasons: prev?.reasons ?? (d.reasons || []).map(String),
+      tier: prev?.tier ?? d.tier ?? 0,
+      peak: Math.max(prev?.peak || 0, mcap),
+      missed: prev?.missed || false,
+      expires: event.t_observed + this.cfg.missWatchMs,
+    });
+  }
+
+  /** A refused token that ran anyway. Recorded once, with the rule that refused it and the multiple
+   *  it reached, so the cost of every rule is countable instead of invisible. */
+  watchRejected(event) {
+    const r = this.disqualified.get(event.id);
+    if (!r || r.missed || !(r.mcap > 0)) return;
+    if (event.t_observed > r.expires) return;
+    const mcap = Number(event.payload?.mcapUsd) || Number(event.payload?.token?.mcapUsd) || 0;
+    if (!(mcap > 0)) return;
+    if (mcap > r.peak) r.peak = mcap;
+    const mult = mcap / r.mcap;
+    if (mult < this.cfg.missMultiple) return;
+    r.missed = true;
+    this.ledger.append({
+      kind: "miss", venue: event.venue, instrument: event.id, gate: r.gate, reasons: r.reasons,
+      tier: r.tier, mcap_at_reject: Math.round(r.mcap), mcap_now: Math.round(mcap),
+      multiple: +mult.toFixed(2), held_ms: event.t_observed - r.at,
+    });
+    this.log("info", `MISS ${event.id} ${mult.toFixed(2)}x after ${r.gate}: ${r.reasons.join(", ")}`);
+  }
+
+  /** What every rule has refused, and what those refusals would have been worth. */
+  misses({ limit = 500 } = {}) {
+    const rows = this.ledger.query({ kind: "miss", limit });
+    const by = new Map();
+    for (const m of rows) {
+      for (const reason of (m.reasons?.length ? m.reasons : [m.gate || "unknown"])) {
+        const s = by.get(reason) || { reason, n: 0, best: 0, sumMult: 0 };
+        s.n++; s.sumMult += m.multiple || 0; s.best = Math.max(s.best, m.multiple || 0);
+        by.set(reason, s);
+      }
+    }
+    return [...by.values()].map(s => ({ ...s, avgMult: +(s.sumMult / s.n).toFixed(2) })).sort((a, b) => b.n - a.n);
   }
 
   governorContext(venue) {
@@ -895,6 +976,7 @@ export class Engine extends EventEmitter {
       bankroll: { source: this.walletMode() ? "wallet" : "fixed", fixed_usd: this.env.bankroll_usd, equity_usd: this.portfolioSnapshot().equity_usd ?? null, wallet: this.wallet.at ? this.wallet : null, wallets: this.wallets },
       positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, name: p.reference?.name || "", ticker: p.reference?.ticker || "", tier: p.tier, model: p.model, notional_usd: p.notional_usd, stake_usd: p.stake_usd, mark: p.mark, entryMark: p.entryMark, peak: p.peak, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode, stall_ms: p.plan?.stall_ms ?? null, max_hold_ms: p.plan?.max_hold_ms ?? null }, tpHit: p._bondli?.tpHit ?? 0, entryTime: p.entryTime, lastTickAt: p.lastTickAt || null, curve: p.reference?.curve?.address || null, adopted: !!p.adopted, sizing: p.sizing || null, lastExitError: p.lastExitError || null })),
       review: this.review(),
+      misses: this.misses({ limit: 300 }).slice(0, 12), // what the rules refused that then ran
       venues, weightsVersion: this.weights.current().version, lastDecisions: s.lastDecisions, alerts: s.alerts.slice(0, 10),
       holdings: Object.fromEntries(Object.entries(this._holdings).map(([venue, h]) => { const open = new Set(this.store.openPositions(venue).map(p => p.instrument)); return [venue, { at: h.at, list: h.list.map(x => ({ ...x, tracked: open.has(x.instrument) })) }]; })),
     };

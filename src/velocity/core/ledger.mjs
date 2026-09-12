@@ -12,6 +12,7 @@ export const RECORD_KINDS = Object.freeze([
   "reconcile", "weights", "governor", "alert", "heartbeat", "violation", "feed", "venue",
   "fee",  // a venue fee paid for nothing (a send that failed on chain): real money, charged to the day
   "rent", // an emptied token account closed and its rent taken back: real money, returned to the wallet
+  "miss", // a candidate a rule refused that then ran anyway: the only record of what the rules cost
 ]);
 
 // Order lifecycle stages, in order. The stage reached is what a crash reveals.
