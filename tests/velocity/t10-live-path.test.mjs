@@ -749,8 +749,15 @@ test("T10: a production-shaped candidate (no enrichment, tier 3) is a GO; missin
   assert.equal(pumpfunFeatures({ token: p.token, qf: { ...p.qf, _whaleBullish: 0 }, scores: p.scores }).whaleBullish, 0, "a real zero is still a zero");
   const withFalseZero = scoreFeatures({ ...f, whaleBullish: 0 }, DEFAULT_WEIGHTS.pumpfun);
   assert.ok(ranked - withFalseZero > 0.04, `a false zero costs ${(ranked - withFalseZero).toFixed(3)} of confidence against a 0.50 floor`);
-  // Every tier's prior clears a 5% cost, so a tier can earn the outcomes that replace its prior.
-  for (const t of [1, 2, 3]) assert.ok(expectedValue({ ...PUMPFUN_PRIORS[t], costs: 0.06 }) > 0, `tier ${t} prior EV`);
+  // In R units every tier's prior looks like a clear edge -- but payoff is a RATIO of average win to
+  // average loss, so that edge is denominated in one average loss, while the cost is a fraction of the
+  // stake. Converted honestly, the tier-3 prior does NOT clear a 3.5% round trip: at a 10% stop, a 3x
+  // payoff needs a 33.75% win rate and the prior assumes 30%.
+  for (const t of [1, 2, 3]) assert.ok(expectedValue({ ...PUMPFUN_PRIORS[t], costs: 0.035 }) > 0, `tier ${t} prior edge in R`);
+  const evOf = (t, costs) => expectedValue({ p_win: PUMPFUN_PRIORS[t].p_win, payoff: PUMPFUN_PRIORS[t].payoff, lossFraction: PUMPFUN_PRIORS[t].loss_fraction, costs });
+  assert.ok(evOf(1, 0.035) > 0, "tier 1 prior clears its costs");
+  assert.ok(evOf(3, 0.035) < 0, "tier 3 prior does not: 30% win rate is below the 33.75% break-even");
+  assert.ok(evOf(3, 0) > 0, "and it is the costs that kill it, not the edge -- which is why tier 3 probes");
   // Through the whole runner at Normal: a GO, not a confidence or EV reject.
   const edge = makePumpfunEdge({ aggression: 2 });
   const runner = new GateRunner({ venue: "pumpfun", edge });
@@ -1063,4 +1070,26 @@ test("T10: a candidate the engine cannot enter is screened before the gates, and
     now += 31_000; await engine.enqueue(() => engine.onEvent(cand("MintHeld", now)));
     assert.equal(engine.ledger.query({ kind: "order" }).filter(o => o.screened).length, 2);
   } finally { await engine.stop(); }
+});
+
+test("T10: expected value converts the payoff ratio into stake before charging costs", async () => {
+  const { expectedValue, GateRunner } = await import("../../src/velocity/core/pipeline.mjs");
+  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  // payoff is avgWin/avgLoss, so p*payoff - (1-p) is an edge in units of one average loss. A cost is
+  // a fraction of the stake. At a 5% average loss, a 3.5% round trip is 0.7 of one loss, not 0.035.
+  const p = 0.4, payoff = 3, costs = 0.035, lossFraction = 0.05;
+  assert.equal(+expectedValue({ p_win: p, payoff, costs }).toFixed(4), 0.565, "unconverted: an 0.6 R edge charged 0.035 R of cost");
+  assert.equal(+expectedValue({ p_win: p, payoff, costs, lossFraction }).toFixed(4), -0.005, "converted: 0.6 R is 3% of stake, and the round trip is 3.5%");
+  // With no loss size supplied the old form is kept rather than silently rescaled.
+  assert.equal(expectedValue({ p_win: p, payoff, costs, lossFraction: 0 }), expectedValue({ p_win: p, payoff, costs }));
+  assert.equal(expectedValue({ p_win: p, payoff, costs, lossFraction: null }), expectedValue({ p_win: p, payoff, costs }));
+  // A bigger stop makes each loss cost more, so the same ratio is worth more per trade.
+  assert.ok(expectedValue({ p_win: p, payoff, costs, lossFraction: 0.15 }) > expectedValue({ p_win: p, payoff, costs, lossFraction: 0.05 }));
+
+  // The probe: a tier judged on priors whose edge is positive before costs is taken small, not refused.
+  const edge = makePumpfunEdge({ aggression: 2 });
+  const runner = new GateRunner({ venue: "pumpfun", edge });
+  assert.equal(runner.probeStakeFraction, 0.4);
+  const strict = new GateRunner({ venue: "pumpfun", edge, probeStakeFraction: 0 });
+  assert.equal(strict.probeStakeFraction, 0, "probing can be switched off");
 });
