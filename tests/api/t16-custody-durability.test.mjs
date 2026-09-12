@@ -67,3 +67,22 @@ test("T16: create refuses to mint a wallet over one the account already has", ()
   assert.match(before, /_redisError/, "and an unreachable store also refuses, rather than assuming 'none'");
   assert.match(before, /status\(503\)/);
 });
+
+test("T16: a balance reading is only cached when every leg of it succeeded", () => {
+  // Robinhood Chain is a separate chain behind a separate RPC and fails separately. The ETH leg
+  // used to be wrapped in a bare catch that left the figure null, and the reading was cached anyway
+  // because rpcFailed only tracked Solana -- so one hiccup on the PONS node froze the ETH number
+  // for fifteen seconds, and the "last known good" path could then serve that same reading forever.
+  const i = SRC.indexOf('app.get("/api/trading-wallet/:wallet"');   // SRC is already the file's text
+  assert.ok(i > 0, "the balance route exists");
+  const route = SRC.slice(i, SRC.indexOf("\n});", i));
+  assert.match(route, /let ethBalance = null, ethFailed = false/, "the ETH leg reports its own failure");
+  assert.doesNotMatch(route, /getBalance\(tw\.evmAddress\)\)\)\.toFixed\(6\); \} catch \{\}/, "and is not swallowed");
+  assert.match(route, /if \(!rpcFailed && !ethFailed\) setCachedBalance/, "a partial reading is never cached");
+  // A failed leg keeps the last good number rather than reporting null as if it were a balance.
+  assert.match(route, /prev && prev\.ethBalance != null \? prev\.ethBalance : null/);
+  // And every response the client cannot trust as live says so.
+  for (const marker of [/stale: ethFailed \? \["eth"\] : null/, /stale: \["sol", "eth"\]/, /stale: \["tokens"\]/])
+    assert.match(route, marker, `stale responses are labelled: ${marker}`);
+  assert.match(route, /as_of: Date\.now\(\)/, "and dated");
+});

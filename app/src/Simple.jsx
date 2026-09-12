@@ -440,7 +440,24 @@ export default function Simple() {
           <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: T.gn, animation: "gp 2s infinite" }} /><span style={{ fontWeight: 800 }}>Trading</span></span>
           <span style={{ fontFamily: M, fontWeight: 900, fontSize: 30, color: pnl >= 0 ? T.gn : T.rd }}>{pnl >= 0 ? "+" : ""}{fmt(pnl)}</span>
         </div>
-        <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span title={pnlKind === "wallet" ? "wallet plus open positions now, against when you pressed Start" : "closed trades today plus open positions"}>{pnlKind === "wallet" ? "since start" : "today"}, {day?.trades || 0} trades{tp ? ` · closed ${(day?.realizedUsd || 0) >= 0 ? "+" : ""}${fmt(day?.realizedUsd || 0)} · open ${(tp.unrealized_usd || 0) >= 0 ? "+" : ""}${fmt(tp.unrealized_usd || 0)}` : ""}</span><span>{(() => { const w = s?.bankroll?.wallets || {}; const sol = w.pumpfun?.sol ?? tw?.solBalance, eth = w.pons?.sol ?? tw?.ethBalance; const parts = []; if (sol != null) parts.push(Number(sol).toFixed(3) + " SOL"); if (eth != null) parts.push(Number(eth).toFixed(4) + " ETH"); return parts.join(" · "); })()}</span></div>
+        <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span title={pnlKind === "wallet" ? "wallet plus open positions now, against when you pressed Start" : "closed trades today plus open positions"}>{pnlKind === "wallet" ? "since start" : "today"}, {day?.trades || 0} trades{tp ? ` · closed ${(day?.realizedUsd || 0) >= 0 ? "+" : ""}${fmt(day?.realizedUsd || 0)} · open ${(tp.unrealized_usd || 0) >= 0 ? "+" : ""}${fmt(tp.unrealized_usd || 0)}` : ""}</span><span>{(() => {
+          // Cash AND what is in positions, per venue. Showing only the wallet made a buy look like
+          // money disappearing: the balance dropped, nothing said where it went, and the number
+          // looked broken rather than spent. A reading the server could not refresh says so instead
+          // of sitting there looking live.
+          const w = s?.bankroll?.wallets || {}, staleLegs = tw?.stale || [];
+          const held = (venue) => (s?.positions || []).filter(p => p.venue === venue && !p.paper).length;
+          const leg = (venue, cash, digits, unit, isStale) => {
+            if (cash == null) return null;
+            const n = held(venue);
+            return Number(cash).toFixed(digits) + " " + unit + (n ? ` + ${n} open` : "") + (isStale ? " (stale)" : "");
+          };
+          const parts = [
+            leg("pumpfun", w.pumpfun?.sol ?? tw?.solBalance, 3, "SOL", w.pumpfun?.sol == null && staleLegs.includes("sol")),
+            leg("pons", w.pons?.sol ?? tw?.ethBalance, 4, "ETH", w.pons?.sol == null && staleLegs.includes("eth")),
+          ].filter(Boolean);
+          return parts.join(" · ");
+        })()}</span></div>
         {paused && <div style={{ color: T.yl, fontSize: 13, marginTop: 8 }}>{/user/.test(s.halt.reason || "") ? "Paused. Open positions still get sold on their plan; nothing new is bought." : `Paused by the bot: ${s.halt.reason}`}</div>}
         {s?.positions?.length > 0 && <div style={{ marginTop: 12 }}>{s.positions.map(p => { const now = Date.now(); const tickAge = p.lastTickAt ? (now - p.lastTickAt) / 1000 : null; const stale = tickAge == null ? now - p.entryTime > 60_000 : tickAge > 60; const open = openPos === p.id; const url = p.venue === "pons" ? `https://www.ponsfamily.com/launchpad/${p.instrument}` : `https://pump.fun/coin/${p.instrument}`; const held = Math.round((now - p.entryTime) / 60000); return <div key={p.id} style={{ borderTop: `1px solid ${T.bd}` }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 8, alignItems: "center", fontFamily: M, fontSize: 13, padding: "6px 0" }}>
