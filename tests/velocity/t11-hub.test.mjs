@@ -250,3 +250,35 @@ test("T11: the sweep sells every token in both wallets: open positions through t
     assert.equal(one.ok, true); assert.equal(one.received, 0.006); assert.equal(routers.evm.tokens["0xheld"], 0);
   } finally { await hub.stopAll(); await feed.stop(); await ponsFeed.stop(); }
 });
+
+test("T11: requireOwner will not act for a wallet the caller did not sign in as", async () => {
+  const { makeRequireOwner, issueAuthToken } = await import("../../src/middleware/wallet-auth.mjs");
+  const guard = makeRequireOwner({ adminSecret: "s3cret" });
+  const run = (over) => new Promise(resolve => {
+    const req = { headers: {}, body: {}, query: {}, params: {}, ...over };
+    const res = { statusCode: 200, status(c) { this.statusCode = c; return this; }, json(b) { resolve({ status: this.statusCode, body: b, req }); } };
+    guard(req, res, () => resolve({ status: null, passed: true, req }));
+  });
+  const alice = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", bob = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+  const tok = issueAuthToken(alice, "free");
+  const auth = { authorization: `Bearer ${tok}` };
+
+  assert.equal((await run({ headers: {}, body: { wallet: alice } })).status, 401, "no token: refused");
+  assert.equal((await run({ headers: { "x-wallet": alice }, body: { wallet: alice } })).status, 401, "a header is not ownership");
+  assert.equal((await run({ headers: auth, body: { wallet: bob } })).status, 403, "signed in as alice, acting on bob: refused");
+  assert.equal((await run({ headers: auth, query: { wallet: bob } })).status, 403, "the query string is checked too");
+
+  const own = await run({ headers: auth, body: { wallet: alice } });
+  assert.equal(own.passed, true); assert.equal(own.req.ownerWallet, alice);
+  // A request that names no wallet resolves to the signed-in one rather than skipping the check.
+  const implied = await run({ headers: auth, body: {} });
+  assert.equal(implied.passed, true); assert.equal(implied.req.ownerWallet, alice);
+  // The support key still works, and only that key.
+  assert.equal((await run({ headers: { "x-admin-secret": "s3cret" }, body: { wallet: bob } })).passed, true);
+  assert.equal((await run({ headers: { "x-admin-secret": "wrong" }, body: { wallet: bob } })).status, 401);
+
+  // The two header-trusting middlewares are gone, not merely unused.
+  const mod = await import("../../src/middleware/wallet-auth.mjs");
+  assert.equal(mod.requireVerifiedWallet, undefined);
+  assert.equal(mod.requireStrictAuth, undefined);
+});

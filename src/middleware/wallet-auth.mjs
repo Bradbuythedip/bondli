@@ -10,7 +10,14 @@ import { PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 import crypto from "crypto";
 
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
+// A missing JWT_SECRET is not a small thing: sessions are signed with a key that dies with the
+// process, so every user is silently signed out on each deploy or restart, and two instances behind
+// one URL reject each other's tokens. It still starts -- refusing to boot would take the whole
+// service down over a session key -- but it says so once, loudly, instead of looking healthy.
+const JWT_SECRET = process.env.JWT_SECRET || (() => {
+  console.warn("[AUTH] JWT_SECRET is not set. Sessions are signed with a random key that is thrown away on restart: everyone will be signed out on every deploy, and a second instance will not accept the first's tokens. Set JWT_SECRET.");
+  return crypto.randomBytes(32).toString("hex");
+})();
 const TOKEN_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // In-memory nonce store (short-lived)
@@ -64,49 +71,12 @@ export function issueAuthToken(wallet, tier) {
   return signJWT({ wallet, tier, verified: true });
 }
 
-// ── Middleware: require verified wallet ──
-export function requireVerifiedWallet(req, res, next) {
-  // Check Bearer token first
-  const auth = req.headers.authorization;
-  if (auth && auth.startsWith("Bearer ")) {
-    const payload = verifyJWT(auth.slice(7));
-    if (payload && payload.verified) {
-      req.user = payload;
-      return next();
-    }
-  }
-  
-  // Fallback: X-Wallet header (legacy, less secure)
-  const wallet = req.headers["x-wallet"] || req.body?.wallet;
-  if (wallet) {
-    req.user = { wallet, verified: false };
-    return next();
-  }
-
-  return res.status(401).json({ error: "Authentication required. Connect wallet first." });
-}
-
-// ── Middleware: require verified wallet for sensitive ops ──
-export function requireStrictAuth(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith("Bearer ")) {
-    // Allow X-Wallet as fallback during transition
-    const wallet = req.headers["x-wallet"] || req.body?.wallet;
-    if (wallet) {
-      req.user = { wallet, verified: false };
-      return next();
-    }
-    return res.status(401).json({ error: "Wallet verification required. Sign the challenge first." });
-  }
-
-  const payload = verifyJWT(auth.slice(7));
-  if (!payload || !payload.verified) {
-    return res.status(401).json({ error: "Invalid or expired session. Re-verify wallet." });
-  }
-
-  req.user = payload;
-  next();
-}
+// NOTE: two middlewares used to live here, requireVerifiedWallet and requireStrictAuth. Both fell
+// back to trusting an X-Wallet header -- "legacy, less secure", from before the signature flow
+// existed -- so anything mounted on them could be acted on by typing someone else's address into a
+// header. Nothing used them by the time the money routes moved to requireOwner, and leaving a
+// ready-made auth bypass in the file for the next route to pick up is worse than having no helper.
+// If a route ever needs a weaker check than ownership, write it deliberately.
 
 // ── Middleware: the caller must have signed in as the wallet the request acts on ──
 // For routes that read a key, move money, or start a trader. No X-Wallet fallback: a header
@@ -118,8 +88,14 @@ export function makeRequireOwner({ adminSecret = process.env.ADMIN_SECRET || nul
     const auth = req.headers.authorization;
     const payload = auth && auth.startsWith("Bearer ") ? verifyJWT(auth.slice(7)) : null;
     if (!payload || !payload.verified || !payload.wallet) return res.status(401).json({ error: "Sign in with your wallet first", auth_required: true });
-    if (target && payload.wallet !== target) return res.status(403).json({ error: "That wallet is not the one you signed in with" });
+    // A request that names no wallet used to skip the ownership check entirely and continue. Every
+    // route behind this happens to reject a missing wallet itself, so nothing was exploitable -- but
+    // the guard was one forgetful route away from being. It now resolves to the signed-in wallet,
+    // which is both safe and what such a request means.
+    if (!target) { req.user = payload; req.ownerWallet = payload.wallet; return next(); }
+    if (payload.wallet !== target) return res.status(403).json({ error: "That wallet is not the one you signed in with" });
     req.user = payload;
+    req.ownerWallet = payload.wallet;
     next();
   };
 }
