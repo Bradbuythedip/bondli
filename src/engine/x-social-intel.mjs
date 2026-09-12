@@ -204,7 +204,9 @@ export class XSocialIntel {
   getStats() {
     return {
       enabled: this.enabled,
-      requestsUsed: this.requestCount,
+      configured: !!this.bearerToken,
+      authFailed: !!this.authFailed,        // a 401/403 turned it off; the token needs replacing
+      requestsUsed: this.requestCount,      // calls sent this process, which on a pay-per-use plan is spend
       monthlyLimit: this.monthlyLimit,
       cacheSize: this.cache.size,
       remaining: Math.max(0, this.monthlyLimit - this.requestCount),

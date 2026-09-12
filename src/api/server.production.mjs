@@ -9522,7 +9522,16 @@ app.get("/api/platform-stats", (req, res) => {
 // ROUTES: X SOCIAL INTEL
 // ═══════════════════════════════════════
 app.get("/api/intel/x-stats", (req, res) => {
-  res.json(xSocial.getStats());
+  // On a pay-per-use plan every call is money, so the budget and the day's spend are the numbers to watch.
+  const day = Math.floor(Date.now() / 86_400_000);
+  res.json({
+    ...xSocial.getStats(),
+    dailyBudget: X_DAILY_BUDGET,
+    spentToday: xQueue.spentAt === day ? xQueue.spent : 0,
+    handlesChecked: xQueue.seen.size,
+    inflight: xQueue.inflight,
+    sites: { probed: siteQueue.seen.size, inflight: siteQueue.inflight, dead: [...siteQueue.seen.values()].filter(v => !v.ok).length },
+  });
 });
 
 app.get("/api/intel/x-analyze/:ca", async (req, res) => {
