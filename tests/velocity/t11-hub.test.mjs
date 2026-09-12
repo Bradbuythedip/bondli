@@ -150,8 +150,22 @@ test("T11: one feed, two users, isolated ledgers, fee paid on the profitable clo
   // A wallet that cannot cover one order is refused at start.
   const feed3 = new ScriptedFeed({ venue: "pumpfun", script: [] }); await feed3.start();
   const hub3 = new VelocityHub({ feed: feed3, rootDir: tmp(), platformWallet: "PLATFORM_FRESH_WALLET", fee: feeDeps(), makeLiveRouter: ({ secret, wallet }) => new FakeLive({ secret, wallet, balanceSol: 0.01 }), log: { log() {}, error() {}, warn() {} } });
-  try { const r = await hub3.start({ wallet: "UserD", secret: "sD" }); assert.equal(r.ok, false); assert.match(r.error, /below one minimum stake/); assert.equal(hub3.has("UserD"), false); }
+  // With no price for the quote asset there is no answer either way, and guessing one is how a
+  // funded Robinhood Chain wallet used to be judged against SOL's order of magnitude.
+  try { const r = await hub3.start({ wallet: "UserD", secret: "sD" }); assert.equal(r.ok, false); assert.match(r.error, /no SOL price yet/); assert.equal(hub3.has("UserD"), false); }
   finally { await hub3.stopAll(); await feed3.stop(); }
+
+  // Given a price, the check is about the money: 0.01 SOL at $200 is $2, under one $10 stake.
+  const feed4 = new ScriptedFeed({ venue: "pumpfun", script: [] }); feed4.solPrice = 200; await feed4.start();
+  const hub4 = new VelocityHub({ feed: feed4, rootDir: tmp(), platformWallet: "PLATFORM_FRESH_WALLET", fee: feeDeps(), makeLiveRouter: ({ secret, wallet }) => new FakeLive({ secret, wallet, balanceSol: 0.01 }), log: { log() {}, error() {}, warn() {} } });
+  try { const r = await hub4.start({ wallet: "UserE", secret: "sE" }); assert.equal(r.ok, false); assert.match(r.error, /below one minimum stake/); }
+  finally { await hub4.stopAll(); await feed4.stop(); }
+
+  // And the same wallet with enough in it goes live.
+  const feed5 = new ScriptedFeed({ venue: "pumpfun", script: [] }); feed5.solPrice = 200; await feed5.start();
+  const hub5 = new VelocityHub({ feed: feed5, rootDir: tmp(), platformWallet: "PLATFORM_FRESH_WALLET", fee: feeDeps(), makeLiveRouter: ({ secret, wallet }) => new FakeLive({ secret, wallet, balanceSol: 0.5 }), log: { log() {}, error() {}, warn() {} } });
+  try { const r = await hub5.start({ wallet: "UserF", secret: "sF" }); assert.equal(r.ok, true, r.error); assert.equal(hub5.users.get("UserF").engine.store.venueMode("pumpfun"), "live"); }
+  finally { await hub5.stopAll(); await feed5.stop(); }
 });
 
 test("T11: a shared feed view forwards events and reference-counts watches", async () => {

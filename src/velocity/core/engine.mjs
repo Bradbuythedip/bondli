@@ -169,6 +169,19 @@ export class Engine extends EventEmitter {
   // ── wallet as bankroll (bankroll_source: wallet) ──
   walletMode() { return this.env.bankroll_source === "wallet"; }
 
+  /** What a venue keeps back for fees, in ITS OWN quote asset. SOL and ETH are not interchangeable
+   *  numbers: 0.006 is about a dollar of SOL and about twenty of ETH, and the same literal used for
+   *  both is how a funded Robinhood Chain wallet gets told it is too small to trade. */
+  quoteReserve(venue) {
+    return venue === "pumpfun" ? (this.env.wallet_reserve_sol ?? 0.02) : (this.env.wallet_reserve_quote?.[venue] ?? 0.001);
+  }
+
+  /** The venue's quote asset in USD: the engine's own reading, or the feed's if no event has
+   *  reached the engine yet (the feed knows the price before the first candidate arrives). */
+  quotePriceFor(venue) {
+    return this.quotePriceOf(venue) || Number(this.venues[venue]?.feed?.solPrice) || 0;
+  }
+
   /** Close the emptied token account and take its rent back. Opening one costs 0.00203928 SOL on
    *  every new mint, about $0.41, which is the largest fixed cost of a round trip and is simply left
    *  behind unless it is claimed. Deliberately not awaited: the engine queue also drives every open
@@ -426,12 +439,19 @@ export class Engine extends EventEmitter {
       catch (err) { return refuse(`live router not ready: ${err.message}`); }
       const h = await router.health();
       if (!h.ok) return refuse(`live venue unreachable: ${h.detail}`);
-      // Before the first radar poll no SOL price is known; $100 asks for more SOL than a dearer
-      // SOL needs, so an unknown price refuses rather than admits a wallet that cannot cover one order.
-      const solPrice = this.quotePriceOf(venue);
-      const minSol = this.env.venues[venue].min_stake_usd / (solPrice > 0 ? solPrice : 100) + (router.priorityFeeSol || 0) + 0.006;
-      if (preflight && preflight.balanceSol != null && preflight.balanceSol < minSol)
-        return refuse(`wallet ${preflight.wallet} holds ${preflight.balanceSol.toFixed(4)} ${preflight.quote || "SOL"}, below one minimum stake plus fees (${minSol.toFixed(4)} ${preflight.quote || "SOL"})`, { preflight });
+      // Can this wallet cover one order plus fees, in the asset this venue actually trades?
+      //
+      // Every term here used to be Solana's. The fee reserve was the literal 0.006, which is about a
+      // dollar of SOL and about twenty of ETH; the price fallback was 100, which is SOL's order of
+      // magnitude and a thirty-fifth of ETH's. On Robinhood Chain the two together demanded 0.0886
+      // ETH -- roughly $31 of gas reserve for a $10 trade on a chain where gas costs three cents --
+      // and a wallet holding $30 of ETH was told it was too small and left in paper.
+      const unit = preflight?.quote || (venue === "pumpfun" ? "SOL" : "ETH");
+      const quotePrice = this.quotePriceFor(venue);
+      if (!(quotePrice > 0)) return refuse(`no ${unit} price yet, so there is no way to tell whether the wallet covers one order; try again in a moment`, { preflight });
+      const minQuote = this.env.venues[venue].min_stake_usd / quotePrice + (router.priorityFeeSol || 0) + this.quoteReserve(venue);
+      if (preflight && preflight.balanceSol != null && preflight.balanceSol < minQuote)
+        return refuse(`wallet ${preflight.wallet} holds ${preflight.balanceSol.toFixed(5)} ${unit}, below one minimum stake plus fees (${minQuote.toFixed(5)} ${unit})`, { preflight });
       // Paper positions cannot be sold through the live router: close them while the paper router still serves the venue.
       for (const p of this.store.openPositions(venue).filter(p => p.paper)) {
         const r = await this.closePosition(p, 100, "VENUE_MODE_CHANGE", { by });
@@ -615,7 +635,7 @@ export class Engine extends EventEmitter {
         const price = this.quotePriceOf(venue) || w?.solPrice || 0;
         if (!fresh || !(w.sol >= 0)) { reason = "WALLET_UNKNOWN"; break; }
         if (!(price > 0)) { reason = "NO_SOL_PRICE"; break; }
-        const reserve = venue === "pumpfun" ? (this.env.wallet_reserve_sol ?? 0.02) : (this.env.wallet_reserve_quote?.[venue] ?? 0.001);
+        const reserve = this.quoteReserve(venue);
         freeUsd += Math.max(0, w.sol - reserve) * price;
       }
       if (reason) { snap.equity_usd = null; snap.equity_reason = reason; }

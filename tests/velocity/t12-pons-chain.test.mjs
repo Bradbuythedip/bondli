@@ -132,3 +132,58 @@ test("T12: a token watched before the feed saw it launch is adopted from the fac
   assert.equal(events.filter(e => e.kind === "candidate" && e.id === TOKEN).length, 0, "an adopted token of unknown age is priced, not judged as a launch");
   assert.equal(feed.status().pendingAdopt, 0);
 });
+
+test("T12: a funded Robinhood Chain wallet is judged in ETH, not against Solana's constants", async () => {
+  const { Engine } = await import("../../src/velocity/core/engine.mjs");
+  const { loadRiskEnvelope } = await import("../../src/velocity/core/risk.mjs");
+  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const { PonsPaperRouter } = await import("../../src/velocity/venues/pons/router.mjs");
+  const fsx = await import("node:fs"); const osx = await import("node:os"); const px = await import("node:path");
+
+  const dir = fsx.mkdtempSync(px.join(osx.tmpdir(), "pons-live-"));
+  const base = JSON.parse(fsx.readFileSync(px.resolve("src/velocity/config/risk.example.json"), "utf8"));
+  const cfg = { ...base, bankroll_usd: 100, per_trade_max_usd: 10, portfolio_max_exposure_usd: 40, daily_loss_limit_usd: 35, max_concurrent_positions: 4 };
+  cfg.venues = { ...base.venues, pumpfun: { ...base.venues.pumpfun, max_exposure_usd: 0, max_concurrent: 0 },
+    pons: { ...base.venues.pons, max_exposure_usd: 40, max_concurrent: 4, min_stake_usd: 10 },
+    polymarket: { ...base.venues.polymarket, max_exposure_usd: 0 } };
+  fsx.writeFileSync(px.join(dir, "r.json"), JSON.stringify(cfg));
+
+  const router = (balanceEth) => ({
+    ready: true,
+    async init() { return this.preflight(); },
+    async preflight() { return { wallet: "0xbot", balanceSol: balanceEth, quote: "ETH" }; },
+    async positions() { return []; }, async health() { return { ok: true }; },
+  });
+  const mk = (balanceEth, ethPrice) => {
+    const e = new Engine({ dataDir: fsx.mkdtempSync(px.join(osx.tmpdir(), "pe-")), envelope: loadRiskEnvelope(px.join(dir, "r.json")),
+      venues: { pons: { mode: "paper", edge: makePumpfunEdge({ venue: "pons", aggression: 1 }),
+        router: new PonsPaperRouter({ bookFile: px.join(dir, `b${balanceEth}.json`) }), liveRouter: router(balanceEth) } } });
+    if (ethPrice) e.quotePrice.pons = ethPrice;
+    return e;
+  };
+
+  // 0.0086 ETH at $3500 is $30 -- three of the $10 stakes this envelope allows. The old check added
+  // a literal 0.006 SOL fee reserve, worth about $21 in ETH, and refused it.
+  const ok = mk(0.0086, 3500);
+  try {
+    await ok.start({ reconcile: false });
+    const r = await ok.setVenueMode("pons", "live", { override: true, by: "user" });
+    assert.equal(r.ok, true, r.error);
+    assert.equal(ok.store.venueMode("pons"), "live", "a $30 ETH wallet trades real money");
+  } finally { await ok.stop(); }
+
+  // Genuinely too small is still refused, and the message is in ETH.
+  const small = mk(0.0005, 3500);
+  try {
+    await small.start({ reconcile: false });
+    const r = await small.setVenueMode("pons", "live", { override: true, by: "user" });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /0\.00050 ETH, below one minimum stake/);
+    assert.doesNotMatch(r.error, /SOL/);
+  } finally { await small.stop(); }
+
+  // The reserve kept back is the venue's own, not Solana's.
+  assert.equal(mk(1, 3500).quoteReserve("pons"), 0.001);
+  assert.equal(mk(1, 3500).quoteReserve("pumpfun"), 0.02);
+  fsx.rmSync(dir, { recursive: true, force: true });
+});
