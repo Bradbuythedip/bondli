@@ -3348,7 +3348,7 @@ app.post("/api/share-credit", (req, res) => {
 // ═══════════════════════════════════════
 
 // Identify if a connected wallet is actually a trading key — returns parent wallet if so
-app.get("/api/trading-wallet/identify/:pubkey", async (req, res) => {
+app.get("/api/trading-wallet/identify/:pubkey", requireOwner, async (req, res) => {
   const pk = req.params.pubkey;
   if (!pk) return res.status(400).json({ error: "pubkey required" });
   try {
@@ -3376,7 +3376,7 @@ app.get("/api/trading-wallet/identify/:pubkey", async (req, res) => {
   }
 });
 
-app.get("/api/trading-wallet/:wallet", async (req, res) => {
+app.get("/api/trading-wallet/:wallet", requireOwner, async (req, res) => {
   const tw = await getTradingWallet(req.params.wallet);
   if (!tw) return res.json({ ok: false, tradingWallet: null });
   let pubkey = tw.pubkey;
@@ -3472,7 +3472,7 @@ app.get("/api/trading-wallet/:wallet", async (req, res) => {
 });
 
 // ── WALLET DEBUG: detailed diagnostic for deposit issues ──
-app.get("/api/trading-wallet/:wallet/debug", async (req, res) => {
+app.get("/api/trading-wallet/:wallet/debug", requireOwner, async (req, res) => {
   const diag = { steps: [], errors: [], wallet: req.params.wallet };
   try {
     // Step 1: Look up trading wallet
@@ -3638,7 +3638,7 @@ app.post("/api/trading-wallet/create-extra", requireOwner, async (req, res) => {
   res.json({ ok: true, wallet: newWallet.pubkey, label: newWallet.label, total: wallets.length });
 });
 
-app.get("/api/trading-wallet/list/:wallet", async (req, res) => {
+app.get("/api/trading-wallet/list/:wallet", requireOwner, async (req, res) => {
   const wallet = req.params.wallet;
   const primary = await getTradingWallet(wallet);
   const wallets = []; 
@@ -3860,7 +3860,7 @@ app.post("/api/session/command", async (req, res) => {
 
 // ── SELL-SWEEP (Close session) ──
 // FIX: Updates session status + sweeps master → trading wallet + NO skim on recovery
-app.post("/api/session/sell-sweep", async (req, res) => {
+app.post("/api/session/sell-sweep", requireOwner, async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
     const session = await sessionManager.get(sessionId);
@@ -4026,7 +4026,7 @@ app.post("/api/session/sell-sweep", async (req, res) => {
 
 // ── FORCE-RECOVER ──
 // Sells any remaining tokens + sweeps all SOL back to trading wallet
-app.post("/api/session/force-recover", async (req, res) => {
+app.post("/api/session/force-recover", requireOwner, async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
     const session = await sessionManager.get(sessionId);
@@ -4166,7 +4166,7 @@ app.post("/api/sessions/clear", async (req, res) => {
 // ═══════════════════════════════════════
 // ROUTES: QUICK APE / SELL (PumpPortal Lightning)
 // ═══════════════════════════════════════
-app.post("/api/quick-ape", async (req, res) => {
+app.post("/api/quick-ape", requireOwner, async (req, res) => {
   try {
     const { wallet, ca, solAmount, slippage: userSlippage, priorityFee: userPriorityFee } = req.body;
     if (!wallet || !ca || !solAmount) return res.status(400).json({ error: "wallet, ca, solAmount required" });
@@ -4370,7 +4370,7 @@ app.post("/api/quick-ape", async (req, res) => {
   }
 });
 
-app.post("/api/quick-sell", async (req, res) => {
+app.post("/api/quick-sell", requireOwner, async (req, res) => {
   try {
     const { wallet, ca, percent } = req.body;
     if (!wallet || !ca) return res.status(400).json({ error: "wallet, ca required" });
@@ -4649,7 +4649,7 @@ app.post("/api/quick-sell", async (req, res) => {
   }
 });
 
-app.post("/api/sell-all", async (req, res) => {
+app.post("/api/sell-all", requireOwner, async (req, res) => {
   try {
     const { wallet } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
@@ -6930,7 +6930,7 @@ app.post("/api/brad/toggle", express.json(), async (req, res) => {
   });
 });
 
-app.get("/api/auto-trade/status", (req, res) => {
+app.get("/api/auto-trade/status", requireOwner, (req, res) => {
   const wallet = req.query.wallet;
   const state = autoTraders.get(wallet);
   if (!state) return res.json({ active: false });
@@ -7507,7 +7507,7 @@ function trackSell(wallet, ca) {
 // ═══════════════════════════════════════
 // ROUTES: POSITIONS / PORTFOLIO
 // ═══════════════════════════════════════
-app.get("/api/positions/:wallet", async (req, res) => {
+app.get("/api/positions/:wallet", requireOwner, async (req, res) => {
   try {
     const userWallet = req.params.wallet;
     const tw = await getTradingWallet(userWallet);
@@ -8622,7 +8622,7 @@ app.post("/api/close", async (req, res) => {
 // ═══════════════════════════════════════
 // ROUTES: EMERGENCY RECOVER
 // ═══════════════════════════════════════
-app.post("/api/emergency-recover", async (req, res) => {
+app.post("/api/emergency-recover", requireOwner, async (req, res) => {
   try {
     const { wallet } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
@@ -8842,7 +8842,7 @@ app.post("/api/vip/claim-referral", async (req, res) => {
 });
 
 // VIP: Export API — full intel data dump for VIP users
-app.get("/api/vip/export-api/:wallet", async (req, res) => {
+app.get("/api/vip/export-api/:wallet", requireOwner, async (req, res) => {
   try {
     const wallet = req.params.wallet;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
