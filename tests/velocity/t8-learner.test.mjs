@@ -126,3 +126,31 @@ test("T8: a rule that refuses a runner leaves a record of what it cost", async (
   assert.equal(engine.disqualified.get("MintRan"), undefined);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("T8: realized statistics age out, so a tier the EV gate closed can reopen", async () => {
+  const { Engine } = await import("../../src/velocity/core/engine.mjs");
+  const { loadRiskEnvelope } = await import("../../src/velocity/core/risk.mjs");
+  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const { PumpfunPaperRouter } = await import("../../src/velocity/venues/pumpfun/router.mjs");
+  const os = await import("node:os"); const fs = await import("node:fs"); const path = await import("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "window-"));
+  const base = JSON.parse(fs.readFileSync(path.resolve("src/velocity/config/risk.example.json"), "utf8"));
+  const cfg = { ...base, bankroll_usd: 200, per_trade_max_usd: 25, portfolio_max_exposure_usd: 100, daily_loss_limit_usd: 50, max_concurrent_positions: 4 };
+  cfg.venues = { ...base.venues, pumpfun: { ...base.venues.pumpfun, max_exposure_usd: 100, min_stake_usd: 5 }, polymarket: { ...base.venues.polymarket, max_exposure_usd: 0 } };
+  fs.writeFileSync(path.join(dir, "risk.json"), JSON.stringify(cfg));
+  const edge = makePumpfunEdge({ aggression: 1 });
+  const WINDOW = 14 * 24 * 60 * 60_000;
+  const e = new Engine({ dataDir: dir, envelope: loadRiskEnvelope(path.join(dir, "risk.json")), config: { statsWindowMs: WINDOW },
+    venues: { pumpfun: { mode: "paper", edge, router: new PumpfunPaperRouter({ bookFile: path.join(dir, "b.json"), latencyMs: 0 }) } } });
+  let now = 1_800_000_000_000; e.clock = () => now;
+
+  // Forty losing tier-3 outcomes. Past minOutcomesForStats, so the edge stops using priors.
+  for (let i = 0; i < 40; i++) e.ledger.append({ kind: "outcome", ts: now, venue: "pumpfun", instrument: `M${i}`, tier: 3, paper: true, pnl_usd: -2, stake_usd: 25, reason: "SL2" });
+  assert.ok(e.modeStats().pumpfun[3].n >= 30, "the tier is being judged on its own record");
+  assert.equal(e.modeStats().pumpfun[3].p_win, 0);
+
+  // Two weeks and a day later, that record is no longer evidence about today.
+  now += WINDOW + 24 * 60 * 60_000;
+  assert.equal(e.modeStats().pumpfun?.[3], undefined, "the window is empty, so the tier falls back to priors and can probe again");
+  fs.rmSync(dir, { recursive: true, force: true });
+});

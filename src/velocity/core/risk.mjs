@@ -169,7 +169,18 @@ export class Sizer {
       // governor has halved still trades the minimum (half of a minimum order does not exist);
       // a stake it has cut further than half is not floored back up: that shrink means not trading.
       const room = Math.min(env.per_trade_max_usd, vc.max_exposure_usd - venueOpen, env.portfolio_max_exposure_usd - totalOpen, budget / stop);
-      if (vc.min_stake_usd <= room) { stake = vc.min_stake_usd; caps.push("MIN_STAKE_FLOOR"); }
+      if (vc.min_stake_usd <= room) {
+        // The envelope's caps are in `room`; the MODEL's own cap deliberately is not. A model asking
+        // for 40% of the maximum on a small account can ask for less than the venue's minimum order,
+        // and there is no such order -- so the choice is the minimum or nothing, and for a probe,
+        // whose whole purpose is to buy an outcome to learn from, nothing means never learning. The
+        // floor takes it, and says so, rather than the cap silently deciding not to trade.
+        const modelCap = decision.stake_cap_fraction > 0 && decision.stake_cap_fraction < 1
+          ? env.per_trade_max_usd * decision.stake_cap_fraction : Infinity;
+        stake = vc.min_stake_usd;
+        caps.push("MIN_STAKE_FLOOR");
+        if (vc.min_stake_usd > modelCap) caps.push("MIN_STAKE_OVER_MODEL_CAP");
+      }
     }
     if (stake < vc.min_stake_usd) return zero(`BELOW_MIN_STAKE_${vc.min_stake_usd}`);
     return {

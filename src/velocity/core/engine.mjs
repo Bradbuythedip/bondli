@@ -45,7 +45,9 @@ export class Engine extends EventEmitter {
     this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000, failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000,
       // How far a refused token has to run before the refusal counts as a miss, and for how long
       // after the refusal it stays under observation.
-      missMultiple: 1.6, missWatchMs: 10 * 60_000, ...config };
+      missMultiple: 1.6, missWatchMs: 10 * 60_000,
+      // How far back realized statistics look. See modeStats: without a window they never revise.
+      statsWindowMs: 14 * 24 * 60 * 60_000, ...config };
     this.ledger = new Ledger(path.join(dataDir, "ledger.jsonl"), { now: clock });
     this.store = new Store(path.join(dataDir, "state.json"), { now: clock });
     this.weights = new WeightStore(path.join(dataDir, "weights"));
@@ -187,8 +189,15 @@ export class Engine extends EventEmitter {
    *  outcomes booked in the mode it is in now, so paper still calibrates itself and live only ever
    *  hears from live. */
   modeStats() {
+    // A ROLLING window, not all history. Without one the statistics are an absorbing state: a tier
+    // that loses money over its first thirty trades makes the EV gate refuse it, refusing it stops
+    // new outcomes arriving, and the stats that closed it can never be revised -- the tier is off
+    // for the life of the account, whatever the market does afterwards. Ageing the window lets a
+    // closed tier fall back to priors and probe again at a reduced size.
+    const cutoff = this.clock() - this.cfg.statsWindowMs;
     const outs = this.ledger.query({ kind: "outcome", limit: 5000 })
-      .filter(o => o && o.venue && !!o.paper === (this.store.venueMode(o.venue) === "paper"));
+      .filter(o => o && o.venue && !!o.paper === (this.store.venueMode(o.venue) === "paper"))
+      .filter(o => !(o.ts > 0) || o.ts >= cutoff);
     return statsFromOutcomes(outs);
   }
 
