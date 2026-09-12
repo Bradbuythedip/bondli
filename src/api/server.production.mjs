@@ -3010,6 +3010,29 @@ wss.on("connection", (ws) => {
 const tradingWallets = new Map(); // userPubkey → { pubkey, secret, createdAt }
 const tradingKeyOwners = new Map(); // tradingKey pubkey → parent userPubkey (reverse lookup)
 
+// Redis is the ONLY durable store for these: Railway wipes the filesystem on every deploy and the
+// in-memory maps go with the process. A custodial key, the user record naming it, and the reverse
+// index are permanent records, not cache, and must never carry an expiry -- see keepForever().
+// Records written by an older build still have a clock ticking on them, so every read clears it.
+
+/** Write a record that must outlive every deploy. No EX, ever. */
+async function keepForever(key, value) {
+  if (!redis) return;
+  try { await redis.set(key, value); } catch {}
+}
+
+/** Clear an expiry an older build left on a custodial record, before it runs out. */
+async function stopTheClock(key) {
+  if (!redis) return;
+  try {
+    const ttl = await redis.ttl(key);   // -1 = no expiry, -2 = already gone
+    if (ttl > 0) {
+      await redis.persist(key);
+      console.warn(`[custody] ${key} was ${Math.round(ttl / 86400)} days from expiring; expiry removed`);
+    }
+  } catch {}
+}
+
 async function getTradingWallet(userPubkey) {
   let tw = tradingWallets.get(userPubkey);
   if (!tw && redis) {
@@ -3018,6 +3041,7 @@ async function getTradingWallet(userPubkey) {
       if (raw) { tw = vault.openRecord(JSON.parse(raw)); tradingWallets.set(userPubkey, tw); }
     } catch {}
   }
+  if (tw) { await stopTheClock("tw:" + userPubkey); if (tw.pubkey) await stopTheClock("tkown:" + tw.pubkey); }
   // Maintain reverse lookup
   if (tw?.pubkey) tradingKeyOwners.set(tw.pubkey, userPubkey);
   return tw;
@@ -3028,11 +3052,11 @@ async function saveTradingWallet(userPubkey, tw) {
   if (tw?.pubkey) {
     tradingKeyOwners.set(tw.pubkey, userPubkey);
     if (redis) {
-      try { await redis.set("tkown:" + tw.pubkey, userPubkey, { EX: 2592000 }); } catch {} // 30d
+      await keepForever("tkown:" + tw.pubkey, userPubkey);
     }
   }
   if (redis) {
-    try { await redis.set("tw:" + userPubkey, JSON.stringify(vault.sealRecord(tw)), { EX: 2592000 }); } catch {} // 30d, secret sealed at rest
+    await keepForever("tw:" + userPubkey, JSON.stringify(vault.sealRecord(tw))); // secret sealed at rest
   }
 }
 
@@ -3053,7 +3077,7 @@ async function findTradingKeyOwner(tradingKeyPubkey) {
     if (tw.pubkey === tradingKeyPubkey) {
       tradingKeyOwners.set(tradingKeyPubkey, parentWallet);
       // Persist reverse index for next time
-      if (redis) { try { await redis.set("tkown:" + tradingKeyPubkey, parentWallet, { EX: 2592000 }); } catch {} }
+      await keepForever("tkown:" + tradingKeyPubkey, parentWallet);
       return parentWallet;
     }
   }
@@ -3115,7 +3139,7 @@ async function saveUser(wallet, data) {
   const merged = { ...existing, ...data, lastSeen: new Date().toISOString() };
   users.set(wallet, merged);
   if (redis) {
-    try { await redis.set("user:" + wallet, JSON.stringify(merged), { EX: 2592000 }); } catch {}
+    await keepForever("user:" + wallet, JSON.stringify(merged)); // names the trading wallet: as permanent as the key
   }
 }
 
@@ -3560,6 +3584,19 @@ app.post("/api/trading-wallet/create", requireOwner, async (req, res) => {
   const existing = await getTradingWallet(wallet);
   if (existing) return res.json({ ok: true, tradingWallet: existing.pubkey, already: true });
   if (!vault.canCreate()) return res.status(503).json({ error: "custodial wallets are disabled until WALLET_ENCRYPTION_KEY is set on the server" });
+  // Never mint a wallet over one that already exists. The user record names the trading wallet, and
+  // it is a SEPARATE record from the key, so "no key but a named wallet" means the key is unreachable
+  // -- expired under an older build's 30-day TTL, or a Redis read that failed. Generating a fresh
+  // keypair there overwrites the pointer to a funded address and puts the money permanently out of
+  // reach, silently, in the one call a returning user is most likely to make. Refuse and say so.
+  const prior = await getUser(wallet);
+  if (prior?._redisError) return res.status(503).json({ error: "cannot reach the wallet store; not creating a wallet that might already exist" });
+  if (prior?.tradingWallet) {
+    return res.status(409).json({
+      error: "a trading wallet already exists for this account but its key could not be loaded; refusing to replace it",
+      tradingWallet: prior.tradingWallet, recoverable: true,
+    });
+  }
   const kp = Keypair.generate();
   const evm = EvmWallet.createRandom(); // the same bot, on Robinhood Chain: one ETH key beside the SOL key
   const tw = { pubkey: kp.publicKey.toBase58(), secret: bs58.encode(kp.secretKey), evmAddress: evm.address, evmSecret: evm.privateKey, createdAt: new Date().toISOString() };
@@ -3632,7 +3669,7 @@ app.post("/api/trading-wallet/create-extra", requireOwner, async (req, res) => {
   }
   wallets.push(newWallet);
   if (redis) {
-    try { await redis.set("extra_wallets:" + wallet, JSON.stringify(vault.sealRecord(wallets)), { EX: 2592000 }); } catch {}
+    await keepForever("extra_wallets:" + wallet, JSON.stringify(vault.sealRecord(wallets)));
   }
   console.log(`[WALLET] Extra wallet created for ${wallet.slice(0, 8)}: ${newWallet.pubkey.slice(0, 8)}`);
   res.json({ ok: true, wallet: newWallet.pubkey, label: newWallet.label, total: wallets.length });
@@ -3713,7 +3750,7 @@ app.post("/api/trading-wallet/import", requireOwner, async (req, res) => {
     
     wallets.push({ pubkey: importedPubkey, secret: privateKey, label: label || "Imported " + (wallets.length + 2), createdAt: new Date().toISOString(), imported: true });
     if (redis) {
-      try { await redis.set("extra_wallets:" + wallet, JSON.stringify(vault.sealRecord(wallets)), { EX: 2592000 }); } catch {}
+      await keepForever("extra_wallets:" + wallet, JSON.stringify(vault.sealRecord(wallets)));
     }
     
     console.log(`[WALLET] Imported extra for ${wallet.slice(0, 8)}: ${importedPubkey.slice(0, 8)} (${bal.toFixed(4)} SOL) — total: ${wallets.length + 1}`);
