@@ -3429,7 +3429,7 @@ app.get("/api/trading-wallet/:wallet", requireOwner, async (req, res) => {
     console.log(`[WALLET-BAL] getBalance failed for ${pubkey.slice(0,8)}: ${e.message}`);
     // On RPC failure, serve last known good balance instead of 0
     const stale = getStaleCachedBalance(cacheKey);
-    if (stale) { console.log(`[WALLET-BAL] Serving stale cache for ${pubkey.slice(0,8)}`); return res.json(stale); }
+    if (stale) { console.log(`[WALLET-BAL] Serving stale cache for ${pubkey.slice(0,8)}`); return res.json({ ...stale, stale: ["sol", "eth"] }); }
   }
   // Calculate total token value in SOL across all held positions
   let tokenValueSol = 0;
@@ -3480,17 +3480,31 @@ app.get("/api/trading-wallet/:wallet", requireOwner, async (req, res) => {
     // If token scan also failed, serve stale cache
     if (!rpcFailed) {
       const stale = getStaleCachedBalance(cacheKey);
-      if (stale) { console.log(`[WALLET-BAL] Serving stale cache for ${pubkey.slice(0,8)} (token scan failed)`); return res.json(stale); }
+      if (stale) { console.log(`[WALLET-BAL] Serving stale cache for ${pubkey.slice(0,8)} (token scan failed)`); return res.json({ ...stale, stale: ["tokens"] }); }
     }
   }
   const totalBalance = +(solBalance + tokenValueSol).toFixed(6);
   // An older wallet has no ETH key yet: mint one now so Robinhood Chain is available to everyone.
   if (!tw.evmAddress && tw.secret && vault.canCreate()) { try { const evm = EvmWallet.createRandom(); tw.evmAddress = evm.address; tw.evmSecret = evm.privateKey; await saveTradingWallet(req.params.wallet, tw); } catch {} }
-  let ethBalance = null;
-  if (tw.evmAddress) { try { ethBalance = +Number(formatEther(await ponsProvider.getBalance(tw.evmAddress))).toFixed(6); } catch {} }
-  const result = { ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails, evmAddress: tw.evmAddress || null, ethBalance };
-  // Only cache successful results (don't cache 0 balance from RPC failures)
-  if (!rpcFailed) setCachedBalance(cacheKey, result);
+  // Robinhood Chain is a separate chain behind a separate RPC, and it fails separately. This used to
+  // swallow the error, leave ethBalance null, and then cache the whole reading anyway -- rpcFailed
+  // only ever tracked Solana -- so one hiccup on the PONS node pinned the ETH figure to null or to
+  // the value it had before, with nothing to say the number had stopped being true.
+  let ethBalance = null, ethFailed = false;
+  if (tw.evmAddress) {
+    try { ethBalance = +Number(formatEther(await ponsProvider.getBalance(tw.evmAddress))).toFixed(6); }
+    catch (e) {
+      ethFailed = true;
+      const prev = getStaleCachedBalance(cacheKey);
+      ethBalance = prev && prev.ethBalance != null ? prev.ethBalance : null;
+      console.log(`[WALLET-BAL] Robinhood Chain balance failed for ${tw.evmAddress.slice(0, 10)}: ${e.message}${ethBalance != null ? "; serving the last good reading" : ""}`);
+    }
+  }
+  const result = { ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails, evmAddress: tw.evmAddress || null, ethBalance, as_of: Date.now(), stale: ethFailed ? ["eth"] : null };
+  // Cache only a reading every leg of which succeeded. A partial one would be served for the next
+  // fifteen seconds as though it were whole, and could then be served indefinitely as "last known
+  // good" by the stale path above -- which is how a number stops moving and nobody notices.
+  if (!rpcFailed && !ethFailed) setCachedBalance(cacheKey, result);
   console.log(`[WALLET-BAL] ${pubkey.slice(0,8)}: ${solBalance.toFixed(4)} SOL + ${tokenValueSol.toFixed(4)} tokens = ${totalBalance} total (${tokenDetails.length} tokens)`);
   res.json(result);
 });
