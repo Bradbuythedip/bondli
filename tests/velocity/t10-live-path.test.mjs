@@ -932,3 +932,35 @@ test("T10: X verification turns a dead handle into no social link, and a week-ol
   const unchecked = { _socialsKnown: 1, _hasAnySocial: 1, _xFlags: null, _xScore: null };
   assert.ok(!has(unchecked, "NO_SOCIALS") && !has(unchecked, "FRESH_SOCIALS"));
 });
+
+test("T10: a refused X credential switches the checker off instead of spending the month on 401s", async () => {
+  const { XSocialIntel } = await import("../../src/engine/x-social-intel.mjs");
+  const x = new XSocialIntel("bad-token");
+  assert.equal(x.enabled, true, "a token that has not been tried yet is usable");
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return { ok: false, status: 401, text: async () => "Unauthorized" }; };
+  try {
+    const first = await x.analyze("https://x.com/someone");
+    assert.equal(first.flags[0], "account_not_found", "a refused call returns no profile");
+    assert.equal(x.enabled, false, "the checker turned itself off");
+    const second = await x.analyze("https://x.com/another");
+    assert.equal(second.flags[0], "no_x_api");
+    assert.equal(calls, 1, "the second token was never sent to the API");
+  } finally { globalThis.fetch = realFetch; }
+});
+
+test("T10: a website that does not answer stops counting as a social link", async () => {
+  const { checkDisqualifiers } = await import("../../src/autoape/gates/disqualifiers.js");
+  const token = { ca: "M", createdAt: Date.now() - 120_000, buys: 20, sells: 4, uniqueBuyers: { size: 12 }, mcapUsd: 12_000, trades: [] };
+  const opts = { requireSocials: true };
+  const noSocials = qf => checkDisqualifiers(token, qf, opts).flags.includes("NO_SOCIALS");
+  // the only listed link is a site that does not resolve
+  assert.ok(noSocials({ _socialsKnown: 1, _hasAnySocial: 0, _siteDead: 1 }));
+  // a live site is enough on its own
+  assert.ok(!noSocials({ _socialsKnown: 1, _hasAnySocial: 1, _siteDead: 0 }));
+  // not probed yet: the producer still counts the link, so nothing is refused on a pending check
+  assert.ok(!noSocials({ _socialsKnown: 1, _hasAnySocial: 1 }));
+  // both dead: refused
+  assert.ok(noSocials({ _socialsKnown: 1, _hasAnySocial: 0, _siteDead: 1, _xDeadHandle: 1 }));
+});
