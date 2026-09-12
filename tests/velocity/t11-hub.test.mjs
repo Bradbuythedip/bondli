@@ -367,3 +367,31 @@ test("T11: an alert reaches whatever the operator pasted, and a flaky receiver d
   assert.equal(off.delivered, false);
   assert.equal(posts.at(-1).ledger.text, "flatten left 2 positions open");
 });
+
+test("T11: Robinhood Chain can be traded on its own, with no SOL funded at all", async () => {
+  const { userEnvelope } = await import("../../src/velocity/hub.mjs");
+  // Turning pump.fun off zeroes its exposure and its slots, exactly as PONS already did. A venue
+  // with no exposure is never sized and never entered.
+  const rhOnly = userEnvelope({ bankrollUsd: 300, maxPositions: 4, pumpfun: false, pons: true });
+  assert.equal(rhOnly.venues.pumpfun.max_exposure_usd, 0);
+  assert.equal(rhOnly.venues.pumpfun.max_concurrent, 0);
+  assert.ok(rhOnly.venues.pons.max_exposure_usd > 0);
+  assert.equal(rhOnly.venues.pons.max_concurrent, rhOnly.max_concurrent_positions);
+
+  // The mirror image still works, and leaving it unsaid still means pump.fun is on.
+  const solOnly = userEnvelope({ bankrollUsd: 300, maxPositions: 4, pons: false });
+  assert.ok(solOnly.venues.pumpfun.max_exposure_usd > 0);
+  assert.equal(solOnly.venues.pons.max_exposure_usd, 0);
+  const both = userEnvelope({ bankrollUsd: 300, maxPositions: 4, pons: true });
+  assert.ok(both.venues.pumpfun.max_exposure_usd > 0 && both.venues.pons.max_exposure_usd > 0);
+
+  // The sizer refuses a venue with no exposure outright, so nothing can leak onto the chain that
+  // was switched off -- not a probe, not a floor, not a reconciled adoption.
+  const { Sizer } = await import("../../src/velocity/core/risk.mjs");
+  const sizer = new Sizer(rhOnly);
+  const d = (venue) => ({ venue, p_win: 0.45, payoff: 3, stop_fraction: 1 });
+  const port = { open: [], realized_today_usd: 0 };
+  assert.equal(sizer.size({ decision: d("pumpfun"), portfolio: port, throttle: 1 }).stake_usd, 0);
+  assert.match(sizer.size({ decision: d("pumpfun"), portfolio: port, throttle: 1 }).reasons[0], /VENUE_DISABLED/);
+  assert.ok(sizer.size({ decision: d("pons"), portfolio: port, throttle: 1 }).stake_usd > 0);
+});
