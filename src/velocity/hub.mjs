@@ -109,7 +109,9 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
     venues: {
       // min_stake_usd: the floor a round trip has to clear to be worth taking. See MIN_STAKE_USD above
       // for the arithmetic behind it; the short version is 4.2% of drag at $10 against 3.5% at $25.
-      pumpfun: { ...t.venues.pumpfun, max_exposure_usd: portfolio, max_concurrent: maxPositions, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.pumpfun.kelly_fraction) },
+      // Either venue can be switched off. A venue with no exposure is never sized and never entered,
+      // which is what lets someone trade Robinhood Chain alone without funding a SOL wallet at all.
+      pumpfun: { ...t.venues.pumpfun, max_exposure_usd: settings.pumpfun === false ? 0 : portfolio, max_concurrent: settings.pumpfun === false ? 0 : maxPositions, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.pumpfun.kelly_fraction) },
       pons: { ...t.venues.pons, max_exposure_usd: settings.pons ? portfolio : 0, max_concurrent: settings.pons ? maxPositions : 0, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.pons.kelly_fraction) },
       polymarket: { ...t.venues.polymarket, max_exposure_usd: 0 },
       perps: { ...t.venues.perps, max_exposure_usd: 0 },
@@ -171,6 +173,11 @@ export class VelocityHub {
     const dataDir = path.join(this.rootDir, wallet);
     fs.mkdirSync(dataDir, { recursive: true });
     const pons = !!settings.pons && !!this.ponsFeed && !!evmSecret; // Robinhood Chain: opted in, feed running, ETH key on file
+    // pump.fun is on unless the user says otherwise. Someone who only wants Robinhood Chain turns it
+    // off and never has to fund a SOL wallet; the venue goes to "off", not "paper", so the engine
+    // stops looking at its feed rather than quietly paper-trading it in the background.
+    const pumpfun = settings.pumpfun !== false;
+    if (!pumpfun && !pons) return { ok: false, error: "turn on at least one chain: pump.fun, Robinhood Chain, or both" };
     const aggression = Math.max(0, Math.min(3, Math.round(settings.aggression == null || settings.aggression === "" ? 1 : Number(settings.aggression) || 0)));
     const envelope = userEnvelope({ ...settings, pons, aggression });
     const view = new SharedFeedView(this.feed, { clock: this.clock });
@@ -194,16 +201,32 @@ export class VelocityHub {
     await engine.start();
     // Start is the user's intent to trade: a halt left over from their last stop or pause must not
     // outlive it. resume() re-runs the governor, so a daily-loss halt that still applies comes back.
-    if (engine.store.state.halt?.mode || engine.store.isHalted("pumpfun")) engine.resume("pumpfun", { by: "user" });
-    const live = await engine.setVenueMode("pumpfun", "live", { override: true, by: "user" });
-    if (!live.ok) { await engine.stop(); return { ok: false, error: live.error || "could not go live", preflight: live.preflight || null }; }
-    if (pons) { const l2 = await engine.setVenueMode("pons", "live", { override: true, by: "user" }); if (!l2.ok) engine.log("warn", `pons stays paper: ${l2.error || "could not go live"}`); }
+    for (const v of Object.keys(engine.venues)) if (engine.store.state.halt?.mode || engine.store.isHalted(v)) engine.resume(v, { by: "user" });
+    // Each wanted venue goes live on its own terms, and the start only fails if NONE of them could.
+    // pump.fun used to be mandatory -- its preflight failing stopped the whole engine -- so a user
+    // with a funded ETH wallet and an empty SOL one could not trade at all.
+    const wanted = [pumpfun && "pumpfun", pons && "pons"].filter(Boolean);
+    const results = {};
+    for (const v of wanted) {
+      results[v] = await engine.setVenueMode(v, "live", { override: true, by: "user" });
+      if (!results[v].ok) engine.log("warn", `${v} stays paper: ${results[v].error || "could not go live"}`);
+    }
+    // A venue the user turned off is switched off rather than left in paper, so the engine stops
+    // reading its feed instead of quietly simulating trades nobody asked for. A venue that was never
+    // built (no ETH key, no PONS feed) is not in engine.venues at all and needs no switching.
+    for (const v of Object.keys(engine.venues)) if (!wanted.includes(v)) await engine.setVenueMode(v, "off", { by: "user" });
+    const anyLive = wanted.some(v => results[v]?.ok);
+    if (!anyLive) {
+      await engine.stop();
+      const first = results[wanted[0]] || {};
+      return { ok: false, error: first.error || "could not go live", preflight: first.preflight || null, venues: results };
+    }
     sup.start();
     // The Robinhood Chain address the fee waiver reads, known whether or not the user trades PONS:
     // they may hold the house token without opting into that venue.
     let evmAddress = null;
     if (evmSecret) { try { evmAddress = new EvmWallet(String(evmSecret).trim()).address; } catch { evmAddress = null; } }
-    this.users.set(wallet, { engine, sup, view, evmAddress, settings: { ...settings, aggression, pons }, startedAt: this.clock() });
+    this.users.set(wallet, { engine, sup, view, evmAddress, settings: { ...settings, aggression, pons, pumpfun }, startedAt: this.clock() });
     // Once a minute, the funnel in the server log: what the candidates hit. The first place to look when nothing fills.
     const fun = setInterval(() => { try { const f = engine.funnel(); this.log.log?.(`[velocity ${wallet.slice(0, 8)}] funnel 10m: judged ${f.judged} (${f.distinct} tokens) go ${f.gos} filled ${f.filled} | ${Object.entries(f.gates).map(([g, n]) => `${g} ${n}`).join(", ") || "no rejects"} | top: ${f.top.map(x => `${x.k} ${x.n}`).join("; ")}${f.sized0 ? ` | no size: ${JSON.stringify(f.sized0)}` : ""}${f.failed ? ` | failed: ${JSON.stringify(f.failed)}` : ""}`); } catch {} }, 60_000);
     fun.unref?.(); this.users.get(wallet).fun = fun;

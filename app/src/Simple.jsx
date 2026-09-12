@@ -274,7 +274,7 @@ export default function Simple() {
   const [size, sSize] = useState(() => { try { const v = Number(localStorage.getItem("bondli_size")); return SIZES.includes(v) ? v : SIZES[0]; } catch { return SIZES[0]; } });
   const [showKey, sShowKey] = useState(null);
   const [openPos, sOpenPos] = useState(null);
-  const [chains, sChains] = useState(() => { try { return JSON.parse(localStorage.getItem("bondli_chains") || "null") || { pons: true }; } catch { return { pons: true }; } });
+  const [chains, sChains] = useState(() => { try { return { pumpfun: true, ...(JSON.parse(localStorage.getItem("bondli_chains") || "null") || {}) }; } catch { return { pumpfun: true, pons: true }; } });
   const [copied, sCopied] = useState(false);
   const narRef = useRef(null);
   const running = !!st?.running;
@@ -313,7 +313,11 @@ export default function Simple() {
     try {
       try { localStorage.setItem("bondli_agg", String(agg)); localStorage.setItem("bondli_size", String(size)); } catch {}
       try { localStorage.setItem("bondli_chains", JSON.stringify(chains)); } catch {}
-      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round((tw?.solBalance || 0) * 200 + (tw?.ethBalance || 0) * 3000)), pons: !!chains.pons && (tw?.ethBalance || 0) > 0.003 });
+      // Only the chains that are on count toward the bankroll: someone trading Robinhood Chain alone
+      // must not be sized against SOL they never funded, or against SOL they are keeping out of it.
+      const usePump = chains.pumpfun !== false, usePons = !!chains.pons && (tw?.ethBalance || 0) > 0.003;
+      const bank = (usePump ? (tw?.solBalance || 0) * 200 : 0) + (usePons ? (tw?.ethBalance || 0) * 3000 : 0);
+      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round(bank)), pumpfun: usePump, pons: usePons });
       if (!r.ok) say(r.error || "Could not start", "error"); else sSt(r);
     } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
   };
@@ -426,9 +430,30 @@ export default function Simple() {
           <div style={{ ...muted, marginTop: 10 }}>Up to 4 tokens at once. Stops for the day after ${Math.max(15, size * 3)} of losses.</div>
           <div style={{ ...muted, marginTop: 6, fontFamily: M, fontSize: 11 }}>A ${size} round trip costs about {dragPct(size, st?.status?.solPrice || 0).toFixed(1)}% in venue fees, priority fees and rent. The bot has to clear that before either of us makes anything.</div>
           <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
-            {[["pump.fun", "Solana", true, true], ["PONS", "Robinhood Chain", !!chains.pons && (tw?.ethBalance || 0) > 0.003, (tw?.ethBalance || 0) > 0.003]].map(([l, sub, on, can]) => <div key={l} onClick={() => l === "PONS" && can && sChains(c => ({ ...c, pons: !c.pons }))} style={{ flex: 1, padding: "8px 10px", borderRadius: 10, border: `1px solid ${on ? T.gn : T.bd}`, background: on ? T.gn + "14" : "transparent", cursor: l === "PONS" && can ? "pointer" : "default", opacity: can ? 1 : .5 }}>
-              <div style={{ fontWeight: 800, fontSize: 13, color: on ? T.gn : T.dm }}>{l}</div><div style={{ ...muted, fontSize: 11 }}>{sub}{l === "PONS" && !can ? " · fund with ETH" : on ? " · on" : " · off"}</div>
-            </div>)}
+            {(() => {
+              // Either chain can be switched off, so long as one stays on. pump.fun used to be a
+              // permanent label -- not clickable, always green -- which meant nobody could trade
+              // Robinhood Chain on its own however they had funded the wallets.
+              const funded = { pumpfun: (tw?.solBalance || 0) > 0.005, pons: (tw?.ethBalance || 0) > 0.003 };
+              const on = { pumpfun: chains.pumpfun !== false, pons: !!chains.pons && funded.pons };
+              const toggle = (k) => {
+                if (k === "pons" && !funded.pons) return;                 // nothing to trade with
+                if (on[k] && !on[k === "pumpfun" ? "pons" : "pumpfun"]) return; // never both off
+                sChains(c => ({ ...c, [k]: !on[k] }));
+              };
+              return [["pumpfun", "pump.fun", "Solana"], ["pons", "PONS", "Robinhood Chain"]].map(([k, l, sub]) => {
+                const isOn = on[k], last = isOn && !on[k === "pumpfun" ? "pons" : "pumpfun"];
+                const can = k === "pons" ? funded.pons : true;
+                const note = k === "pons" && !funded.pons ? " · fund with ETH"
+                  : isOn && !funded[k] ? (k === "pumpfun" ? " · on, no SOL yet" : " · on")
+                  : last ? " · on, the only one"
+                  : isOn ? " · on" : " · off";
+                return <div key={k} onClick={() => toggle(k)} title={last ? "at least one chain has to stay on" : ""}
+                  style={{ flex: 1, padding: "8px 10px", borderRadius: 10, border: `1px solid ${isOn ? T.gn : T.bd}`, background: isOn ? T.gn + "14" : "transparent", cursor: can && !last ? "pointer" : "default", opacity: can ? 1 : .5 }}>
+              <div style={{ fontWeight: 800, fontSize: 13, color: isOn ? T.gn : T.dm }}>{l}</div><div style={{ ...muted, fontSize: 11 }}>{sub}{note}</div>
+                </div>;
+              });
+            })()}
           </div>
           <div style={{ marginTop: 16 }}><Btn big T={T} onClick={start} disabled={busy === "start"}>{busy === "start" ? "Starting…" : "Start"}</Btn></div>
         </>}
