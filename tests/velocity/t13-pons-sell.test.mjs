@@ -167,3 +167,36 @@ test("T13: a sell is refused rather than booked as a total loss when the quote p
   assert.equal(res.failure.code, "NO_QUOTE_PRICE");
   assert.equal(c.sent.length, 0, "and nothing was sent: the ETH never leaves unpriced");
 });
+
+test("T13: a Robinhood Chain position whose tokens are gone is checked against the chain first", async () => {
+  const { TOPICS } = await import("../../src/velocity/venues/pons/chain.mjs");
+  const c = chain({ balance: 0n, allowance: 2n ** 255n });
+  const r = new PonsLiveRouter({ secret: KEY, provider: c, confirmTimeoutMs: 3000 }); await r.init();
+  const me = r.address.toLowerCase();
+
+  // The curve's own record of a sale: CurveSell(seller, recipient, tokensIn, quoteOut, fee, tax).
+  const sellLog = (seller, quoteOut, tokensIn, block, tx) => ({
+    address: CURVE, blockNumber: block, transactionHash: tx, index: 0,
+    topics: [TOPICS.CurveSell, zeroPadValue(seller, 32), zeroPadValue(seller, 32)],
+    data: coder.encode(["uint256", "uint256", "uint256", "uint256"], [toWei(tokensIn), toWei(quoteOut), 0n, 0n]),
+  });
+  c.getBlockNumber = async () => 1000;
+  c.getBlock = async (n) => ({ timestamp: 1_700_000 + n });     // seconds
+  const someoneElse = "0x" + "9".repeat(40);
+
+  // Two sales on this curve: a stranger's, then ours. Ours is the one that explains the empty wallet.
+  c.getLogs = async () => [sellLog(someoneElse, 5, 100, 990, "0xother"), sellLog(me, 0.004, 1000, 995, "0xmine")];
+  const sale = await r.findRecentSale(TOKEN, { since: 0 });
+  assert.deepEqual({ sig: sale.sig, sol: sale.solReceived, qty: sale.qty }, { sig: "0xmine", sol: 0.004, qty: 1000 },
+    "the wallet's own sale, with the quote the curve actually paid");
+  assert.equal(sale.at, (1_700_000 + 995) * 1000);
+
+  // A sale from before this position was opened is not this position's exit.
+  assert.equal(await r.findRecentSale(TOKEN, { since: (1_700_000 + 999) * 1000 }), null);
+  // Nobody sold: nothing to recover, and the engine books the loss it was going to book.
+  c.getLogs = async () => [sellLog(someoneElse, 5, 100, 990, "0xother")];
+  assert.equal(await r.findRecentSale(TOKEN, { since: 0 }), null);
+  // An RPC that will not answer must not invent a sale.
+  c.getLogs = async () => { throw new Error("rate limited"); };
+  assert.equal(await r.findRecentSale(TOKEN, { since: 0 }), null);
+});
