@@ -248,6 +248,13 @@ export class VelocityHub {
     return u.engine.enqueue(() => u.engine.clearExitError(positionId));
   }
 
+  /** Clear a "paused by the bot: daily_limit" banner. Re-arms the limit rather than removing it. */
+  async acknowledgeDailyLimit(wallet) {
+    const u = this.users.get(wallet);
+    if (!u) return { ok: false, error: "not running" };
+    return u.engine.enqueue(() => u.engine.acknowledgeDailyLimit());
+  }
+
   /** Sell everything the user holds and stop their engine. */
   async stop(wallet, { flatten = true } = {}) {
     const u = this.users.get(wallet);
@@ -613,6 +620,7 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
   app.post("/api/velocity/release", requireOwner, async (req, res) => { try { res.json(await hub.release(req.body.wallet, req.body.positionId, req.body.note || null)); } catch (e) { res.status(500).json({ error: e.message }); } });
   // Dismiss a stale "sell failed" banner without touching the position.
   app.post("/api/velocity/clear-error", requireOwner, async (req, res) => { try { res.json(await hub.clearExitError(req.body.wallet, req.body.positionId)); } catch (e) { res.status(500).json({ error: e.message }); } });
+  app.post("/api/velocity/ack-daily-limit", requireOwner, async (req, res) => { try { res.json(await hub.acknowledgeDailyLimit(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/halt", requireOwner, async (req, res) => { try { res.json(await hub.halt(req.body.wallet, req.body.mode === "freeze" ? "freeze" : "flatten")); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.get("/api/velocity/status", requireOwner, (req, res) => res.json({ ok: true, ...hub.status(req.query.wallet), narration: hub.narration(req.query.wallet, 40) }));
   app.get("/api/velocity/health", (req, res) => res.json({ ok: true, users: hub.list().length, feeConfigured: hub.feeOk, feed: hub.feed.status?.() || null, pons: hub.ponsFeed ? { ...(hub.ponsFeed.status?.() || {}), tokens: hub.ponsFeed.tokens?.size ?? null, ethPrice: hub.ponsFeed.solPrice, feeConfigured: !!hub.platformEvmWallet } : null }));
