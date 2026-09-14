@@ -1,7 +1,7 @@
 // T5: every entry gets a plan; each layer fires in simulation at its trigger.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPlan, evaluateExit, markPosition, assertHasPlan, applyExitStamp } from "../../src/velocity/core/exits.mjs";
+import { createPlan, evaluateExit, markPosition, assertHasPlan, applyExitStamp, BLIND_EXIT_MS } from "../../src/velocity/core/exits.mjs";
 import { makeEvent } from "../../src/velocity/core/events.mjs";
 import { EXIT_PLANS } from "../../src/velocity/core/plans.mjs";
 
@@ -281,4 +281,30 @@ test("T5: dead on arrival — nobody follows us in, so we leave in seconds", () 
   assert.equal(plan1.doa_ms, 30_000);
   assert.equal(evaluateExit(pumpPos({ plan: plan1 }), tick(10_050, alone, at(12_500))), null);
   assert.equal(evaluateExit(pumpPos({ plan: plan1 }), tick(10_050, alone, at(31_000)))?.reason, "DOA");
+});
+
+// A held token whose price cannot be read is the worst kind of position: every price rule -- the
+// stop loss, the crash exit, the trail -- needs a price, so none of them can fire, and the only
+// thing left is a blind time exit minutes later. That is how a 12% stop realized 64% losses.
+test("T5: a position with no readable price is sold on that fact after a short grace", () => {
+  const now = 1_700_000_000_000;
+  const plan = createPlan({ venue: "pons", key: 2, entry: { score: 70 } });
+  const pos = { id: "p1", venue: "pons", instrument: "0xdead", plan, entryMark: 20_000, peak: 20_000, entryTime: now, notional_usd: 10 };
+  const blind = (at) => ({ venue: "pons", kind: "tick", id: "0xdead", t_observed: at, payload: { unreadable: true, token: { ca: "0xdead" } } });
+
+  // The grace holds: a single failed read is a blip, not a fault.
+  assert.equal(evaluateExit(pos, blind(now + 1_000), { now: now + 1_000 }), null);
+  assert.equal(evaluateExit(pos, blind(now + 30_000), { now: now + 30_000 }), null);
+  // Past the grace it sells, well before this plan's 3-minute stall and 15-minute max hold.
+  const out = evaluateExit(pos, blind(now + BLIND_EXIT_MS + 1_000), { now: now + BLIND_EXIT_MS + 1_000 });
+  assert.equal(out?.action, "SELL");
+  assert.equal(out.pct, 100);
+  assert.equal(out.reason, "blind-exit");
+  assert.ok(BLIND_EXIT_MS < plan.stall_ms, "blind is worse than stalled: it must fire first");
+
+  // A real price coming back clears it: the clock restarts rather than carrying the old blindness.
+  const readable = { venue: "pons", kind: "tick", id: "0xdead", t_observed: now + 50_000, payload: { mcapUsd: 20_000, token: { ca: "0xdead", buys: 50, sells: 5, trades: [{ side: "buy", time: now + 1_000 }, { side: "buy", time: now + 2_000 }, { side: "buy", time: now + 30_000 }], uniqueBuyers: { size: 20 }, createdAt: now - 300_000, mcapUsd: 20_000 }, dynamics: { scores: 5, velocity: 0.05, acceleration: 0, trend: "stable" }, scores: { apeScore: 66 } } };
+  assert.equal(evaluateExit(pos, readable, { now: now + 50_000 }), null);
+  assert.equal(pos._blindSince, null);
+  assert.equal(evaluateExit(pos, blind(now + 60_000), { now: now + 60_000 }), null, "the grace starts again");
 });

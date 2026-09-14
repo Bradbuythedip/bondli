@@ -17,7 +17,8 @@ export class Governor {
     this.env = envelope;
     this.clock = clock;
     this.cfg = {
-      dailyHaltFraction: 0.8,        // halt at 80% of the daily loss limit, leaving room for open risk
+      dailyFloorThrottle: 0.25,      // the smallest the daily-loss taper shrinks a stake to; never zero
+      dailyBreakerMult: 3,           // x the daily limit in one day: a fault, and the only hard stop left
       streakThrottle: { 3: 0.5, 4: 0.25 },
       maxConsecutiveLosses: 5,
       revengeWindowMs: 120_000,
@@ -64,9 +65,32 @@ export class Governor {
     const limit = this.env.daily_loss_limit_usd;
     const realizedLoss = Math.max(0, -realized_today_usd);
     const openRisk = open.reduce((s, p) => s + (p.notional_usd || 0) * (p.worst_case_fraction ?? 1), 0);
-    if (realizedLoss >= limit * this.cfg.dailyHaltFraction) stop("daily_limit", `realized loss ${realizedLoss.toFixed(2)} >= ${(limit * this.cfg.dailyHaltFraction).toFixed(2)} (${this.cfg.dailyHaltFraction * 100}% of ${limit})`);
-    else if (realizedLoss + openRisk >= limit) flag("daily_limit", (realizedLoss + openRisk) / limit, `realized ${realizedLoss.toFixed(2)} + open risk ${openRisk.toFixed(2)} reaches the limit; entries throttled to zero`, 0);
-    else if (realizedLoss >= limit * 0.5) flag("daily_limit", realizedLoss / limit, `realized loss at ${Math.round((realizedLoss / limit) * 100)}% of the daily limit`, 0.5);
+    // A cliff was the wrong shape for this. Halting at 80% of the limit locked the bot out for the
+    // rest of the UTC day over a loss it could plausibly have traded back at a smaller size, and it
+    // fired on an ordinary bad hour because the limit is sized for a day. It also refused every
+    // candidate loudly, which told the operator nothing they could act on.
+    //
+    // The limit is now a taper, not a gate: from half the limit onwards the stake shrinks smoothly
+    // toward dailyFloorThrottle and stays there. Losing more always means betting less, at every
+    // point, with no step to game and no lockout to wait out. Open risk counts against the taper the
+    // same as realized loss, because money at risk is money that can still be lost today.
+    //
+    // The one remaining hard stop is a circuit breaker, not a trading rule: dailyBreakerMult times
+    // the limit in a single day is not a losing session, it is something broken -- a mispriced venue,
+    // a sell path that cannot sell, a feed lying about a price -- and the right response to that is
+    // to stop and be looked at.
+    const exposure = realizedLoss + openRisk;
+    const breaker = limit * this.cfg.dailyBreakerMult;
+    if (realizedLoss >= breaker) {
+      stop("daily_breaker", `realized loss ${realizedLoss.toFixed(2)} is ${this.cfg.dailyBreakerMult}x the daily limit of ${limit}; that is a fault, not a drawdown`);
+    } else if (exposure > limit * 0.5) {
+      // 0.5x the limit -> 1.0, 1.0x -> the floor, and flat at the floor beyond that.
+      const over = Math.min(1, (exposure / limit - 0.5) / 0.5);
+      const mult = 1 - over * (1 - this.cfg.dailyFloorThrottle);
+      flag("daily_limit", Math.min(1, exposure / limit),
+        `${exposure.toFixed(2)} of the ${limit} daily limit is spent (${realizedLoss.toFixed(2)} realized, ${openRisk.toFixed(2)} still open); stakes at ${Math.round(mult * 100)}%`,
+        +mult.toFixed(3));
+    }
 
     // Losing streak: counted and shown, never a brake. On a curve venue the base rate is a 25-35%
     // win rate, so five losses in a row is an ordinary week of Tuesdays; a halt here with no

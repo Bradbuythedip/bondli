@@ -999,10 +999,10 @@ export class Engine extends EventEmitter {
     return this.anyLiveVenue() ? d.realizedUsd : (d.paperRealizedUsd || 0);
   }
 
-  /** The operator acknowledges today's loss limit and asks to keep trading. This does not remove the
-   *  brake, it re-arms it: the loss booked so far is forgiven for the governor's purposes, so the halt
-   *  returns after another full limit's worth of loss. Nothing else about the day's accounting moves —
-   *  the P&L the operator reads is still the truth. Resets on the day roll like the rest of the day. */
+  /** The operator forgives today's loss: it stops counting against the daily taper and the circuit
+   *  breaker, so stakes go back to full size and the breaker is a fresh day's worth away. Nothing
+   *  else about the accounting moves — the P&L the operator reads is still the truth — and it resets
+   *  on the day roll like the rest of the day. */
   acknowledgeDailyLimit() {
     const d = this.store.state.day;
     const loss = Math.max(0, -this.realizedToday());
@@ -1011,8 +1011,7 @@ export class Engine extends EventEmitter {
     this._haltNoticed.clear();
     this.store.save();
     this.evaluateGovernor();
-    const next = this.env.daily_loss_limit_usd * (this.governor.cfg?.dailyHaltFraction ?? 0.8);
-    this.ledger.append({ kind: "resume", venue: "-", by: `daily-limit ack: $${forgiven.toFixed(2)} forgiven, next halt another $${next.toFixed(2)} of loss away`, cleared: "daily_limit" });
+    this.ledger.append({ kind: "resume", venue: "-", by: `daily loss forgiven: $${forgiven.toFixed(2)}; stakes back to full size, the taper starts again from zero`, cleared: "daily_limit" });
     return { ok: true, forgiven: +forgiven.toFixed(2), halted: !!this.verdict.halt, haltReason: this.verdict.halt ? this.verdict.haltReason : null };
   }
 

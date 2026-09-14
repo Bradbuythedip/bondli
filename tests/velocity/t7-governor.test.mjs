@@ -37,7 +37,7 @@ test("T7: losing streak throttles at 3, cuts at 4, halts at 5, all before the da
   assert.equal(gov.last.blindSpots.losing_streak?.triggered, false, "shown as informational");
 });
 
-test("T7: daily loss halts at 80% of the limit even without a streak", () => {
+test("T7: the daily loss limit tapers the stake instead of halting; only a 3x day is a hard stop", () => {
   const ledger = mkLedger();
   const gov = new Governor({ ledger, envelope: env });
   let t = 1_700_000_000_000;
@@ -52,12 +52,24 @@ test("T7: daily loss halts at 80% of the limit even without a streak", () => {
   }
   assert.equal(realized, -70);
   assert.equal(verdict.halt, false);
-  assert.equal(verdict.throttle, 0.5, "past half the limit: throttled");
-  const v2 = gov.evaluate({ realized_today_usd: -80, open: [] });
-  assert.equal(v2.halt, true);
-  assert.equal(v2.haltReason, "daily_limit");
+  // The taper runs from half the limit (full size) to the limit (the floor), so 70% of 100 is 0.7.
+  assert.equal(verdict.throttle, 0.7, "past half the limit: smoothly smaller, not stopped");
+  // Losing more always means betting less, at every point -- no step, and no lockout.
+  const at80 = gov.evaluate({ realized_today_usd: -80, open: [] });
+  assert.equal(at80.halt, false, "the limit is a taper now, not a gate");
+  assert.equal(at80.throttle, 0.55);
+  assert.ok(at80.throttle < verdict.throttle, "monotone: a worse day is never a bigger stake");
+  // Past the limit it flattens at the floor and never reaches zero: the bot can still trade back.
+  const past = gov.evaluate({ realized_today_usd: -150, open: [] });
+  assert.equal(past.halt, false);
+  assert.equal(past.throttle, 0.25);
+  // Money still at risk counts against the taper the same as money already lost.
   const v3 = gov.evaluate({ realized_today_usd: -30, open: [{ notional_usd: 80, worst_case_fraction: 1 }] });
-  assert.equal(v3.throttle, 0, "realized plus open worst case reaching the limit stops new entries");
+  assert.equal(v3.throttle, 0.25, "realized plus open worst case past the limit sits at the floor");
+  // The one hard stop left is a fault, not a drawdown: 3x the daily limit in one day.
+  const broken = gov.evaluate({ realized_today_usd: -300, open: [] });
+  assert.equal(broken.halt, true);
+  assert.equal(broken.haltReason, "daily_breaker");
 });
 
 test("T7: regime caps, overconfidence, revenge, and never above 1", () => {

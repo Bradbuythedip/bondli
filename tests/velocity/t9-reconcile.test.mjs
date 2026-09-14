@@ -134,7 +134,7 @@ test("T9: paper mode end to end writes every stage and blocks entries on a stale
 
 // The daily loss limit halts the engine. The operator can clear that halt without removing the
 // brake: the loss booked so far stops counting against today, so the next halt is a full limit away.
-test("T9: acknowledging the daily limit re-arms it instead of removing it", async () => {
+test("T9: forgiving the day's loss resets the taper and the breaker, not the P&L", async () => {
   const dataDir = tmp();
   const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
   const engine = mkEngine(dataDir, feed);
@@ -142,27 +142,27 @@ test("T9: acknowledging the daily limit re-arms it instead of removing it", asyn
   // Paper venue, so the paper day is what the governor reads.
   engine.store.state.day.paperRealizedUsd = -limit;
   engine.evaluateGovernor();
-  assert.equal(engine.verdict.halt, true);
-  assert.equal(engine.verdict.haltReason, "daily_limit");
+  assert.equal(engine.verdict.halt, false, "the limit tapers, it does not halt");
+  const throttled = engine.verdict.throttle;
+  assert.ok(throttled < 1 && throttled > 0, `tapered to ${throttled}`);
 
   const r = engine.acknowledgeDailyLimit();
   assert.equal(r.ok, true);
-  assert.equal(r.halted, false, "the halt is cleared");
   assert.equal(r.forgiven, limit);
   assert.equal(engine.store.state.day.paperRealizedUsd, -limit, "the P&L the operator reads is untouched");
+  assert.equal(engine.verdict.throttle, 1, "stakes back to full size");
 
-  // Half a limit more of loss is not enough to halt again: the brake was re-armed, not removed.
-  engine.store.state.day.paperRealizedUsd = -limit * 1.5;
+  // A 3x day is still a hard stop, and it counts from the forgiven point, not from zero.
+  engine.store.state.day.paperRealizedUsd = -limit * 3;
   engine.evaluateGovernor();
-  assert.equal(engine.verdict.halt, false, "still trading after half a fresh limit");
-  // A full fresh limit does halt again.
-  engine.store.state.day.paperRealizedUsd = -limit * 2;
+  assert.equal(engine.verdict.halt, false, "2x more loss since the ack is not yet a fault");
+  engine.store.state.day.paperRealizedUsd = -limit * 4;
   engine.evaluateGovernor();
-  assert.equal(engine.verdict.halt, true, "the limit halts again on its own terms");
-  assert.equal(engine.verdict.haltReason, "daily_limit");
+  assert.equal(engine.verdict.halt, true);
+  assert.equal(engine.verdict.haltReason, "daily_breaker");
 
   // The day roll clears the acknowledgement with the rest of the day.
   engine.store.state.day.date = "1999-01-01";
-  engine.store.rollDay?.();
-  if (engine.store.state.day.date !== "1999-01-01") assert.equal(engine.store.state.day.lossAckUsd, 0);
+  engine.store.rollDay();
+  assert.equal(engine.store.state.day.lossAckUsd, 0);
 });
