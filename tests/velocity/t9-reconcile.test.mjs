@@ -104,8 +104,16 @@ test("T9: paper mode end to end writes every stage and blocks entries on a stale
   await sup.watchdog();
   assert.equal(engine.blocked.pumpfun, "FEED_STALE");
   await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "candidate", id: "MintLate", t_venue: now + 2000, t_observed: now + 2100, payload: goodCandidatePayload("MintLate") })));
-  const blocked = engine.ledger.query({ kind: "decision", limit: 1 })[0];
-  assert.equal(blocked.gate, "governor"); assert.match(blocked.reasons[0], /FEED_STALE/);
+  // A halted governor refuses every candidate for one reason, so it says it once per window instead
+  // of writing an identical reject per token into the narration the operator reads.
+  const stillNoDecision = engine.ledger.query({ kind: "decision", limit: 1 })[0];
+  assert.notEqual(stillNoDecision?.instrument, "MintLate", "a halted engine does not judge candidates");
+  const notice = engine.ledger.query({ kind: "order", limit: 1 })[0];
+  assert.equal(notice.stage, "failed"); assert.match(notice.reason, /HALTED:.*FEED_STALE/);
+  // ...and only once: the second candidate inside the window adds no line.
+  const seq = notice.seq;
+  await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "candidate", id: "MintLate2", t_venue: now + 2200, t_observed: now + 2300, payload: goodCandidatePayload("MintLate2") })));
+  assert.equal(engine.ledger.query({ kind: "order", limit: 1 })[0].seq, seq, "one halt line per window, not one per token");
   delete engine.blocked.pumpfun; feed.lastEventAt = Date.now();
   await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "candidate", id: "MintLate", t_venue: now + 3000, t_observed: now + 3100, payload: goodCandidatePayload("MintLate") })));
   assert.equal(engine.store.openPositions().length, 1);
@@ -122,4 +130,39 @@ test("T9: paper mode end to end writes every stage and blocks entries on a stale
   const why = engine.why("last");
   assert.ok(Array.isArray(why) && why.length >= 1);
   } finally { await engine.stop(); }
+});
+
+// The daily loss limit halts the engine. The operator can clear that halt without removing the
+// brake: the loss booked so far stops counting against today, so the next halt is a full limit away.
+test("T9: acknowledging the daily limit re-arms it instead of removing it", async () => {
+  const dataDir = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  const engine = mkEngine(dataDir, feed);
+  const limit = envelope.daily_loss_limit_usd;
+  // Paper venue, so the paper day is what the governor reads.
+  engine.store.state.day.paperRealizedUsd = -limit;
+  engine.evaluateGovernor();
+  assert.equal(engine.verdict.halt, true);
+  assert.equal(engine.verdict.haltReason, "daily_limit");
+
+  const r = engine.acknowledgeDailyLimit();
+  assert.equal(r.ok, true);
+  assert.equal(r.halted, false, "the halt is cleared");
+  assert.equal(r.forgiven, limit);
+  assert.equal(engine.store.state.day.paperRealizedUsd, -limit, "the P&L the operator reads is untouched");
+
+  // Half a limit more of loss is not enough to halt again: the brake was re-armed, not removed.
+  engine.store.state.day.paperRealizedUsd = -limit * 1.5;
+  engine.evaluateGovernor();
+  assert.equal(engine.verdict.halt, false, "still trading after half a fresh limit");
+  // A full fresh limit does halt again.
+  engine.store.state.day.paperRealizedUsd = -limit * 2;
+  engine.evaluateGovernor();
+  assert.equal(engine.verdict.halt, true, "the limit halts again on its own terms");
+  assert.equal(engine.verdict.haltReason, "daily_limit");
+
+  // The day roll clears the acknowledgement with the rest of the day.
+  engine.store.state.day.date = "1999-01-01";
+  engine.store.rollDay?.();
+  if (engine.store.state.day.date !== "1999-01-01") assert.equal(engine.store.state.day.lossAckUsd, 0);
 });

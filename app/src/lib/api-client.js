@@ -56,6 +56,7 @@ class A {
   vclose(w, positionId, pct) { return this.f("/api/velocity/close", { method: "POST", body: { wallet: w, positionId, pct }, timeout: 90000 }); }
   vrelease(w, positionId, note) { return this.f("/api/velocity/release", { method: "POST", body: { wallet: w, positionId, note } }); }
   vclearErr(w, positionId) { return this.f("/api/velocity/clear-error", { method: "POST", body: { wallet: w, positionId } }); }
+  vackDaily(w) { return this.f("/api/velocity/ack-daily-limit", { method: "POST", body: { wallet: w } }); }
   // What the bot sees (public)
   launch() { return this.f("/api/launch", { noauth: true, timeout: 8000 }); }
   live(agg) { return this.f("/api/radar/live" + (agg != null ? "?aggression=" + agg : ""), { noauth: true, timeout: 8000 }); }

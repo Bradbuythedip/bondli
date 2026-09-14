@@ -356,6 +356,13 @@ export default function Simple() {
   // "also in the wallets" list, where the Sell button already works.
   const refreshStatus = async () => { try { const r = await a.vstat(pk); sSt(r); } catch {} };
   const clearErr = async (p) => { try { await a.vclearErr(pk, p.id); await refreshStatus(); } catch (e) { say(e.message, "error"); } };
+  // The daily loss limit stopped the bot. Clearing it re-arms the limit rather than removing it: the
+  // loss booked so far stops counting against today, so the next stop is a fresh limit away.
+  const ackDaily = async () => {
+    if (!confirm("Keep trading today?\n\nThe bot stopped because today's realized loss hit the daily limit. This forgives that loss for the limit's purposes — it will stop again after another full limit's worth. Your P&L is unchanged.")) return;
+    try { const r = await a.vackDaily(pk); say(r.ok ? (r.halted ? `Daily limit cleared; still paused: ${r.haltReason}` : "Daily limit cleared — trading again") : r.error, r.ok && !r.halted ? "ok" : "error"); await refreshStatus(); }
+    catch (e) { say(e.message, "error"); }
+  };
   const releasePos = async (p) => {
     if (!confirm(`Stop tracking ${p.instrument.slice(0, 10)}…?\n\nThe venue is refusing every sell. This removes it from your open positions and frees the slot. No profit or loss is recorded — the tokens stay in your wallet and will show up below to sell by hand.`)) return;
     try { const r = await a.vrelease(pk, p.id); say(r.ok ? `Stopped tracking ${p.instrument.slice(0, 8)}…; ${Math.round(r.qty || 0).toLocaleString()} tokens are still in the wallet` : r.error, r.ok ? "ok" : "error"); await refreshStatus(); loadWallet(); }
@@ -511,7 +518,10 @@ export default function Simple() {
           ].filter(Boolean);
           return parts.join(" · ");
         })()}</span></div>
-        {paused && <div style={{ color: T.yl, fontSize: 13, marginTop: 8 }}>{/user/.test(s.halt.reason || "") ? "Paused. Open positions still get sold on their plan; nothing new is bought." : `Paused by the bot: ${s.halt.reason}`}</div>}
+        {paused && <div style={{ color: T.yl, fontSize: 13, marginTop: 8 }}>
+          {/user/.test(s.halt.reason || "") ? "Paused. Open positions still get sold on their plan; nothing new is bought." : `Paused by the bot: ${s.halt.reason}`}
+          {/daily_limit/.test(s.halt.reason || "") && <> <span onClick={ackDaily} style={{ cursor: "pointer", textDecoration: "underline" }}>keep trading</span></>}
+        </div>}
         {s?.positions?.length > 0 && <div style={{ marginTop: 12 }}>{s.positions.map(p => { const now = Date.now(); const tickAge = p.lastTickAt ? (now - p.lastTickAt) / 1000 : null; const stale = tickAge == null ? now - p.entryTime > 60_000 : tickAge > 60; const open = openPos === p.id; const url = p.venue === "pons" ? `https://www.ponsfamily.com/launchpad/${p.instrument}` : `https://pump.fun/coin/${p.instrument}`; const held = Math.round((now - p.entryTime) / 60000); return <div key={p.id} style={{ borderTop: `1px solid ${T.bd}` }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 8, alignItems: "center", fontFamily: M, fontSize: 13, padding: "6px 0" }}>
             <span onClick={() => sOpenPos(open ? null : p.id)} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer" }}><span style={{ fontWeight: 800, color: T.tx }}>{p.name || p.ticker || p.instrument.slice(0, 6) + "…"}</span> <span style={{ color: T.ft, fontSize: 11 }}>{p.venue === "pons" ? "RH" : "SOL"} · {held}m{stale ? " · no price" : ""}</span></span>

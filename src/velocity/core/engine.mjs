@@ -45,7 +45,7 @@ export class Engine extends EventEmitter {
     this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000,
       // After a DOA or STALL exit: we left because nothing was happening, not because it was bad.
       retryCooldownMs: 45_000,
-      failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000,
+      failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000, haltNoticeMs: 5 * 60_000,
       // How far a refused token has to run before the refusal counts as a miss, and for how long
       // after the refusal it stays under observation.
       missMultiple: 1.6, missWatchMs: 10 * 60_000,
@@ -75,6 +75,7 @@ export class Engine extends EventEmitter {
     // afterwards so a rule that refused a runner leaves a record. See noteRejected/watchRejected.
     this.disqualified = new Map();
     this._entryBlockedLogged = new Map(); // instrument -> until; one "already in / cooling down" line per window, not one per tick
+    this._haltNoticed = new Map(); // venue -> ts; one halt line per window, not one per refused candidate
     this.pendingBuys = new Map();  // instrument -> { sig, decision, orderId, stake, sizing, at }: sent, not yet confirmed
     this.wallet = { sol: null, usd: null, solPrice: null, at: 0, venue: null }; // last live wallet reading (bankroll_source: wallet)
     this.wallets = {}; // venue -> reading; a hosted user trades pump.fun from a SOL wallet and PONS from an ETH wallet
@@ -549,6 +550,11 @@ export class Engine extends EventEmitter {
     // position's stop loss, and each throwaway GO is written to the ledger and counted in the
     // funnel the operator reads. A held mint tickles this every couple of seconds.
     if (event.kind === "candidate" && this.cannotEnter(venue, event.id, event.t_observed)) return this.noteBlockedEntry(venue, event);
+    // A halted governor refuses every candidate for the same reason. Running the pipeline anyway
+    // spends the serialised queue on a foregone conclusion and writes one identical HALT reject per
+    // token to the ledger the operator reads — a few hundred lines an hour that bury the exits and
+    // the one line that matters. Say it once per haltNoticeMs and stop. Exits already ran above.
+    if (event.kind === "candidate" && gov.halt) return this.noteHalted(venue, gov, event.t_observed);
     const decisions = v.runner.run(event, { governor: gov, stats: this.stats, minStakeUsd: this.env.venues[venue]?.min_stake_usd ?? null, weights: { pumpfun: this.weights.current().weights } });
     const decideMs = performance.now() - t0;
     for (const d of decisions) {
@@ -702,6 +708,14 @@ export class Engine extends EventEmitter {
     this._entryBlockedLogged.set(inst, at + this.cfg.rejudgeMs);
     const held = this.inflight.has(inst) || this.pendingBuys.has(inst) || this.store.openPositions(venue).some(p => p.instrument === inst);
     this.ledger.append({ kind: "order", venue, orderId: `${venue}:${inst}:blocked`, instrument: inst, stage: "failed", reason: held ? "ALREADY_IN_OR_INFLIGHT" : "REENTRY_COOLDOWN", screened: true });
+  }
+
+  /** The governor is halted: one narration line per venue per haltNoticeMs, not one per token. */
+  noteHalted(venue, gov, at) {
+    const last = this._haltNoticed.get(venue) || 0;
+    if (at - last < (this.cfg.haltNoticeMs ?? 5 * 60_000)) return;
+    this._haltNoticed.set(venue, at);
+    this.ledger.append({ kind: "order", venue, orderId: `${venue}:halt`, instrument: "-", stage: "failed", reason: `HALTED:${gov.haltReason || "halt"}`, screened: true });
   }
 
   /** True when this instrument could not be entered even with a perfect score. */
@@ -985,9 +999,29 @@ export class Engine extends EventEmitter {
     return this.anyLiveVenue() ? d.realizedUsd : (d.paperRealizedUsd || 0);
   }
 
+  /** The operator acknowledges today's loss limit and asks to keep trading. This does not remove the
+   *  brake, it re-arms it: the loss booked so far is forgiven for the governor's purposes, so the halt
+   *  returns after another full limit's worth of loss. Nothing else about the day's accounting moves —
+   *  the P&L the operator reads is still the truth. Resets on the day roll like the rest of the day. */
+  acknowledgeDailyLimit() {
+    const d = this.store.state.day;
+    const loss = Math.max(0, -this.realizedToday());
+    const forgiven = Math.max(0, loss - (d.lossAckUsd || 0));
+    d.lossAckUsd = loss;
+    this._haltNoticed.clear();
+    this.store.save();
+    this.evaluateGovernor();
+    const next = this.env.daily_loss_limit_usd * (this.governor.cfg?.dailyHaltFraction ?? 0.8);
+    this.ledger.append({ kind: "resume", venue: "-", by: `daily-limit ack: $${forgiven.toFixed(2)} forgiven, next halt another $${next.toFixed(2)} of loss away`, cleared: "daily_limit" });
+    return { ok: true, forgiven: +forgiven.toFixed(2), halted: !!this.verdict.halt, haltReason: this.verdict.halt ? this.verdict.haltReason : null };
+  }
+
   evaluateGovernor() {
     const snap = this.portfolioSnapshot();
-    const verdict = this.governor.evaluate({ regime: this.store.state.regime, realized_today_usd: snap.realized_today_usd, open: this.store.openPositions().map(p => ({ ...p })) });
+    // A loss the operator has explicitly acknowledged still counts in the P&L; it stops counting
+    // against today's limit, so the next halt is a fresh limit away rather than instant.
+    const ack = Math.max(0, Number(this.store.state.day.lossAckUsd) || 0);
+    const verdict = this.governor.evaluate({ regime: this.store.state.regime, realized_today_usd: snap.realized_today_usd + ack, open: this.store.openPositions().map(p => ({ ...p })) });
     this.verdict = verdict;
     this.store.state.throttle = verdict.throttle;
     this.store.state.governor = { reasons: verdict.reasons, blindSpots: verdict.blindSpots, halt: verdict.halt, haltReason: verdict.haltReason, at: verdict.at };

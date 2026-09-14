@@ -25,7 +25,7 @@ function defaultState(now) {
     routers: {},              // venue -> { ok, latencyMs, checkedAt }
     venues: {},               // venue -> { mode }
     weightsVersion: 0,
-    day: { date: dayKey(now), realizedUsd: 0, trades: 0, paperRealizedUsd: 0, paperTrades: 0 },
+    day: { date: dayKey(now), realizedUsd: 0, trades: 0, paperRealizedUsd: 0, paperTrades: 0, lossAckUsd: 0 },
     alerts: [],
     lastDecisions: [],
   };
@@ -66,7 +66,7 @@ export class Store {
     const key = dayKey(this.now());
     // Paper and live are counted apart. They fund the same daily loss limit only when there is no
     // live venue at all, and then it is the simulation's own limit.
-    if (this.state.day.date !== key) this.state.day = { date: key, realizedUsd: 0, trades: 0, paperRealizedUsd: 0, paperTrades: 0 };
+    if (this.state.day.date !== key) this.state.day = { date: key, realizedUsd: 0, trades: 0, paperRealizedUsd: 0, paperTrades: 0, lossAckUsd: 0 };
     if (this.state.day.paperRealizedUsd == null) { this.state.day.paperRealizedUsd = 0; this.state.day.paperTrades = 0; } // an older state file
     return this.state.day;
   }
