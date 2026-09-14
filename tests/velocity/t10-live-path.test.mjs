@@ -1134,6 +1134,40 @@ test("T10: the header P&L starts at zero, not at the value of the wallet", async
   } finally { await engine.stop(); }
 });
 
+// A venue that goes live after Start joins the baseline so its balance is not read as profit. Its
+// OPEN POSITIONS have to join it too: truePnl adds today's open value and subtracts the baseline's,
+// so a position the baseline never saw is a gain the size of its whole mark. That is how a header
+// read +$9.41 over a session whose own subtitle said "closed -$9.63 · open -$0.95".
+test("T10: a venue folded into the baseline brings its open positions with it", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const live = new FakeLive(); live.balanceSol = 1.0;
+  const engine = mkEngine(dir, { envelope: env, mode: "paper", live });
+  let now = Date.now(); engine.clock = () => now;
+  engine.quotePrice.pumpfun = 100;
+  try {
+    await engine.start({ reconcile: false });
+    await engine.setVenueMode("pumpfun", "live", { override: true, by: "user" });
+    assert.equal(engine.truePnl().since_start_usd, 0);
+
+    // A second venue is already holding a $20 position, currently marked down 5%, when it goes live.
+    engine.venues.pons = { ...engine.venues.pumpfun };
+    engine.quotePrice.pons = 2000;
+    engine.store.state.positions.ponsPos = { id: "ponsPos", venue: "pons", instrument: "0xabc", status: "open",
+      notional_usd: 20, changePct: -5, unrealized_usd: -1, paper: false, qty: 1, remaining_qty: 1, entryTime: now, plan: { key: 2 } };
+    engine.store.setVenueMode("pons", "live");
+    engine.noteWallet("pons", { balanceSol: 0.01, quote: "ETH" });
+
+    const b = engine.store.state.baseline;
+    assert.equal(b.quote.pons, 0.01, "the wallet joined the baseline");
+    assert.equal(b.open_usd, 19, "and so did what that wallet already bought, at its current mark");
+    assert.equal(engine.truePnl().since_start_usd, 0, "funding a venue mid-run is not a profit");
+
+    // From there it measures real movement: the same position down another $2 is -$2, not +$17.
+    engine.store.state.positions.ponsPos.changePct = -15;
+    assert.equal(engine.truePnl().since_start_usd, -2);
+  } finally { await engine.stop(); }
+});
+
 test("T10: two callers cannot sell the same position at once", async () => {
   const dir = tmp(); const env = smallEnvelope(dir);
   const live = new FakeLive();

@@ -7,6 +7,10 @@ import { EXPLORER, FACTORY, FACTORY_ABI, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, 
 
 const PRICE_MAX_AGE_MS = 5 * 60_000;
 const DEFAULT_RESERVES = { quoteReserve: 3, tokenReserve: 1_000_000_000, feeBps: 100, creatorTaxBps: 0 };
+// The worst price a sell may ever accept, as a share of the curve's own quote for that exact size.
+// Below this the trade is not worth making at all: the position is better left open for one more
+// tick than handed over at a price nobody would agree to in advance.
+const MIN_SELL_KEEP = 0.85;
 
 function reserves(ref = {}) {
   const c = ref.curve || {};
@@ -142,14 +146,27 @@ export class PonsLiveRouter extends Router {
 
   /** Which sell the curve will take, found by dry runs that cost nothing: full amount at the normal
    *  slippage, then wider, then halves down to an eighth. Returns { ok, units, keep, note } or { ok:false, err }. */
+  /** Find a sell the curve will accept, without agreeing to be robbed to get one.
+   *
+   *  What a curve actually refuses is SIZE: it will not let one sell drain it past a limit, but it
+   *  will take a quarter of the same order. So every size is tried at a fair price before the price
+   *  is widened at all -- the old ladder had this the wrong way round and offered the whole position
+   *  at half price before ever trying to sell half of it at a fair one.
+   *
+   *  And the floor is a floor. The old ladder ended at keep = 0, which sends minOut = 0: a sell that
+   *  accepts ANY price, including near zero, on a thin curve where a sandwich costs a few dollars to
+   *  run. That is not slippage tolerance, it is a blank cheque, and it is how a close came back at
+   *  -72% on a position whose exit rule only fires in profit. A sell that can only succeed with no
+   *  price floor is a sell that should fail and be retried. */
   async _sellShape(curve, units, r) {
-    const keeps = [1 - this.slippagePct / 100, 0.5, 0];
+    const normal = Math.max(MIN_SELL_KEEP, 1 - this.slippagePct / 100);
+    const keeps = normal > MIN_SELL_KEEP ? [normal, MIN_SELL_KEEP] : [normal];
     const fractions = [1n, 2n, 4n, 8n];
     let err = null;
-    for (const div of fractions) {
-      const u = units / div; if (u <= 0n) break;
-      const q = curveSellQuote(r, toTokens(u), r.feeBps);
-      for (const keep of keeps) {
+    for (const keep of keeps) {
+      for (const div of fractions) {
+        const u = units / div; if (u <= 0n) break;
+        const q = curveSellQuote(r, toTokens(u), r.feeBps);
         const minOut = toWei(Math.max(0, (q.quoteOut || 0) * keep));
         try { await curve.sell.staticCall(u, minOut, this.address); return { ok: true, units: u, keep, note: `${div === 1n ? "all" : `1/${div}`} at ${Math.round(keep * 100)}% of quote` }; }
         catch (e) { err = e; if (!/revert|CALL_EXCEPTION|execution/i.test(String(e.message || e.shortMessage || "")) && e.code !== "CALL_EXCEPTION") return { ok: false, err: e }; }

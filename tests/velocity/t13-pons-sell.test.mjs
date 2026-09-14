@@ -56,6 +56,9 @@ class FakeChain extends JsonRpcProvider {
           if (s.revert) { const e = new Error("execution reverted: " + s.revert); e.code = 3; e.data = coder.encode(["string"], [s.revert]).replace(/^0x/, "0x08c379a0" + "0".repeat(0)); e.data = "0x08c379a0" + coder.encode(["string"], [s.revert]).slice(2); throw e; }
           if (s.maxUnits != null && f.args[0] > s.maxUnits) { const e = new Error("execution reverted (unknown custom error)"); e.code = 3; e.data = "0xdeadbeef" + "0".repeat(56); throw e; }
           if (f.args[0] > s.balance) { const e = new Error("execution reverted: ERC20: transfer amount exceeds balance"); e.code = 3; e.data = "0x08c379a0" + coder.encode(["string"], ["ERC20: transfer amount exceeds balance"]).slice(2); throw e; }
+          // A curve that will not pay more than acceptOut for this order: the sell reverts on the
+          // minOut, which is what a real curve does when the order is too big for its reserves.
+          if (s.acceptOut != null && f.args[1] > s.acceptOut) { const e = new Error("execution reverted: SlippageExceeded"); e.code = 3; e.data = "0x08c379a0" + coder.encode(["string"], ["SlippageExceeded"]).slice(2); throw e; }
           return method === "eth_estimateGas" ? "0x30000" : curveI.encodeFunctionResult("sell", [toWei(0.01)]);
         }
       }
@@ -78,7 +81,7 @@ class FakeChain extends JsonRpcProvider {
   receipt(hash, to, logs) { return { transactionHash: hash, blockHash: "0x" + "b".repeat(64), blockNumber: "0x11", transactionIndex: "0x0", from: "0x" + "0".repeat(40), to, status: "0x1", gasUsed: "0x5208", cumulativeGasUsed: "0x5208", effectiveGasPrice: "0x3b9aca00", contractAddress: null, logsBloom: "0x" + "0".repeat(512), type: "0x2", logs: logs.map((l, i) => ({ ...l, blockNumber: "0x11", blockHash: "0x" + "b".repeat(64), transactionHash: hash, transactionIndex: "0x0", logIndex: "0x" + i.toString(16), removed: false })) }; }
 }
 
-function chain(over = {}) { return new FakeChain({ balance: BAL, allowance: 0n, quoteReserve: 2, tokenReserve: 800_000_000n * 10n ** 18n, graduated: false, revert: null, sellSeen: [], receipts: {}, ...over }); }
+function chain(over = {}) { return new FakeChain({ balance: BAL, allowance: 0n, quoteReserve: 2, tokenReserve: 800_000_000n * 10n ** 18n, graduated: false, revert: null, acceptOut: null, sellSeen: [], receipts: {}, ...over }); }
 const position = (over = {}) => ({ id: "pons:x", instrument: TOKEN, reference: null, ...over });
 
 test("T13: a position with no curve is sold anyway: the factory names the curve, the wallet's exact balance is sold, approve first", async () => {
@@ -199,4 +202,37 @@ test("T13: a Robinhood Chain position whose tokens are gone is checked against t
   // An RPC that will not answer must not invent a sale.
   c.getLogs = async () => { throw new Error("rate limited"); };
   assert.equal(await r.findRecentSale(TOKEN, { since: 0 }), null);
+});
+
+// The sell ladder used to end at keep = 0, which sends minOut = 0: a sell that accepts ANY price,
+// including near zero, on a thin curve where a sandwich costs a few dollars to run. It also tried
+// every price at full size before ever trying a smaller size, so the first thing it offered after a
+// normal-slippage failure was the whole position at half price. That is how a close came back at
+// -72% on an exit rule that only fires in profit.
+test("T13: a sell never offers the position at any price, and shrinks the order before widening the price", async () => {
+  // The curve will only pay a little: nothing near a full-size quote clears, but a small order does.
+  const c = chain({ allowance: 2n ** 255n, acceptOut: toWei(0.3) });
+  const r = new PonsLiveRouter({ secret: KEY, provider: c, confirmTimeoutMs: 3000 }); await r.init();
+  const res = await r.close(position({ reference: { curve: { address: CURVE }, solPrice: 2000 } }), 100, { reference: { curve: { address: CURVE }, solPrice: 2000 } });
+  assert.equal(res.ok, true, res.failure?.reason);
+
+  // Every minOut the router ever put in front of the curve, in a dry run or for real, kept at least
+  // 85% of that order's own quote. None was zero.
+  assert.ok(c.s.sellSeen.length > 0);
+  for (const seen of c.s.sellSeen) assert.ok(seen.minOut > 0n, "no sell is ever offered with no price floor");
+  // Size was the lever, not price: it reached an accepted order by shrinking, at the normal keep.
+  const first = c.s.sellSeen[0], accepted = c.s.sellSeen.find(x => x.minOut <= toWei(0.3));
+  assert.ok(accepted, "it found an order the curve accepts");
+  assert.ok(accepted.units < first.units, "by selling less, not by accepting less per token");
+});
+
+test("T13: when no order clears at a fair price the sell fails and is retried, rather than dumping at zero", async () => {
+  // The curve pays essentially nothing at any size: there is no honest sell here.
+  const c = chain({ allowance: 2n ** 255n, acceptOut: 1n });
+  const r = new PonsLiveRouter({ secret: KEY, provider: c, confirmTimeoutMs: 3000 }); await r.init();
+  const res = await r.close(position({ reference: { curve: { address: CURVE }, solPrice: 2000 } }), 100, { reference: { curve: { address: CURVE }, solPrice: 2000 } });
+  assert.equal(res.ok, false);
+  assert.equal(res.failure.code, "REVERT");
+  assert.equal(c.sent.length, 0, "and nothing was sent: the position is worth more open than given away");
+  for (const seen of c.s.sellSeen) assert.ok(seen.minOut > 0n);
 });
