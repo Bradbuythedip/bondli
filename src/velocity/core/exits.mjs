@@ -17,6 +17,11 @@ const CURVE = v => v === "pumpfun" || v === "pons";
 
 export const PUMPFUN_EXIT_SETTINGS = Object.freeze({ momentumExit: true, sl1Sell: 80 });
 
+// How long a held position may go without a readable price before it is sold on that fact alone.
+// Shorter than every stall_ms in the plan table: a blind position is worse than a stalled one,
+// because a stalled one at least has a stop loss standing behind it.
+export const BLIND_EXIT_MS = 45_000;
+
 export function createPlan({ venue, key, entry = {} }) {
   const base = planFor(venue, key);
   if (CURVE(venue)) {
@@ -88,7 +93,18 @@ function evaluatePumpfun(position, tick, plan, now, held) {
   // The time stop needs no price: a token that left the radar or went to zero still gets sold.
   // A moonbag has no time limit: it rides until it dies (-80%) or gives back its own trail.
   if (held > plan.max_hold_ms && !position._bondli?.isMoonbag) return { action: "SELL", pct: 100, reason: "MAX_HOLD", layer: 2, detail: `${Math.round(held / 60000)}min` };
-  if (!(token.mcapUsd > 0)) return null;
+  // Blind: the venue is answering, but not with a price for this token -- a reverting curve read, a
+  // pool that graduated out from under us, a quote-asset price gap. Every second blind is unbounded
+  // downside with no stop loss behind it, because every price rule below this line needs a price.
+  // Holding through it is not patience, it is an unmanaged position. Sell after a short grace, well
+  // before the time exits, and reset the moment a real price comes back.
+  if (!(token.mcapUsd > 0)) {
+    if (!position._blindSince) position._blindSince = now;
+    const blind = now - position._blindSince;
+    if (blind >= (plan.blind_ms ?? BLIND_EXIT_MS)) return { action: "SELL", pct: 100, reason: "blind-exit", layer: 2, detail: `no readable price for ${Math.round(blind / 1000)}s` };
+    return null;
+  }
+  position._blindSince = null;
   const pos = position._bondli || (position._bondli = {
     entryMcap: position.entryMark, peakMcap: position.peak || position.entryMark, tier: Number(plan.key), entryScore: position.entryScore || 0,
     entryTime: position.entryTime, tpHit: 0, slHit: 0, isMoonbag: false,

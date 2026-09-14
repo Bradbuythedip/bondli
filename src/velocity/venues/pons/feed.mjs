@@ -304,9 +304,23 @@ export class PonsFeed extends Feed {
       const held = this.watched.has(t.ca);
       if (t._pending || (touched.has(t) && now - (t._hydratedAt || 0) > 20_000) || (held && now - (t._hydratedAt || 0) > 4_000)) await this._hydrate(t);
       if (t.native === false) continue; // the curve says its quote is an ERC-20 after all
-      if (!(t.mcapUsd > 0) || !(this.solPrice > 0)) continue;
+      // A token we HOLD gets a tick every poll, readable or not. This guard used to sit above the
+      // held emit, so a held token whose curve read failed -- a reverting getReserves, a graduated
+      // pool, an ETH price gap -- emitted nothing at all. No tick means checkExits never runs on it:
+      // no stop loss, no crash exit, no trail. The only thing left that could fire was the sweeper's
+      // blind time exit minutes later, which is why every STALL close was a 60%+ loss while the
+      // price-driven exits lost 4%. An unreadable held position is a fact the exit layer has to be
+      // told, not a reason to say nothing.
+      const readable = t.mcapUsd > 0 && this.solPrice > 0;
+      if (this.watched.has(t.ca)) {
+        const payload = readable ? { ...this.payloadFor(t, now), source: "pons" }
+          : { unreadable: true, source: "pons", solPrice: this.solPrice, solPriceAt: this.solPriceAt, quote: "ETH", token: { ca: t.ca, curve: t.curve, graduated: !!t.graduated, _ageMs: now - t.createdAt } };
+        this.emitEvent({ kind: "tick", id: t.ca, payload, t_venue: now });
+        this.ticks++;
+        if (!readable) this.unreadableTicks = (this.unreadableTicks || 0) + 1;
+      }
+      if (!readable) continue;
       const payload = this.payloadFor(t, now);
-      if (this.watched.has(t.ca)) { this.emitEvent({ kind: "tick", id: t.ca, payload: { ...payload, source: "pons" }, t_venue: now }); this.ticks++; }
       if (now - t.createdAt < SNIPE_TAX_WINDOW_MS) continue; // a buy in the snipe-tax window is a donation: not even a candidate
       if (t.uniqueBuyers.size < 2 || t.buys < 3) continue; // the pump.fun base filter's floor: two people and three buys before anyone is asked to judge it
       if (!this._changed(t, payload, now)) continue;

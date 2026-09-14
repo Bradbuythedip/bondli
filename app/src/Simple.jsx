@@ -520,7 +520,7 @@ export default function Simple() {
         })()}</span></div>
         {paused && <div style={{ color: T.yl, fontSize: 13, marginTop: 8 }}>
           {/user/.test(s.halt.reason || "") ? "Paused. Open positions still get sold on their plan; nothing new is bought." : `Paused by the bot: ${s.halt.reason}`}
-          {/daily_limit/.test(s.halt.reason || "") && <> <span onClick={ackDaily} style={{ cursor: "pointer", textDecoration: "underline" }}>keep trading</span></>}
+          {/daily_limit|daily_breaker/.test(s.halt.reason || "") && <> <span onClick={ackDaily} style={{ cursor: "pointer", textDecoration: "underline" }}>keep trading</span></>}
         </div>}
         {s?.positions?.length > 0 && <div style={{ marginTop: 12 }}>{s.positions.map(p => { const now = Date.now(); const tickAge = p.lastTickAt ? (now - p.lastTickAt) / 1000 : null; const stale = tickAge == null ? now - p.entryTime > 60_000 : tickAge > 60; const open = openPos === p.id; const url = p.venue === "pons" ? `https://www.ponsfamily.com/launchpad/${p.instrument}` : `https://pump.fun/coin/${p.instrument}`; const held = Math.round((now - p.entryTime) / 60000); return <div key={p.id} style={{ borderTop: `1px solid ${T.bd}` }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 8, alignItems: "center", fontFamily: M, fontSize: 13, padding: "6px 0" }}>

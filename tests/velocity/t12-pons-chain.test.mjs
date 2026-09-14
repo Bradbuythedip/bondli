@@ -226,3 +226,39 @@ test("T12: a curve's own fees are priced honestly, and an unread tax is not free
   const solTok = { ca: "M", createdAt: Date.now() - 5 * 60_000, buys: 20, sells: 4, uniqueBuyers: { size: 12 }, trades: [], spark: [] };
   assert.ok(!checkDisqualifiers(solTok, {}, AGGRESSION[1]).flags.includes("FEE_TOO_HIGH"));
 });
+
+// A held token used to emit nothing at all when its curve read failed, because the "is the price
+// readable" guard sat above the held-tick emit. No tick means the engine never runs an exit check:
+// no stop loss, no crash exit, no trail, and the position rides to whatever the blind time exit
+// finds minutes later. A held position must always produce a tick, even to say it cannot be priced.
+test("T12: a held token whose curve read fails still ticks, and the tick says it is unreadable", async () => {
+  const { PonsFeed } = await import("../../src/velocity/venues/pons/feed.mjs");
+  let now = 1_800_000_000_000; const clock = () => now;
+  const TOKEN = addr(0x81), CURVE = addr(0x82);
+  let broken = false, head = 5000;
+  const rpc = { blockNumber: async () => head, logs: async () => [],
+    curveInfo: async () => { if (broken) throw new Error("execution reverted"); return { quoteReserve: 3.4, tokenReserve: 9e8, realQuoteReserve: 0.4, feeBps: 100, creatorTaxBps: 0, graduationThreshold: 4, native: true }; },
+    tokenMeta: async () => ({ name: "Ghost", symbol: "GHST" }),
+    launchInfo: async (t) => t === TOKEN ? { token: TOKEN, curve: CURVE, deployer: addr(0x83), pairToken: addr(0), graduationThreshold: 4, graduated: false } : null };
+  const feed = new PonsFeed({ rpc, pollMs: 1000, ethPrice: 2000, clock });
+  const events = []; feed.on("event", e => { if (e.kind !== "feed_health") events.push(e); });
+  feed.watch(TOKEN);
+  await feed.pollOnce();
+  const good = events.filter(e => e.kind === "tick" && e.id === TOKEN);
+  assert.equal(good.length, 1); assert.ok(good[0].payload.mcapUsd > 0);
+
+  // Now the curve stops answering and the cached reading is wiped, the way a graduated pool or a
+  // reverting read leaves it.
+  broken = true;
+  const t = feed.token(TOKEN);
+  t.mcapUsd = 0; t._hydratedAt = 0;
+  events.length = 0;
+  now += 10_000; head += 5;
+  await feed.pollOnce();
+  const ticks = events.filter(e => e.kind === "tick" && e.id === TOKEN);
+  assert.equal(ticks.length, 1, "a held position still gets a tick when it cannot be priced");
+  assert.equal(ticks[0].payload.unreadable, true, "and the tick says so, so the exit layer can act on it");
+  assert.equal(feed.status().unreadableTicks ?? feed.unreadableTicks, 1);
+  // It is not offered as something to buy while it cannot be priced.
+  assert.equal(events.filter(e => e.kind === "candidate" && e.id === TOKEN).length, 0);
+});
