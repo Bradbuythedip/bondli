@@ -166,3 +166,38 @@ test("T9: forgiving the day's loss resets the taper and the breaker, not the P&L
   engine.store.rollDay();
   assert.equal(engine.store.state.day.lossAckUsd, 0);
 });
+
+// A PONS curve that graduates moves to a Uniswap V4 pool the router cannot sell into, and it never
+// un-graduates. Retrying that sell forever held a concurrency slot for the life of the process --
+// with two slots, half the bot's throughput lost to one dead token.
+test("T9: a sell that can never succeed releases the position instead of holding the slot forever", async () => {
+  const dataDir = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  const engine = mkEngine(dataDir, feed, { reentryCooldownMs: 0 });
+  try {
+    await engine.start({ reconcile: true });
+    const now = Date.now();
+    await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "candidate", id: "MintGrad", t_venue: now - 100, t_observed: now, payload: goodCandidatePayload("MintGrad") })));
+    const pos = engine.store.openPositions()[0];
+    assert.ok(pos, "a position to strand");
+
+    // The venue now refuses this sell terminally, and will do so on every retry.
+    const router = engine.venues.pumpfun.router;
+    router.close = async () => ({ ok: false, failure: { code: "GRADUATED", reason: "the curve has graduated to a Uniswap V4 pool" } });
+
+    const r = await engine.enqueue(() => engine.closePosition(pos, 100, "TEST"));
+    assert.equal(r.ok, false, "the sell still failed: nothing was invented");
+    assert.equal(engine.store.openPositions().length, 0, "the slot is free again");
+
+    const exits = engine.ledger.query({ kind: "exit", limit: 5 });
+    const released = exits.find(e => e.reason === "RELEASED");
+    assert.ok(released, "the release is on the record");
+    assert.equal(released.by, "engine");
+    assert.match(released.detail, /GRADUATED/);
+    assert.equal(released.proceeds_usd, 0);
+    // No P&L and no outcome: nothing was realized, and teaching the learner a loss that did not
+    // happen is exactly the FLAT_AT_VENUE mistake.
+    assert.equal(engine.ledger.query({ kind: "outcome", limit: 5 }).filter(o => o.instrument === "MintGrad").length, 0);
+    assert.equal(engine.store.state.day.paperRealizedUsd, 0);
+  } finally { await engine.stop(); }
+});

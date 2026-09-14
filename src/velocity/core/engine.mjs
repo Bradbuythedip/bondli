@@ -36,6 +36,12 @@ export function curveEntryMark(venue, fill, decision) {
 /** Gate-1 flags that describe the token, not the last minute: a reject on these stands. */
 export const FATAL_FLAGS = new Set(["SERIAL_LAUNCHER", "SERIAL_RUGGER", "DEV_SELF_SNIPE", "FREEZE_AUTHORITY", "STOLEN_ART", "TOO_LATE"]);
 
+/** Sell failures that no retry can fix, because the venue has changed in a way that cannot change
+ *  back. Only GRADUATED qualifies today: a PONS curve that completed moved to a Uniswap V4 pool the
+ *  router does not speak, and it never un-graduates. Everything else the routers report -- REVERT,
+ *  UNREADABLE, NO_CURVE, SEND_FAILED -- can be an RPC having a bad minute, and is retried. */
+export const TERMINAL_EXIT_CODES = new Set(["GRADUATED"]);
+
 export class Engine extends EventEmitter {
   constructor({ dataDir, envelope, venues = {}, clock = () => Date.now(), config = {}, alerter = null }) {
     super();
@@ -921,6 +927,18 @@ export class Engine extends EventEmitter {
       } else if (p.flatSeenAt) delete p.flatSeenAt;
       this.ledger.append({ kind: "exit", venue, positionId: p.id, instrument: p.instrument, pct, reason, failed: true, error: r.failure.reason, code, venue_ref: r.failure.venue_ref || null });
       p.lastExitError = { code, reason: String(r.failure.reason || "").slice(0, 200), tried: reason, at: this.clock(), count: (p.lastExitError?.count || 0) + 1 };
+      // A terminal refusal is not a failure to retry: the venue is telling us this position can never
+      // be sold by the bot, and no amount of waiting changes that. A graduated PONS curve moved to a
+      // Uniswap V4 pool the router does not speak; retrying forever holds a concurrency slot for the
+      // life of the process, and with two slots that is half the bot's throughput lost to one token.
+      // Release it: the slot comes back, no P&L is invented, and the tokens show up under the wallet
+      // holdings where they can be sold by hand.
+      if (TERMINAL_EXIT_CODES.has(code)) {
+        this.log("warn", `TERMINAL ${code} on ${p.instrument}: releasing so the slot is not held forever`);
+        this.exiting.delete(p.id); // releasePosition refuses while a sell is in flight, and this one is over
+        this.releasePosition(p.id, { by: "engine", note: `${code}: ${String(r.failure.reason || "").slice(0, 160)}` });
+        return r;
+      }
       this.log("warn", `EXIT FAILED ${p.instrument} ${reason}: ${r.failure.reason}`);
       this.store.save();
       return r;
