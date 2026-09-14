@@ -201,3 +201,63 @@ test("T9: a sell that can never succeed releases the position instead of holding
     assert.equal(engine.store.state.day.paperRealizedUsd, 0);
   } finally { await engine.stop(); }
 });
+
+// A curve that refuses every sell is, from here, indistinguishable from one that cannot be sold.
+// Retrying forever held the slot AND raised a fresh error banner every few seconds, so the operator
+// dismissed one and the next arrived: the error could not be cleared while its cause was still being
+// made. After enough identical refusals the position is released and the cause goes away.
+test("T9: a sell that keeps failing the same way is given up on, so the error stops being remade", async () => {
+  const dataDir = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  const engine = mkEngine(dataDir, feed, { reentryCooldownMs: 0, releaseAfterFailures: 3 });
+  try {
+    await engine.start({ reconcile: true });
+    const now = Date.now();
+    await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "candidate", id: "MintStuck", t_venue: now - 100, t_observed: now, payload: goodCandidatePayload("MintStuck") })));
+    const pos = engine.store.openPositions()[0];
+    assert.ok(pos);
+
+    const router = engine.venues.pumpfun.router;
+    router.close = async () => ({ ok: false, failure: { code: "REVERT", reason: "sell would revert (custom error 0x42301c23)" } });
+
+    // The first refusals are retried: a revert really can be an RPC having a bad minute.
+    await engine.enqueue(() => engine.closePosition(pos, 100, "TEST"));
+    assert.equal(engine.store.openPositions().length, 1);
+    assert.equal(pos.lastExitError.count, 1);
+    await engine.enqueue(() => engine.closePosition(pos, 100, "TEST"));
+    assert.equal(pos.lastExitError.count, 2);
+    assert.equal(engine.store.openPositions().length, 1, "not given up on too early");
+
+    // The third identical answer settles it.
+    await engine.enqueue(() => engine.closePosition(pos, 100, "TEST"));
+    assert.equal(engine.store.openPositions().length, 0, "the slot is free and the error has no source left");
+    const released = engine.ledger.query({ kind: "exit", limit: 8 }).find(e => e.reason === "RELEASED");
+    assert.ok(released); assert.equal(released.by, "engine"); assert.match(released.detail, /REVERT/);
+    assert.equal(engine.ledger.query({ kind: "outcome", limit: 8 }).filter(o => o.instrument === "MintStuck").length, 0, "no invented P&L");
+  } finally { await engine.stop(); }
+});
+
+// A different failure means the situation changed, so the tally starts again rather than counting
+// unrelated bad minutes toward giving up on a position that is still perfectly sellable.
+test("T9: the give-up tally counts one repeated failure, not a mix of different ones", async () => {
+  const dataDir = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  const engine = mkEngine(dataDir, feed, { reentryCooldownMs: 0, releaseAfterFailures: 3 });
+  try {
+    await engine.start({ reconcile: true });
+    const now = Date.now();
+    await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "candidate", id: "MintMixed", t_venue: now - 100, t_observed: now, payload: goodCandidatePayload("MintMixed") })));
+    const pos = engine.store.openPositions()[0];
+    const router = engine.venues.pumpfun.router;
+    let code = "REVERT";
+    router.close = async () => ({ ok: false, failure: { code, reason: `${code} happened` } });
+
+    await engine.enqueue(() => engine.closePosition(pos, 100, "TEST"));
+    await engine.enqueue(() => engine.closePosition(pos, 100, "TEST"));
+    assert.equal(pos.lastExitError.count, 2);
+    code = "SEND_FAILED";
+    await engine.enqueue(() => engine.closePosition(pos, 100, "TEST"));
+    assert.equal(pos.lastExitError.count, 1, "a different answer restarts the tally");
+    assert.equal(engine.store.openPositions().length, 1, "and the position is still being tried");
+  } finally { await engine.stop(); }
+});

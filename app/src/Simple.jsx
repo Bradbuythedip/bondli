@@ -401,6 +401,7 @@ export default function Simple() {
   // the gas reserve; 0.01 leaves room for a few of them. It is a smaller number than the SOL floor
   // because ETH is dearer and Robinhood Chain gas is cents, not a rent-bearing token account.
   const MIN_BANKROLL_ETH = 0.01;
+  const RELEASE_AFTER = 5; // engine cfg.releaseAfterFailures: keep the two in step
   const fundedSol = (tw?.solBalance || 0) >= MIN_BANKROLL_SOL;
   const fundedEth = (tw?.ethBalance || 0) >= MIN_BANKROLL_ETH;
   // Which chains are actually on: what the user asked for, AND what the wallet can pay for. One
@@ -538,7 +539,7 @@ export default function Simple() {
           </div>}
           {p.lastExitError && <div style={{ fontFamily: M, fontSize: 11, color: T.rd, padding: "0 0 8px", lineHeight: 1.4, display: "flex", gap: 8, alignItems: "flex-start" }}>
             <span style={{ flex: 1, minWidth: 0 }}>sell failed ×{p.lastExitError.count} ({p.lastExitError.tried}): {p.lastExitError.code ? p.lastExitError.code + " " : ""}{p.lastExitError.reason}
-              {p.lastExitError.count >= 2 && <span style={{ display: "block", color: T.dm, marginTop: 3 }}>The venue is refusing every sell. Give up on it and the tokens stay in your wallet to sell by hand.</span>}
+              {p.lastExitError.count >= 2 && <span style={{ display: "block", color: T.dm, marginTop: 3 }}>The venue is refusing every sell. The bot gives up on its own after {RELEASE_AFTER} tries and frees the slot — or give up now. Either way the tokens stay in your wallet to sell by hand.</span>}
             </span>
             <span style={{ display: "flex", gap: 8, flexShrink: 0 }}>
               {p.lastExitError.count >= 2 && <span onClick={() => releasePos(p)} style={{ cursor: "pointer", color: T.yl, textDecoration: "underline" }}>give up</span>}

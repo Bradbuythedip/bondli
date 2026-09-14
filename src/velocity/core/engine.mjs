@@ -51,7 +51,7 @@ export class Engine extends EventEmitter {
     this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000,
       // After a DOA or STALL exit: we left because nothing was happening, not because it was bad.
       retryCooldownMs: 45_000,
-      failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000, haltNoticeMs: 5 * 60_000,
+      failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000, haltNoticeMs: 5 * 60_000, releaseAfterFailures: 5,
       // How far a refused token has to run before the refusal counts as a miss, and for how long
       // after the refusal it stays under observation.
       missMultiple: 1.6, missWatchMs: 10 * 60_000,
@@ -940,15 +940,25 @@ export class Engine extends EventEmitter {
         if (!p.flatSeenAt) p.flatSeenAt = this.clock();
       } else if (p.flatSeenAt) delete p.flatSeenAt;
       this.ledger.append({ kind: "exit", venue, positionId: p.id, instrument: p.instrument, pct, reason, failed: true, error: r.failure.reason, code, venue_ref: r.failure.venue_ref || null });
-      p.lastExitError = { code, reason: String(r.failure.reason || "").slice(0, 200), tried: reason, at: this.clock(), count: (p.lastExitError?.count || 0) + 1 };
+      // Count repeats of the SAME failure. A different code means the situation changed and the
+      // tally starts again; the same code over and over is the venue saying the same no.
+      const sameAsBefore = p.lastExitError?.code === code;
+      p.lastExitError = { code, reason: String(r.failure.reason || "").slice(0, 200), tried: reason, at: this.clock(), count: sameAsBefore ? (p.lastExitError.count || 0) + 1 : 1 };
       // A terminal refusal is not a failure to retry: the venue is telling us this position can never
       // be sold by the bot, and no amount of waiting changes that. A graduated PONS curve moved to a
       // Uniswap V4 pool the router does not speak; retrying forever holds a concurrency slot for the
       // life of the process, and with two slots that is half the bot's throughput lost to one token.
       // Release it: the slot comes back, no P&L is invented, and the tokens show up under the wallet
       // holdings where they can be sold by hand.
-      if (TERMINAL_EXIT_CODES.has(code)) {
-        this.log("warn", `TERMINAL ${code} on ${p.instrument}: releasing so the slot is not held forever`);
+      // ...and a refusal that is not terminal in principle becomes terminal in practice once the
+      // venue has given the same answer this many times running. REVERT is the case that matters: a
+      // curve that refuses every sell is indistinguishable, from here, from one that cannot be sold,
+      // and the difference stops mattering after the fifth identical no. Retrying forever holds a
+      // concurrency slot AND raises a fresh error banner every few seconds, so the operator dismisses
+      // one and the next arrives -- the error cannot be cleared while its cause is still being made.
+      const stuck = p.lastExitError.count >= this.cfg.releaseAfterFailures;
+      if (TERMINAL_EXIT_CODES.has(code) || stuck) {
+        this.log("warn", `TERMINAL ${code} on ${p.instrument}${stuck ? ` after ${p.lastExitError.count} identical failures` : ""}: releasing so the slot is not held forever`);
         this.exiting.delete(p.id); // releasePosition refuses while a sell is in flight, and this one is over
         this.releasePosition(p.id, { by: "engine", note: `${code}: ${String(r.failure.reason || "").slice(0, 160)}` });
         return r;
