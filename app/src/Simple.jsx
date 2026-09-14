@@ -315,7 +315,7 @@ export default function Simple() {
       try { localStorage.setItem("bondli_chains", JSON.stringify(chains)); } catch {}
       // Only the chains that are on count toward the bankroll: someone trading Robinhood Chain alone
       // must not be sized against SOL they never funded, or against SOL they are keeping out of it.
-      const usePump = chains.pumpfun !== false, usePons = !!chains.pons && (tw?.ethBalance || 0) > 0.003;
+      const usePump = chainsOn.pumpfun, usePons = chainsOn.pons;
       const bank = (usePump ? (tw?.solBalance || 0) * 200 : 0) + (usePons ? (tw?.ethBalance || 0) * 3000 : 0);
       const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round(bank)), pumpfun: usePump, pons: usePons });
       if (!r.ok) say(r.error || "Could not start", "error"); else sSt(r);
@@ -390,7 +390,24 @@ export default function Simple() {
   // 15% of $350 is $52. Below this the bot either refuses every trade or gets one shot a day.
   const MIN_BANKROLL_SOL = 0.5;   // the hard floor: below this the fees are most of the trade
   const GOOD_BANKROLL_SOL = 2;    // what it actually wants: room for several $25 bets and a day's loss limit
-  const funded = (tw?.solBalance || 0) >= MIN_BANKROLL_SOL;
+  // Robinhood Chain has its own floor, in its own asset. One $10 stake needs about 0.0039 ETH plus
+  // the gas reserve; 0.01 leaves room for a few of them. It is a smaller number than the SOL floor
+  // because ETH is dearer and Robinhood Chain gas is cents, not a rent-bearing token account.
+  const MIN_BANKROLL_ETH = 0.01;
+  const fundedSol = (tw?.solBalance || 0) >= MIN_BANKROLL_SOL;
+  const fundedEth = (tw?.ethBalance || 0) >= MIN_BANKROLL_ETH;
+  // Which chains are actually on: what the user asked for, AND what the wallet can pay for. One
+  // definition, read by the Start call and by the chips, so the panel can never show pump.fun off
+  // and then start it anyway.
+  const chainsOn = {
+    pumpfun: chains.pumpfun !== false && fundedSol,
+    pons: !!chains.pons && fundedEth,
+  };
+  // Funded means funded on a chain the bot can actually trade -- EITHER chain. This read SOL alone,
+  // so a wallet holding 0.024 ETH and no SOL was shown "send SOL to begin" and never rendered the
+  // Start button at all: the engine had supported Robinhood Chain on its own for days, and the panel
+  // would not let anyone ask for it.
+  const funded = fundedSol || fundedEth;
   const wrap = { minHeight: "100vh", background: T.bg, color: T.tx, fontFamily: S, display: "flex", flexDirection: "column", alignItems: "center", padding: "48px 16px 32px", boxSizing: "border-box" };
   const card = { width: "100%", maxWidth: 440, background: T.sf, border: `1px solid ${running ? T.gn : T.bd}`, borderRadius: 16, padding: 20, boxSizing: "border-box" };
   const muted = { color: T.ft, fontSize: 13, lineHeight: 1.5 };
@@ -419,8 +436,9 @@ export default function Simple() {
           <span style={{ fontFamily: M, fontWeight: 800, fontSize: 22 }}>{tw.solBalance.toFixed(3)} SOL</span>
         </div>
         <div onClick={() => copy(tw.pubkey)} title="copy" style={{ fontFamily: M, fontSize: 12, color: T.dm, marginTop: 6, wordBreak: "break-all", cursor: "pointer", padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{tw.pubkey}{copied ? "  copied" : ""}</div>
-        {!funded && <div style={{ ...muted, marginTop: 8 }}>Send SOL to that address to begin. {MIN_BANKROLL_SOL} SOL is the floor, {GOOD_BANKROLL_SOL} SOL is what it actually wants. Every trade pays a fixed cost before it earns anything, about {dragPct(SIZES[0], st?.status?.solPrice || 0).toFixed(0)}% at the smallest stake, so a thin bankroll forces small bets and small bets lose to the costs.{(tw?.solBalance || 0) > 0 ? ` You have ${(tw.solBalance).toFixed(3)}.` : ""}</div>}
-        {funded && (tw?.solBalance || 0) < GOOD_BANKROLL_SOL && <div style={{ ...muted, marginTop: 8, color: T.yl }}>This works at {(tw.solBalance).toFixed(2)} SOL but it is tight: it can hold one or two positions and the day's loss limit stops it early. {GOOD_BANKROLL_SOL} SOL gives it room.</div>}
+        {!funded && <div style={{ ...muted, marginTop: 8 }}>Fund either chain to begin: {MIN_BANKROLL_SOL} SOL here, or {MIN_BANKROLL_ETH} ETH on Robinhood Chain below. Either one on its own is enough. Every trade pays a fixed cost before it earns anything, about {dragPct(SIZES[0], st?.status?.solPrice || 0).toFixed(0)}% at the smallest stake, so a thin bankroll forces small bets and small bets lose to the costs. For Solana, {GOOD_BANKROLL_SOL} SOL is what it actually wants.{(tw?.solBalance || 0) > 0 ? ` You have ${(tw.solBalance).toFixed(3)} SOL` : ""}{(tw?.ethBalance || 0) > 0 ? `${(tw?.solBalance || 0) > 0 ? " and" : " You have"} ${(tw.ethBalance).toFixed(4)} ETH` : ""}{((tw?.solBalance || 0) > 0 || (tw?.ethBalance || 0) > 0) ? "." : ""}</div>}
+        {fundedSol && (tw?.solBalance || 0) < GOOD_BANKROLL_SOL && <div style={{ ...muted, marginTop: 8, color: T.yl }}>This works at {(tw.solBalance).toFixed(2)} SOL but it is tight: it can hold one or two positions and the day's loss limit stops it early. {GOOD_BANKROLL_SOL} SOL gives it room.</div>}
+        {!fundedSol && fundedEth && <div style={{ ...muted, marginTop: 8, color: T.yl }}>Not enough SOL for pump.fun, so it starts on Robinhood Chain alone. Turn pump.fun back on below once this wallet holds {MIN_BANKROLL_SOL} SOL.</div>}
         {tw.evmAddress && <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 14 }}>
             <span style={muted}>Bot wallet · Robinhood Chain</span>
@@ -444,18 +462,18 @@ export default function Simple() {
               // Either chain can be switched off, so long as one stays on. pump.fun used to be a
               // permanent label -- not clickable, always green -- which meant nobody could trade
               // Robinhood Chain on its own however they had funded the wallets.
-              const funded = { pumpfun: (tw?.solBalance || 0) > 0.005, pons: (tw?.ethBalance || 0) > 0.003 };
-              const on = { pumpfun: chains.pumpfun !== false, pons: !!chains.pons && funded.pons };
+              // The same floors the funding copy quotes, not a second set of ad-hoc numbers.
+              const canFund = { pumpfun: fundedSol, pons: fundedEth };
+              const on = chainsOn;
               const toggle = (k) => {
-                if (k === "pons" && !funded.pons) return;                 // nothing to trade with
+                if (!canFund[k]) return;                                       // nothing to trade with
                 if (on[k] && !on[k === "pumpfun" ? "pons" : "pumpfun"]) return; // never both off
                 sChains(c => ({ ...c, [k]: !on[k] }));
               };
               return [["pumpfun", "pump.fun", "Solana"], ["pons", "PONS", "Robinhood Chain"]].map(([k, l, sub]) => {
                 const isOn = on[k], last = isOn && !on[k === "pumpfun" ? "pons" : "pumpfun"];
-                const can = k === "pons" ? funded.pons : true;
-                const note = k === "pons" && !funded.pons ? " · fund with ETH"
-                  : isOn && !funded[k] ? (k === "pumpfun" ? " · on, no SOL yet" : " · on")
+                const can = canFund[k];
+                const note = !can ? (k === "pons" ? ` · fund with ${MIN_BANKROLL_ETH} ETH` : ` · fund with ${MIN_BANKROLL_SOL} SOL`)
                   : last ? " · on, the only one"
                   : isOn ? " · on" : " · off";
                 return <div key={k} onClick={() => toggle(k)} title={last ? "at least one chain has to stay on" : ""}
