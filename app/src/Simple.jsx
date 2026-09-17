@@ -426,7 +426,7 @@ export default function Simple() {
   const [copied, sCopied] = useState(false);
   const narRef = useRef(null);
   const running = !!st?.running;
-  const s = st?.status; const day = s?.day; const tp = s?.pnl || null; const pnl = tp?.since_start_usd ?? (day?.realizedUsd || 0) + (tp?.unrealized_usd || 0); const pnlKind = tp?.since_start_usd != null ? "wallet" : "trades";
+  const s = st?.status; const day = s?.day; const tp = s?.pnl || null; const pnl = tp?.since_start_usd ?? (tp?.realized_today_usd ?? day?.realizedUsd ?? 0) + (tp?.unrealized_usd || 0); const pnlKind = tp?.kind === "paper" ? "paper" : tp?.since_start_usd != null ? "wallet" : "trades";
   // Whether this wallet's fee is waived, as the server last read it. null = not known (not running, or
   // never read); the footer then states the offer rather than the fact.
   const waived = st?.fee?.waiver?.holds ?? null;
@@ -671,7 +671,7 @@ export default function Simple() {
           <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: onPaper ? T.yl : T.gn, animation: "gp 2s infinite" }} /><span style={{ fontWeight: 800 }}>{onPaper ? "Paper trading" : "Trading"}</span>{onPaper && <span style={{ fontFamily: M, fontSize: 10, fontWeight: 900, letterSpacing: ".08em", color: "#000", background: T.yl, borderRadius: 5, padding: "2px 6px" }}>PRETEND MONEY</span>}</span>
           <span style={{ fontFamily: M, fontWeight: 900, fontSize: 30, color: pnl >= 0 ? T.gn : T.rd }}>{pnl >= 0 ? "+" : ""}{fmt(pnl)}</span>
         </div>
-        <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span title={pnlKind === "wallet" ? "wallet plus open positions now, against when you pressed Start" : "closed trades today plus open positions"}>{pnlKind === "wallet" ? "since start" : "today"}, {day?.trades || 0} trades{tp ? ` · closed ${(day?.realizedUsd || 0) >= 0 ? "+" : ""}${fmt(day?.realizedUsd || 0)} · open ${(tp.unrealized_usd || 0) >= 0 ? "+" : ""}${fmt(tp.unrealized_usd || 0)}` : ""}</span><span>{(() => {
+        <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span title={pnlKind === "wallet" ? "wallet plus open positions now, against when you pressed Start" : pnlKind === "paper" ? "pretend money: closed paper trades since Start plus open paper positions" : "closed trades today plus open positions"}>{pnlKind === "paper" ? "since start, on paper" : pnlKind === "wallet" ? "since start" : "today"}, {tp?.trades_today ?? day?.trades ?? 0} trades{tp ? ` · closed ${(tp.realized_today_usd ?? day?.realizedUsd ?? 0) >= 0 ? "+" : ""}${fmt(tp.realized_today_usd ?? day?.realizedUsd ?? 0)} · open ${(tp.unrealized_usd || 0) >= 0 ? "+" : ""}${fmt(tp.unrealized_usd || 0)}` : ""}</span><span>{(() => {
           // Cash AND what is in positions, per venue. Showing only the wallet made a buy look like
           // money disappearing: the balance dropped, nothing said where it went, and the number
           // looked broken rather than spent. A reading the server could not refresh says so instead
