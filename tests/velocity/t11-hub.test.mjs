@@ -498,3 +498,43 @@ test("T11: a paper run trades the live feed with simulated money and cannot touc
     assert.equal(routers.Paper?.transfers?.length ?? 0, 0, "no fee is taken on pretend profit");
   } finally { await hub.stop("Paper").catch(() => {}); await feed.stop(); }
 });
+
+// The fee is owed whether or not the transfer lands. A throw in transferSol used to vanish into the
+// outcome handler's catch: no record, no retry, the money simply not collected.
+test("T11: a fee whose transfer fails is recorded as owed and collected on the next close that works", async () => {
+  const root = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  feed.solPrice = 100;
+  const routers = {};
+  const hub = new VelocityHub({ feed, rootDir: root, platformWallet: "PLATFORM_FRESH_WALLET", fee: feeDeps("pro"), makeLiveRouter: ({ secret, wallet }) => (routers[wallet] = new FakeLive({ secret, wallet })), log: { log() {}, error() {}, warn() {} } });
+  await feed.start();
+  try {
+    const r = await hub.start({ wallet: "Owed", secret: "s", settings: { bankrollUsd: 100, aggression: 2 } });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const live = routers.Owed;
+    let fail = true;
+    live.transferSol = async (to, sol) => { if (fail) throw new Error("blockhash not found"); live.transfers.push({ to, sol }); return "SIGLATE"; };
+    const eng = hub.users.get("Owed").engine;
+    const trade = async (id) => {
+      const now = Date.now();
+      feed.emitEvent({ kind: "candidate", id, payload: goodCandidatePayload(id), t_venue: now - 100 });
+      await new Promise(res => setTimeout(res, 50)); await eng.enqueue(() => {});
+      feed.emitEvent({ kind: "tick", id, payload: tickPayload(id, 17_000, { dynamics: { scores: 5, velocity: -0.6, acceleration: -0.2, trend: "crashing" } }), t_venue: now + 500 });
+      await new Promise(res => setTimeout(res, 80)); await eng.enqueue(() => {}); await new Promise(res => setTimeout(res, 30));
+    };
+    await trade("MintOwe1");
+    assert.deepEqual(live.transfers, [], "nothing moved");
+    const owed = eng.ledger.query({ kind: "fee", limit: 3 }).find(f => f.collected === false);
+    assert.ok(owed, "the fee is on the record as owed, with the reason");
+    assert.equal(owed.owed_sol, 0.00095); assert.match(owed.error, /blockhash/);
+    assert.equal(hub.status("Owed").owedFees.length, 1, "and the operator can see it");
+
+    // The path works again: the next profitable close pays its own fee AND the one owed.
+    fail = false;
+    await trade("MintOwe2");
+    assert.deepEqual(live.transfers.map(t => t.sol), [0.00095, 0.00095], "this trade's fee, then the owed one");
+    assert.equal(hub.status("Owed").owedFees.length, 0);
+    const late = eng.ledger.query({ kind: "fee", limit: 5 }).find(f => /collected late/.test(f.note || ""));
+    assert.ok(late); assert.equal(late.venue_ref, "SIGLATE");
+  } finally { await hub.stop("Owed").catch(() => {}); await feed.stop(); }
+});
