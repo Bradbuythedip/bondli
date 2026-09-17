@@ -71,6 +71,7 @@ import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
 import { XSocialIntel } from "../engine/x-social-intel.mjs";
 import { MetaTracker } from "../engine/meta-engine.mjs";
 import { HistoricalMovers } from "../engine/historical-movers.mjs";
+import { WalletIntel } from "../engine/wallet-intel.mjs";
 import SurvivorshipBias from "../engine/survivorship-bias.mjs";
 import { SmartMoneyTracker } from "../engine/smart-money-tracker.mjs";
 import { ResurgenceScanner } from "../engine/resurgence-scanner.mjs";
@@ -372,6 +373,13 @@ function recordKolMention(ca, handle) {
 }
 
 // Dev Wallet Tracker — maps every dev wallet on radar, checks balances, profiles funded devs
+// Measured smart money. Every buy and sell on the on-chain stream arrives here with the FULL buyer
+// pubkey; this keeps a forward P&L ledger per wallet from that stream alone, with the exclusions
+// that matter (creation-slot snipers, co-firing rings, wash, fresh showcase wallets), and answers
+// "how many proven wallets bought this in its first minute". Snapshots go to Redis, the only store
+// that survives a redeploy; the filesystem does not.
+const walletIntel = new WalletIntel({ store: redis ? { get: (k) => redis.get(k), set: (k, v) => redis.set(k, v) } : null, storeKey: "wallet-intel:v1", log: console });
+walletIntel.load().then(ok => console.log(`[WALLET-INTEL] ${ok ? "restored from Redis" : "starting fresh"}`)).catch(e => console.warn("[WALLET-INTEL] load:", e.message));
 const devWalletTracker = new DevWalletTracker({ redis, connection });
 // Load persisted dev wallet data from Redis
 if (redis) { devWalletTracker.load().catch(() => {}); }
@@ -1284,6 +1292,7 @@ function processRadarMessage(data) {
 
     radar.tokens.set(mint, token);
     radar._lastLaunchAt = now; // what "online" on the site actually means: a launch was seen just now
+    walletIntel.onCreate({ mint, creator: trader || null, ts: now, slot: data.slot ?? null });
     { const v = detectMayhem({ create: data }); if (v.mayhem) markMayhem(mint, v.source); }
     if (!token._mayhem) noteCopycat(token);
     subscribeToToken(mint);
@@ -1461,6 +1470,11 @@ function processRadarMessage(data) {
     // Track trade (hub = bot/router wallet: counts for volume, not for identity)
     const hub = noteWalletTrade(trader.slice(0, 8), mint, now);
     token.trades.push({ side: data.txType, sol: +sol.toFixed(4), wallet: trader.slice(0, 8), time: now, hub });
+    // The full pubkey exists only here; token.trades keeps a prefix. This is the one place the
+    // wallet ledger can be fed, so it is fed for buys and sells alike -- a sell is what closes a
+    // position and turns a guess about a wallet into a measured result.
+    if (trader && (data.txType === "buy" || data.txType === "sell")) walletIntel.onTrade({ mint, wallet: trader, isBuy: data.txType === "buy", sol, tokens: Number(data.tokenAmount) || 0, ts: now, slot: data.slot ?? null, signature: data.signature || null, mcapUsd: token.mcapUsd || null });
+    if (token.mcapUsd > 0) walletIntel.markMcap(mint, token.mcapUsd, now);
     if (token.trades.length > 100) token.trades = token.trades.slice(-100);
     if (!hub) radar._revivals.noteTrade(mint, { side: data.txType, sol, wallet: trader, curvePct: token.graduated ? null : Math.min(100, (vSol / 85) * 100), ts: now });
 
@@ -1484,6 +1498,7 @@ function processRadarMessage(data) {
       // Smart wallet: resolve outcome as win for all buyers
       smartWallets.resolveOutcome(mint, true);
       smartMoneyTracker.recordOutcome(mint, true);
+      walletIntel.onGraduated(mint, now);
       // Fetch live MC from DexScreener since PumpPortal stops sending data after graduation
       // Retry with delay since Raydium pool takes seconds to index
       refreshGraduatedMcap(mint).catch(() => {});
@@ -2132,6 +2147,10 @@ function extractQuickFeatures(t) {
       (t.knownInfluencerBuys ? t.knownInfluencerBuys * 0.2 : 0) +
       (smartMoneyTracker.getSmartMoneyScore(t.ca || ca)?.convergence ? 0.5 : 0)
     ),
+    // Layer 3: measured. Wallets with a proven forward record (20+ closed positions, Wilson-bounded
+    // win rate, early hits on runners, none of the exclusion flags) that bought inside the first
+    // minute. count is the number of them; score is bounded so two strong ones saturate it.
+    _smartMoney: (() => { const sm = walletIntel.smartBuyers(t.ca || ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }); return { count: sm.count, score: Math.min(1, (sm.sumScore || 0) / 2) }; })(),
 
     // ═══ HOLDER QUALITY SCORE — are early buyers proven winners? ═══
     // A token where 5 early buyers each have 3+ past graduated tokens
@@ -8214,6 +8233,11 @@ function buildScoredResponse(query = {}) {
   return { ts: now, solPrice: solUsdPrice, solPriceAt: solUsdPriceAt || null, gradMc: gradMcUsd(), count: rows.length, tokens: rows.slice(0, limit) };
 }
 app.get("/api/radar/scored", (req, res) => res.json(buildScoredResponse(req.query)));
+// Smart money. The aggregate is public; the list of wallets is the operator's. A public list of the
+// wallets a bot copies is bait for the wallets themselves (buy, be copied, sell into the copiers) and
+// a gift to every other bot, so it stays behind the admin key.
+app.get("/api/smart-money/status", (req, res) => { res.set("Cache-Control", "public, max-age=30"); res.json({ ok: true, ...walletIntel.status() }); });
+app.get("/api/smart-money/top", requireAdmin, (req, res) => res.json({ ok: true, top: walletIntel.top(Math.min(200, parseInt(req.query.n || "50") || 50)), status: walletIntel.status() }));
 
 // ═══ The front page's live view: what the bot is looking at right now, light enough to poll ═══
 // Newest launches first, with the one word the bot has for each: mayhem / copy / rug / hot / watching.
@@ -8248,7 +8272,7 @@ app.get("/api/radar/live", (req, res) => {
       verdict = judgeToken(t, qf, scoreDynamics.get(t.ca) || null, aggression);
       tag = tagFor(verdict, !!t._slowCook);
     }
-    return { ca: t.ca, chain: pons ? "robinhood" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated };
+    return { ca: t.ca, chain: pons ? "robinhood" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, smart: pons ? 0 : walletIntel.smartBuyers(t.ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }).count, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated };
   };
   // Robinhood Chain launches sit in the same list, newest first, marked by chain.
   const ponsTokens = velocityHub?.ponsFeed ? [...velocityHub.ponsFeed.tokens.values()] : [];
