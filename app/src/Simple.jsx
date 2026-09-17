@@ -135,6 +135,31 @@ function TokenImg({ src, ca, label, size, T }) {
     <img ref={ref} key={full} src={full} alt="" decoding="async" onLoad={onLoad} onError={onError}
       style={{ position: "absolute", inset: 0, width: size, height: size, objectFit: "cover", opacity: loaded ? 1 : 0, animation: loaded ? "imgin .35s ease-out" : "none" }} /></div>;
 }
+// ── Heartbeat ──────────────────────────────────────────────────────────────────
+// The landing page's proof that the thing is real, from every bot on the site with no wallet named:
+// how many are trading now, what closed today, the best of it. "0 bots trading" in a corner was the
+// opposite of this. When there is nothing yet it says nothing -- an empty pulse is not a pulse.
+const held = ms => ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))}s` : `${Math.round(ms / 60_000)}m`;
+const shareText = (c) => `${c.pnl_pct >= 0 ? "+" : ""}${Number(c.pnl_pct).toFixed(0)}% on $${(c.ticker || c.instrument.slice(0, 6)).replace(/^\$/, "")} in ${held(c.held_ms)}. The bot did it, not me 🐸`;
+const shareUrl = (c) => `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText(c))}&url=${encodeURIComponent("https://bondli.fun")}`;
+function Heartbeat({ T }) {
+  const [d, sD] = useState(null);
+  useEffect(() => { let on = true; const poll = async () => { try { const r = await a.pulse(); if (on) sD(r); } catch {} }; poll(); const id = setInterval(poll, 20_000); return () => { on = false; clearInterval(id); }; }, []);
+  if (!d || (!d.live && !d.closes)) return null;
+  const muted = { color: T.ft, fontSize: 12 };
+  const best = d.best?.[0];
+  return <div style={{ width: "100%", maxWidth: 440, marginBottom: 18, display: "flex", flexDirection: "column", gap: 8 }}>
+    <div style={{ display: "flex", gap: 6 }}>
+      {[[d.live, "bots trading now", "gn"], [d.closes, "closes today", "tx"], [d.closes ? `${Math.round(100 * d.wins / d.closes)}%` : "—", "won", d.closes && d.wins / d.closes >= .3 ? "gn" : "dm"]].map(([n, l, c]) =>
+        <div key={l} className="card" style={{ flex: 1, border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 20, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
+    </div>
+    {best && <div className="card" style={{ border: `1px solid ${T.gn}55`, borderRadius: 10, padding: "8px 12px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+      <span style={{ ...muted, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>best today · <b style={{ color: T.tx }}>${(best.ticker || best.instrument.slice(0, 6)).replace(/^\$/, "")}</b> in {held(best.held_ms)}</span>
+      <span style={{ fontFamily: M, fontWeight: 900, fontSize: 18, color: T.gn, flexShrink: 0 }}>+{Number(best.pnl_pct).toFixed(0)}%</span>
+    </div>}
+  </div>;
+}
+
 // ── Movers ─────────────────────────────────────────────────────────────────────
 // The other half of "what is happening": the launch radar above only ever sees tokens in their first
 // hours, so anything that already ran was invisible here. /api/movers has been on the server all
@@ -560,6 +585,8 @@ export default function Simple() {
       <div style={{ ...muted, fontSize: 16, marginTop: 10 }}>You keep the wallet. It does the trading.</div>
     </div>
 
+    <Heartbeat T={T} />
+
     <Launch T={T} />
 
     <div className="card" style={card}>
@@ -701,6 +728,16 @@ export default function Simple() {
         {s?.review && <div style={{ marginTop: 10, fontFamily: M, fontSize: 11, color: T.ft, lineHeight: 1.6 }}>
           <div>last {s.review.n} closes: <b style={{ color: s.review.pnl_usd >= 0 ? T.gn : T.rd }}>{fmt(s.review.pnl_usd)}</b> · won {Math.round(s.review.win_rate * 100)}% · fees {fmt(s.review.fees_usd)}{Object.entries(s.review.venues || {}).map(([v, x]) => ` · ${v === "pons" ? "RH" : "SOL"} ${x.n} ${fmt(x.pnl_usd)}`)}</div>
           <div>{s.review.reasons.slice(0, 6).map(r => <span key={r.reason} style={{ marginRight: 10, color: r.pnl_usd >= 0 ? T.gn : T.yl }}>{r.reason.toLowerCase().replace(/_/g, " ")} {r.n} {fmt(r.pnl_usd)}</span>)}</div>
+        </div>}
+        {s.closes?.length > 0 && <div style={{ marginTop: 12 }}>
+          <div style={{ ...muted, marginBottom: 6 }}>your last closes · a win is a tap from X</div>
+          <div style={{ background: T.sf + "e6", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
+            {s.closes.slice(0, 5).map((c, i) => <div key={c.ts + ":" + i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderTop: i ? `1px solid ${T.bd}` : "none" }}>
+              <span style={{ flex: 1, minWidth: 0, fontFamily: M, fontSize: 12, color: T.dm, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><b style={{ color: T.tx }}>${(c.ticker || c.instrument.slice(0, 6)).replace(/^\$/, "")}</b> · {held(c.held_ms)} · {c.reason.toLowerCase().replace(/_/g, " ")}{c.paper ? " · paper" : ""}</span>
+              <span style={{ fontFamily: M, fontWeight: 900, fontSize: 14, color: c.pnl_usd >= 0 ? T.gn : T.rd, flexShrink: 0 }}>{c.pnl_pct >= 0 ? "+" : ""}{Number(c.pnl_pct).toFixed(0)}%</span>
+              {c.pnl_usd > 0 && !c.paper && <a href={shareUrl(c)} target="_blank" rel="noopener" style={{ flexShrink: 0, fontFamily: S, fontWeight: 800, fontSize: 12, color: "#000", background: T.gn, borderRadius: 8, padding: "5px 9px", textDecoration: "none" }}>Share</a>}
+            </div>)}
+          </div>
         </div>}
         <Pulse st={st} T={T} />
         <div style={{ marginTop: 14, display: "flex", gap: 8 }}>

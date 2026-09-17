@@ -7768,12 +7768,32 @@ const imgCache = new Map(); // url → { buf, ct, ts }
 const IMG_CACHE_MAX = 2000;
 const IMG_CACHE_TTL = 7200000; // 2 hours
 const imgFailing = new Map(); // url → timestamp of last failure (negative cache)
+const imgByMint = new Map(); // mint → { uri, at }: pump.fun's own answer for the picture, asked once
 
 app.get("/api/img", async (req, res) => {
   // ?url= the image we know about (may be empty), ?mint= the token: DexScreener keeps its own copy of
   // every pump.fun token's picture by mint, which is the one source that needs no metadata from us.
   const mint = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(req.query.mint || "") ? req.query.mint : null;
-  const url = req.query.url || (mint ? `https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png?size=lg` : "");
+  // A launch's picture is on pump.fun the moment pump.fun indexes the mint -- usually well before the
+  // radar's own metadata pass reaches it, and long before DexScreener has a pair to hang a picture
+  // on. So a request that names a mint and no picture asks pump.fun for the picture first. The
+  // answer is remembered per mint (a miss for 20s, a hit for the life of the process: a mint's
+  // picture does not change), so the JSON hop is paid once, not per tile per poll.
+  let url = req.query.url || "";
+  if (!url && mint) {
+    const known = imgByMint.get(mint);
+    if (known && (known.uri || Date.now() - known.at < 20_000)) url = known.uri || "";
+    else {
+      try {
+        const r = await fetch(`${PUMP_FUN_API}/coins/${mint}`, { signal: AbortSignal.timeout(4000), headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Accept": "application/json", "Origin": "https://pump.fun", "Referer": "https://pump.fun/" } });
+        const d = r.ok ? await r.json() : null;
+        url = (d && (d.image_uri || d.profile_image)) || "";
+      } catch { url = ""; }
+      imgByMint.set(mint, { uri: url || null, at: Date.now() });
+      if (imgByMint.size > 20_000) imgByMint.delete(imgByMint.keys().next().value);
+    }
+  }
+  if (!url && mint) url = `https://dd.dexscreener.com/ds-data/tokens/solana/${mint}.png?size=lg`;
   if (!url) return res.status(400).end();
 
   // Check cache first

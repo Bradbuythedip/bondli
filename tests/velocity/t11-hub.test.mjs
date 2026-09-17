@@ -538,3 +538,36 @@ test("T11: a fee whose transfer fails is recorded as owed and collected on the n
     assert.ok(late); assert.equal(late.venue_ref, "SIGLATE");
   } finally { await hub.stop("Owed").catch(() => {}); await feed.stop(); }
 });
+
+// The landing page's heartbeat is every bot's closes with no wallet named. Two things must hold: no
+// record carries a wallet, and a paper close is never counted as money -- it would be the easiest
+// way in the world to make the site look like it is winning.
+test("T11: the public pulse names no wallet and counts no paper money", async () => {
+  const root = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  feed.solPrice = 100;
+  const routers = {};
+  const hub = new VelocityHub({ feed, rootDir: root, platformWallet: "PLATFORM_FRESH_WALLET", fee: feeDeps("pro"), makeLiveRouter: ({ secret, wallet }) => (routers[wallet] = new FakeLive({ secret, wallet })), log: { log() {}, error() {}, warn() {} } });
+  await feed.start();
+  try {
+    assert.deepEqual({ ...hub.pulse(), ts: 0 }, { bots: 0, live: 0, closes: 0, wins: 0, pnl_usd: 0, best: [], recent: [], windowMs: 24 * 60 * 60_000, ts: 0 }, "an empty site has an empty pulse, not an invented one");
+    const live = await hub.start({ wallet: "Real", secret: "s1", settings: { bankrollUsd: 100, aggression: 2 } });
+    const paper = await hub.start({ wallet: "Pretend", secret: "s2", settings: { bankrollUsd: 100, aggression: 2, paper: true } });
+    assert.ok(live.ok && paper.ok);
+    const now = Date.now();
+    feed.emitEvent({ kind: "candidate", id: "MintP", payload: goodCandidatePayload("MintP"), t_venue: now - 100 });
+    await new Promise(res => setTimeout(res, 50));
+    for (const w of ["Real", "Pretend"]) await hub.users.get(w).engine.enqueue(() => {});
+    feed.emitEvent({ kind: "tick", id: "MintP", payload: tickPayload("MintP", 17_000, { dynamics: { scores: 5, velocity: -0.6, acceleration: -0.2, trend: "crashing" } }), t_venue: now + 500 });
+    await new Promise(res => setTimeout(res, 80));
+    for (const w of ["Real", "Pretend"]) await hub.users.get(w).engine.enqueue(() => {});
+    const p = hub.pulse();
+    assert.equal(p.bots, 2); assert.equal(p.live, 1, "the paper bot is a bot, not a live one");
+    assert.equal(p.closes, 1, "the paper close is not a close that happened with money");
+    for (const c of [...p.recent, ...p.best]) { assert.equal("wallet" in c, false); assert.equal(c.paper, false); assert.ok(c.instrument && Number.isFinite(c.pnl_pct)); }
+    assert.equal(JSON.stringify(p).includes("Real"), false, "no wallet, anywhere in it");
+    // The user's own card sees their own closes, paper flagged as paper.
+    const mine = hub.status("Pretend").status.closes;
+    assert.equal(mine.length, 1); assert.equal(mine[0].paper, true);
+  } finally { for (const w of ["Real", "Pretend"]) await hub.stop(w).catch(() => {}); await feed.stop(); }
+});

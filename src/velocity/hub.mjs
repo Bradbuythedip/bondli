@@ -322,6 +322,32 @@ export class VelocityHub {
     return { running: true, startedAt: u.startedAt, settings: u.settings, owedFees: u.owedFees || [], status: s, funnel: u.engine.funnel(), feeWallet: this.feeOk ? this.platformWallet : null, fee, sweep: this._sweepView(this._sweeps.get(wallet)) };
   }
 
+  /** What every bot on the site did lately, with no wallet named. This is the landing page's proof
+   *  that the thing is real: bots trading now, closes in the last day, the best of them. A wallet is
+   *  never in it, and a paper close is counted as paper, never as money. */
+  pulse({ windowMs = 24 * 60 * 60_000, limit = 8 } = {}) {
+    const since = this.clock() - windowMs;
+    const closes = [];
+    for (const u of this.users.values()) {
+      for (const o of u.engine.ledger.query({ kind: "outcome", limit: 200 })) {
+        if (o.ts < since || o.reason === "LEG_UNWOUND") continue;
+        const p = u.engine.store.state.positions?.[o.positionId];
+        closes.push({ ts: o.ts, venue: o.venue, instrument: o.instrument, name: p?.reference?.name || "", ticker: p?.reference?.ticker || "", pnl_usd: o.pnl_usd, pnl_pct: o.pnl_pct, held_ms: o.held_ms, reason: o.reason, paper: !!o.paper });
+      }
+    }
+    const live = closes.filter(c => !c.paper);
+    const wins = live.filter(c => c.pnl_usd > 0);
+    const best = [...wins].sort((a, b) => b.pnl_pct - a.pnl_pct).slice(0, limit);
+    const recent = [...live].sort((a, b) => b.ts - a.ts).slice(0, limit);
+    return {
+      bots: this.users.size,
+      live: [...this.users.values()].filter(u => !u.settings?.paper).length,
+      closes: live.length, wins: wins.length,
+      pnl_usd: +live.reduce((s, c) => s + c.pnl_usd, 0).toFixed(2),
+      best, recent, windowMs, ts: this.clock(),
+    };
+  }
+
   /** The narration, newest last, from the user's own ledger. */
   narration(wallet, limit = 60) {
     const u = this.users.get(wallet);
@@ -662,5 +688,6 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
   app.post("/api/velocity/ack-daily-limit", requireOwner, async (req, res) => { try { res.json(await hub.acknowledgeDailyLimit(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/halt", requireOwner, async (req, res) => { try { res.json(await hub.halt(req.body.wallet, req.body.mode === "freeze" ? "freeze" : "flatten")); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.get("/api/velocity/status", requireOwner, (req, res) => res.json({ ok: true, ...hub.status(req.query.wallet), narration: hub.narration(req.query.wallet, 40) }));
+  app.get("/api/velocity/pulse", (req, res) => { res.set("Cache-Control", "public, max-age=10"); res.json({ ok: true, ...hub.pulse() }); });
   app.get("/api/velocity/health", (req, res) => res.json({ ok: true, users: hub.list().length, feeConfigured: hub.feeOk, feed: hub.feed.status?.() || null, pons: hub.ponsFeed ? { ...(hub.ponsFeed.status?.() || {}), tokens: hub.ponsFeed.tokens?.size ?? null, ethPrice: hub.ponsFeed.solPrice, feeConfigured: !!hub.platformEvmWallet } : null }));
 }
