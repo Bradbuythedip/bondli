@@ -233,6 +233,14 @@ export class Engine extends EventEmitter {
   }
 
   /** The last hundred closes, grouped by how they ended: where the money went. */
+  /** The last few closes as a person would tell them: what, how much, how long. For the share card. */
+  closes(limit = 8) {
+    return this.ledger.query({ kind: "outcome", limit: limit * 2 })
+      .filter(o => o.reason !== "LEG_UNWOUND")
+      .slice(0, limit)
+      .map(o => { const p = this.store.state.positions?.[o.positionId]; return { ts: o.ts, venue: o.venue, instrument: o.instrument, name: p?.reference?.name || "", ticker: p?.reference?.ticker || "", pnl_usd: o.pnl_usd, pnl_pct: o.pnl_pct, held_ms: o.held_ms, reason: o.reason, paper: !!o.paper }; });
+  }
+
   review(limit = 100) {
     const outs = this.ledger.query({ kind: "outcome", limit }).filter(o => !o.paper);
     if (!outs.length) return null;
@@ -1216,7 +1224,7 @@ export class Engine extends EventEmitter {
       day: { ...s.day, limit_usd: this.env.daily_loss_limit_usd, counted_usd: this.realizedToday(), counting: this.anyLiveVenue() ? "live" : "paper", used_pct: +((Math.max(0, -this.realizedToday()) / this.env.daily_loss_limit_usd) * 100).toFixed(1) },
       bankroll: { source: this.walletMode() ? "wallet" : "fixed", fixed_usd: this.env.bankroll_usd, equity_usd: this.portfolioSnapshot().equity_usd ?? null, wallet: this.wallet.at ? this.wallet : null, wallets: this.wallets },
       positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, name: p.reference?.name || "", ticker: p.reference?.ticker || "", tier: p.tier, model: p.model, notional_usd: p.notional_usd, stake_usd: p.stake_usd, mark: p.mark, entryMark: p.entryMark, peak: p.peak, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode, stall_ms: p.plan?.stall_ms ?? null, max_hold_ms: p.plan?.max_hold_ms ?? null }, tpHit: p._bondli?.tpHit ?? 0, entryTime: p.entryTime, lastTickAt: p.lastTickAt || null, curve: p.reference?.curve?.address || null, adopted: !!p.adopted, sizing: p.sizing || null, lastExitError: p.lastExitError || null })),
-      review: this.review(),
+      review: this.review(), closes: this.closes(8),
       misses: this.misses({ limit: 300 }).slice(0, 12), // what the rules refused that then ran
       venues, weightsVersion: this.weights.current().version, lastDecisions: s.lastDecisions, alerts: s.alerts.slice(0, 10),
       holdings: Object.fromEntries(Object.entries(this._holdings).map(([venue, h]) => { const open = new Set(this.store.openPositions(venue).map(p => p.instrument)); return [venue, { at: h.at, list: h.list.map(x => ({ ...x, tracked: open.has(x.instrument) })) }]; })),
