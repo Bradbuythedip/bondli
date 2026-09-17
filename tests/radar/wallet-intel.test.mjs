@@ -287,3 +287,19 @@ test("memory stays bounded: no raw trades kept, positions die at 24h, mints at 2
   r2.intel.status();
   assert.equal(r2.intel.wallets.has("OLD"), false); assert.equal(r2.intel.wallets.has("ACTIVE"), true);
 });
+
+test("a buy with no cost is not a cost basis: it opens nothing, and the sell after it is ignored", () => {
+  const r = rig({ minClosed: 1 });
+  const L = launch(r, 0);
+  buy(r, L, "W", { after: 30_000, sol: 0 });
+  run(r, L);
+  sell(r, L, "W", { after: 20 * MIN, sol: 0.3 });
+  const st = r.intel.walletScore("W");
+  assert.equal(st.closed, 0, "nothing closed: there was never a lot"); assert.equal(st.score, 0);
+  assert.equal(r.intel.status().counters?.ignoredBuys ?? r.intel.counters.ignoredBuys, 1);
+  assert.equal(r.intel.counters.ignoredSells, 1, "the sell found no lot and was ignored, not credited as profit");
+  // The same wallet with a real buy closes a real win.
+  const L2 = launch(r, 1);
+  buy(r, L2, "W", { after: 30_000, sol: 0.1 }); run(r, L2); sell(r, L2, "W", { after: 20 * MIN, sol: 0.3 });
+  assert.equal(r.intel.walletScore("W").closed, 1);
+});

@@ -17,8 +17,7 @@ import { Dynamics, quickFeatures, scoreToken } from "../pons/feed.mjs";
 import {
   PORTALS, POOL_MANAGER, STATE_VIEW, USDC_ERC20, DEFAULT_RPC_URL, EXPLORER, SNIPE_TAX_WINDOW_MS, QUOTE_IS_NATIVE, QUOTE_DECIMALS, TOKEN_DECIMALS, POOL_FEE_PIPS,
   HOOK_ABI, STATE_VIEW_ABI, ERC20_ABI, TOPICS, portalIface,
-  decodeLog, classifySwap, priceFromSqrtX96, mcapQuote, progress, poolIdFor, tokenIsToken0, sqrtRatioAtTick, sqrtRatioFromX96, toTokens,
-} from "./chain.mjs";
+  decodeLog, classifySwap, priceFromSqrtX96, mcapQuote, progress, poolIdFor, tokenIsToken0, sqrtRatioAtTick, sqrtRatioFromX96, toTokens, CHAIN_ID } from "./chain.mjs";
 
 const zeroPad = (a) => zeroPadValue(String(a).toLowerCase(), 32);
 const lower = (a) => String(a).toLowerCase();
@@ -71,7 +70,9 @@ export function positionReserves({ sqrtPriceX96, liquidity, tickStart, tickBond,
 
 /** The chain, behind a handful of calls, so a test can fake it. */
 export function ethersRpc(rpcUrl = process.env.ARC_RPC_URL || DEFAULT_RPC_URL) {
-  const provider = new JsonRpcProvider(rpcUrl, undefined, { staticNetwork: true, batchMaxCount: 10 });
+  // The chain is named up front: a provider left to detect it retries every second, loudly, for as
+  // long as the RPC is unreachable, and the chain id is not something the RPC gets to decide.
+  const provider = new JsonRpcProvider(rpcUrl, { chainId: CHAIN_ID, name: "arc" }, { staticNetwork: true, batchMaxCount: 10 });
   const stateView = new Contract(STATE_VIEW, STATE_VIEW_ABI, provider);
   return {
     provider,

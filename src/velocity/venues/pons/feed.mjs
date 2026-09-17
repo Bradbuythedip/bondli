@@ -7,11 +7,13 @@
 import { JsonRpcProvider, Contract, zeroPadValue } from "ethers";
 const zeroPad = (a) => zeroPadValue(String(a).toLowerCase(), 32);
 import { Feed, errorText } from "../../core/feed.mjs";
-import { FACTORY, FACTORY_ABI, TOPICS, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, EXPLORER, SNIPE_TAX_WINDOW_MS, decodeLog, mcapQuote, curveProgress, toEth, toTokens } from "./chain.mjs";
+import { FACTORY, FACTORY_ABI, TOPICS, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, EXPLORER, SNIPE_TAX_WINDOW_MS, decodeLog, mcapQuote, curveProgress, toEth, toTokens, CHAIN_ID } from "./chain.mjs";
 
 /** The chain, behind four calls, so a test can fake it. */
 export function ethersRpc(rpcUrl = process.env.PONS_RPC_URL || DEFAULT_RPC_URL) {
-  const provider = new JsonRpcProvider(rpcUrl, undefined, { staticNetwork: true, batchMaxCount: 10 });
+  // The chain is named up front: a provider left to detect it retries every second, loudly, for as
+  // long as the RPC is unreachable, and the chain id is not something the RPC gets to decide.
+  const provider = new JsonRpcProvider(rpcUrl, { chainId: CHAIN_ID, name: "robinhood" }, { staticNetwork: true, batchMaxCount: 10 });
   return {
     provider,
     blockNumber: () => provider.getBlockNumber(),

@@ -127,6 +127,8 @@ export class WalletIntel {
   /** One buy or sell from the stream. mcapUsd is optional: the mint's last mark is used without it. */
   onTrade({ mint, wallet, isBuy, sol, tokens, ts, slot = null, signature = null, mcapUsd = null } = {}) {
     if (!mint || !wallet || !(sol >= 0) || !(tokens > 0)) return;
+    // A buy with no cost is not a cost basis: booked at zero it would close as a guaranteed win.
+    if (isBuy && !(sol > 0)) { this.counters.ignoredBuys = (this.counters.ignoredBuys || 0) + 1; return; }
     const now = Number.isFinite(ts) ? ts : this.clock();
     this.counters.trades++;
     const m = this._mint(mint, now), w = this._wallet(wallet, now);

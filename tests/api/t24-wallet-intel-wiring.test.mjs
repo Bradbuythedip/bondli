@@ -41,3 +41,16 @@ test("T24: the measured signal reaches the features, the edge and the learner, a
   assert.match(SRC, /app\.get\("\/api\/smart-money\/top", requireAdmin,/);
   assert.match(SRC, /app\.get\("\/api\/smart-money\/status", \(req, res\)/);
 });
+
+test("T24: the trade hook books the trade's own SOL, never the curve delta; the admin gate has no default and reads only the header", () => {
+  const trade = SRC.indexOf("walletIntel.onTrade({ mint, wallet: trader, isBuy: data.txType === \"buy\"");
+  assert.ok(trade > 0);
+  assert.match(SRC.slice(trade, trade + 260), /sol: Number\(data\.solAmount\) > 0 \? Number\(data\.solAmount\) : sol,/);
+  assert.match(SRC, /const ADMIN_SECRET = process\.env\.ADMIN_SECRET \|\| null;/);
+  assert.doesNotMatch(SRC, /bondli_default/);
+  const gate = SRC.indexOf("function requireAdmin(req, res, next)");
+  const body = SRC.slice(gate, gate + 400);
+  assert.match(body, /const secret = req\.headers\["x-admin-secret"\];/);
+  assert.doesNotMatch(body, /req\.query/);
+  assert.match(body, /if \(!ADMIN_SECRET \|\| !secret \|\| secret !== ADMIN_SECRET\) return res\.status\(403\)/);
+});
