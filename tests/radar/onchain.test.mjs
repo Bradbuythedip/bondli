@@ -1,7 +1,9 @@
 // On-chain pump.fun trade decoding, offline, against a real TradeEvent sample.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decodeTradeEvent, pumpTradesFromLogs, toPortalTrade, PUMP_PROGRAM, TRADE_DISC_B64 } from "../../src/api/radar-onchain.mjs";
+import { decodeTradeEvent, pumpTradesFromLogs, toPortalTrade, PUMP_PROGRAM, TRADE_DISC_B64, decodeCreateEvent, pumpEventsFromLogs, toPortalCreate, CREATE_DISC_B64 } from "../../src/api/radar-onchain.mjs";
+import { PublicKey } from "@solana/web3.js";
+import { createHash } from "node:crypto";
 
 const SAMPLE = "vdt/007mYe4I2s9bQJeDK7Vsc0abb1HZtkn00oEApJL31hHDmDkdn4elBH4AAAAANMdMxxcLAAABQFvoWh4tpYvdaQpW4wxu9sWX0f+5ye2VIR53vUXOYLdYSHFnAAAAAJ7V3KMRAAAArWn3u2uCAQCeKbmnCgAAAK3R5G/agwAA";
 
@@ -48,4 +50,68 @@ test("only decodes events emitted while pump.fun is executing", () => {
   assert.equal(pumpTradesFromLogs(collision).length, 0);
   assert.equal(pumpTradesFromLogs([`Program ${PUMP_PROGRAM} invoke [1]`, "Program data: " + TRADE_DISC_B64 + "AAAA", `Program ${PUMP_PROGRAM} success`]).length, 0, "garbage payload is skipped");
   assert.equal(pumpTradesFromLogs(null).length, 0);
+});
+
+// A CreateEvent is the launch itself, with the metadata uri in it. Decoding it is what lets the
+// radar see a launch -- and fetch its picture -- at second zero, without PumpPortal's websocket.
+// No live sample is checked in (the RPC is not reachable offline), so the event is built here from
+// the documented Anchor/Borsh layout: 8-byte discriminator, three length-prefixed strings, then
+// mint / bonding curve / creator pubkeys, then the fields pump.fun appended later.
+const KEY = (n) => new PublicKey(Buffer.alloc(32, n));
+function borshStr(s) { const b = Buffer.from(s, "utf8"); const len = Buffer.alloc(4); len.writeUInt32LE(b.length); return Buffer.concat([len, b]); }
+function createEventBytes({ name, symbol, uri, mint, curve, user, trailing = true }) {
+  const disc = createHash("sha256").update("event:CreateEvent").digest().subarray(0, 8);
+  const parts = [disc, borshStr(name), borshStr(symbol), borshStr(uri), mint.toBuffer(), curve.toBuffer(), user.toBuffer()];
+  if (trailing) {
+    const creator = KEY(9).toBuffer(); const ts = Buffer.alloc(8); ts.writeBigInt64LE(1758000000n);
+    const vTok = Buffer.alloc(8); vTok.writeBigUInt64LE(1073000000000000n); const vSol = Buffer.alloc(8); vSol.writeBigUInt64LE(30000000000n);
+    parts.push(creator, ts, vTok, vSol);
+  }
+  return Buffer.concat(parts);
+}
+
+test("the CreateEvent discriminator prefix is the sha256 of the Anchor event name", () => {
+  const disc = createHash("sha256").update("event:CreateEvent").digest().subarray(0, 8);
+  assert.equal(disc.toString("hex"), "1b72a94ddeeb6376");
+  assert.ok(disc.toString("base64").startsWith(CREATE_DISC_B64), `${disc.toString("base64")} starts with ${CREATE_DISC_B64}`);
+  assert.equal(CREATE_DISC_B64.length, 10, "ten characters: the eleventh depends on the byte after the discriminator");
+});
+
+test("decodes a CreateEvent: name, symbol, uri and the keys, with and without the appended fields", () => {
+  const mint = KEY(1), curve = KEY(2), user = KEY(3);
+  const full = decodeCreateEvent(createEventBytes({ name: "Jeff", symbol: "JEFF", uri: "https://ipfs.io/ipfs/bafkreiabc", mint, curve, user }));
+  assert.equal(full.name, "Jeff"); assert.equal(full.symbol, "JEFF"); assert.equal(full.uri, "https://ipfs.io/ipfs/bafkreiabc");
+  assert.equal(full.mint, mint.toBase58()); assert.equal(full.bondingCurve, curve.toBase58()); assert.equal(full.user, user.toBase58());
+  assert.equal(full.creator, KEY(9).toBase58()); assert.equal(full.timestamp, 1758000000); assert.equal(full.vSol, 30000000000); assert.equal(full.vTok, 1073000000000000);
+  // The layout pump.fun shipped first, before creator/timestamp/reserves were appended.
+  const old = decodeCreateEvent(createEventBytes({ name: "Old", symbol: "OLD", uri: "ipfs://Qm1", mint, curve, user, trailing: false }));
+  assert.equal(old.uri, "ipfs://Qm1"); assert.equal(old.creator, null); assert.equal(old.vSol, null);
+  // Garbage is null, never a throw: a truncated string length must not read past the buffer.
+  assert.equal(decodeCreateEvent(createEventBytes({ name: "x", symbol: "y", uri: "z", mint, curve, user }).subarray(0, 40)), null);
+  const bad = createEventBytes({ name: "x", symbol: "y", uri: "z", mint, curve, user }); bad.writeUInt32LE(0xffffffff, 8);
+  assert.equal(decodeCreateEvent(bad), null);
+});
+
+test("one walk of the logs yields creates and trades, only while pump.fun is executing", () => {
+  const mint = KEY(4), curve = KEY(5), user = KEY(6);
+  const createLine = "Program data: " + createEventBytes({ name: "N", symbol: "S", uri: "u", mint, curve, user }).toString("base64");
+  const logs = [
+    `Program ${PUMP_PROGRAM} invoke [1]`, createLine, "Program data: " + SAMPLE, `Program ${PUMP_PROGRAM} success`,
+    "Program SomeOtherProgram1111111111111111111111111 invoke [1]", createLine, "Program SomeOtherProgram1111111111111111111111111 success",
+  ];
+  const ev = pumpEventsFromLogs(logs);
+  assert.equal(ev.creates.length, 1, "the create under a foreign program is not ours");
+  assert.equal(ev.trades.length, 1);
+  assert.equal(ev.creates[0].mint, mint.toBase58());
+  assert.deepEqual(pumpTradesFromLogs(logs).map(t => t.mint), ev.trades.map(t => t.mint), "the old entry point still returns the trades");
+});
+
+test("a create maps to PumpPortal's create shape so the radar's create branch needs no change", () => {
+  const mint = KEY(7), curve = KEY(8), user = KEY(3);
+  const c = decodeCreateEvent(createEventBytes({ name: "Jeff", symbol: "JEFF", uri: "ipfs://Qm2", mint, curve, user }));
+  const p = toPortalCreate(c, "sigC", 456);
+  assert.equal(p.txType, "create"); assert.equal(p.mint, mint.toBase58()); assert.equal(p.traderPublicKey, user.toBase58());
+  assert.equal(p.name, "Jeff"); assert.equal(p.symbol, "JEFF"); assert.equal(p.uri, "ipfs://Qm2", "the uri is what makes the picture fetchable at second zero");
+  assert.equal(p.vSolInBondingCurve, 30); assert.ok(Math.abs(p.marketCapSol - 27.96) < 0.05, "opening market cap from the opening reserves");
+  assert.equal(p.source, "onchain"); assert.equal(p.signature, "sigC"); assert.equal(p.slot, 456);
 });
