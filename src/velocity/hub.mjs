@@ -205,6 +205,9 @@ export class VelocityHub {
     // Paper: run the whole machine on the real feed and simulate only the fills. Chosen per start, so
     // a user can paper-trade today and go live tomorrow with the same settings.
     const paper = !!settings.paper;
+    // Public callouts are the user's choice, off by default: a call links the buy transaction, and the
+    // transaction names the trading wallet. Nobody's wallet goes public because someone else's did.
+    const callouts = settings.callouts === true;
     const aggression = Math.max(0, Math.min(3, Math.round(settings.aggression == null || settings.aggression === "" ? 1 : Number(settings.aggression) || 0)));
     const envelope = userEnvelope({ ...settings, pons, arc, aggression });
     const view = new SharedFeedView(this.feed, { clock: this.clock });
@@ -227,8 +230,9 @@ export class VelocityHub {
     engine.on("outcome", ({ position }) => { this.settleFee(wallet, position).catch(err => this.log.error?.(`[VELOCITY-HUB] fee ${wallet.slice(0, 8)}: ${err.message}`)); });
     // Every fill is offered to the public record; the callouts object decides (paper never, below the
     // tier never, once an hour per token across every user) and never throws back into the engine.
-    engine.on("position", p => { this.callouts.onFill(p, { venue: p.venue, tx: p.venue_ref || null, mcapUsd: p.reference?.mcapUsd, tier: p.tier, plan: p.plan, paper: !!p.paper }).catch(() => {}); });
-    engine.on("outcome", ({ position: p, pnl }) => { this.callouts.onOutcome({ position: p, pnl, instrument: p.instrument, reason: p.exitReason }).catch(() => {}); });
+    engine.on("position", p => { if (!callouts) return; this.callouts.onFill(p, { venue: p.venue, tx: p.venue_ref || null, mcapUsd: p.reference?.mcapUsd, tier: p.tier, plan: p.plan, paper: !!p.paper }).catch(() => {}); });
+    engine.on("outcome", ({ position: p, pnl }) => { this.callouts.onOutcome({ position: p, pnl, instrument: p.instrument, positionId: p.id, paper: !!p.paper, reason: p.exitReason }).catch(() => {}); });
+    engine.on("released", ({ position: p }) => { this.callouts.onOutcome({ position: p, pnl: null, instrument: p.instrument, positionId: p.id, paper: !!p.paper, reason: "RELEASED" }).catch(() => {}); });
     const sup = new Supervisor({ engine, dataDir, alerter: engine.alerter, clock: this.clock });
     await engine.start();
     // Start is the user's intent to trade: a halt left over from their last stop or pause must not
@@ -263,7 +267,7 @@ export class VelocityHub {
       return { ok: false, error: first.error || "could not go live", preflight: first.preflight || null, venues: results };
     }
     sup.start();
-    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, pons, arc, pumpfun, paper }, startedAt: this.clock() });
+    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, pons, arc, pumpfun, paper, callouts }, startedAt: this.clock() });
     // Once a minute, the funnel in the server log: what the candidates hit. The first place to look when nothing fills.
     const fun = setInterval(() => { try { const f = engine.funnel(); this.log.log?.(`[velocity ${wallet.slice(0, 8)}] funnel 10m: judged ${f.judged} (${f.distinct} tokens) go ${f.gos} filled ${f.filled} | ${Object.entries(f.gates).map(([g, n]) => `${g} ${n}`).join(", ") || "no rejects"} | top: ${f.top.map(x => `${x.k} ${x.n}`).join("; ")}${f.sized0 ? ` | no size: ${JSON.stringify(f.sized0)}` : ""}${f.failed ? ` | failed: ${JSON.stringify(f.failed)}` : ""}`); } catch {} }, 60_000);
     fun.unref?.(); this.users.get(wallet).fun = fun;

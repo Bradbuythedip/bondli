@@ -294,6 +294,7 @@ export class Engine extends EventEmitter {
     this._knownForeign.delete(p.venue + ":" + p.instrument); // so it shows up as a wallet holding again
     this.venues[p.venue]?.feed?.unwatch(p.instrument);
     this.cooldown.set(p.instrument, this.clock() + this.cfg.reentryCooldownMs);
+    this.emit("released", { position: p });
     this.log("warn", `RELEASED ${p.venue} ${p.instrument}: ${note || p.lastExitError?.reason || "by the operator"}; ${held} tokens stay in the wallet`);
     this.store.save();
     return { ok: true, instrument: p.instrument, venue: p.venue, qty: held };
@@ -1213,6 +1214,7 @@ export class Engine extends EventEmitter {
         this.store.closePosition(p.id, { exitReason: "MISSING_AT_VENUE", pnl_usd: pnl, remaining_qty: 0 });
         if (!p.paper) { this.store.rollDay(); this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4); this.store.state.day.trades++; }
         this.ledger.append({ kind: "outcome", venue, instrument: inst, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: this.clock() - p.entryTime, reason: "MISSING_AT_VENUE", reconciled: true, paper: !!p.paper });
+        this.emit("outcome", { position: p, pnl }); // the hub's fee and record hooks hear this close like any other
         rep.closed.push(inst);
       }
       if (rep.unknown.length) this.log("warn", `${venue}: wallet holds ${rep.unknown.length} token(s) this engine never bought (${rep.unknown.map(u => u.instrument.slice(0, 8)).join(", ")}); left alone`);

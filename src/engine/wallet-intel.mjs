@@ -307,8 +307,12 @@ export class WalletIntel {
     out.medianHoldMs = median(holds);
     out.profitableMints = profitable.size;
     let eN = 0, eHit = 0;
-    for (const e of w.early) { const wt = decayWeight(now - e.ts, o.halfLifeMs); eN += wt; if (e.hit) { eHit += wt; out.earlyHits++; } }
-    out.earlyBuys = w.early.length; out.earlyHitRate = out.earlyBuys ? round(out.earlyHits / out.earlyBuys, 4) : 0;
+    // An early buy is labelled by what the mint does in its first day; until that day is up an
+    // unresolved entry is neither a hit nor a miss, and counting it as a miss would mark a wallet
+    // down for buying a launch seconds ago.
+    let earlyBuys = 0;
+    for (const e of w.early) { if (!e.hit && now - e.ts < DAY) continue; earlyBuys++; const wt = decayWeight(now - e.ts, o.halfLifeMs); eN += wt; if (e.hit) { eHit += wt; out.earlyHits++; } }
+    out.earlyBuys = earlyBuys; out.earlyHitRate = out.earlyBuys ? round(out.earlyHits / out.earlyBuys, 4) : 0;
     const earlyEff = eN > 0 ? eHit / eN : 0;
 
     const f = out.flags;
@@ -342,7 +346,7 @@ export class WalletIntel {
     const out = { mint, count: 0, wallets: [], sumScore: 0, sumSol: 0, seen: 0 };
     if (!m) return out;
     const from = sinceTs ?? m.createTs ?? m.seenTs, to = from + windowMs, now = this.clock();
-    const groups = new Map();
+    const cands = [];
     for (const [wallet, b] of m.buyers) {
       if (b.ts < from || b.ts > to) continue;
       out.seen++;
@@ -350,10 +354,25 @@ export class WalletIntel {
       const s = this.walletScore(wallet, now);
       const f = s.flags;
       if (s.score < threshold || f.sniper || f.wash || f.fresh || f.deployerFunded) continue;
-      const g = s.cohort || wallet, prev = groups.get(g);
-      if (!prev || s.score > prev.score) groups.set(g, { wallet, score: s.score, ts: b.ts, sol: b.sol, cohort: s.cohort ? s.cohort.split(",").length : null, members: (prev?.members || 0) + 1 });
-      else prev.members++;
+      cands.push({ wallet, score: s.score, ts: b.ts, sol: b.sol, flagged: !!f.cohort });
     }
+    // A ring is a connected component over the partner graph, not each wallet's own view of it: two
+    // members of one ring can have different partner sets (a staggered fourth member pairs with some
+    // and not others), and grouping by each wallet's own key counted such a ring three times.
+    const idx = new Map(cands.map((c, i) => [c.wallet, i])), root = cands.map((_, i) => i);
+    const find = i => { while (root[i] !== i) { root[i] = root[root[i]]; i = root[i]; } return i; };
+    for (const c of cands) {
+      if (!c.flagged) continue; // a pair that happens to co-fire is two wallets; a ring is what the flag names
+      const w = this.wallets.get(c.wallet); if (!w) continue;
+      for (const k in w.partners) { const j = idx.get(k); if (j != null && cands[j].flagged && w.partners[k] >= this.o.cohortMinLaunches) { const a = find(idx.get(c.wallet)), b = find(j); if (a !== b) root[a] = b; } }
+    }
+    const groups = new Map();
+    for (const c of cands) {
+      const g = find(idx.get(c.wallet)), prev = groups.get(g);
+      if (!prev) groups.set(g, { wallet: c.wallet, score: c.score, ts: c.ts, sol: c.sol, cohort: c.flagged ? 1 : null, members: 1 });
+      else { prev.members++; prev.cohort = prev.members; if (c.score > prev.score) Object.assign(prev, { wallet: c.wallet, score: c.score, ts: c.ts, sol: c.sol }); }
+    }
+    for (const g of groups.values()) if (g.members > 1) g.cohort = g.members;
     out.wallets = [...groups.values()].sort((a, b) => b.score - a.score);
     out.count = out.wallets.length;
     for (const x of out.wallets) { out.sumScore += x.score; out.sumSol += x.sol; }

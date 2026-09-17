@@ -47,8 +47,15 @@ test("T25: a fill reaches the callouts through the hub with the buy tx on it; th
   assert.match(ENGINE, /venue_ref: fill\.venue_ref \|\| null,\n    \};/);
   // One Callouts per hub, on its own ledger, injectable for tests.
   assert.match(HUB, /this\.callouts = callouts \|\| new Callouts\(\{\n\s+ledger: new Ledger\(path\.join\(rootDir, "_hub", "callouts\.jsonl"\)/);
-  assert.match(HUB, /engine\.on\("position", p => \{ this\.callouts\.onFill\(p, \{ venue: p\.venue, tx: p\.venue_ref \|\| null, mcapUsd: p\.reference\?\.mcapUsd, tier: p\.tier, plan: p\.plan, paper: !!p\.paper \}\)\.catch\(\(\) => \{\}\); \}\);/);
-  assert.match(HUB, /engine\.on\("outcome", \(\{ position: p, pnl \}\) => \{ this\.callouts\.onOutcome\(\{ position: p, pnl, instrument: p\.instrument, reason: p\.exitReason \}\)\.catch\(\(\) => \{\}\); \}\);/);
+  // Opt-in per user: a call links the buy transaction, and the transaction names the trading wallet.
+  assert.match(HUB, /const callouts = settings\.callouts === true;/);
+  assert.match(HUB, /engine\.on\("position", p => \{ if \(!callouts\) return; this\.callouts\.onFill\(p, \{ venue: p\.venue, tx: p\.venue_ref \|\| null, mcapUsd: p\.reference\?\.mcapUsd, tier: p\.tier, plan: p\.plan, paper: !!p\.paper \}\)\.catch\(\(\) => \{\}\); \}\);/);
+  // Every close reports by position, paper flagged, releases included, so another engine's close of the same token is never this call's result.
+  assert.match(HUB, /engine\.on\("outcome", \(\{ position: p, pnl \}\) => \{ this\.callouts\.onOutcome\(\{ position: p, pnl, instrument: p\.instrument, positionId: p\.id, paper: !!p\.paper, reason: p\.exitReason \}\)\.catch\(\(\) => \{\}\); \}\);/);
+  assert.match(HUB, /engine\.on\("released", \(\{ position: p \}\) => \{ this\.callouts\.onOutcome\(\{ position: p, pnl: null, instrument: p\.instrument, positionId: p\.id, paper: !!p\.paper, reason: "RELEASED" \}\)/);
+  assert.match(SITE, /callouts: calls \}\);/, "the site sends the choice");
+  assert.match(SITE, /Public calls\{calls \? " · on" : ""\}/);
+  assert.match(SITE, /The transaction shows this bot's wallet/);
   // Channels come from the environment; none set still leaves the record on the site.
   assert.match(HUB, /webhookUrl: process\.env\.CALLOUT_WEBHOOK_URL \|\| null/);
   assert.match(HUB, /telegram: process\.env\.CALLOUT_TG_TOKEN && process\.env\.CALLOUT_TG_CHAT_ID \? \{ token: process\.env\.CALLOUT_TG_TOKEN, chatId: process\.env\.CALLOUT_TG_CHAT_ID \} : null/);

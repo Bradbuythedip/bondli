@@ -21,7 +21,7 @@ const escapeHtml = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&l
 export const LINKS = Object.freeze({
   pumpfun: Object.freeze({ tx: tx => `https://solscan.io/tx/${tx}`, token: ca => `https://pump.fun/coin/${ca}` }),
   pons: Object.freeze({ tx: tx => `https://robinhoodchain.blockscout.com/tx/${tx}`, token: ca => (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}").replace("{ca}", ca) }),
-  arc: Object.freeze({ tx: tx => `https://explorer.arc.io/tx/${tx}`, token: ca => `https://explorer.arc.io/token/${ca}` }),
+  arc: Object.freeze({ tx: tx => `https://explorer.arc.io/tx/${tx}`, token: ca => (process.env.ARC_TOKEN_URL || "https://explorer.arc.io/token/{ca}").replace("{ca}", ca) }),
 });
 
 /** A hold time a person reads at a glance: 45s, 3m, 1h12m. */
@@ -37,9 +37,9 @@ export function heldLabel(ms) {
 /** '+42% in 3m' for a win, '-8% stopped after 3m' for a loss. The reason names the exit layer. */
 export function resultLine(result) {
   const pct = Number(result?.pnl_pct) || 0;
-  const signed = `${pct >= 0 ? "+" : ""}${pct.toFixed(pct % 1 ? 1 : 0)}%`;
+  const signed = `${pct > 0 ? "+" : ""}${pct.toFixed(pct % 1 ? 1 : 0)}%`;
   const held = heldLabel(result?.held_ms);
-  if (pct >= 0) return `${signed} in ${held}`;
+  if (pct > 0) return `${signed} in ${held}`;
   const reason = String(result?.reason || "").toLowerCase();
   const word = /stop/.test(reason) ? "stopped" : /stall|doa/.test(reason) ? "cut flat" : /max_hold|timeout|time/.test(reason) ? "timed out" : reason ? reason.replace(/_/g, " ") : "closed";
   return `${signed} ${word} after ${held}`;
@@ -73,7 +73,7 @@ export class Callouts {
     this.byId = new Map();
     this.lastAt = new Map();       // instrument -> ts of its last callout, for the dedupe window
     this.lastError = null;
-    this.skipped = { paper: 0, tier: 0, dedupe: 0 };
+    this.skipped = { paper: 0, tier: 0, dedupe: 0, noTx: 0 };
     this._rehydrate();
   }
 
@@ -81,9 +81,10 @@ export class Callouts {
   _rehydrate() {
     if (typeof this.ledger?.query !== "function") return;
     let recs = [];
-    try { recs = this.ledger.query({ kind: "callout", limit: this.feedLimit * 3 }); } catch { return; }
+    // A delivered call is four records (call, delivery, result, result_delivery).
+    try { recs = this.ledger.query({ kind: "callout", limit: this.feedLimit * 4 }); } catch { return; }
     for (const r of recs) {
-      if (r.phase === "call") this._remember({ ...r, channels: r.channels || {}, result: r.result || null, messageIds: {} });
+      if (r.phase === "call") this._remember({ ...r, positionId: r.positionId || "", channels: r.channels || {}, result: r.result || null, messageIds: {} });
       else if (r.phase === "delivery" && this.byId.has(r.id)) Object.assign(this.byId.get(r.id), { posted: r.posted, channels: r.channels || {}, messageIds: r.messageIds || {} });
       else if (r.phase === "result" && this.byId.has(r.id)) this.byId.get(r.id).result = r.result || null;
     }
@@ -117,18 +118,24 @@ export class Callouts {
       const ts = this.clock();
       const last = this.lastAt.get(instrument);
       if (last != null && ts - last < this.dedupeMs) { this.skipped.dedupe++; return { posted: false, id: null, channels: {}, reason: "already called" }; }
+      // The whole point is a transaction anyone can look up; a fill without one is not called.
+      if (!tx) { this.skipped.noTx++; return { posted: false, id: null, channels: {}, reason: "no tx" }; }
 
       const ref = position?.reference || {};
       const exitPlan = plan ?? position?.plan ?? null;
-      const hash = createHash("sha256").update(`${venue}|${instrument}|${tx || ""}|${ts}`).digest("hex");
+      const mcap = Math.round(Number(mcapUsd ?? ref.mcapUsd) || 0), planText = planLine(exitPlan);
+      // The anchor covers everything the call declares up front -- venue, token, tx, time, the market
+      // cap it paid, the tier, the exit plan -- so none of it can be edited later without breaking the
+      // hash a reader recomputes: sha256(venue|instrument|tx|ts|mcapUsd|tier|plan).
+      const hash = createHash("sha256").update(`${venue}|${instrument}|${tx}|${ts}|${mcap}|${t}|${planText}`).digest("hex");
       const call = {
-        id: hash.slice(0, 16), ts, venue, instrument, name: String(ref.name || ""), ticker: String(ref.ticker || ""),
-        mcapUsd: Math.round(Number(mcapUsd ?? ref.mcapUsd) || 0), tier: t, tx: tx || null, txUrl: tx ? this._url(venue, "tx", tx) : "",
-        url: this._url(venue, "token", instrument), plan: planLine(exitPlan), hash, posted: null, channels: {}, result: null, messageIds: {},
+        id: hash.slice(0, 16), ts, venue, instrument, positionId: String(position?.id || ""), name: String(ref.name || ""), ticker: String(ref.ticker || ""),
+        mcapUsd: mcap, tier: t, tx, txUrl: this._url(venue, "tx", tx),
+        url: this._url(venue, "token", instrument), plan: planText, hash, posted: null, channels: {}, result: null, messageIds: {},
       };
       // The anchor goes down before any channel is tried: the post proves nothing unless the ledger
       // already holds the hash it carries.
-      this.ledger?.append({ kind: "callout", phase: "call", ts, id: call.id, venue, instrument, name: call.name, ticker: call.ticker, mcapUsd: call.mcapUsd, tier: t, tx: call.tx, url: call.url, plan: call.plan, hash });
+      this.ledger?.append({ kind: "callout", phase: "call", ts, id: call.id, venue, instrument, positionId: call.positionId, name: call.name, ticker: call.ticker, mcapUsd: call.mcapUsd, tier: t, tx: call.tx, url: call.url, plan: call.plan, hash });
       this._remember(call);
       // Dedupe from the moment of the anchor, not the delivery: a fill whose channels are down is still called.
       this.lastAt.set(instrument, ts);
@@ -152,9 +159,13 @@ export class Callouts {
   async onOutcome(outcome = {}) {
     try {
       const p = outcome.position || null;
+      // A paper close is never a result, whatever it closed: the hub shares one record across users
+      // and a paper engine can hold the same token a called live fill holds.
+      if (outcome.paper ?? !!p?.paper) return { posted: false, id: null, channels: {}, reason: "paper" };
       const instrument = String(outcome.instrument || p?.instrument || "");
-      const call = this._openCall(instrument, outcome.calloutId);
-      if (!call) return { posted: false, id: null, channels: {}, reason: "not called" };
+      const pid = String(outcome.positionId ?? p?.id ?? "") || null; // unknown is null: the instrument fallback, never a mismatch
+      const call = this._openCall(instrument, outcome.calloutId, pid);
+      if (!call) return { posted: false, id: null, channels: {}, reason: this._openCall(instrument, null, null) ? "not the called fill" : "not called" };
       const held = outcome.held_ms ?? (p?.entryTime ? this.clock() - p.entryTime : 0);
       const pnlPct = outcome.pnl_pct ?? (p?.cost_usd > 0 && Number.isFinite(outcome.pnl) ? +((outcome.pnl / p.cost_usd) * 100).toFixed(2) : 0);
       const result = { pnl_pct: +(Number(pnlPct) || 0).toFixed(2), held_ms: Math.max(0, Math.round(Number(held) || 0)), reason: String(outcome.reason || p?.exitReason || "") };
@@ -170,22 +181,29 @@ export class Callouts {
     }
   }
 
-  /** The latest unresolved call on an instrument (or the one with this id). */
-  _openCall(instrument, id = null) {
-    if (id && this.byId.has(id)) return this.byId.get(id);
+  /** The unresolved call for THIS fill: by id, else by the position that made it, else (for a call
+   *  anchored before positions were recorded) the latest unresolved call on the instrument. Another
+   *  engine's close of the same token is not this call's result. */
+  _openCall(instrument, id = null, positionId = null) {
+    if (id && this.byId.has(id)) { const c = this.byId.get(id); return c.result ? null : c; }
     for (let i = this.calls.length - 1; i >= 0; i--) {
       const c = this.calls[i];
-      if (c.instrument === instrument && !c.result) return c;
+      if (c.instrument !== instrument || c.result) continue;
+      if (c.positionId && positionId != null) { if (c.positionId === positionId) return c; continue; }
+      return c;
     }
     return null;
   }
 
   _title(call) { return `${call.ticker ? `$${call.ticker}` : short(call.instrument)}${call.name ? ` (${call.name})` : ""}`; }
+  // The plain text goes to Slack, where <!channel> in a token's name would page everyone: its angle
+  // brackets and ampersands are escaped there; Discord gets allowed_mentions instead (below).
+  _plainTitle(call) { return this._title(call).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
   _recordUrl() { return this.statusUrl ? `${this.statusUrl}/callouts` : ""; }
 
   _callText(call) {
     const lines = [
-      `CALLOUT ${this._title(call)} on ${call.venue}`,
+      `CALLOUT ${this._plainTitle(call)} on ${call.venue}`,
       `mcap ${usd(call.mcapUsd)} at post, tier ${call.tier}${call.plan ? `, exit plan: ${call.plan}` : ""}`,
       `bought: ${call.tx ? (call.txUrl || call.tx) : "(no tx)"}`,
     ];
@@ -205,7 +223,7 @@ export class Callouts {
 
   _resultText(call) {
     const line = resultLine(call.result);
-    const text = `${this._title(call)}: ${line}${call.tx ? ` (entry ${short(call.tx)})` : ""}`;
+    const text = `${this._plainTitle(call)}: ${line}${call.tx ? ` (entry ${short(call.tx)})` : ""}`;
     return { text, html: `${escapeHtml(this._title(call))}: <b>${escapeHtml(line)}</b>`, title: `bondli result ${call.ticker || short(call.instrument)}` };
   }
 
@@ -243,7 +261,7 @@ export class Callouts {
 
   async _webhook(cfg, msg) {
     // Slack reads text, Discord reads content, ntfy reads message: one paste, any receiver.
-    await this._post(cfg.url, { text: msg.text, content: msg.text, message: msg.text, title: msg.title, level: "info", priority: 3 });
+    await this._post(cfg.url, { text: msg.text, content: msg.text, message: msg.text, title: msg.title, level: "info", priority: 3, allowed_mentions: { parse: [] } });
     return {};
   }
 

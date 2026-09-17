@@ -239,10 +239,19 @@ test("snapshot/restore round-trips scores, rings and open positions; the store i
   // persistence: a Map-backed store, written from the stream once per persistEveryMs, read back by load()
   const map = new Map(), store = { get: async k => map.get(k) ?? null, set: async (k, v) => { map.set(k, v); } };
   const r5 = rig({ store, persistEveryMs: 10 * MIN });
-  for (let i = 0; i < 3; i++) { const L5 = launch(r5, i); buy(r5, L5, "X", { after: 30_000 }); sell(r5, L5, "X", { after: 20 * MIN, sol: 1 }); }
-  await r5.intel._persisting; await r5.intel._persisting;
+  // Interleaved with the clock, so the cadence itself is what is tested: the window runs from the
+  // last write, so a trade five minutes after it is silent and one eleven minutes after it writes.
+  const L5a = launch(r5, 0); buy(r5, L5a, "X", { after: 30_000 });
+  await r5.intel._persisting;
   assert.ok(map.has(INTEL_DEFAULTS.storeKey), "written from onTrade without anyone calling persist()");
-  assert.ok(r5.intel.status().persisted >= 1 && r5.intel.status().persisted <= 3, `one write per cadence, not per trade: ${r5.intel.status().persisted}`);
+  assert.equal(r5.intel.status().persisted, 1);
+  r5.at(L5a.ts + 5 * MIN); r5.intel.onTrade({ mint: L5a.mint, wallet: "X2", isBuy: true, sol: 0.1, tokens: 1e6, ts: r5.now(), slot: slotAt(r5.now()), signature: "b:X2" });
+  await r5.intel._persisting;
+  assert.equal(r5.intel.status().persisted, 1, "inside the window: no second write");
+  r5.at(L5a.ts + 11 * MIN); r5.intel.onTrade({ mint: L5a.mint, wallet: "X3", isBuy: true, sol: 0.1, tokens: 1e6, ts: r5.now(), slot: slotAt(r5.now()), signature: "b:X3" });
+  await r5.intel._persisting;
+  assert.equal(r5.intel.status().persisted, 2, "past the window: the next trade writes");
+  sell(r5, L5a, "X", { after: 20 * MIN, sol: 1 });
   await r5.intel.persist();
   const r6 = rig({ store }); r6.at(r5.now());
   assert.equal(await r6.intel.load(), true);
@@ -302,4 +311,40 @@ test("a buy with no cost is not a cost basis: it opens nothing, and the sell aft
   const L2 = launch(r, 1);
   buy(r, L2, "W", { after: 30_000, sol: 0.1 }); run(r, L2); sell(r, L2, "W", { after: 20 * MIN, sol: 0.3 });
   assert.equal(r.intel.walletScore("W").closed, 1);
+});
+
+test("a staggered ring counts once: the fourth member pairs with some members and not others, and still belongs to the ring", () => {
+  const r = rig();
+  for (let i = 0; i < 24; i++) {
+    const L = launch(r, i);
+    buy(r, L, "A", { after: 20_000 }); buy(r, L, "B", { after: 35_000 }); buy(r, L, "C", { after: 50_000 }); buy(r, L, "D", { after: 85_000 });
+    buy(r, L, "SOLO", { after: 200_000 }); // inside the early window, outside every ring member's pairing window
+    run(r, L);
+    for (const w of ["A", "B", "C", "D", "SOLO"]) sell(r, L, w, { after: 20 * MIN, sol: 1.5 });
+  }
+  // D is 65s behind A, so A and D never pair; B-D and C-D do. Each member's own partner set differs.
+  for (const w of ["A", "B", "C", "D"]) assert.equal(r.intel.walletScore(w).flags.cohort, true, `${w} is in the ring`);
+  assert.notEqual(r.intel.walletScore("A").cohort, r.intel.walletScore("D").cohort, "their own views of the ring differ");
+  assert.equal(r.intel.walletScore("SOLO").flags.cohort, false);
+  const L = launch(r, 30);
+  for (const w of ["A", "B", "C", "D", "SOLO"]) buy(r, L, w, { after: 30_000 });
+  const s = r.intel.smartBuyers(L.mint, { windowMs: 5 * MIN });
+  assert.equal(s.count, 2, `the ring once and SOLO: ${JSON.stringify(s.wallets)}`);
+  const ring = s.wallets.find(x => x.wallet !== "SOLO");
+  assert.equal(ring.members, 4); assert.equal(ring.cohort, 4);
+});
+
+test("an early buy is neither hit nor miss until the mint's first day is up", () => {
+  const r = rig({ minClosed: 5 });
+  for (let i = 0; i < 6; i++) { const L = launch(r, i); buy(r, L, "E", { after: 30_000 }); run(r, L); sell(r, L, "E", { after: 20 * MIN, sol: 1.5 }); }
+  const proven = r.intel.walletScore("E");
+  assert.equal(proven.earlyHitRate, 1);
+  // Ten early buys seconds ago on mints that have not moved yet: no new information, no mark-down.
+  for (let i = 10; i < 20; i++) { const ts = r.now() + 1000; r.at(ts); const mint = "FRESH" + i; r.intel.onCreate({ mint, creator: "DEV" + i, ts, slot: slotAt(ts) }); r.intel.markMcap(mint, 6000, ts); r.intel.onTrade({ mint, wallet: "E", isBuy: true, sol: 0.5, tokens: 1e6, ts: ts + 500, slot: slotAt(ts + 500), signature: "b:E:" + i }); }
+  const now = r.intel.walletScore("E");
+  assert.equal(now.earlyHitRate, 1, "pending entries are not misses"); assert.equal(now.earlyBuys, 6);
+  // A day on, still flat: now they are misses.
+  r.at(r.now() + 25 * HOUR);
+  const later = r.intel.walletScore("E");
+  assert.ok(later.earlyHitRate < 1 && later.earlyBuys === 16, JSON.stringify(later));
 });
