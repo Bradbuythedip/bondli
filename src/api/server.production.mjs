@@ -147,7 +147,8 @@ async function fastSend(connection, tx, signers) {
   }
 }
 const REDIS_URL = process.env.REDIS_URL || null;
-const ADMIN_SECRET = process.env.ADMIN_SECRET || "bondli_default";
+// No default: an admin route on a deploy without the variable is closed, not open to a well-known word.
+const ADMIN_SECRET = process.env.ADMIN_SECRET || null;
 const DEFAULT_REFERRAL_CODE = "ilikethetech"; // owner's referral code — applied to all new users unless they have another referrer
 // PumpPortal requires an API key (its wallet funded with >= 0.02 SOL) for
 // subscribeTokenTrade since 2025. Without it the radar sees creates but no trades.
@@ -1479,7 +1480,10 @@ function processRadarMessage(data) {
     // The full pubkey exists only here; token.trades keeps a prefix. This is the one place the
     // wallet ledger can be fed, so it is fed for buys and sells alike -- a sell is what closes a
     // position and turns a guess about a wallet into a measured result.
-    if (trader && (data.txType === "buy" || data.txType === "sell")) walletIntel.onTrade({ mint, wallet: trader, isBuy: data.txType === "buy", sol, tokens: Number(data.tokenAmount) || 0, ts: now, slot: data.slot ?? null, signature: data.signature || null, mcapUsd: token.mcapUsd || null });
+    // The trade's own SOL, as the stream decoded it, never the curve-reserve delta: a delta is zero
+    // on the first trade seen for a mint and the sum of two trades after a dropped one, and either
+    // way a wallet would be booked a lot it did not pay for or charged one it did not make.
+    if (trader && (data.txType === "buy" || data.txType === "sell")) walletIntel.onTrade({ mint, wallet: trader, isBuy: data.txType === "buy", sol: Number(data.solAmount) > 0 ? Number(data.solAmount) : sol, tokens: Number(data.tokenAmount) || 0, ts: now, slot: data.slot ?? null, signature: data.signature || null, mcapUsd: token.mcapUsd || null });
     if (token.mcapUsd > 0) walletIntel.markMcap(mint, token.mcapUsd, now);
     if (token.trades.length > 100) token.trades = token.trades.slice(-100);
     if (!hub) radar._revivals.noteTrade(mint, { side: data.txType, sol, wallet: trader, curvePct: token.graduated ? null : Math.min(100, (vSol / 85) * 100), ts: now });
@@ -3223,8 +3227,9 @@ function requireWallet(req, res, next) {
 }
 
 function requireAdmin(req, res, next) {
-  const secret = req.headers["x-admin-secret"] || req.query?.secret;
-  if (secret !== ADMIN_SECRET) return res.status(403).json({ error: "Forbidden" });
+  // Header only: a secret in a query string lands in access logs and shared links.
+  const secret = req.headers["x-admin-secret"];
+  if (!ADMIN_SECRET || !secret || secret !== ADMIN_SECRET) return res.status(403).json({ error: "Forbidden" });
   next();
 }
 
