@@ -112,6 +112,8 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
       // which is what lets someone trade Robinhood Chain alone without funding a SOL wallet at all.
       pumpfun: { ...t.venues.pumpfun, max_exposure_usd: settings.pumpfun === false ? 0 : portfolio, max_concurrent: settings.pumpfun === false ? 0 : maxPositions, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.pumpfun.kelly_fraction) },
       pons: { ...t.venues.pons, max_exposure_usd: settings.pons ? portfolio : 0, max_concurrent: settings.pons ? maxPositions : 0, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.pons.kelly_fraction) },
+      // Arc (Argus): opt-in like Robinhood Chain, quoted in USDC. Off until the user turns it on.
+      arc: { ...t.venues.arc, max_exposure_usd: settings.arc ? portfolio : 0, max_concurrent: settings.arc ? maxPositions : 0, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.arc.kelly_fraction) },
       polymarket: { ...t.venues.polymarket, max_exposure_usd: 0 },
       perps: { ...t.venues.perps, max_exposure_usd: 0 },
     },

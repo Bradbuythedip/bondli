@@ -5,11 +5,11 @@ import { createContext } from "react";
 // text is the cream of the cup itself. Nothing is neon -- the painting has no saturated colour in it,
 // and a trading screen that shouts is harder to read, not easier.
 //
-// Contrast is measured, not eyeballed. Against a card, the three inks sit at 11.6 / 6.8 / 5.0 and the
-// three states at 7.7 (green) / 5.3 (red) / 8.1 (yellow), so every one of them clears 4.5:1 -- the
+// Contrast is measured, not eyeballed. Against a card, the three inks sit at 10.6 / 6.2 / 4.6 and the
+// three states at 7.1 (green) / 4.8 (red) / 7.4 (yellow), so every one of them clears 4.5:1 -- the
 // faint ink that carries every age, market cap and buyer count included, which is the one that used
 // to drift under the readable floor. Black on the green button is 12.0.
-export const D = { bg: "#2a2022", sf: "#372b2d", bd: "rgba(255,255,255,.15)", gn: "#a8d07a", rd: "#e8867e", yl: "#e8c46a", tx: "#f4ece1", dm: "#c3b5a8", ft: "#a99a8d" };
+export const D = { bg: "#2a2022", sf: "#3d3133", bd: "rgba(255,255,255,.15)", gn: "#a8d07a", rd: "#e8867e", yl: "#e8c46a", tx: "#f4ece1", dm: "#c3b5a8", ft: "#a99a8d" };
 // The same painting in a lighter room: the ground and cards lift, the colours lift with them so the
 // ratios hold (7.0 / 5.1 / 7.3 for the states, 10.1 / 6.6 / 5.1 for the inks).
 export const L = { bg: "#3a2e30", sf: "#483a3c", bd: "rgba(255,255,255,.18)", gn: "#b8dc8e", rd: "#f09c94", yl: "#f0d17e", tx: "#fdf7ee", dm: "#d4c8bb", ft: "#bcb0a3" };
@@ -24,8 +24,8 @@ body{background:${T.bg};color:${T.tx};overflow-x:hidden;-webkit-font-smoothing:a
    ground colour so every surface keeps the contrast it was measured at; the cards are translucent and
    blurred so he shows through them. With no /fren.png the scrim alone is the painting's own colour. */
 body::before{content:"";position:fixed;inset:0;z-index:-2;background:${T.bg} url(/fren.png) center 28%/cover no-repeat}
-body::after{content:"";position:fixed;inset:0;z-index:-1;background:linear-gradient(180deg,${T.bg}b8 0%,${T.bg}d9 45%,${T.bg}f2 100%)}
-.card{background:${T.sf}e6;backdrop-filter:blur(14px) saturate(1.1);-webkit-backdrop-filter:blur(14px) saturate(1.1)}
+body::after{content:"";position:fixed;inset:0;z-index:-1;background:linear-gradient(180deg,${T.bg}d4 0%,${T.bg}ec 40%,${T.bg}f7 100%)}
+.card{background:${T.sf}f5;backdrop-filter:blur(16px) saturate(1.05);-webkit-backdrop-filter:blur(16px) saturate(1.05)}
 input,button{font-family:inherit;-webkit-appearance:none}
 ::-webkit-scrollbar{width:2px}::-webkit-scrollbar-thumb{background:${T.bd};border-radius:4px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}

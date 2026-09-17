@@ -293,3 +293,36 @@ test("T9: a paper run reports its own P&L, as paper, and never touches the walle
     assert.equal(engine.store.state.day.trades, 0);
   } finally { await engine.stop(); }
 });
+
+// The closes list must lead with the close that just happened. ledger.query returns the newest N
+// records oldest-first, and taking the head of that showed the stale end of the window -- the same
+// re-entered ticker three times over, and never the latest fill.
+test("T9: closes() leads with the newest close and counts the same trades the header does", async () => {
+  const dataDir = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  const engine = mkEngine(dataDir, feed);
+  let now = Date.now(); engine.clock = () => now;
+  try {
+    await engine.start({ reconcile: false });
+    // Twelve paper closes, booked directly so the test is about the list and not about sizing:
+    // one every five seconds, each losing a little.
+    for (let k = 0; k < 12; k++) {
+      now += 5000;
+      const id = "Mint" + String(k).padStart(2, "0");
+      engine._bookExit(
+        { id: "p" + k, venue: "pumpfun", instrument: id, status: "open", paper: true, qty: 1, remaining_qty: 1, cost_usd: 10, proceeds_usd: 0, stake_usd: 10, notional_usd: 10, entryTime: now - 12_000, plan: { key: 3 }, reference: { ticker: id } },
+        { ok: true, fill: { price: 1, qty: 1, notional_usd: 9.6, fee_usd: 0, t_filled: now, paper: true } }, 100, "DOA");
+    }
+    const list = engine.closes(8);
+    assert.equal(list.length, 8);
+    assert.equal(list[0].instrument, "Mint11", "the newest close first");
+    assert.equal(list[7].instrument, "Mint04", "the eight newest, not the eight oldest of the last sixteen");
+    for (let i = 1; i < list.length; i++) assert.ok(list[i - 1].ts >= list[i].ts, "newest first, throughout");
+    assert.equal(list[0].paper, true);
+    const p = engine.truePnl();
+    assert.equal(p.kind, "paper");
+    assert.equal(p.since_start.trades, 12, "the header's words count the same twelve closes the number does");
+    assert.equal(p.since_start.closed_usd, -4.8);
+    assert.equal(p.since_start_usd, -4.8);
+  } finally { await engine.stop(); }
+});

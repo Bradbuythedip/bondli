@@ -22,7 +22,10 @@ import { promotionGate } from "./promote.mjs";
 /** Venues that trade a bonding curve in a quote asset: pump.fun (SOL) and PONS on Robinhood Chain (ETH).
  *  Positions are marked by market cap, plans are the tiered layers, fills carry sol_spent / sol_received
  *  (the quote asset), and reference.solPrice is that quote asset's USD price. */
-export const CURVE_VENUES = new Set(["pumpfun", "pons"]);
+// Arc's Argus is not a virtual curve -- it is one concentrated Uniswap v4 position the price walks
+// up through -- but from the engine's side it trades like one: a launch, a rising price, buyers
+// and sellers, a quote asset. So it shares the curve venues' plans, exits and cost model.
+export const CURVE_VENUES = new Set(["pumpfun", "pons", "arc"]);
 
 /** The market cap a curve position is marked from at entry. On PONS the fill is exact (quote spent
  *  and tokens received from the receipt), so the mark is what was actually paid per token times the
@@ -235,9 +238,12 @@ export class Engine extends EventEmitter {
   /** The last hundred closes, grouped by how they ended: where the money went. */
   /** The last few closes as a person would tell them: what, how much, how long. For the share card. */
   closes(limit = 8) {
+    // ledger.query hands back the newest N records OLDEST first. Taking the head of that list showed
+    // the eight oldest of the last sixteen -- stale re-entries of one ticker, three times over, and
+    // never the close that just happened. The newest go first, and each carries its time.
     return this.ledger.query({ kind: "outcome", limit: limit * 2 })
       .filter(o => o.reason !== "LEG_UNWOUND")
-      .slice(0, limit)
+      .slice(-limit).reverse()
       .map(o => { const p = this.store.state.positions?.[o.positionId]; return { ts: o.ts, venue: o.venue, instrument: o.instrument, name: p?.reference?.name || "", ticker: p?.reference?.ticker || "", pnl_usd: o.pnl_usd, pnl_pct: o.pnl_pct, held_ms: o.held_ms, reason: o.reason, paper: !!o.paper }; });
   }
 
@@ -363,20 +369,29 @@ export class Engine extends EventEmitter {
     // did. Pretend money is still a number: realized since Start from the paper outcomes, plus what
     // the paper positions are worth now, labelled as paper so nobody mistakes it for the wallet.
     const paperOnly = !this.anyLiveVenue();
+    // The big number is "since Start"; the words under it must count the same trades, or the two
+    // contradict each other on screen (they did: -$1.22 over "0 trades, closed +$0.00"). Both modes
+    // therefore report trades and closed P&L since Start from the ledger, the one source of truth,
+    // beside the day counters the loss limit reads.
+    const since = this.store.state.startedAt || 0;
+    const sinceStart = (paper) => {
+      const outs = this.ledger.query({ kind: "outcome", limit: 5000 }).filter(o => !!o.paper === paper && o.ts >= since && o.reason !== "LEG_UNWOUND");
+      return { trades: outs.length, closed_usd: +outs.reduce((s, o) => s + (Number(o.pnl_usd) || 0), 0).toFixed(2) };
+    };
     if (paperOnly) {
-      const since = this.store.state.startedAt || 0;
-      const realizedSinceStart = this.ledger.query({ kind: "outcome", limit: 5000 }).filter(o => o.paper && o.ts >= since && o.reason !== "LEG_UNWOUND").reduce((s, o) => s + (Number(o.pnl_usd) || 0), 0);
+      const ss = sinceStart(true);
+      const realizedSinceStart = ss.closed_usd;
       const paperOpen = this.store.openPositions().filter(p => p.paper);
       const unrealizedPaper = paperOpen.reduce((s, p) => s + (p.unrealized_usd || 0), 0);
       const openPaper = paperOpen.reduce((s, p) => s + (p.notional_usd || 0) * (1 + (p.changePct || 0) / 100), 0);
       const d = this.store.state.day;
-      return { kind: "paper", wallet_usd: null, open_usd: +openPaper.toFixed(2), unrealized_usd: +unrealizedPaper.toFixed(2), realized_today_usd: +(d.paperRealizedUsd || 0).toFixed(2), trades_today: d.paperTrades || 0, baseline: null, since_start_usd: +(realizedSinceStart + unrealizedPaper).toFixed(2), quote: {}, all_since_start: true };
+      return { kind: "paper", wallet_usd: null, open_usd: +openPaper.toFixed(2), unrealized_usd: +unrealizedPaper.toFixed(2), realized_today_usd: +(d.paperRealizedUsd || 0).toFixed(2), trades_today: d.paperTrades || 0, since_start: ss, baseline: null, since_start_usd: +(realizedSinceStart + unrealizedPaper).toFixed(2), quote: {}, all_since_start: true };
     }
     const open = this.store.openPositions().filter(p => !p.paper);
     const openUsd = this.openValueUsd();
     const unrealized = open.reduce((s, p) => s + (p.unrealized_usd || 0), 0);
     const b = this.store.state.baseline || null;
-    const out = { kind: "wallet", wallet_usd: known ? +walletUsd.toFixed(2) : null, open_usd: +openUsd.toFixed(2), unrealized_usd: +unrealized.toFixed(2), realized_today_usd: this.store.state.day.realizedUsd, trades_today: this.store.state.day.trades || 0, baseline: b, since_start_usd: null, quote, all_since_start: allSinceStart };
+    const out = { kind: "wallet", wallet_usd: known ? +walletUsd.toFixed(2) : null, open_usd: +openUsd.toFixed(2), unrealized_usd: +unrealized.toFixed(2), realized_today_usd: this.store.state.day.realizedUsd, trades_today: this.store.state.day.trades || 0, since_start: sinceStart(false), baseline: b, since_start_usd: null, quote, all_since_start: allSinceStart };
     if (b && known) {
       // Each wallet's change in its own quote asset, at today's price: SOL and ETH moving is not trading.
       // A live venue the baseline has never seen contributes nothing rather than everything: its

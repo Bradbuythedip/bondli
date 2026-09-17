@@ -4,7 +4,7 @@
 
 import { createHash } from "node:crypto";
 
-export const VENUES = Object.freeze(["pumpfun", "pons", "polymarket", "perps"]);
+export const VENUES = Object.freeze(["pumpfun", "pons", "arc", "polymarket", "perps"]);
 export const EVENT_KINDS = Object.freeze([
   "candidate",   // an instrument worth running through the decision pipeline
   "tick",        // price/mark update for an instrument (drives exits)
