@@ -99,41 +99,41 @@ const HUE = s => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) 
 const IMG_RETRY_MS = [8_000, 32_000, 32_000, 32_000, 45_000, 45_000, 60_000, 60_000, 60_000, 60_000]; // ~7 min
 function TokenImg({ src, ca, label, size, T }) {
   const [tries, sTries] = useState(0); const [ok, sOk] = useState(true); const [ready, sReady] = useState(null);
+  const ref = useRef(null);
   useEffect(() => { sTries(0); sOk(true); sReady(null); }, [src, ca]);
   const h = HUE(ca);
   const tile = { width: size, height: size, borderRadius: Math.round(size / 4), overflow: "hidden", position: "relative", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: M, fontWeight: 900, fontSize: Math.round(size / 3.2), color: "rgba(255,255,255,.55)", background: `radial-gradient(circle at 30% 30%, hsl(${h} 45% 34%), hsl(${(h + 40) % 360} 40% 18%))` };
   const fuzz = <div style={{ position: "absolute", inset: 0, background: `linear-gradient(110deg, transparent 30%, hsl(${h} 60% 60% / .25) 50%, transparent 70%)`, backgroundSize: "200% 100%", animation: "shimmer 1.6s linear infinite", filter: "blur(6px)" }} />;
   const url = imgUrl(src, ca);
   const full = url ? url + (tries ? `&r=${tries}` : "") : "";
-  // Nothing half-drawn is ever put on screen. The picture is fetched into a detached Image and
-  // decode() is awaited: onLoad alone only says the BYTES arrived, so a progressive JPEG or a large
-  // PNG could be revealed mid-decode and paint in bands. decode() resolves when the frame is ready to
-  // present, so the element is only mounted once there is a whole picture to show. Browsers without
-  // decode() fall back to the load event, which is what we had.
-  useEffect(() => {
-    if (!full) return;
-    let on = true;
-    const img = new Image();
-    img.src = full;
-    const done = () => { if (on) sReady(full); };
-    const fail = () => {
-      if (!on) return;
-      // A token's picture usually exists a minute or three after its launch, and the proxy remembers
-      // a miss for 30s. The old schedule -- six tries, 3s apart and growing -- spent most of them
-      // inside that window and gave up inside 65s, which is why a row of brand-new launches sat on
-      // its initials for good. Try on a schedule that outlasts the metadata, each gap past the
-      // negative cache, and only then settle for the ticker.
-      if (tries < IMG_RETRY_MS.length) setTimeout(() => { if (on) sTries(t => t + 1); }, IMG_RETRY_MS[tries]);
-      else sOk(false);
-    };
-    if (img.decode) img.decode().then(done, fail);
-    else { img.onload = done; img.onerror = fail; }
-    return () => { on = false; };
-  }, [full, tries]);
-  if (!url || !ok) return <div style={tile}>{label}</div>;
   const loaded = ready === full;
+  // Nothing half-drawn is ever put on screen, and nothing that DID arrive is ever thrown away.
+  //
+  // The picture loads in a real <img> that is in the document but invisible (opacity 0 is still a
+  // full paint, so a progressive JPEG draws its bands where nobody can see them). It is revealed only
+  // once there is a whole frame: decode() when the browser has it, which resolves when the frame is
+  // ready to present. But decode() is NOT the judge of whether the picture exists. On WebKit it can
+  // reject for a picture that loaded perfectly well -- a detached element, a large frame, memory
+  // pressure -- and the previous version of this tile fetched into a detached Image and treated any
+  // rejection as a miss, so on an iPhone a good picture was retried into the ground and then
+  // replaced by the ticker. Now: onerror is the only miss. If decode() rejects but the element says
+  // it has pixels (complete, naturalWidth > 0), the picture is real and it is shown.
+  const reveal = () => { const el = ref.current; if (el && el.complete && el.naturalWidth > 0) sReady(full); };
+  const onLoad = () => {
+    const el = ref.current; if (!el) return;
+    if (el.decode) el.decode().then(reveal, reveal); else reveal();
+  };
+  const onError = () => {
+    // A token's picture usually exists a minute or three after its launch, and the proxy remembers
+    // a miss for 30s. Retry on a schedule that outlasts the metadata, each gap past that negative
+    // cache so the retry is a real fetch, and only then settle for the ticker.
+    if (tries < IMG_RETRY_MS.length) setTimeout(() => sTries(t => t + 1), IMG_RETRY_MS[tries]);
+    else sOk(false);
+  };
+  if (!url || !ok) return <div style={tile}>{label}</div>;
   return <div style={tile}>{!loaded && fuzz}{!loaded && <span style={{ position: "relative" }}>{label}</span>}
-    {loaded && <img src={full} alt="" style={{ position: "absolute", inset: 0, width: size, height: size, objectFit: "cover", animation: "imgin .35s ease-out" }} />}</div>;
+    <img ref={ref} key={full} src={full} alt="" decoding="async" onLoad={onLoad} onError={onError}
+      style={{ position: "absolute", inset: 0, width: size, height: size, objectFit: "cover", opacity: loaded ? 1 : 0, animation: loaded ? "imgin .35s ease-out" : "none" }} /></div>;
 }
 // ── Movers ─────────────────────────────────────────────────────────────────────
 // The other half of "what is happening": the launch radar above only ever sees tokens in their first
