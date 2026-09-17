@@ -9,7 +9,9 @@ import path from "node:path";
 import { ScriptedFeed } from "../../src/velocity/core/feed.mjs";
 import { makeEvent } from "../../src/velocity/core/events.mjs";
 import { failure } from "../../src/velocity/core/router.mjs";
-import { VelocityHub, SharedFeedView, userEnvelope, EXPOSED_DEFAULT_PLATFORM_WALLET, DEFAULT_FEE_PCT } from "../../src/velocity/hub.mjs";
+import { VelocityHub, SharedFeedView, userEnvelope, EXPOSED_DEFAULT_PLATFORM_WALLET, DEFAULT_FEE_PCT, mountVelocityRoutes } from "../../src/velocity/hub.mjs";
+import { Callouts } from "../../src/velocity/core/callouts.mjs";
+import { Ledger } from "../../src/velocity/core/ledger.mjs";
 import { goodCandidatePayload, tickPayload } from "./helpers/fixtures.mjs";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "velocity-t11-"));
@@ -570,4 +572,52 @@ test("T11: the public pulse names no wallet and counts no paper money", async ()
     const mine = hub.status("Pretend").status.closes;
     assert.equal(mine.length, 1); assert.equal(mine[0].paper, true);
   } finally { for (const w of ["Real", "Pretend"]) await hub.stop(w).catch(() => {}); await feed.stop(); }
+});
+
+test("T11: a live fill is called out once for the whole hub, with its tx; paper never; the close reports back; the public route names no wallet", async () => {
+  const root = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  feed.solPrice = 100;
+  const posts = [];
+  // The hub's own callouts object, with a fetch double in place of the webhook. minTier 0 so the
+  // fixture's tier does not decide the test; the tier gate itself is T21's.
+  const callouts = new Callouts({ ledger: new Ledger(path.join(root, "_hub", "callouts.jsonl")), channels: { webhookUrl: "https://hook.test/calls" }, minTier: 0, statusUrl: "https://bondli.fun",
+    fetchImpl: async (url, opts) => { posts.push({ url, body: JSON.parse(opts.body) }); return { ok: true, json: async () => ({}) }; } });
+  const hub = new VelocityHub({ feed, rootDir: root, platformWallet: "PLATFORM_FRESH_WALLET", fee: feeDeps(), callouts, makeLiveRouter: ({ secret, wallet }) => new FakeLive({ secret, wallet }), log: { log() {}, error() {}, warn() {} } });
+  assert.equal(hub.callouts, callouts, "the injected object is the hub's, not a second one");
+  await feed.start();
+  try {
+    assert.equal((await hub.start({ wallet: "UserA", secret: "sA", settings: { bankrollUsd: 100, aggression: 2 } })).ok, true);
+    assert.equal((await hub.start({ wallet: "UserB", secret: "sB", settings: { bankrollUsd: 100, aggression: 2 } })).ok, true);
+    assert.equal((await hub.start({ wallet: "Pretend", secret: "sP", settings: { bankrollUsd: 100, aggression: 2, paper: true } })).ok, true);
+    const now = Date.now();
+    feed.emitEvent({ kind: "candidate", id: "MintX", payload: goodCandidatePayload("MintX"), t_venue: now - 100 });
+    await new Promise(r => setTimeout(r, 60));
+    for (const w of ["UserA", "UserB", "Pretend"]) { await hub.users.get(w).engine.enqueue(() => {}); assert.equal(hub.users.get(w).engine.store.openPositions("pumpfun").length, 1, `${w} holds MintX`); }
+    await new Promise(r => setTimeout(r, 20));
+    // Three engines bought the same token; two live, one paper. One call, carrying the buy's own tx.
+    assert.equal(posts.length, 1, JSON.stringify(posts));
+    assert.match(JSON.stringify(posts[0].body), /SIGBUY/);
+    assert.equal(hub.users.get("UserA").engine.store.openPositions("pumpfun")[0].venue_ref, "SIGBUY", "the position remembers its buy tx");
+    const feedRows = callouts.feed();
+    assert.equal(feedRows.length, 1); assert.equal(feedRows[0].tx, "SIGBUY"); assert.equal(feedRows[0].instrument, "MintX"); assert.equal(feedRows[0].result, null);
+    assert.equal(callouts.status().skipped.paper, 1, "the paper engine's fill was offered and refused");
+    // The anchor is in the hub's own ledger, before any post.
+    assert.ok(fs.existsSync(path.join(root, "_hub", "callouts.jsonl")));
+    // The close reports back and the record resolves.
+    feed.emitEvent({ kind: "tick", id: "MintX", payload: tickPayload("MintX", 17_000, { dynamics: { scores: 5, velocity: -0.6, acceleration: -0.2, trend: "crashing" } }), t_venue: now + 500 });
+    await new Promise(r => setTimeout(r, 80));
+    for (const w of ["UserA", "UserB", "Pretend"]) await hub.users.get(w).engine.enqueue(() => {});
+    await new Promise(r => setTimeout(r, 40));
+    assert.equal(callouts.record().resolved, 1, JSON.stringify(callouts.record()));
+    assert.ok(posts.length >= 2, "the result was posted");
+    assert.ok(callouts.feed()[0].result && Number.isFinite(callouts.feed()[0].result.pnl_pct));
+    // The public route: the same rows, and nothing in them names a user.
+    const routes = {}; const app = { get: (p, ...h) => { routes[p] = h.at(-1); }, post: () => {} };
+    mountVelocityRoutes(app, { hub, requireOwner: (q, s, n) => n(), getTradingWallet: async () => null });
+    let out = null; routes["/api/callouts"]({ query: { limit: "5" } }, { set() {}, json: b => { out = b; } });
+    assert.equal(out.ok, true); assert.equal(out.calls.length, 1); assert.equal(out.calls[0].tx, "SIGBUY"); assert.equal(out.record.calls, 1);
+    const text = JSON.stringify(out);
+    assert.doesNotMatch(text, /UserA|UserB|Pretend|wallet/i, "no wallet and no user in the public record");
+  } finally { await hub.stopAll(); await feed.stop(); }
 });

@@ -867,6 +867,8 @@ export class Engine extends EventEmitter {
       reference: decision.reference || null, legs: r.fills ? r.fills.map(f => ({ instrument: f.instrument, qty: f.qty, price: f.price })) : null, paper: !!fill.paper,
       // Measured SOL, for anything that must not depend on a price feed (the platform fee).
       sol_spent: fill.sol_spent ?? null, sol_received: 0,
+      // The buy's own transaction. A public callout is only worth anything with this on it.
+      venue_ref: fill.venue_ref || null,
     };
     this.ledger.append({ kind: "fill", venue, orderId, decisionId: decision.id, positionId: position.id, side: "BUY", instrument: inst, price: fill.price, qty: fill.qty, notional_usd: fill.notional_usd, fee_usd: fill.fee_usd || 0, slippage_bps: fill.slippage_bps, latency_ms: fill.latency_ms, venue_ref: fill.venue_ref, sol_spent: fill.sol_spent ?? null, exact: fill.exact ?? null, plan: { venue: plan.venue, key: plan.key, mode: plan.mode }, paper: !!fill.paper });
     this.ledger.append({ kind: "order", venue, orderId, decisionId: decision.id, stage: "filled", positionId: position.id });
