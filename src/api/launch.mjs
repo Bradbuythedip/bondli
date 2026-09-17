@@ -6,15 +6,30 @@ import fs from "node:fs";
 import path from "node:path";
 
 export const LAUNCH_STATUSES = Object.freeze(["soon", "live", "graduated", "off"]);
-export const LAUNCH_VENUES = Object.freeze(["pons", "uniswap-v2"]);
+export const LAUNCH_VENUES = Object.freeze(["pump.fun", "pons", "uniswap-v2"]);
+export const LAUNCH_CHAINS = Object.freeze(["solana", "robinhood"]);
+/** The post the token is about. Shown on the banner as "the post"; overridable via links.post. */
+export const JEFF_POST_URL = "https://x.com/elonmusk/status/1935370021439705302";
 export const LAUNCH_FIELDS = Object.freeze(["name", "ticker", "chain", "venue", "address", "curve", "pair", "status", "tagline", "image", "links"]);
 const MAX_UPDATES = 20;
 
 export function defaultLaunch() {
-  return { name: "Not a fruit fly", ticker: "", chain: "robinhood", venue: "uniswap-v2", address: "", curve: "", pair: "", status: "soon", tagline: "Bondli's own token. Launching on Robinhood Chain.", image: "/fly.png", links: {}, updates: [], updatedAt: 0 };
+  return { name: "Jeff", ticker: "JEFF", chain: "solana", venue: "pump.fun", address: "", curve: "", pair: "", status: "soon", tagline: "Bondli's own token. Launching on pump.fun.", image: "", links: { post: JEFF_POST_URL }, updates: [], updatedAt: 0 };
 }
 
-const isAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(String(a || ""));
+/** The record the store held before the token moved to Solana. Recognised so a volume that still
+ *  carries it comes up as $JEFF, not as a fruit fly: the defaults only apply when the file is
+ *  missing, and the file was not missing. Only a record that never launched is migrated -- a live
+ *  address, on any chain, is left exactly as it is. */
+export function isLegacyLaunch(st) {
+  if (!st || typeof st !== "object") return false;
+  const name = String(st.name || "").toLowerCase();
+  return !st.address && (name === "not a fruit fly" || name === "notafly" || (st.chain === "robinhood" && !st.ticker));
+}
+
+const isEvmAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(String(a || ""));
+const isSolAddr = (a) => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(a || ""));
+const isAddrFor = (chain, a) => chain === "solana" ? isSolAddr(a) : isEvmAddr(a);
 
 /** Apply one push to the stored state. Unknown fields are ignored; an `update` string is appended
  *  (newest first, capped); `reset: true` starts over from the defaults. Returns the new state or throws. */
@@ -25,7 +40,14 @@ export function mergeLaunch(state, body = {}, now = Date.now()) {
     if (k === "links") { for (const [n, v] of Object.entries(body.links || {})) { if (v == null || v === "") delete next.links[n]; else next.links[n] = String(v).slice(0, 300); } continue; }
     if (k === "status") { if (!LAUNCH_STATUSES.includes(body.status)) throw new Error(`status must be one of ${LAUNCH_STATUSES.join(", ")}`); next.status = body.status; continue; }
     if (k === "venue") { if (!LAUNCH_VENUES.includes(body.venue)) throw new Error(`venue must be one of ${LAUNCH_VENUES.join(", ")}`); next.venue = body.venue; continue; }
-    if (k === "address" || k === "curve" || k === "pair") { if (body[k] !== "" && !isAddr(body[k])) throw new Error(`${k} must be a 0x address`); next[k] = String(body[k]).toLowerCase(); continue; }
+    if (k === "chain") { if (!LAUNCH_CHAINS.includes(body.chain)) throw new Error(`chain must be one of ${LAUNCH_CHAINS.join(", ")}`); next.chain = body.chain; continue; }
+    if (k === "address" || k === "curve" || k === "pair") {
+      // The chain the address is checked against is the one being pushed with it, else the stored one.
+      const chain = body.chain !== undefined ? body.chain : next.chain;
+      if (body[k] !== "" && !isAddrFor(chain, body[k])) throw new Error(`${k} must be a ${chain === "solana" ? "base58 Solana" : "0x"} address`);
+      // Base58 is case-sensitive: a Solana address is stored as given, an EVM one lowercased as before.
+      next[k] = chain === "solana" ? String(body[k]) : String(body[k]).toLowerCase(); continue;
+    }
     next[k] = String(body[k]).slice(0, k === "tagline" ? 200 : 120);
   }
   if (body.update) next.updates = [{ at: now, text: String(body.update).slice(0, 280) }, ...next.updates].slice(0, MAX_UPDATES);
@@ -38,7 +60,13 @@ export function mergeLaunch(state, body = {}, now = Date.now()) {
 
 export class LaunchStore {
   constructor(file) { this.file = file; this.state = this._read(); }
-  _read() { try { return { ...defaultLaunch(), ...JSON.parse(fs.readFileSync(this.file, "utf8")) }; } catch { return defaultLaunch(); } }
+  _read() {
+    let stored = null;
+    try { stored = JSON.parse(fs.readFileSync(this.file, "utf8")); } catch { return defaultLaunch(); }
+    if (isLegacyLaunch(stored)) { console.log("[LAUNCH] stored banner is the pre-Solana token; starting over as $JEFF"); return defaultLaunch(); }
+    const d = defaultLaunch();
+    return { ...d, ...stored, links: { ...d.links, ...(stored.links || {}) } };
+  }
   push(body, now = Date.now()) {
     this.state = mergeLaunch(this.state, body, now);
     try { fs.mkdirSync(path.dirname(this.file), { recursive: true }); fs.writeFileSync(this.file, JSON.stringify(this.state, null, 2)); } catch (err) { console.error("[LAUNCH] could not persist:", err.message); }

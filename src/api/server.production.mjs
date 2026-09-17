@@ -8302,10 +8302,13 @@ app.get("/api/launch", async (req, res) => {
   const st = launchStore.state;
   const ponsUrl = (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}");
   const live = await launchOnChain(st);
-  const swap = st.venue === "uniswap-v2" ? `https://app.uniswap.org/swap?chain=robinhood&outputCurrency=${st.address}` : ponsUrl.replace("{ca}", st.address);
+  const sol = st.chain === "solana";
+  const swap = sol ? `https://pump.fun/coin/${st.address}` : st.venue === "uniswap-v2" ? `https://app.uniswap.org/swap?chain=robinhood&outputCurrency=${st.address}` : ponsUrl.replace("{ca}", st.address);
   const url = st.address ? (st.links.launchpad || swap) : (st.links.launchpad || "");
   const pair = st.pair || live?.pair || null;
-  res.json({ ...st, url, buy: st.address && st.status !== "soon" && st.status !== "off" ? swap : "", chart: pair ? `https://dexscreener.com/robinhood/${pair}` : (st.venue === "pons" && st.address ? ponsUrl.replace("{ca}", st.address) : ""), explorer: st.address ? `https://robinhoodchain.blockscout.com/token/${st.address}` : "", live, trend: launchHistory.read(st.address), ts: Date.now() });
+  const chart = sol ? (st.address ? `https://dexscreener.com/solana/${st.address}` : "") : pair ? `https://dexscreener.com/robinhood/${pair}` : (st.venue === "pons" && st.address ? ponsUrl.replace("{ca}", st.address) : "");
+  const explorer = st.address ? (sol ? `https://solscan.io/token/${st.address}` : `https://robinhoodchain.blockscout.com/token/${st.address}`) : "";
+  res.json({ ...st, url, buy: st.address && st.status !== "soon" && st.status !== "off" ? swap : "", chart, explorer, live, trend: launchHistory.read(st.address), ts: Date.now() });
 });
 app.post("/api/launch", requireAdmin, (req, res) => {
   try { const st = launchStore.push(req.body || {}); launchLive = { at: 0, data: null, key: "" }; if (launchHistory.key !== st.address) launchHistory.reset(st.address); console.log(`[LAUNCH] ${st.status} ${st.ticker || st.name} ${st.address || "(no address)"}${req.body?.update ? ` · update: ${req.body.update}` : ""}`); res.json({ ok: true, launch: st }); }

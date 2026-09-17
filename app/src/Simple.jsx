@@ -3,7 +3,7 @@
 // does is shown in its own words; nothing is explained in prose that the narration already shows.
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { TC, D, L, BLUE, css } from "./lib/theme.js";
-import { M, S, imgUrl, X_URL, DISCORD_URL, FREN_SYMBOL, FREN_URL } from "./lib/constants.js";
+import { M, S, imgUrl, X_URL, DISCORD_URL, JEFF_SYMBOL, JEFF_URL } from "./lib/constants.js";
 import a from "./lib/api-client.js";
 
 const FEE_PCT = 5;
@@ -311,18 +311,25 @@ function Launch({ T }) {
   const copy = async () => { try { await navigator.clipboard.writeText(l.address); sCopied(true); setTimeout(() => sCopied(false), 1500); } catch {} };
   const pill = { display: "inline-block", padding: "4px 10px", borderRadius: 999, fontFamily: M, fontSize: 11, fontWeight: 800, letterSpacing: ".08em", whiteSpace: "nowrap" };
   // The corner badge is the state of the launch and, once there is something to buy, the way in.
-  const where = l.venue === "uniswap-v2" ? "UNISWAP" : "PONS";
+  const sol = l.chain === "solana";
+  const where = sol ? (l.status === "graduated" ? "RAYDIUM" : "PUMP.FUN") : l.venue === "uniswap-v2" ? "UNISWAP" : "PONS";
+  const chainName = sol ? "SOLANA" : "ROBINHOOD CHAIN";
   const buyUrl = live ? (l.buy || l.url || "") : "";
-  const badge = l.status === "graduated" ? `GRADUATED · BUY ON ${where}` : live ? `NOW LIVE · BUY ON ${where}` : "SOON ON ROBINHOOD CHAIN";
+  const badge = l.status === "graduated" ? `GRADUATED · BUY ON ${where}` : live ? `NOW LIVE · BUY ON ${where}` : `SOON ON ${chainName}`;
+  const post = l.links?.post || "";
+  // The name, as the server states it, split at the first space so a two-word name stacks the way
+  // the old one did and a one-word name stands alone. Nothing about the token is hard-coded here.
+  const [first, ...rest] = String(l.name || "").toUpperCase().split(" ");
   return <div style={{ width: "100%", maxWidth: 440, marginBottom: 18, position: "relative", overflow: "hidden", borderRadius: 18, border: `1px solid ${live ? T.gn : T.bd}`, background: `radial-gradient(120% 90% at 85% 20%, ${T.gn}2a 0%, ${T.sf} 55%)`, padding: "18px 18px 16px", boxSizing: "border-box" }}>
-    <img src={l.image || "/fly.png"} alt="Not a fruit fly" style={{ position: "absolute", right: -18, top: -6, width: 190, height: "auto", animation: "fly 5s ease-in-out infinite", filter: `drop-shadow(0 0 22px ${T.gn}88)`, pointerEvents: "none" }} />
+    {l.image && <img src={l.image} alt={l.name || ""} style={{ position: "absolute", right: -18, top: -6, width: 190, height: "auto", animation: "fly 5s ease-in-out infinite", filter: `drop-shadow(0 0 22px ${T.gn}88)`, pointerEvents: "none" }} />}
     <div style={{ position: "relative", zIndex: 1, maxWidth: 240 }}>
       {buyUrl
         ? <a href={buyUrl} target="_blank" rel="noopener" style={{ ...pill, display: "inline-flex", alignItems: "center", gap: 6, background: T.gn, color: "#000", border: `1px solid ${T.gn}`, textDecoration: "none", animation: "gp 1.8s infinite" }}>{badge}<span aria-hidden="true">&#8594;</span></a>
         : <span style={{ ...pill, background: live ? T.gn : T.bg, color: live ? "#000" : T.dm, border: `1px solid ${live ? T.gn : T.bd}` }}>{badge}</span>}
-      <div style={{ fontSize: 30, fontWeight: 900, letterSpacing: "-.03em", lineHeight: 1, marginTop: 12 }}>NOT A<br />FRUIT FLY</div>
+      <div style={{ fontSize: 30, fontWeight: 900, letterSpacing: "-.03em", lineHeight: 1, marginTop: 12 }}>{first}{rest.length > 0 && <><br />{rest.join(" ")}</>}</div>
       {l.ticker && <div style={{ fontFamily: M, fontWeight: 800, color: T.gn, marginTop: 6 }}>${l.ticker.replace(/^\$/, "")}</div>}
       <div style={{ color: T.ft, fontSize: 13, lineHeight: 1.45, marginTop: 8 }}>{l.tagline}</div>
+      {post && <a href={post} target="_blank" rel="noopener" style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, fontSize: 13, fontWeight: 800, color: T.tx, textDecoration: "none", borderBottom: `1px solid ${T.bd}` }}><XIcon /> the post</a>}
     </div>
     {live && <div style={{ position: "relative", zIndex: 1, marginTop: 14 }}>
       {lv && <div style={{ marginBottom: 10 }}>
@@ -732,8 +739,8 @@ export default function Simple() {
     <div style={{ ...muted, fontSize: 12, marginTop: 28, textAlign: "center", maxWidth: 440 }}>
       Bondli keeps {FEE_PCT}% of each profitable trade, taken from the profit. Losing trades cost nothing.{" "}
       {waived === true
-        ? <span style={{ color: T.gn }}>You hold ${FREN_SYMBOL}, so yours is 0%.</span>
-        : <>Hold one <a href={FREN_URL} target="_blank" rel="noopener" style={{ color: T.dm, textDecoration: "underline dotted", textUnderlineOffset: 3 }}>${FREN_SYMBOL}</a> and it is 0%.</>}
+        ? <span style={{ color: T.gn }}>You hold ${JEFF_SYMBOL}, so yours is 0%.</span>
+        : <>Hold one <a href={JEFF_URL} target="_blank" rel="noopener" style={{ color: T.dm, textDecoration: "underline dotted", textUnderlineOffset: 3 }}>${JEFF_SYMBOL}</a> and it is 0%.</>}
       {" "}Memecoins can go to zero; only trade what you can lose.
     </div>
     <Socials T={T} />
