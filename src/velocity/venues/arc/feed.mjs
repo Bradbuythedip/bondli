@@ -264,13 +264,18 @@ export class ArcFeed extends Feed {
     }
     if (rec.kind === "opened") {
       const t = this.tokens.get(rec.token); if (!t) return;
-      t.liquidity = rec.liquidity; t.positionId = rec.positionId;
+      // The log's `liquidity` is the supply the Portal passed as liquidityDelta, not the position's L,
+      // so it is kept apart and the pool's own liquidity is read from StateView like everything else.
+      t.eventLiquidity = rec.liquidity; t.positionId = rec.positionId;
+      // The log already carries the range; the hook read confirms it later, and until then these serve.
+      if (t.tickStart == null && Number.isFinite(Number(rec.tickLower))) { t.tickStart = Number(rec.tickLower); t.tickBond = Number(rec.tickUpper); }
       if (rec.poolId && !t.poolId) { t.poolId = lower(rec.poolId); this.byPool.set(t.poolId, t); }
       return t;
     }
     if (rec.kind === "swap") {
       const t = this.byPool.get(lower(rec.poolId)); if (!t) return;
       const { side, tokens, quote } = classifySwap(rec, { tokenIs0: t.tokenIs0, quoteDecimals: t.quoteDecimals });
+      if (!side) return; // moved no tokens: not a trade of this token
       const buy = side === "buy", wallet = rec.wallet || rec.sender;
       if (buy) { t.buys++; t.uniqueBuyers.add(wallet); if (wallet === t.devWallet && t.buys === 1) t.devInitialQuote = quote; } else t.sells++;
       t.volumeQuote += quote; t.volumeUsd = t.volumeQuote * this.solPrice;
@@ -328,11 +333,18 @@ export class ArcFeed extends Feed {
         t._hookRead = true;
       }
       if (slot) { t.sqrtPriceX96 = slot.sqrtPriceX96; t.tick = slot.tick; if (slot.lpFeePips) t.poolFeeBps = slot.lpFeePips / 100; }
+      t._readFailedAt = null; // the pool answered: whatever is cached is current again
       if (liq) t.liquidity = liq;
       if (meta) { t.name = meta.name || t.name; t.ticker = meta.symbol || t.ticker; }
       t._pending = false; t._hydratedAt = this.clock();
       this._remark(t);
-    } catch (err) { t._hydrateError = err.message; this.hydrateErrors++; this.lastHydrateError = `${t.ca.slice(0, 10)}: ${err.message}`.slice(0, 200); }
+    } catch (err) {
+      t._hydrateError = err.message; this.hydrateErrors++; this.lastHydrateError = `${t.ca.slice(0, 10)}: ${err.message}`.slice(0, 200);
+      // The cached price is left in place for the record, but it is no longer a price: a held token
+      // whose pool stopped answering must reach the exit layer as unreadable, not marked at a
+      // frozen number forever. The engine's blind exit has its own grace for a transient failure.
+      if (t.poolId) t._readFailedAt = t._readFailedAt || this.clock();
+    }
   }
 
   payloadFor(t, now = this.clock()) {
@@ -368,7 +380,9 @@ export class ArcFeed extends Feed {
     let from = null;
     try { from = await this.rpc.txFrom(rec.tx); } catch { this.attributionErrors = (this.attributionErrors || 0) + 1; }
     if (this._txFrom.size > 5000) this._txFrom.clear();
-    this._txFrom.set(rec.tx, from);
+    // A lookup that failed is not an answer: caching null would pin every swap in that transaction
+    // on the router's address for good, and count the router as a buyer.
+    if (from) this._txFrom.set(rec.tx, from);
     return from;
   }
 
@@ -404,7 +418,7 @@ export class ArcFeed extends Feed {
       // must still reach the exit layer: no tick means no stop loss, no crash exit, no trail, only
       // the sweeper's blind time exit minutes later. An unreadable held position is a fact the
       // exit layer has to be told, not a reason to say nothing.
-      const readable = t.mcapUsd > 0 && this.solPrice > 0;
+      const readable = t.mcapUsd > 0 && this.solPrice > 0 && !t._readFailedAt;
       if (held) {
         const payload = readable ? { ...this.payloadFor(t, now), source: "arc" }
           : { unreadable: true, source: "arc", solPrice: this.solPrice, solPriceAt: this.solPriceAt, quote: "USDC", token: { ca: t.ca, curve: t.poolId, graduated: false, bonded: !!t.bonded, _ageMs: now - t.createdAt } };
