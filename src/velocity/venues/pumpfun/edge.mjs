@@ -21,6 +21,8 @@ export function pumpfunFeatures(c) {
     whaleBullish: opt(c.qf?._whaleBullish),
     walletAge: opt(c.qf?.rg_walletAgeScore),
     freshWalletRatio: opt(c.qf?._rg_freshWalletRatio),
+    // Measured smart money in the first minute: proven wallets only, exclusions applied upstream.
+    smartMoney: opt(c.qf?._smartMoney?.score),
   };
 }
 

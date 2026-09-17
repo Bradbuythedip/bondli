@@ -12,12 +12,12 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 export const DEFAULT_WEIGHTS = Object.freeze({
-  pumpfun: Object.freeze({ apeScore: 0.40, memeticQuick: 0.15, survivorMatch: 0.15, chartHealth: 0.10, whaleBullish: 0.10, walletAge: 0.05, freshWalletRatio: 0.05 }),
+  pumpfun: Object.freeze({ apeScore: 0.30, memeticQuick: 0.15, survivorMatch: 0.15, chartHealth: 0.10, whaleBullish: 0.10, walletAge: 0.05, freshWalletRatio: 0.05, smartMoney: 0.10 }),
 });
 
 // Signs are fixed here, not learned: a "negative" feature counts against confidence.
 export const FEATURE_SIGNS = Object.freeze({
-  pumpfun: Object.freeze({ apeScore: 1, memeticQuick: 1, survivorMatch: 1, chartHealth: 1, whaleBullish: 1, walletAge: 1, freshWalletRatio: -1 }),
+  pumpfun: Object.freeze({ apeScore: 1, memeticQuick: 1, survivorMatch: 1, chartHealth: 1, whaleBullish: 1, walletAge: 1, freshWalletRatio: -1, smartMoney: 1 }),
 });
 
 export const WEIGHT_CONSTRAINTS = Object.freeze({
@@ -29,11 +29,15 @@ export const WEIGHT_CONSTRAINTS = Object.freeze({
     whaleBullish: Object.freeze({ min: 0.03, max: 0.25 }),
     walletAge: Object.freeze({ min: 0.02, max: 0.15 }),
     freshWalletRatio: Object.freeze({ min: 0.02, max: 0.15 }),
+    smartMoney: Object.freeze({ min: 0.03, max: 0.30 }),
   }),
 });
 
 // Sacred: the learning loop may never make these count the other way.
 export const SACRED_INVERSIONS = Object.freeze({
+  // smartMoney is deliberately NOT sacred: labelled wallets get baited (buy, be copied, sell into
+  // the copiers), so the data may honestly show it counting the other way for a while, and the
+  // learner must be allowed to say so. Its floor in WEIGHT_CONSTRAINTS keeps it from being dropped.
   pumpfun: Object.freeze({ survivorMatch: "positive", apeScore: "positive", freshWalletRatio: "negative" }),
 });
 
