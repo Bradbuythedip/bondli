@@ -8,7 +8,14 @@
 // the whole supply as ONE concentrated position between tickStart and tickBond above the opening price.
 // Buys walk the price up through that position; when the tick crosses tickBond a monotonic "bonded"
 // latch flips and stays. There is no migration: the pool keeps trading the same position forever.
-// Source: github.com/arguspad/argus-world (contracts/Portal.sol, LaunchHook.sol; onchain/addresses.md).
+// What is pinned to a published source and what is not: the Portal events, their topic0 and the
+// launches() record layout come from Argus's own onchain/event-signatures.md, addresses.md and
+// launch-record-layout.md; the PoolManager and StateView ABIs are Uniswap v4's. The LaunchHook
+// interface (its getters, Bonded, TaxCollected, the snipe-tax formula) comes from the reference
+// contracts/LaunchHook.sol in that repo, which describes itself as a simplification of the deployed
+// hook, and the deployed bytecode could not be read from here. Everything built on it fails closed:
+// a hook whose getters do not answer keeps its launch out of the feed (never a candidate), and the
+// router dry-runs every swap before sending, so a wrong hook ABI costs trades, not money.
 import { Interface, AbiCoder, id as keccakId, keccak256, formatUnits, parseUnits } from "ethers";
 
 export const CHAIN_ID = 5042;
@@ -207,7 +214,8 @@ export function classifySwap(swap, { tokenIs0, quoteDecimals = QUOTE_DECIMALS })
   const a0 = BigInt(swap.amount0), a1 = BigInt(swap.amount1);
   const tokenDelta = tokenIs0 ? a0 : a1, quoteDelta = tokenIs0 ? a1 : a0;
   const abs = (x) => (x < 0n ? -x : x);
-  return { side: tokenDelta > 0n ? "buy" : "sell", tokens: toTokens(abs(tokenDelta)), quote: toUsdc(abs(quoteDelta), quoteDecimals) };
+  // A swap that moved no tokens (a buy the empty position could not fill) is neither side.
+  return { side: tokenDelta > 0n ? "buy" : tokenDelta < 0n ? "sell" : null, tokens: toTokens(abs(tokenDelta)), quote: toUsdc(abs(quoteDelta), quoteDecimals) };
 }
 
 // ── Tick and price arithmetic. A sqrt price here is the plain ratio (sqrtPriceX96 / 2^96), which a
@@ -216,7 +224,13 @@ const Q96 = 2 ** 96;
 export const sqrtRatioAtTick = (tick) => Math.pow(1.0001, tick / 2);
 export const sqrtRatioFromX96 = (x) => Number(x) / Q96;
 export const sqrtRatioToX96 = (r) => BigInt(Math.round(r * Q96));
-export const tickFromSqrtPriceX96 = (x) => Math.floor(Math.log(sqrtRatioFromX96(x) ** 2) / Math.log(1.0001));
+// The float log lands a hair under an exact tick about one time in seven, and floor then answers the
+// tick below. The decode is settled against the next tick's own ratio, which is exact at boundaries.
+export const tickFromSqrtPriceX96 = (x) => {
+  const r = sqrtRatioFromX96(x);
+  const t = Math.floor(Math.log(r ** 2) / Math.log(1.0001) + 1e-6);
+  return sqrtRatioAtTick(t + 1) <= r ? t + 1 : t;
+};
 
 /**
  * USDC per token from a pool's sqrtPriceX96. The raw ratio is currency1 units per currency0 unit;
@@ -240,14 +254,21 @@ export function mcapQuote(price) { return Number(price) > 0 ? Number(price) * TO
  * The Portal and the splitter are exempt, which is how the creator's own dev buy gets through.
  */
 export function snipeTaxBps(elapsedMs) {
+  // An unknown launch time is priced as the launch block, never as "the window is over".
+  if (!Number.isFinite(Number(elapsedMs))) return SNIPE_TAX_CAP_BPS;
   const elapsed = Math.max(0, Math.floor(Number(elapsedMs) / 1000));
-  if (!Number.isFinite(elapsed) || elapsed >= 3) return 0;
+  if (elapsed >= 3) return 0;
   const shift = Math.floor((elapsed * 14) / 3);
   if (shift >= 256) return 0;
   return SNIPE_TAX_CAP_BPS >> shift;
 }
 /** What the hook actually withholds from a side: leg tax plus snipe tax, never past the 99% cap. */
-export function combinedTaxBps(legBps, snipeBps = 0) { return Math.min(SNIPE_TAX_CAP_BPS, (Number(legBps) || 0) + (Number(snipeBps) || 0)); }
+// A leg tax that has not been read yet (the feed keeps it null until the hook answers) is priced at
+// the cap, not at zero: an unknown cost is the worst case until it is known.
+export function combinedTaxBps(legBps, snipeBps = 0) {
+  const leg = legBps == null || !Number.isFinite(Number(legBps)) ? SNIPE_TAX_CAP_BPS : Number(legBps);
+  return Math.min(SNIPE_TAX_CAP_BPS, leg + (Number(snipeBps) || 0));
+}
 
 /**
  * 0..1 of the way from the opening tick to the bond tick, LaunchHook.milestoneProgress() in floats.

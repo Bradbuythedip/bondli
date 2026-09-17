@@ -94,8 +94,12 @@ test("T20: price from sqrtPriceX96 for both currency orders and both quote decim
   close(priceFromSqrtX96(x0, { tokenIs0: false }), 1e29, 1e-9, "reading the order wrong is off by 1e34, never subtle");
   assert.equal(priceFromSqrtX96(0n, { tokenIs0: true }), 0);
   close(mcapQuote(1e-5), 10_000, 1e-12, "mcap"); assert.equal(mcapQuote(0), 0); assert.equal(TOKEN_SUPPLY, 1e9);
-  // A tick round-trips through its sqrt ratio.
-  assert.equal(tickFromSqrtPriceX96(sqrtRatioToX96(sqrtRatioAtTick(-398400))), -398400);
+  // Every tick on the 200 grid, and every tick across the launch band, round-trips through its sqrt
+  // ratio. A plain floor of the float log answered one tick low about one time in seven.
+  // Below about -700000 the X96 integer itself is only a few billion, so its own rounding is coarser
+  // than a tick; no Argus pool sits there (launches open around -420000 for a 6-decimal quote).
+  for (let t = -700000; t <= 887200; t += 200) assert.equal(tickFromSqrtPriceX96(sqrtRatioToX96(sqrtRatioAtTick(t))), t, `grid tick ${t}`);
+  for (let t = -420000; t <= -300000; t += 7) assert.equal(tickFromSqrtPriceX96(sqrtRatioToX96(sqrtRatioAtTick(t))), t, `band tick ${t}`);
   close(sqrtRatioFromX96(sqrtRatioToX96(2.5e-9)), 2.5e-9, 1e-12, "x96 round trip");
 });
 
@@ -182,6 +186,10 @@ test("T20: buy and sell quotes match a tiny-step walk of the position to 0.1%, f
     assert.equal(s.capped, false, "the sell is smaller than the buy after fees, so it stays inside what the pool took in");
     assert.ok(s.usdcOut > 250 * 0.88 && s.usdcOut < 250 * 0.92, `round trip loses about 3% + 1% + 1% + 5%: ${s.usdcOut}`);
     close(s.usdcTaxed, s.usdcGross * 0.05, 1e-9, "5% of the gross to the hook");
+    // The paper router books these as the fill: the price must be net of the tax, the pool's cut in tokens.
+    close(s.avgPrice, s.usdcOut / s.tokensUsed, 1e-12, "sell average price is net USDC over tokens accepted, tax out");
+    close(s.tokensLpFee, s.tokensUsed * 0.01, 1e-9, "1% of the tokens sent is the pool's fee");
+    close(s.tokensUsed, b.tokensOut, 1e-12, "an uncapped sell accepts every token sent");
     assert.ok(s.slippage_bps > 0 && s.priceAfter < s.spot);
     // The snipe tax in the launch block: 3% + 99% caps at 99%, so 250 USDC buys almost nothing.
     const sniped = quoteBuy({ ...p, snipeBps: snipeTaxBps(0) }, 250);
@@ -217,4 +225,15 @@ test("T20: a buy past the bond tick is capped at the position's edge; a sell pas
     const below = quoteBuy({ ...p, sqrtPriceX96: sqrtRatioToX96(sqrtRatioAtTick(tokenIs0 ? p.tickStart - 2000 : p.tickStart + 2000)) }, 250);
     close(below.tokensOut, quoteBuy(p, 250).tokensOut, 1e-12, "same fill as from the opening tick");
   }
+});
+
+test("T20: an unknown launch time or leg tax is priced as the worst case, never as free; a swap that moved no tokens is no side", async () => {
+  const { snipeTaxBps, combinedTaxBps, classifySwap, SNIPE_TAX_CAP_BPS } = await import("../../src/velocity/venues/arc/chain.mjs");
+  assert.equal(snipeTaxBps(undefined), SNIPE_TAX_CAP_BPS); assert.equal(snipeTaxBps(NaN), SNIPE_TAX_CAP_BPS); assert.equal(snipeTaxBps(null), SNIPE_TAX_CAP_BPS);
+  assert.equal(snipeTaxBps(0), SNIPE_TAX_CAP_BPS); assert.equal(snipeTaxBps(3_000), 0); assert.equal(snipeTaxBps(1e12), 0);
+  assert.equal(combinedTaxBps(null, 0), SNIPE_TAX_CAP_BPS); assert.equal(combinedTaxBps(undefined, 100), SNIPE_TAX_CAP_BPS);
+  assert.equal(combinedTaxBps(300, 0), 300); assert.equal(combinedTaxBps(300, 9900), SNIPE_TAX_CAP_BPS); assert.equal(combinedTaxBps(0, 0), 0, "a zero read is a zero, not unknown");
+  assert.equal(classifySwap({ amount0: 0n, amount1: -5n }, { tokenIs0: true }).side, null);
+  assert.equal(classifySwap({ amount0: 5n, amount1: -5n }, { tokenIs0: true }).side, "buy");
+  assert.equal(classifySwap({ amount0: -5n, amount1: 5n }, { tokenIs0: true }).side, "sell");
 });

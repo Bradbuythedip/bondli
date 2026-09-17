@@ -164,15 +164,22 @@ test("T22: a held token whose pool read fails still ticks, and the tick says it 
   const good = events.filter(e => e.kind === "tick" && e.id === TOKEN);
   assert.equal(good.length, 1); assert.ok(good[0].payload.mcapUsd > 0); assert.equal(good[0].payload.curve.address, POOL);
   assert.equal(events.filter(e => e.kind === "candidate").length, 0, "held and priced, but with no buyers it is nothing to judge");
-  // Now the pool stops answering and the cached reading is wiped, the way a reverting read leaves it.
-  s.slot0Broken = true; t.mcapUsd = 0; t._hydratedAt = 0; events.length = 0;
+  // Now the pool stops answering. The cached number stays on the record, but it is no longer a price:
+  // the tick must say unreadable, or the position would be marked at a frozen number forever.
+  s.slot0Broken = true; t._hydratedAt = 0; events.length = 0;
   now += 10_000; s.head += 20;
   await feed.pollOnce();
+  assert.ok(t.mcapUsd > 0, "the last reading is kept, which is exactly why the tick has to say it is stale");
   const ticks = events.filter(e => e.kind === "tick" && e.id === TOKEN);
   assert.equal(ticks.length, 1, "a held position still gets a tick when it cannot be priced");
   assert.deepEqual(ticks[0].payload, { unreadable: true, source: "arc", solPrice: 1, solPriceAt: feed.solPriceAt, quote: "USDC", token: { ca: TOKEN, curve: POOL, graduated: false, bonded: false, _ageMs: 130_000 } });
   assert.equal(feed.status().unreadableTicks, 1); assert.equal(feed.status().hydrateErrors, 1); assert.match(feed.status().lastHydrateError, /reverted/);
   assert.equal(events.filter(e => e.kind === "candidate" && e.id === TOKEN).length, 0, "not offered while it cannot be priced");
+  // The pool answers again: the very next poll is a priced tick.
+  s.slot0Broken = false; t._hydratedAt = 0; events.length = 0; now += 5_000; s.head += 10;
+  await feed.pollOnce();
+  const back = events.filter(e => e.kind === "tick" && e.id === TOKEN);
+  assert.equal(back.length, 1); assert.ok(back[0].payload.mcapUsd > 0 && !back[0].payload.unreadable, "readable again");
 });
 
 test("T22: past the bond tick the token is bonded, still ticked, still a candidate, and never graduated", async () => {
