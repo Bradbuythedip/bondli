@@ -464,12 +464,12 @@ export default function Simple() {
       // Only the chains that are on count toward the bankroll: someone trading Robinhood Chain alone
       // must not be sized against SOL they never funded, or against SOL they are keeping out of it.
       try { localStorage.setItem("bondli_paper", paper ? "1" : "0"); } catch {}
-      const usePump = chainsOn.pumpfun, usePons = chainsOn.pons;
+      const usePump = chainsOn.pumpfun, usePons = chainsOn.pons, useArc = chainsOn.arc;
       // Paper has no wallet to size against, so it gets a stated bankroll: enough to run the same
       // four positions at the chosen stake, which is what makes the result comparable to going live.
       const bank = paper ? Math.max(100, size * 20)
-        : (usePump ? (tw?.solBalance || 0) * 200 : 0) + (usePons ? (tw?.ethBalance || 0) * 3000 : 0);
-      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round(bank)), pumpfun: usePump, pons: usePons, paper });
+        : (usePump ? (tw?.solBalance || 0) * 200 : 0) + (usePons ? (tw?.ethBalance || 0) * 3000 : 0) + (useArc ? (tw?.usdcBalance || 0) : 0);
+      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round(bank)), pumpfun: usePump, pons: usePons, arc: useArc, paper });
       if (!r.ok) say(r.error || "Could not start", "error"); else sSt(r);
     } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
   };
@@ -531,6 +531,11 @@ export default function Simple() {
     if (!confirm(`Send all SOL from the bot wallet back to ${pk.slice(0, 6)}…?`)) return;
     sBusy("withdraw"); try { const r = await a.wdr(pk, pk, "all"); say(`Sent ${r.sol.toFixed(4)} SOL`, "ok"); await loadWallet(); } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
   };
+  const withdrawUsdc = async () => {
+    if (running) { say("Stop the bot first", "error"); return; }
+    const to = prompt("Send all USDC on Arc to which 0x address?"); if (!to) return;
+    sBusy("withdraw"); try { const r = await a.wdrUsdc(pk, to.trim()); say(`Sent ${r.usdc.toFixed(2)} USDC`, "ok"); await loadWallet(); } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
+  };
   const withdrawEth = async () => {
     if (running) { say("Stop the bot first", "error"); return; }
     const to = prompt("Send all ETH on Robinhood Chain to which 0x address?"); if (!to) return;
@@ -553,24 +558,28 @@ export default function Simple() {
   // the gas reserve; 0.01 leaves room for a few of them. It is a smaller number than the SOL floor
   // because ETH is dearer and Robinhood Chain gas is cents, not a rent-bearing token account.
   const MIN_BANKROLL_ETH = 0.01;
+  // Arc is quoted in dollars: one minimum stake plus gas, with room for a few. Gas on Arc is cents.
+  const MIN_BANKROLL_USDC = 12;
   const RELEASE_AFTER = 5; // engine cfg.releaseAfterFailures: keep the two in step
   const fundedSol = (tw?.solBalance || 0) >= MIN_BANKROLL_SOL;
   const fundedEth = (tw?.ethBalance || 0) >= MIN_BANKROLL_ETH;
+  const fundedUsdc = (tw?.usdcBalance || 0) >= MIN_BANKROLL_USDC;
   // Paper money needs no funding: nothing can be spent, so nothing has to be there. Every other rule
   // -- the gates, the sizes, the plans, the exits, the live feed -- is the same one live trading uses.
-  const canTrade = { pumpfun: fundedSol || paper, pons: (fundedEth || paper) && !!tw?.evmAddress };
+  const canTrade = { pumpfun: fundedSol || paper, pons: (fundedEth || paper) && !!tw?.evmAddress, arc: (fundedUsdc || paper) && !!tw?.evmAddress };
   // Which chains are actually on: what the user asked for, AND what the wallet can pay for. One
   // definition, read by the Start call and by the chips, so the panel can never show pump.fun off
   // and then start it anyway.
   const chainsOn = {
     pumpfun: chains.pumpfun !== false && canTrade.pumpfun,
     pons: !!chains.pons && canTrade.pons,
+    arc: !!chains.arc && canTrade.arc,
   };
   // Funded means funded on a chain the bot can actually trade -- EITHER chain. This read SOL alone,
   // so a wallet holding 0.024 ETH and no SOL was shown "send SOL to begin" and never rendered the
   // Start button at all: the engine had supported Robinhood Chain on its own for days, and the panel
   // would not let anyone ask for it.
-  const funded = fundedSol || fundedEth || paper;
+  const funded = fundedSol || fundedEth || fundedUsdc || paper;
   // What the RUNNING bot is doing, as the server reports it -- not what the switch happens to say
   // now. Flipping the toggle mid-run must not relabel a run that is spending real money.
   const onPaper = running ? !!st?.settings?.paper : paper;
@@ -614,13 +623,13 @@ export default function Simple() {
             <span style={{ display: "block", ...muted, fontSize: 12, marginTop: 2 }}>Same feed, same rules, pretend money. Nothing is bought or sold and no fee is charged, so you can watch it work before funding anything.</span>
           </span>
         </div>
-        {!funded && <div style={{ ...muted, marginTop: 8 }}>Fund either chain to begin: {MIN_BANKROLL_SOL} SOL here, or {MIN_BANKROLL_ETH} ETH on Robinhood Chain below. Either one on its own is enough. Every trade pays a fixed cost before it earns anything, about {dragPct(SIZES[0], st?.status?.solPrice || 0).toFixed(0)}% at the smallest stake, so a thin bankroll forces small bets and small bets lose to the costs. For Solana, {GOOD_BANKROLL_SOL} SOL is what it actually wants.{(tw?.solBalance || 0) > 0 ? ` You have ${(tw.solBalance).toFixed(3)} SOL` : ""}{(tw?.ethBalance || 0) > 0 ? `${(tw?.solBalance || 0) > 0 ? " and" : " You have"} ${(tw.ethBalance).toFixed(4)} ETH` : ""}{((tw?.solBalance || 0) > 0 || (tw?.ethBalance || 0) > 0) ? "." : ""}</div>}
+        {!funded && <div style={{ ...muted, marginTop: 8 }}>Fund any chain to begin: {MIN_BANKROLL_SOL} SOL here, {MIN_BANKROLL_ETH} ETH on Robinhood Chain, or {MIN_BANKROLL_USDC} USDC on Arc (both at the 0x address below). Any one on its own is enough. Every trade pays a fixed cost before it earns anything, about {dragPct(SIZES[0], st?.status?.solPrice || 0).toFixed(0)}% at the smallest stake, so a thin bankroll forces small bets and small bets lose to the costs. For Solana, {GOOD_BANKROLL_SOL} SOL is what it actually wants.{(tw?.solBalance || 0) > 0 ? ` You have ${(tw.solBalance).toFixed(3)} SOL` : ""}{(tw?.ethBalance || 0) > 0 ? `${(tw?.solBalance || 0) > 0 ? " and" : " You have"} ${(tw.ethBalance).toFixed(4)} ETH` : ""}{((tw?.solBalance || 0) > 0 || (tw?.ethBalance || 0) > 0) ? "." : ""}</div>}
         {fundedSol && (tw?.solBalance || 0) < GOOD_BANKROLL_SOL && <div style={{ ...muted, marginTop: 8, color: T.yl }}>This works at {(tw.solBalance).toFixed(2)} SOL but it is tight: it can hold one or two positions and the day's loss limit stops it early. {GOOD_BANKROLL_SOL} SOL gives it room.</div>}
         {!fundedSol && fundedEth && <div style={{ ...muted, marginTop: 8, color: T.yl }}>Not enough SOL for pump.fun, so it starts on Robinhood Chain alone. Turn pump.fun back on below once this wallet holds {MIN_BANKROLL_SOL} SOL.</div>}
         {tw.evmAddress && <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 14 }}>
-            <span style={muted}>Bot wallet · Robinhood Chain</span>
-            <span style={{ fontFamily: M, fontWeight: 800, fontSize: 22 }}>{tw.ethBalance == null ? "…" : tw.ethBalance.toFixed(4)} ETH</span>
+            <span style={muted}>Bot wallet · Robinhood Chain & Arc</span>
+            <span style={{ fontFamily: M, fontWeight: 800, fontSize: 22 }}>{tw.ethBalance == null ? "…" : tw.ethBalance.toFixed(4)} ETH<span style={{ ...muted, fontSize: 14, marginLeft: 8 }}>{tw.usdcBalance == null ? "…" : tw.usdcBalance.toFixed(2)} USDC</span></span>
           </div>
           <div onClick={() => copy(tw.evmAddress)} title="copy" style={{ fontFamily: M, fontSize: 12, color: T.dm, marginTop: 6, wordBreak: "break-all", cursor: "pointer", padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{tw.evmAddress}{copied ? "  copied" : ""}</div>
           {!(tw.ethBalance > 0.003) && <div style={{ ...muted, marginTop: 8 }}>Optional. Send ETH on Robinhood Chain to that address and the bot trades PONS launches too. 0.05 ETH is a good start.</div>}
@@ -643,15 +652,17 @@ export default function Simple() {
               // The same floors the funding copy quotes, not a second set of ad-hoc numbers.
               const canFund = canTrade;
               const on = chainsOn;
+              const isLast = (k) => on[k] && !Object.keys(on).some(x => x !== k && on[x]); // the only one on
               const toggle = (k) => {
-                if (!canFund[k]) return;                                       // nothing to trade with
-                if (on[k] && !on[k === "pumpfun" ? "pons" : "pumpfun"]) return; // never both off
+                if (!canFund[k]) return;       // nothing to trade with
+                if (isLast(k)) return;         // never every chain off
                 sChains(c => ({ ...c, [k]: !on[k] }));
               };
-              return [["pumpfun", "pump.fun", "Solana"], ["pons", "PONS", "Robinhood Chain"]].map(([k, l, sub]) => {
-                const isOn = on[k], last = isOn && !on[k === "pumpfun" ? "pons" : "pumpfun"];
+              const fundWith = { pumpfun: `${MIN_BANKROLL_SOL} SOL`, pons: `${MIN_BANKROLL_ETH} ETH`, arc: `${MIN_BANKROLL_USDC} USDC` };
+              return [["pumpfun", "pump.fun", "Solana"], ["pons", "PONS", "Robinhood Chain"], ["arc", "Argus", "Arc · USDC"]].map(([k, l, sub]) => {
+                const isOn = on[k], last = isLast(k);
                 const can = canFund[k];
-                const note = !can ? (k === "pons" ? (tw?.evmAddress ? ` · fund with ${MIN_BANKROLL_ETH} ETH` : " · no ETH wallet yet") : ` · fund with ${MIN_BANKROLL_SOL} SOL`)
+                const note = !can ? ((k !== "pumpfun" && !tw?.evmAddress) ? " · no EVM wallet yet" : ` · fund with ${fundWith[k]}`)
                   : last ? " · on, the only one"
                   : isOn ? " · on" : " · off";
                 return <div key={k} onClick={() => toggle(k)} title={last ? "at least one chain has to stay on" : ""}
@@ -760,6 +771,7 @@ export default function Simple() {
     {pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 14, display: "flex", gap: 8 }}>
       <Btn ghost T={T} onClick={withdraw} disabled={busy === "withdraw" || running}>{busy === "withdraw" ? "Sending…" : "Withdraw SOL"}</Btn>
       {tw.ethBalance > 0 && <Btn ghost T={T} onClick={withdrawEth} disabled={busy === "withdraw" || running}>Withdraw ETH</Btn>}
+      {tw.usdcBalance > 0 && <Btn ghost T={T} onClick={withdrawUsdc} disabled={busy === "withdraw" || running}>Withdraw USDC</Btn>}
       <Btn ghost T={T} onClick={exportKey} disabled={busy === "key"}>{busy === "key" ? "Signing…" : "Export key"}</Btn>
     </div>}
     {pk && tw && <div style={{ width: "100%", maxWidth: 440, marginTop: 8 }}>

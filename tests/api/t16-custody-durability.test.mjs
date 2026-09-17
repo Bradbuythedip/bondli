@@ -78,11 +78,15 @@ test("T16: a balance reading is only cached when every leg of it succeeded", () 
   const route = SRC.slice(i, SRC.indexOf("\n});", i));
   assert.match(route, /let ethBalance = null, ethFailed = false/, "the ETH leg reports its own failure");
   assert.doesNotMatch(route, /getBalance\(tw\.evmAddress\)\)\)\.toFixed\(6\); \} catch \{\}/, "and is not swallowed");
-  assert.match(route, /if \(!rpcFailed && !ethFailed\) setCachedBalance/, "a partial reading is never cached");
+  // Arc is a third leg on the same address behind its own RPC, and it fails on its own too.
+  assert.match(route, /let usdcBalance = null, usdcFailed = false/, "the Arc leg reports its own failure");
+  assert.match(route, /if \(!rpcFailed && !ethFailed && !usdcFailed\) setCachedBalance/, "a partial reading is never cached");
   // A failed leg keeps the last good number rather than reporting null as if it were a balance.
   assert.match(route, /prev && prev\.ethBalance != null \? prev\.ethBalance : null/);
-  // And every response the client cannot trust as live says so.
-  for (const marker of [/stale: ethFailed \? \["eth"\] : null/, /stale: \["sol", "eth"\]/, /stale: \["tokens"\]/])
+  assert.match(route, /prev && prev\.usdcBalance != null \? prev\.usdcBalance : null/);
+  // And every response the client cannot trust as live says so, naming each leg that is stale.
+  assert.match(route, /const staleLegs = \[ethFailed && "eth", usdcFailed && "arc"\]\.filter\(Boolean\)/);
+  for (const marker of [/stale: staleLegs\.length \? staleLegs : null/, /stale: \["sol", "eth"\]/, /stale: \["tokens"\]/])
     assert.match(route, marker, `stale responses are labelled: ${marker}`);
   assert.match(route, /as_of: Date\.now\(\)/, "and dated");
 });
