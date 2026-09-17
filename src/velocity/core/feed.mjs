@@ -5,6 +5,14 @@
 import { EventEmitter } from "node:events";
 import { makeEvent, observeLatencyMs, LatencyHistogram } from "./events.mjs";
 
+/** An error as it may be shown anywhere. ethers embeds the request URL, API key included, in its
+ *  messages (info.requestUrl), and a feed's last error is served on the health route; a key must
+ *  never travel that way. The short message is kept, every URL is replaced, the length is bounded. */
+export function errorText(err, max = 300) {
+  const raw = String(err?.shortMessage || err?.message || err || "");
+  return raw.replace(/https?:\/\/\S+/g, "<rpc>").slice(0, max);
+}
+
 export class Feed extends EventEmitter {
   constructor({ venue, name, clock = () => Date.now(), staleAfterMs = 5_000, latencyBoundMs = 500 }) {
     super();

@@ -12,6 +12,7 @@
 // as a native transfer. Getting a face wrong is not a rounding error, it is a factor of 10^12.
 import { Wallet, JsonRpcProvider, Contract, Interface, AbiCoder, MaxUint256, ZeroAddress, zeroPadValue, parseUnits } from "ethers";
 import { PaperRouter, Router, failure } from "../../core/router.mjs";
+import { errorText } from "../../core/feed.mjs";
 import {
   EXPLORER, CHAIN_ID, DEFAULT_RPC_URLS, PORTALS, POOL_MANAGER, STATE_VIEW, UNIVERSAL_ROUTER, PERMIT2, USDC_ERC20,
   QUOTE_IS_NATIVE, QUOTE_DECIMALS, NATIVE_DECIMALS, TOKEN_DECIMALS, POOL_FEE_PIPS, TICK_SPACING, SNIPE_TAX_WINDOW_MS,
@@ -388,7 +389,7 @@ export class ArcLiveRouter extends Router {
       const fee = (d.trade ? d.tax + d.trade.quote * (now.lpFeePips / 1e6) : q.usdcTaxed + q.usdcLpFee) + d.gasUsdc;
       return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "arc", instrument: order.instrument, side: "BUY", price: qty > 0 ? (spent * price) / qty : est.price, qty, notional_usd: +(spent * price).toFixed(4), slippage_bps: +q.slippage_bps.toFixed(2), fee_usd: +(fee * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: hash, sol_spent: spent, exact: !!d.trade } };
     } catch (err) {
-      return failure(order, "SEND_FAILED", (err.reason || err.shortMessage || err.message || String(err)).slice(0, 300), hash ? { venue_ref: hash, t_sent } : {});
+      return failure(order, "SEND_FAILED", errorText(err.reason || err, 300), hash ? { venue_ref: hash, t_sent } : {});
     }
   }
 
@@ -531,7 +532,7 @@ export class ArcLiveRouter extends Router {
       const pctFilled = units > 0n ? Math.min(100, (Number(units - leftUnits) / Number(units)) * 100) : 0;
       return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "arc", instrument: position.instrument, side: "SELL", price: qtySold > 0 ? (got * price) / qtySold : 0, qty: qtySold, notional_usd: +(got * price).toFixed(4), slippage_bps: null, fee_usd: +((feeQuote + gasUsdc) * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: lastHash, sol_received: got, exact, held_before: held, chunks, partial: unsold, pct_filled: +pctFilled.toFixed(2), shape: shape.note } };
     } catch (err) {
-      return failure({ id: position.id }, "SEND_FAILED", (err.reason || err.shortMessage || err.message || String(err)).slice(0, 300), hash ? { venue_ref: hash, t_sent } : {});
+      return failure({ id: position.id }, "SEND_FAILED", errorText(err.reason || err, 300), hash ? { venue_ref: hash, t_sent } : {});
     }
   }
 
@@ -601,7 +602,7 @@ export class ArcLiveRouter extends Router {
     if (!this.ready) return { ok: false, latencyMs: null, detail: "not initialised" };
     const t0 = Date.now();
     try { const b = await this.provider.getBlockNumber(); return { ok: true, latencyMs: Date.now() - t0, detail: `block ${b}` }; }
-    catch (err) { return { ok: false, latencyMs: Date.now() - t0, detail: err.message }; }
+    catch (err) { return { ok: false, latencyMs: Date.now() - t0, detail: errorText(err, 200) }; }
   }
 
   /** Balances of the tokens this router knows about. An EVM wallet has no account list to enumerate. */

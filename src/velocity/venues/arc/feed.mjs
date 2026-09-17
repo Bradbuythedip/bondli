@@ -10,7 +10,7 @@
 // after the bond tick, so `graduated` is always false and the engine's pre-graduation exit must
 // not fire. What the bond tick does flip is `bonded`, which is exposed as its own flag.
 import { JsonRpcProvider, Contract, zeroPadValue } from "ethers";
-import { Feed } from "../../core/feed.mjs";
+import { Feed, errorText } from "../../core/feed.mjs";
 // Score, features and dynamics read only the per-token state every EVM launchpad feed keeps
 // (trades with full wallets, buyers, spark, mcap), nothing chain-specific: imported, not copied.
 import { Dynamics, quickFeatures, scoreToken } from "../pons/feed.mjs";
@@ -186,6 +186,9 @@ export function pollDelay(pollMs, errors) {
   return Math.min(60_000, pollMs * 2 ** Math.min(errors, 6));
 }
 
+/** A liquidity reading is known when it is a positive integer; '0' (a swap that pushed past the position) is not. */
+const liqKnown = v => { try { return v != null && BigInt(v) > 0n; } catch { return false; } };
+
 export class ArcFeed extends Feed {
   constructor({ rpc = null, rpcUrl, pollMs = 1_500, fromBlock = null, maxTokens = 3000, clock, onTrade = null, ...rest } = {}) {
     super({ venue: "arc", name: "arc-feed", staleAfterMs: rest.staleAfterMs ?? Math.max(8_000, 3 * pollMs), latencyBoundMs: rest.latencyBoundMs ?? 2_500, clock });
@@ -199,6 +202,7 @@ export class ArcFeed extends Feed {
     this._txFrom = new Map(); // transaction hash -> sender, so a burst of swaps in one tx costs one read
     this._lastEmitted = new Map(); this._timers = []; this._block = null; this.errors = 0; this.reemitMs = rest.reemitMs ?? 30_000;
     this.lastError = null; this.hydrateErrors = 0; this.lastHydrateError = null; this.ticks = 0; this.candidates = 0; this.polls = 0;
+    this._adopt = new Set(); this._adoptAt = new Map(); this._adoptTries = new Map(); // watched tokens the feed has yet to find on a Portal
     this.onTrade = typeof onTrade === "function" ? onTrade : null; // one buy or sell, for anything that keeps its own history
   }
 
@@ -209,16 +213,24 @@ export class ArcFeed extends Feed {
   watch(id) {
     const ca = lower(id);
     super.watch(ca);
-    if (!this.tokens.has(ca)) (this._adopt = this._adopt || new Set()).add(ca);
+    if (!this.tokens.has(ca)) this._adopt.add(ca);
   }
-  unwatch(id) { super.unwatch(lower(id)); }
+  unwatch(id) { const ca = lower(id); super.unwatch(ca); this._adopt.delete(ca); this._adoptAt.delete(ca); this._adoptTries.delete(ca); }
+  /** A watched token the Portals could not name is asked about again, later and less often, never dropped:
+   *  dropping it would leave a held position with no tick at all, readable or not. */
+  _adoptLater(ca, now) {
+    this.adoptFailures = (this.adoptFailures || 0) + 1;
+    const tries = (this._adoptTries.get(ca) || 0) + 1; this._adoptTries.set(ca, tries);
+    this._adoptAt.set(ca, now + Math.min(60_000, this.pollMs * 2 ** Math.min(tries, 6)));
+  }
   async _adoptWatched(now) {
-    if (!this._adopt?.size || !this.rpc.launchInfo) return;
+    if (!this._adopt.size || !this.rpc.launchInfo) return;
     for (const ca of [...this._adopt]) {
-      this._adopt.delete(ca);
+      if ((this._adoptAt.get(ca) || 0) > now) continue;
       try {
         const info = await this.rpc.launchInfo(ca);
-        if (!info) { this.adoptFailures = (this.adoptFailures || 0) + 1; continue; }
+        if (!info) { this._adoptLater(ca, now); continue; }
+        this._adopt.delete(ca); this._adoptAt.delete(ca); this._adoptTries.delete(ca);
         const t = this.apply({ kind: "launch", ...info, name: "", symbol: "", block: null, tx: null }, now - CANDIDATE_MIN_AGE_MS - 1);
         if (t) {
           this.apply({ kind: "parts", token: ca, hook: info.hook, locker: info.locker, splitter: info.splitter }, now);
@@ -227,7 +239,7 @@ export class ArcFeed extends Feed {
           t._ageUnknown = true; t._adopted = true;
           await this._hydrate(t);
         }
-      } catch (err) { this.adoptFailures = (this.adoptFailures || 0) + 1; this.lastHydrateError = `adopt ${ca.slice(0, 10)}: ${err.message}`.slice(0, 200); this._adopt.add(ca); }
+      } catch (err) { this._adoptLater(ca, now); this.lastHydrateError = `adopt ${ca.slice(0, 10)}: ${errorText(err, 180)}`; }
     }
   }
 
@@ -251,7 +263,9 @@ export class ArcFeed extends Feed {
       this.tokens.set(t.ca, t);
       if (t.poolId) this.byPool.set(t.poolId, t);
       const parts = this._parts.get(t.ca); if (parts) { this._parts.delete(t.ca); this.apply(parts, now); }
-      if (this.tokens.size > this.maxTokens) { const oldest = [...this.tokens.values()].sort((a, b) => a.createdAt - b.createdAt)[0]; this._forget(oldest); }
+      // Room is made from tokens nobody holds. A held token is never evicted: an adopted position is
+      // hours old and would be the first to go, and a token that leaves the map stops ticking.
+      if (this.tokens.size > this.maxTokens) { const oldest = [...this.tokens.values()].filter(x => !this.watched.has(x.ca)).sort((a, b) => a.createdAt - b.createdAt)[0]; if (oldest) this._forget(oldest); }
       return t;
     }
     if (rec.kind === "parts") {
@@ -290,7 +304,7 @@ export class ArcFeed extends Feed {
     }
   }
 
-  _forget(t) { this.tokens.delete(t.ca); if (t.poolId) this.byPool.delete(t.poolId); if (t.hook) this.byHook.delete(t.hook); }
+  _forget(t) { this.tokens.delete(t.ca); if (t.poolId) this.byPool.delete(t.poolId); if (t.hook) this.byHook.delete(t.hook); if (this.watched.has(t.ca)) this._adopt.add(t.ca); }
 
   _remark(t) {
     if (t.sqrtPriceX96 != null) {
@@ -317,7 +331,7 @@ export class ArcFeed extends Feed {
       const [hook, slot, liq, meta] = await Promise.all([
         t._hookRead ? null : this.rpc.hookInfo(t.hook),
         t.poolId ? this.rpc.slot0(t.poolId) : null,
-        t.poolId && !t.liquidity ? this.rpc.liquidity(t.poolId) : null,
+        t.poolId && !liqKnown(t.liquidity) ? this.rpc.liquidity(t.poolId) : null,
         t.name ? null : this.rpc.tokenMeta(t.ca),
       ]);
       if (hook) {
@@ -339,7 +353,7 @@ export class ArcFeed extends Feed {
       t._pending = false; t._hydratedAt = this.clock();
       this._remark(t);
     } catch (err) {
-      t._hydrateError = err.message; this.hydrateErrors++; this.lastHydrateError = `${t.ca.slice(0, 10)}: ${err.message}`.slice(0, 200);
+      t._hydrateError = errorText(err, 200); this.hydrateErrors++; this.lastHydrateError = `${t.ca.slice(0, 10)}: ${errorText(err, 180)}`;
       // The cached price is left in place for the record, but it is no longer a price: a held token
       // whose pool stopped answering must reach the exit layer as unreadable, not marked at a
       // frozen number forever. The engine's blind exit has its own grace for a transient failure.
@@ -390,7 +404,9 @@ export class ArcFeed extends Feed {
     const now = this.clock();
     const head = await this.rpc.blockNumber();
     if (this._block == null) this._block = this.fromBlock ?? head; // first poll: from now, not from genesis
-    if (head < this._block) { this.touch(); return 0; }
+    // No new block: nothing to read, but a held position is still owed its tick. A stalled head is
+    // exactly when a frozen price must not stand in for a live one.
+    if (head < this._block) { await this._adoptWatched(now); await this._tickHeld(now); this.touch(); return 0; }
     const from = this._block, to = Math.min(head, from + 2000);
     // Every Portal, not just the current one: an older Portal still owns its launches' records and
     // its tokens still trade, and a Portal upgrade must not make the feed go blind to them.
@@ -413,19 +429,8 @@ export class ArcFeed extends Feed {
     for (const t of this.tokens.values()) {
       const held = this.watched.has(t.ca);
       if (t._pending || (touched.has(t) && now - (t._hydratedAt || 0) > 20_000) || (held && now - (t._hydratedAt || 0) > 4_000)) await this._hydrate(t);
-      if (t.unsupportedQuote) continue; // the hook says its quote is not USDC after all
-      // A token we HOLD gets a tick every poll, readable or not. A held token whose pool read failed
-      // must still reach the exit layer: no tick means no stop loss, no crash exit, no trail, only
-      // the sweeper's blind time exit minutes later. An unreadable held position is a fact the
-      // exit layer has to be told, not a reason to say nothing.
-      const readable = t.mcapUsd > 0 && this.solPrice > 0 && !t._readFailedAt;
-      if (held) {
-        const payload = readable ? { ...this.payloadFor(t, now), source: "arc" }
-          : { unreadable: true, source: "arc", solPrice: this.solPrice, solPriceAt: this.solPriceAt, quote: "USDC", token: { ca: t.ca, curve: t.poolId, graduated: false, bonded: !!t.bonded, _ageMs: now - t.createdAt } };
-        this.emitEvent({ kind: "tick", id: t.ca, payload, t_venue: now });
-        this.ticks++;
-        if (!readable) this.unreadableTicks = (this.unreadableTicks || 0) + 1;
-      }
+      const readable = this._readable(t);
+      if (held) this._emitHeldTick(t, now, readable);
       if (!readable) continue;
       const payload = this.payloadFor(t, now);
       if (t._ageUnknown || now - t.createdAt < CANDIDATE_MIN_AGE_MS) continue; // inside the snipe tax, or of no known age: not even a candidate
@@ -433,17 +438,49 @@ export class ArcFeed extends Feed {
       if (!this._changed(t, payload, now)) continue;
       this.emitEvent({ kind: "candidate", id: t.ca, payload, t_venue: now }); emitted++; this.candidates++;
     }
+    for (const ca of this.watched) if (!this.tokens.has(ca)) this._emitUnknownTick(ca, now);
     this.polls++;
     this.touch();
     this.markHealth(true, `block ${to}, ${this.tokens.size} tokens, ${emitted} candidates`);
     return emitted;
   }
+  /** A price the exit layer may act on: read, current, and in an asset the router can pay in. */
+  _readable(t) { return t.mcapUsd > 0 && this.solPrice > 0 && !t._readFailedAt && !t.unsupportedQuote; }
+  // A token we HOLD gets a tick every poll, readable or not. A held token whose pool read failed
+  // must still reach the exit layer: no tick means no stop loss, no crash exit, no trail, only
+  // the sweeper's blind time exit minutes later. An unreadable held position is a fact the exit
+  // layer has to be told, not a reason to say nothing. A quote the router cannot pay in is not a
+  // price either: a held one still ticks, as unreadable.
+  _emitHeldTick(t, now, readable = this._readable(t)) {
+    const payload = readable ? { ...this.payloadFor(t, now), source: "arc" }
+      : { unreadable: true, source: "arc", solPrice: this.solPrice, solPriceAt: this.solPriceAt, quote: "USDC", token: { ca: t.ca, curve: t.poolId, graduated: false, bonded: !!t.bonded, _ageMs: now - t.createdAt } };
+    this.emitEvent({ kind: "tick", id: t.ca, payload, t_venue: now });
+    this.ticks++;
+    if (!readable) this.unreadableTicks = (this.unreadableTicks || 0) + 1;
+  }
+  /** A watched token the feed does not hold at all -- not yet adopted, or not on any v4 Portal -- still
+   *  gets its unreadable tick, so the exit layer's blind exit arms instead of the position waiting on timers. */
+  _emitUnknownTick(ca, now) {
+    this.emitEvent({ kind: "tick", id: ca, payload: { unreadable: true, source: "arc", solPrice: this.solPrice, solPriceAt: this.solPriceAt, quote: "USDC", token: { ca, curve: null, graduated: false, bonded: false, _ageMs: null } }, t_venue: now });
+    this.ticks++; this.unreadableTicks = (this.unreadableTicks || 0) + 1;
+  }
+  /** Every held token's tick, on a poll that read nothing new. */
+  async _tickHeld(now) {
+    for (const ca of this.watched) {
+      const t = this.tokens.get(ca);
+      if (!t) { this._emitUnknownTick(ca, now); continue; }
+      if (t._pending || now - (t._hydratedAt || 0) > 4_000) await this._hydrate(t);
+      this._emitHeldTick(t, now);
+    }
+  }
+  /** A poll that threw: counted, kept for the health page with any URL scrubbed out of it. */
+  _noteError(err) { this.errors++; this.lastError = `${new Date(this.clock()).toISOString()} ${errorText(err, 260)}`; this.markHealth(false, errorText(err, 200)); }
 
   async start() {
     this.running = true;
     const tick = async () => {
       if (!this.running) return;
-      try { await this.pollOnce(); this.errors = 0; } catch (err) { this.errors++; this.lastError = `${new Date(this.clock()).toISOString()} ${err.message}`.slice(0, 300); this.markHealth(false, err.message); }
+      try { await this.pollOnce(); this.errors = 0; } catch (err) { this._noteError(err); }
       if (this.running) this._timers.push(setTimeout(tick, pollDelay(this.pollMs, this.errors)));
     };
     tick();

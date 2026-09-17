@@ -229,7 +229,10 @@ test("T22: a launch quoted in something other than USDC is read, then set aside:
   for (let i = 0; i < 3; i++) { const q = buyOn(s, 50); s.logs.push(swapLog(s, { usdc: 48, tokens: q.tokensOut, side: "buy", blk: 1050 + i, tx: "0xq" + i, wallet: addr(0x300 + i) })); }
   await feed.pollOnce();
   assert.equal(feed.token(TOKEN).unsupportedQuote, true); assert.equal(feed.status().skippedQuote, 1);
-  assert.equal(events.length, 0, "no tick, no candidate");
+  // Held, so it still ticks -- as unreadable, since a quote the router cannot pay in is not a price -- and is never a candidate.
+  assert.equal(events.filter(e => e.kind === "candidate").length, 0, "never a candidate");
+  const ticks = events.filter(e => e.kind === "tick");
+  assert.equal(ticks.length, 1); assert.equal(ticks[0].payload.unreadable, true);
 });
 
 test("T22: PartsDeployed arriving before TokenCreated is kept until the launch shows up", async () => {

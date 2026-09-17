@@ -6,7 +6,7 @@
 // The quote asset is ETH: every "solPrice" field on this venue is the ETH price in USD.
 import { JsonRpcProvider, Contract, zeroPadValue } from "ethers";
 const zeroPad = (a) => zeroPadValue(String(a).toLowerCase(), 32);
-import { Feed } from "../../core/feed.mjs";
+import { Feed, errorText } from "../../core/feed.mjs";
 import { FACTORY, FACTORY_ABI, TOPICS, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, EXPLORER, SNIPE_TAX_WINDOW_MS, decodeLog, mcapQuote, curveProgress, toEth, toTokens } from "./chain.mjs";
 
 /** The chain, behind four calls, so a test can fake it. */
@@ -176,6 +176,7 @@ export class PonsFeed extends Feed {
     this.tokens = new Map(); this.byCurve = new Map(); this.dyn = new Dynamics();
     this._lastEmitted = new Map(); this._timers = []; this._block = null; this.errors = 0; this.reemitMs = rest.reemitMs ?? 30_000;
     this.lastError = null; this.hydrateErrors = 0; this.lastHydrateError = null; this.ticks = 0; this.candidates = 0; this.polls = 0;
+    this._adopt = new Set(); this._adoptAt = new Map(); this._adoptTries = new Map(); // watched tokens the feed has yet to find at the factory
     this.onTrade = typeof onTrade === "function" ? onTrade : null; // one buy or sell, for anything that keeps its own history
   }
 
@@ -186,19 +187,27 @@ export class PonsFeed extends Feed {
   watch(id) {
     const ca = String(id).toLowerCase();
     super.watch(ca);
-    if (!this.tokens.has(ca)) (this._adopt = this._adopt || new Set()).add(ca);
+    if (!this.tokens.has(ca)) this._adopt.add(ca);
   }
-  unwatch(id) { super.unwatch(String(id).toLowerCase()); }
+  unwatch(id) { const ca = lower(id); super.unwatch(ca); this._adopt.delete(ca); this._adoptAt.delete(ca); this._adoptTries.delete(ca); }
+  /** A watched token the factory could not name is asked about again, later and less often, never dropped:
+   *  dropping it would leave a held position with no tick at all, readable or not. */
+  _adoptLater(ca, now) {
+    this.adoptFailures = (this.adoptFailures || 0) + 1;
+    const tries = (this._adoptTries.get(ca) || 0) + 1; this._adoptTries.set(ca, tries);
+    this._adoptAt.set(ca, now + Math.min(60_000, this.pollMs * 2 ** Math.min(tries, 6)));
+  }
   async _adoptWatched(now) {
-    if (!this._adopt?.size || !this.rpc.launchInfo) return;
+    if (!this._adopt.size || !this.rpc.launchInfo) return;
     for (const ca of [...this._adopt]) {
-      this._adopt.delete(ca);
+      if ((this._adoptAt.get(ca) || 0) > now) continue;
       try {
         const info = await this.rpc.launchInfo(ca);
-        if (!info) { this.adoptFailures = (this.adoptFailures || 0) + 1; continue; }
+        if (!info) { this._adoptLater(ca, now); continue; }
+        this._adopt.delete(ca); this._adoptAt.delete(ca); this._adoptTries.delete(ca);
         const t = this.apply({ kind: "launch", ...info, block: null, tx: null }, now - SNIPE_TAX_WINDOW_MS - 1);
         if (t) { t._ageUnknown = true; t._adopted = true; if (info.graduated) { t.graduated = true; t._curvePct = 1; } await this._hydrate(t); }
-      } catch (err) { this.adoptFailures = (this.adoptFailures || 0) + 1; this.lastHydrateError = `adopt ${ca.slice(0, 10)}: ${err.message}`.slice(0, 200); this._adopt.add(ca); }
+      } catch (err) { this._adoptLater(ca, now); this.lastHydrateError = `adopt ${ca.slice(0, 10)}: ${errorText(err, 180)}`; }
     }
   }
 
@@ -217,7 +226,9 @@ export class PonsFeed extends Feed {
         // side. Everything downstream must be able to tell ignorance from a reading.
         quoteReserve: 0, tokenReserve: 0, realQuoteReserve: 0, feeBps: null, creatorTaxBps: null, mcapQuote: 0, mcapUsd: 0, progress: 0, graduated: false, _curvePct: 0, _source: "pons", _apeScore: 0, _scoredAt: 0, _pending: true };
       this.tokens.set(rec.token, t); this.byCurve.set(rec.curve, t);
-      if (this.tokens.size > this.maxTokens) { const oldest = [...this.tokens.values()].sort((a, b) => a.createdAt - b.createdAt)[0]; this.tokens.delete(oldest.ca); this.byCurve.delete(oldest.curve); }
+      // Room is made from tokens nobody holds; a held token is never evicted, because a token that
+      // leaves the map stops ticking and an adopted position is the oldest of all.
+      if (this.tokens.size > this.maxTokens) { const oldest = [...this.tokens.values()].filter(x => !this.watched.has(x.ca)).sort((a, b) => a.createdAt - b.createdAt)[0]; if (oldest) { this.tokens.delete(oldest.ca); this.byCurve.delete(oldest.curve); } }
       return t;
     }
     const t = this.byCurve.get(rec.curve); if (!t) return;
@@ -252,9 +263,14 @@ export class PonsFeed extends Feed {
       Object.assign(t, { quoteReserve: info.quoteReserve, tokenReserve: info.tokenReserve, realQuoteReserve: info.realQuoteReserve, feeBps: info.feeBps, creatorTaxBps: info.creatorTaxBps, native: info.native });
       if (info.graduationThreshold > 0) t.graduationThreshold = info.graduationThreshold;
       if (meta) { t.name = meta.name || t.name; t.ticker = meta.symbol || t.ticker; }
-      t._pending = false; t._hydratedAt = this.clock();
+      t._pending = false; t._hydratedAt = this.clock(); t._readFailedAt = null;
       this._remark(t);
-    } catch (err) { t._hydrateError = err.message; this.hydrateErrors++; this.lastHydrateError = `${t.ca.slice(0, 10)}: ${err.message}`.slice(0, 200); }
+    } catch (err) {
+      t._hydrateError = errorText(err, 200); this.hydrateErrors++; this.lastHydrateError = `${t.ca.slice(0, 10)}: ${errorText(err, 180)}`;
+      // The cached reserves stay for the record but are no longer a price: a held token whose curve
+      // stopped answering reaches the exit layer as unreadable, never marked at a frozen number.
+      t._readFailedAt = t._readFailedAt || this.clock();
+    }
   }
 
   payloadFor(t, now = this.clock()) {
@@ -284,7 +300,9 @@ export class PonsFeed extends Feed {
     if (this.priceFn) { try { const p = await this.priceFn(); if (p > 0) { this.solPrice = p; this.solPriceAt = now; } } catch {} }
     const head = await this.rpc.blockNumber();
     if (this._block == null) this._block = this.fromBlock ?? head; // first poll: from now, not from genesis
-    if (head < this._block) { this.touch(); return 0; }
+    // No new block: nothing to read, but a held position is still owed its tick. A stalled head is
+    // exactly when a frozen price must not stand in for a live one.
+    if (head < this._block) { await this._adoptWatched(now); await this._tickHeld(now); this.touch(); return 0; }
     const from = this._block, to = Math.min(head, from + 2000);
     const launches = await this.rpc.logs({ address: FACTORY, topics: [[TOPICS.TokenLaunched, TOPICS.PoolGraduated]], fromBlock: from, toBlock: to });
     for (const l of launches) { const r = decodeLog(l); if (r?.kind === "launch") this.apply(r, now); else if (r?.kind === "graduated") { const t = this.tokens.get(r.token); if (t) { t.graduated = true; t._curvePct = 1; } } }
@@ -303,22 +321,8 @@ export class PonsFeed extends Feed {
     for (const t of this.tokens.values()) {
       const held = this.watched.has(t.ca);
       if (t._pending || (touched.has(t) && now - (t._hydratedAt || 0) > 20_000) || (held && now - (t._hydratedAt || 0) > 4_000)) await this._hydrate(t);
-      if (t.native === false) continue; // the curve says its quote is an ERC-20 after all
-      // A token we HOLD gets a tick every poll, readable or not. This guard used to sit above the
-      // held emit, so a held token whose curve read failed -- a reverting getReserves, a graduated
-      // pool, an ETH price gap -- emitted nothing at all. No tick means checkExits never runs on it:
-      // no stop loss, no crash exit, no trail. The only thing left that could fire was the sweeper's
-      // blind time exit minutes later, which is why every STALL close was a 60%+ loss while the
-      // price-driven exits lost 4%. An unreadable held position is a fact the exit layer has to be
-      // told, not a reason to say nothing.
-      const readable = t.mcapUsd > 0 && this.solPrice > 0;
-      if (this.watched.has(t.ca)) {
-        const payload = readable ? { ...this.payloadFor(t, now), source: "pons" }
-          : { unreadable: true, source: "pons", solPrice: this.solPrice, solPriceAt: this.solPriceAt, quote: "ETH", token: { ca: t.ca, curve: t.curve, graduated: !!t.graduated, _ageMs: now - t.createdAt } };
-        this.emitEvent({ kind: "tick", id: t.ca, payload, t_venue: now });
-        this.ticks++;
-        if (!readable) this.unreadableTicks = (this.unreadableTicks || 0) + 1;
-      }
+      const readable = this._readable(t);
+      if (held) this._emitHeldTick(t, now, readable);
       if (!readable) continue;
       const payload = this.payloadFor(t, now);
       if (now - t.createdAt < SNIPE_TAX_WINDOW_MS) continue; // a buy in the snipe-tax window is a donation: not even a candidate
@@ -326,17 +330,50 @@ export class PonsFeed extends Feed {
       if (!this._changed(t, payload, now)) continue;
       this.emitEvent({ kind: "candidate", id: t.ca, payload, t_venue: now }); emitted++; this.candidates++;
     }
+    for (const ca of this.watched) if (!this.tokens.has(ca)) this._emitUnknownTick(ca, now);
     this.polls++;
     this.touch();
     this.markHealth(true, `block ${to}, ${this.tokens.size} tokens, ${emitted} candidates`);
     return emitted;
   }
+  /** A price the exit layer may act on: read, current, and in an asset the router can pay in. */
+  _readable(t) { return t.mcapUsd > 0 && this.solPrice > 0 && !t._readFailedAt && t.native !== false; }
+  // A token we HOLD gets a tick every poll, readable or not. This guard used to sit above the held
+  // emit, so a held token whose curve read failed -- a reverting getReserves, a graduated pool, an
+  // ETH price gap -- emitted nothing at all. No tick means checkExits never runs on it: no stop
+  // loss, no crash exit, no trail. The only thing left that could fire was the sweeper's blind time
+  // exit minutes later, which is why every STALL close was a 60%+ loss while the price-driven exits
+  // lost 4%. An unreadable held position is a fact the exit layer has to be told, not a reason to
+  // say nothing. A quote the router cannot pay in (an ERC-20 pair) is not a price either.
+  _emitHeldTick(t, now, readable = this._readable(t)) {
+    const payload = readable ? { ...this.payloadFor(t, now), source: "pons" }
+      : { unreadable: true, source: "pons", solPrice: this.solPrice, solPriceAt: this.solPriceAt, quote: "ETH", token: { ca: t.ca, curve: t.curve, graduated: !!t.graduated, _ageMs: now - t.createdAt } };
+    this.emitEvent({ kind: "tick", id: t.ca, payload, t_venue: now });
+    this.ticks++;
+    if (!readable) this.unreadableTicks = (this.unreadableTicks || 0) + 1;
+  }
+  /** A watched token the feed does not hold at all still gets its unreadable tick, so the blind exit arms. */
+  _emitUnknownTick(ca, now) {
+    this.emitEvent({ kind: "tick", id: ca, payload: { unreadable: true, source: "pons", solPrice: this.solPrice, solPriceAt: this.solPriceAt, quote: "ETH", token: { ca, curve: null, graduated: false, _ageMs: null } }, t_venue: now });
+    this.ticks++; this.unreadableTicks = (this.unreadableTicks || 0) + 1;
+  }
+  /** Every held token's tick, on a poll that read nothing new. */
+  async _tickHeld(now) {
+    for (const ca of this.watched) {
+      const t = this.tokens.get(ca);
+      if (!t) { this._emitUnknownTick(ca, now); continue; }
+      if (t._pending || now - (t._hydratedAt || 0) > 4_000) await this._hydrate(t);
+      this._emitHeldTick(t, now);
+    }
+  }
+  /** A poll that threw: counted, kept for the health page with any URL scrubbed out of it. */
+  _noteError(err) { this.errors++; this.lastError = `${new Date(this.clock()).toISOString()} ${errorText(err, 260)}`; this.markHealth(false, errorText(err, 200)); }
 
   async start() {
     this.running = true;
     const tick = async () => {
       if (!this.running) return;
-      try { await this.pollOnce(); this.errors = 0; } catch (err) { this.errors++; this.lastError = `${new Date(this.clock()).toISOString()} ${err.message}`.slice(0, 300); this.markHealth(false, err.message); }
+      try { await this.pollOnce(); this.errors = 0; } catch (err) { this._noteError(err); }
       if (this.running) this._timers.push(setTimeout(tick, this.pollMs));
     };
     tick();

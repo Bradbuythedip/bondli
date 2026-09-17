@@ -23,7 +23,7 @@ test("T25: the Arc feed is built from ARC_RPC_URL, handed to the hub, started, a
   assert.match(SERVER.slice(ctor, ctor + 600), /onTrade: \(t, tr\) => radar\._revivals\.noteTrade/);
   // The hub keeps it beside the PONS feed and reports it on the health route.
   assert.match(HUB, /this\.arcFeed = arcFeed;/);
-  assert.match(HUB, /arc: hub\.arcFeed \? \{ \.\.\.\(hub\.arcFeed\.status\?\.\(\) \|\| \{\}\), tokens: hub\.arcFeed\.tokens\?\.size \?\? null/);
+  assert.match(HUB, /arc: hub\.arcFeed \? \{ \.\.\.pub\(hub\.arcFeed\.status\?\.\(\)\), tokens: hub\.arcFeed\.tokens\?\.size \?\? null/);
   // The key never lives in the example file.
   assert.match(ENV, /# ARC_RPC_URL=https:\/\/arc-mainnet\.g\.alchemy\.com\/v2\/<key>/);
   assert.doesNotMatch(ENV, /alchemy\.com\/v2\/[A-Za-z0-9_-]{20,}/);
@@ -55,7 +55,7 @@ test("T25: a fill reaches the callouts through the hub with the buy tx on it; th
   // The public route is unauthenticated and answers from feed()/record() only: never status()'s lastError or a user.
   const route = HUB.indexOf('app.get("/api/callouts"');
   assert.ok(route > 0);
-  const body = HUB.slice(route, route + 500);
+  const body = HUB.slice(route, HUB.indexOf("app.get(", route + 10));
   assert.doesNotMatch(body, /requireOwner/);
   assert.match(body, /calls: hub\.callouts\.feed\(limit\), record: hub\.callouts\.record\(\)/);
   assert.doesNotMatch(body, /lastError|wallet/);
@@ -82,4 +82,15 @@ test("T25: the Arc venue is built in hub.start the way PONS is, on the same EVM 
   // The site lists Arc holdings and lets a bonded token be sold (the pool keeps trading after the bond).
   assert.match(SITE, /\[\.\.\.hold\.sol, \.\.\.hold\.eth, \.\.\.\(hold\.usdc \|\| \[\]\)\]\.map/);
   assert.match(SITE, /h\.state === "bonded" \|\| h\.state === "unknown" && \(h\.venue === "pumpfun" \|\| h\.venue === "arc"\)/);
+});
+
+test("T25: the public health route never carries a feed's error text, because an RPC error can quote the key", () => {
+  const route = HUB.indexOf('app.get("/api/velocity/health"');
+  assert.ok(route > 0);
+  const before = HUB.slice(route - 1400, route);
+  assert.match(before, /const pub = s => \{ const \{ lastError, lastHydrateError, \.\.\.rest \} = s \|\| \{\}; return rest; \};/);
+  const body = HUB.slice(route, route + 700);
+  assert.match(body, /feed: pub\(hub\.feed\.status\?\.\(\)\)/);
+  assert.match(body, /\.\.\.pub\(hub\.ponsFeed\.status\?\.\(\)\)/);
+  assert.match(body, /\.\.\.pub\(hub\.arcFeed\.status\?\.\(\)\)/);
 });
