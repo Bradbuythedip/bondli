@@ -200,8 +200,16 @@ export class Engine extends EventEmitter {
       .then(() => router.closeTokenAccount(instrument))
       .then(r => {
         if (!r?.closed) return;
-        this.ledger.append({ kind: "rent", venue, instrument, sol: r.reclaimed_sol, accounts: r.closed, venue_ref: r.sig || null, note: "token account closed, rent reclaimed" });
-        this.log("info", `rent back ${r.reclaimed_sol} SOL from ${instrument.slice(0, 8)}`);
+        // The rent went out at entry inside cost_usd, so the position's outcome already counts it as
+        // lost. Getting it back is realized money and is credited to the day it lands in, or every
+        // pump.fun trade is booked ~$0.40 worse than it was and the header drifts under the truth by
+        // that much per trade, forever.
+        const px = this.quotePriceOf(venue) || 0;
+        const usd = +((Number(r.reclaimed_sol) || 0) * px).toFixed(4);
+        if (usd > 0) { this.store.rollDay(); this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + usd).toFixed(4); }
+        this.ledger.append({ kind: "rent", venue, instrument, sol: r.reclaimed_sol, usd, accounts: r.closed, venue_ref: r.sig || null, note: "token account closed, rent reclaimed" });
+        this.store.save();
+        this.log("info", `rent back ${r.reclaimed_sol} SOL ($${usd.toFixed(2)}) from ${instrument.slice(0, 8)}`);
         this.refreshWallet().catch(() => {});
       })
       .catch(err => this.log("warn", `rent reclaim ${instrument.slice(0, 8)}: ${err.shortMessage || err.message}`));
@@ -989,7 +997,12 @@ export class Engine extends EventEmitter {
     const proceeds = f.notional_usd;
     p.proceeds_usd = (p.proceeds_usd || 0) + proceeds;
     if (f.sol_received > 0) p.sol_received = (p.sol_received || 0) + f.sol_received;
-    p.remaining_qty = Math.max(0, (p.remaining_qty ?? p.qty) - (f.qty || 0));
+    const before = p.remaining_qty ?? p.qty;
+    p.remaining_qty = Math.max(0, before - (f.qty || 0));
+    // What is still on the table shrinks with what was sold. notional_usd is what the risk envelope,
+    // the daily taper and the header's open value all read; leaving it at the entry size after a
+    // partial sell counted the sold part as still at risk AND as cash in the wallet -- twice.
+    if (before > 0 && p.remaining_qty < before) p.notional_usd = +((p.notional_usd || 0) * (p.remaining_qty / before)).toFixed(4);
     // What actually filled, not what was asked for. A router that sells a position in chunks can stop
     // part-way and still succeed; closing on the requested percentage abandoned the rest.
     const filledPct = Number.isFinite(f.pct_filled) ? f.pct_filled : pct;

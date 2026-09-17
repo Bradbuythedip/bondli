@@ -319,7 +319,7 @@ export class VelocityHub {
     // The waiver as last read; status must not block on an RPC, so this never triggers a fresh read.
     const cached = this.waiver.enabled ? this.waiver.cached(wallet) : null;
     const fee = { pct: this.feePct, waiver: this.waiver.enabled ? { symbol: this.waiver.symbol, token: this.waiver.token, minTokens: this.waiver.minTokens, holds: cached ? cached.holds : null } : null };
-    return { running: true, startedAt: u.startedAt, settings: u.settings, status: s, funnel: u.engine.funnel(), feeWallet: this.feeOk ? this.platformWallet : null, fee, sweep: this._sweepView(this._sweeps.get(wallet)) };
+    return { running: true, startedAt: u.startedAt, settings: u.settings, owedFees: u.owedFees || [], status: s, funnel: u.engine.funnel(), feeWallet: this.feeOk ? this.platformWallet : null, fee, sweep: this._sweepView(this._sweeps.get(wallet)) };
   }
 
   /** The narration, newest last, from the user's own ledger. */
@@ -350,12 +350,49 @@ export class VelocityHub {
     const feeWallet = venue === "pons" ? this.platformEvmWallet : (this.feeOk ? this.platformWallet : null);
     if (!feeWallet) { u.engine.log("warn", `platform fee ${f.fee.toFixed(6)} ${quote} not collected: ${venue === "pons" ? "PLATFORM_EVM_WALLET" : "PLATFORM_WALLET"} not set`); return { fee: f.fee, net: f.net, collected: false }; }
     const solPrice = u.engine.quotePriceOf(venue) || (venue === "pons" ? this.ponsFeed?.solPrice : this.feed.solPrice) || 0;
-    const sig = await u.engine.venues[venue].liveRouter.transferSol(feeWallet, f.fee);
-    u.engine.ledger.append({ kind: "fee", venue: "pumpfun", instrument: position.instrument, positionId: position.id, scope: "platform", sol: +f.fee.toFixed(6), usd: +(f.fee * solPrice).toFixed(4), rate: f.rate ?? null, net_sol: f.net, venue_ref: sig, note: `performance fee ${f.rate ?? ""}% of ${f.net.toFixed(4)} SOL profit` });
+    let sig;
+    try { sig = await u.engine.venues[venue].liveRouter.transferSol(feeWallet, f.fee); }
+    catch (err) {
+      // The fee is owed whether or not the transfer landed. A throw here used to vanish into the
+      // outcome handler's catch: no record, no retry, the money simply not collected. Record it as
+      // owed and try again on the next close from this wallet.
+      const reason = String(err?.shortMessage || err?.message || err).slice(0, 200);
+      u.engine.ledger.append({ kind: "fee", venue, quote, instrument: position.instrument, positionId: position.id, scope: "platform", sol: 0, owed_sol: +f.fee.toFixed(6), usd: 0, rate: f.rate ?? null, net_sol: f.net, collected: false, error: reason, note: `performance fee not collected: ${reason}` });
+      u.owedFees = [...(u.owedFees || []), { venue, quote, amount: +f.fee.toFixed(6), instrument: position.instrument, at: this.clock(), error: reason }];
+      u.engine.store.save();
+      u.engine.log("warn", `platform fee ${f.fee.toFixed(6)} ${quote} owed, transfer failed: ${reason}`);
+      return { fee: f.fee, net: f.net, collected: false, error: reason };
+    }
+    // The venue and quote asset are recorded as they are. This used to write venue "pumpfun" and a
+    // field named sol for an ETH fee on Robinhood Chain, so the ledger could not say which chain
+    // was paid in what.
+    u.engine.ledger.append({ kind: "fee", venue, quote, instrument: position.instrument, positionId: position.id, scope: "platform", sol: +f.fee.toFixed(6), usd: +(f.fee * solPrice).toFixed(4), rate: f.rate ?? null, net_sol: f.net, venue_ref: sig, note: `performance fee ${f.rate ?? ""}% of ${f.net.toFixed(4)} ${quote} profit` });
+    this.collectOwed(wallet, venue).catch(() => {});
     u.engine.store.save();
     this.fee.recordGlobalFee?.(f.fee);
     u.engine.log("info", `platform fee ${f.fee.toFixed(6)} ${quote} (${f.rate ?? "?"}% of ${f.net.toFixed(4)} profit) tx ${String(sig).slice(0, 10)}`);
     return { fee: f.fee, net: f.net, collected: true, sig };
+  }
+
+  /** Fees that could not be transferred when they were earned. Tried again after any later fee on
+   *  the same venue succeeds -- that is proof the transfer path works again. Never throws. */
+  async collectOwed(wallet, venue) {
+    const u = this.users.get(wallet);
+    if (!u?.owedFees?.length) return;
+    const feeWallet = venue === "pons" ? this.platformEvmWallet : (this.feeOk ? this.platformWallet : null);
+    const router = u.engine.venues[venue]?.liveRouter;
+    if (!feeWallet || !router?.transferSol) return;
+    const keep = [];
+    for (const owed of u.owedFees) {
+      if (owed.venue !== venue) { keep.push(owed); continue; }
+      try {
+        const sig = await router.transferSol(feeWallet, owed.amount);
+        u.engine.ledger.append({ kind: "fee", venue, quote: owed.quote, instrument: owed.instrument, scope: "platform", sol: owed.amount, usd: +(owed.amount * (u.engine.quotePriceOf(venue) || 0)).toFixed(4), venue_ref: sig, collected: true, note: `performance fee collected late (${owed.error})` });
+        u.engine.log("info", `owed platform fee ${owed.amount} ${owed.quote} collected tx ${String(sig).slice(0, 10)}`);
+      } catch (err) { keep.push({ ...owed, error: String(err?.shortMessage || err?.message || err).slice(0, 200) }); }
+    }
+    u.owedFees = keep;
+    u.engine.store.save();
   }
 
   /** Does this user hold enough of the house token to trade free? Never throws.

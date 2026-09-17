@@ -966,6 +966,11 @@ test("T10: the token account's rent comes back when a position leaves for good, 
     await engine.closePosition(partial, 50, "TEST_PARTIAL", { by: "test" });
     await new Promise(r => setTimeout(r, 20));
     assert.deepEqual(live.closedAccounts, [], "a partial exit keeps the account open");
+    // Half sold means half still at risk. notional_usd is what the risk envelope, the daily taper
+    // and the header's open value read; left at 25 it counted the sold half as still on the table
+    // AND as cash in the wallet.
+    assert.equal(engine.store.state.positions["pos:partial"].notional_usd, 12.5, "what is still at risk shrinks with what was sold");
+    assert.equal(engine.store.state.positions["pos:partial"].stake_usd, 25, "the original stake, which the statistics key on, does not");
 
     // The final sell empties it: the rent is claimed and booked.
     await engine.closePosition(engine.store.state.positions["pos:partial"], 100, "TEST_FINAL", { by: "test" });
@@ -974,6 +979,12 @@ test("T10: the token account's rent comes back when a position leaves for good, 
     for (let i = 0; i < 50 && !engine.ledger.query({ kind: "rent", limit: 1 }).length; i++) await new Promise(r => setTimeout(r, 10));
     const rent = engine.ledger.query({ kind: "rent", limit: 1 })[0];
     assert.equal(rent.sol, 0.002034); assert.equal(rent.instrument, "MintR"); assert.equal(rent.venue_ref, "SIGRENT");
+    // The rent went out inside cost_usd at entry, so the outcome already booked it as lost. Getting
+    // it back is realized money: 0.002034 SOL at $200 is $0.41 credited to the day it lands in.
+    assert.equal(rent.usd, 0.4068);
+    const realized = engine.store.state.day.realizedUsd;
+    const outcome = engine.ledger.query({ kind: "outcome", limit: 1 })[0];
+    assert.equal(+(realized - outcome.pnl_usd).toFixed(4), 0.4068, "the day is the outcome plus the rent that came back");
   } finally { await engine.stop(); }
 });
 
