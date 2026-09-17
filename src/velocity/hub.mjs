@@ -21,6 +21,8 @@ import { HolderWaiver } from "./core/holder-waiver.mjs";
 /** The original platform wallet. Its key was pasted into a chat once; the operator chose to keep it,
  *  so it is accepted with a loud warning at boot rather than refused. Sweep it often. */
 export const EXPOSED_DEFAULT_PLATFORM_WALLET = "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
+/** Each venue's quote asset, as the ledger and the operator name it. */
+export const QUOTE_OF = Object.freeze({ pumpfun: "SOL", pons: "ETH", arc: "USDC" });
 /** The one rate, for everyone who does not hold the house token. The site states the same number. */
 export const DEFAULT_FEE_PCT = 5;
 /** The smallest stake whose costs do not eat the trade. See the venue envelope below. */
@@ -368,16 +370,16 @@ export class VelocityHub {
     if (!(f.fee > 0.0005)) return { fee: 0, net: f.net };
     // Holders trade free. Checked after the fee is computed so the ledger can say what was waived.
     if (await this.holderWaived(wallet)) {
-      const venue0 = position.venue || "pumpfun", quote0 = venue0 === "pons" ? "ETH" : "SOL";
+      const venue0 = position.venue || "pumpfun", quote0 = QUOTE_OF[venue0] || "SOL";
       u.engine.ledger.append({ kind: "fee", venue: venue0, instrument: position.instrument, positionId: position.id, scope: "platform", sol: 0, usd: 0, rate: 0, net_sol: f.net, waived_sol: +f.fee.toFixed(6), note: `fee waived: holds ${this.waiver.symbol}` });
       u.engine.store.save();
       u.engine.log("info", `platform fee waived (${f.fee.toFixed(6)} ${quote0}): this wallet holds ${this.waiver.symbol}`);
       return { fee: 0, net: f.net, waived: +f.fee.toFixed(6), reason: `holds ${this.waiver.symbol}` };
     }
-    const venue = position.venue || "pumpfun", quote = venue === "pons" ? "ETH" : "SOL";
-    const feeWallet = venue === "pons" ? this.platformEvmWallet : (this.feeOk ? this.platformWallet : null);
-    if (!feeWallet) { u.engine.log("warn", `platform fee ${f.fee.toFixed(6)} ${quote} not collected: ${venue === "pons" ? "PLATFORM_EVM_WALLET" : "PLATFORM_WALLET"} not set`); return { fee: f.fee, net: f.net, collected: false }; }
-    const solPrice = u.engine.quotePriceOf(venue) || (venue === "pons" ? this.ponsFeed?.solPrice : this.feed.solPrice) || 0;
+    const venue = position.venue || "pumpfun", quote = QUOTE_OF[venue] || "SOL";
+    const feeWallet = this.feeWalletFor(venue);
+    if (!feeWallet) { u.engine.log("warn", `platform fee ${f.fee.toFixed(6)} ${quote} not collected: ${venue === "pumpfun" ? "PLATFORM_WALLET" : "PLATFORM_EVM_WALLET"} not set`); return { fee: f.fee, net: f.net, collected: false }; }
+    const solPrice = u.engine.quotePriceOf(venue) || (venue === "arc" ? 1 : venue === "pons" ? this.ponsFeed?.solPrice : this.feed.solPrice) || 0;
     let sig;
     try { sig = await u.engine.venues[venue].liveRouter.transferSol(feeWallet, f.fee); }
     catch (err) {
@@ -402,12 +404,16 @@ export class VelocityHub {
     return { fee: f.fee, net: f.net, collected: true, sig };
   }
 
+  /** Where a venue's fee goes: the Solana wallet for SOL, the EVM wallet for anything on an EVM chain.
+   *  One EVM address serves Robinhood Chain and Arc alike; the asset differs (ETH there, USDC here). */
+  feeWalletFor(venue) { return venue === "pumpfun" ? (this.feeOk ? this.platformWallet : null) : this.platformEvmWallet; }
+
   /** Fees that could not be transferred when they were earned. Tried again after any later fee on
    *  the same venue succeeds -- that is proof the transfer path works again. Never throws. */
   async collectOwed(wallet, venue) {
     const u = this.users.get(wallet);
     if (!u?.owedFees?.length) return;
-    const feeWallet = venue === "pons" ? this.platformEvmWallet : (this.feeOk ? this.platformWallet : null);
+    const feeWallet = this.feeWalletFor(venue);
     const router = u.engine.venues[venue]?.liveRouter;
     if (!feeWallet || !router?.transferSol) return;
     const keep = [];

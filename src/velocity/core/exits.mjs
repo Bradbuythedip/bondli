@@ -13,7 +13,10 @@ const MIN_STOP_PCT = 4;        // nor tighter than 4% in absolute terms
 const MAX_TP_WIDEN = 3;        // nor a target more than 3x its designed level
 import { planFor } from "./plans.mjs";
 import { withClock } from "./pipeline.mjs";
-const CURVE = v => v === "pumpfun" || v === "pons";
+// Arc's Argus trades like a curve from here (a launch, a price walking up one position, buyers and
+// sellers, a quote asset), so every price rule applies. It never graduates -- the pool keeps trading
+// after the bond tick -- which is why the pre-graduation rule below stays pons-only.
+const CURVE = v => v === "pumpfun" || v === "pons" || v === "arc";
 
 export const PUMPFUN_EXIT_SETTINGS = Object.freeze({ momentumExit: true, sl1Sell: 80 });
 
