@@ -17,6 +17,8 @@ import { makePumpfunEdge } from "./venues/pumpfun/edge.mjs";
 import { PumpfunPaperRouter, PumpfunLiveRouter } from "./venues/pumpfun/router.mjs";
 import { PonsLiveRouter, PonsPaperRouter } from "./venues/pons/router.mjs";
 import { HolderWaiver } from "./core/holder-waiver.mjs";
+import { Ledger } from "./core/ledger.mjs";
+import { Callouts } from "./core/callouts.mjs";
 
 /** The original platform wallet. Its key was pasted into a chat once; the operator chose to keep it,
  *  so it is accepted with a loud warning at boot rather than refused. Sweep it often. */
@@ -136,8 +138,8 @@ export class VelocityHub {
    * @param fee         { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser }
    * @param makeLiveRouter  ({ secret }) => router; tests inject a double
    */
-  constructor({ feed, ponsFeed = null, rootDir, platformWallet, platformEvmWallet = null, fee, feePct = null, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, makePonsRouter = null, clock = () => Date.now(), log = console }) {
-    this.feed = feed; this.ponsFeed = ponsFeed; this.rootDir = rootDir; this.platformWallet = platformWallet || null; this.platformEvmWallet = platformEvmWallet || null; this.fee = fee; this.rpcUrl = rpcUrl;
+  constructor({ feed, ponsFeed = null, arcFeed = null, rootDir, platformWallet, platformEvmWallet = null, fee, feePct = null, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, makePonsRouter = null, callouts = null, clock = () => Date.now(), log = console }) {
+    this.feed = feed; this.ponsFeed = ponsFeed; this.arcFeed = arcFeed; this.rootDir = rootDir; this.platformWallet = platformWallet || null; this.platformEvmWallet = platformEvmWallet || null; this.fee = fee; this.rpcUrl = rpcUrl;
     this.makePonsRouter = makePonsRouter || (({ secret }) => new PonsLiveRouter({ secret, clock }));
     // A flat rate on realized profit (VELOCITY_FEE_PCT) replaces the site's ladder when set: one number, said plainly.
     // One rate for everyone who does not hold the house token. There are no tiers: the old free /
@@ -147,6 +149,20 @@ export class VelocityHub {
     this.makeLiveRouter = makeLiveRouter || (({ secret }) => new PumpfunLiveRouter({ secret, rpcUrl, clock }));
     this.clock = clock; this.log = log;
     this.users = new Map(); // wallet -> { engine, sup, view, settings, startedAt }
+    // The public track record: the bot's own live fills, each written to a ledger with a hash before
+    // any channel sees it. One for the whole hub, not one per user -- the dedupe (one call per token
+    // per hour) and the record are hub-wide, and no row ever names whose engine traded. Tests inject
+    // their own with a fetch double; production reads its channels from the environment and posts
+    // nowhere when none is set, which still leaves the record on the site.
+    this.callouts = callouts || new Callouts({
+      ledger: new Ledger(path.join(rootDir, "_hub", "callouts.jsonl"), { now: clock }), clock,
+      statusUrl: process.env.PUBLIC_URL || process.env.BONDLI_URL || "",
+      minTier: Number.isFinite(Number(process.env.CALLOUT_MIN_TIER)) && process.env.CALLOUT_MIN_TIER !== "" ? Number(process.env.CALLOUT_MIN_TIER) : 2,
+      channels: {
+        webhookUrl: process.env.CALLOUT_WEBHOOK_URL || null,
+        telegram: process.env.CALLOUT_TG_TOKEN && process.env.CALLOUT_TG_CHAT_ID ? { token: process.env.CALLOUT_TG_TOKEN, chatId: process.env.CALLOUT_TG_CHAT_ID } : null,
+      },
+    });
     this._sweeps = new Map(); // wallet -> running or finished sweep job
     this._holdingsCache = new Map();
     // Hold the house token and the fee is zero, on both venues. $JEFF is an SPL mint on Solana, read
@@ -204,6 +220,10 @@ export class VelocityHub {
     });
     engine.on("log", l => this.log.log?.(`[velocity ${wallet.slice(0, 8)}] ${l.level} ${l.text}`));
     engine.on("outcome", ({ position }) => { this.settleFee(wallet, position).catch(err => this.log.error?.(`[VELOCITY-HUB] fee ${wallet.slice(0, 8)}: ${err.message}`)); });
+    // Every fill is offered to the public record; the callouts object decides (paper never, below the
+    // tier never, once an hour per token across every user) and never throws back into the engine.
+    engine.on("position", p => { this.callouts.onFill(p, { venue: p.venue, tx: p.venue_ref || null, mcapUsd: p.reference?.mcapUsd, tier: p.tier, plan: p.plan, paper: !!p.paper }).catch(() => {}); });
+    engine.on("outcome", ({ position: p, pnl }) => { this.callouts.onOutcome({ position: p, pnl, instrument: p.instrument, reason: p.exitReason }).catch(() => {}); });
     const sup = new Supervisor({ engine, dataDir, alerter: engine.alerter, clock: this.clock });
     await engine.start();
     // Start is the user's intent to trade: a halt left over from their last stop or pause must not
@@ -697,5 +717,12 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
   app.post("/api/velocity/halt", requireOwner, async (req, res) => { try { res.json(await hub.halt(req.body.wallet, req.body.mode === "freeze" ? "freeze" : "flatten")); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.get("/api/velocity/status", requireOwner, (req, res) => res.json({ ok: true, ...hub.status(req.query.wallet), narration: hub.narration(req.query.wallet, 40) }));
   app.get("/api/velocity/pulse", (req, res) => { res.set("Cache-Control", "public, max-age=10"); res.json({ ok: true, ...hub.pulse() }); });
-  app.get("/api/velocity/health", (req, res) => res.json({ ok: true, users: hub.list().length, feeConfigured: hub.feeOk, feed: hub.feed.status?.() || null, pons: hub.ponsFeed ? { ...(hub.ponsFeed.status?.() || {}), tokens: hub.ponsFeed.tokens?.size ?? null, ethPrice: hub.ponsFeed.solPrice, feeConfigured: !!hub.platformEvmWallet } : null }));
+  // The public track record. Rows carry the token, the tx and the result; never a wallet or a user.
+  app.get("/api/callouts", (req, res) => {
+    res.set("Cache-Control", "public, max-age=10");
+    const limit = Math.max(1, Math.min(200, parseInt(req.query?.limit) || 50));
+    const s = hub.callouts.status();
+    res.json({ ok: true, calls: hub.callouts.feed(limit), record: hub.callouts.record(), channels: s.channels, minTier: s.minTier });
+  });
+  app.get("/api/velocity/health", (req, res) => res.json({ ok: true, users: hub.list().length, feeConfigured: hub.feeOk, feed: hub.feed.status?.() || null, pons: hub.ponsFeed ? { ...(hub.ponsFeed.status?.() || {}), tokens: hub.ponsFeed.tokens?.size ?? null, ethPrice: hub.ponsFeed.solPrice, feeConfigured: !!hub.platformEvmWallet } : null, arc: hub.arcFeed ? { ...(hub.arcFeed.status?.() || {}), tokens: hub.arcFeed.tokens?.size ?? null, feeConfigured: !!hub.platformEvmWallet } : null, callouts: hub.callouts.record() }));
 }

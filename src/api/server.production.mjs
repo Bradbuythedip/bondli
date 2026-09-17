@@ -50,6 +50,7 @@ import { LaunchTrend } from "./launch-trend.mjs";
 import { DEFAULT_RPC_URL as PONS_DEFAULT_RPC, CHAIN_ID as PONS_CHAIN_ID } from "../velocity/venues/pons/chain.mjs";
 import { Wallet as EvmWallet, JsonRpcProvider as EvmProvider, formatEther, parseEther } from "ethers";
 import { CHAIN_ID as ARC_CHAIN_ID, DEFAULT_RPC_URL as ARC_DEFAULT_RPC } from "../velocity/venues/arc/chain.mjs";
+import { ArcFeed } from "../velocity/venues/arc/feed.mjs";
 // Robinhood Chain: one provider for balances and withdrawals; the PONS feed and routers have their own.
 const ponsProvider = new EvmProvider(process.env.PONS_RPC_URL || PONS_DEFAULT_RPC, { chainId: PONS_CHAIN_ID, name: "robinhood" }, { staticNetwork: true });
 // Arc: the same EVM key the user already has for Robinhood Chain works here -- one 0x address, two
@@ -8281,15 +8282,16 @@ app.get("/api/radar/live", (req, res) => {
   const loose = aggression >= 3;
   // Where a row opens: the launchpad the token lives on. PONS_TOKEN_URL can override the PONS pattern.
   const ponsUrl = (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}");
-  const linkFor = t => t._source === "pons" ? ponsUrl.replace("{ca}", t.ca) : `https://pump.fun/coin/${t.ca}`;
+  const arcUrl = (process.env.ARC_TOKEN_URL || "https://explorer.arc.io/token/{ca}");
+  const linkFor = t => t._source === "pons" ? ponsUrl.replace("{ca}", t.ca) : t._source === "arc" ? arcUrl.replace("{ca}", t.ca) : `https://pump.fun/coin/${t.ca}`;
   const row = t => {
     const score = t._apeScore || 0;
     const buyers = t.uniqueBuyers?.size || 0, ageS = (now - (t.createdAt || now)) / 1000, mc = t.mcapUsd || 0;
-    const pons = t._source === "pons";
+    const pons = t._source === "pons", arc = t._source === "arc";
     // The verdict is the bot's own judge at this aggression, not a score threshold: "buy zone" means it would enter.
     let verdict = null, tag;
-    if (pons) {
-      // The PONS feed judges its own tokens with the same gates; the row reads what it last decided.
+    if (pons || arc) {
+      // The PONS and Arc feeds judge their own tokens with the same gates; the row reads what each last decided.
       if (ageS < 60) tag = "new"; else if (buyers === 0) tag = "nobuyers"; else if (buyers < 2 || (t.buys || 0) < 3) tag = "fewbuyers";
       // Stamped on the token itself, not on the copy the judge is handed, or the reading is thrown away.
       else { const qf = t._lastQf || null; slowCookOf(t, qf, now); verdict = judgeToken({ ...t, uniqueBuyers: { size: buyers } }, qf, t._lastDyn || null, aggression); tag = tagFor(verdict, !!t._slowCook); }
@@ -8303,11 +8305,13 @@ app.get("/api/radar/live", (req, res) => {
       verdict = judgeToken(t, qf, scoreDynamics.get(t.ca) || null, aggression);
       tag = tagFor(verdict, !!t._slowCook);
     }
-    return { ca: t.ca, chain: pons ? "robinhood" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, smart: pons ? 0 : walletIntel.smartBuyers(t.ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }).count, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated };
+    return { ca: t.ca, chain: pons ? "robinhood" : arc ? "arc" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, smart: pons || arc ? 0 : walletIntel.smartBuyers(t.ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }).count, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated };
   };
-  // Robinhood Chain launches sit in the same list, newest first, marked by chain.
+  // Robinhood Chain and Arc launches sit in the same list, newest first, marked by chain.
   const ponsTokens = velocityHub?.ponsFeed ? [...velocityHub.ponsFeed.tokens.values()] : [];
-  const both = [...all, ...ponsTokens];
+  const arcTokens = velocityHub?.arcFeed ? [...velocityHub.arcFeed.tokens.values()] : [];
+  const both = [...all, ...ponsTokens, ...arcTokens];
+  const ponsHour = ponsTokens.filter(t => now - (t.createdAt || 0) < 3600_000).length, arcHour = arcTokens.filter(t => now - (t.createdAt || 0) < 3600_000).length;
   const rows = both.filter(t => now - (t.createdAt || 0) < 30 * 60_000).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0)).slice(0, limit).map(row);
   const revivals = all.filter(t => t._revival && now - t._revival.at < 10 * 60_000).sort((x, y) => (y._revival.at || 0) - (x._revival.at || 0)).slice(0, 10).map(row);
   // The list above is the last half hour, because that is what a launch feed is. Tokens that aged
@@ -8325,7 +8329,7 @@ app.get("/api/radar/live", (req, res) => {
     // radar.online is a count of legacy websocket clients, which the site does not use, so it read
     // "offline" with bots trading. Online here is the feed itself: a launch or a trade in the last 90s.
     ts: now, solPrice: solUsdPrice, online: (now - Math.max(radar._lastLaunchAt || 0, radar._lastPortalTradeAt || 0, radar._lastOnchainCreateAt || 0, radar._onchain?.stats?.lastMsg || 0)) < 90_000, aggression,
-    hour: { launches: hour.length + ponsTokens.filter(t => now - (t.createdAt || 0) < 3600_000).length, robinhood: ponsTokens.filter(t => now - (t.createdAt || 0) < 3600_000).length, mayhem: hour.filter(t => t._mayhem).length, copies: hour.filter(t => t._copyOf).length, hot: rows.filter(r => r.tag === "hot").length },
+    hour: { launches: hour.length + ponsHour + arcHour, robinhood: ponsHour, arc: arcHour, mayhem: hour.filter(t => t._mayhem).length, copies: hour.filter(t => t._copyOf).length, hot: rows.filter(r => r.tag === "hot").length },
     bots: velocityHub ? velocityHub.list().length : null,
     tokens: rows, revivals, cooking,
   });
@@ -11333,14 +11337,20 @@ if (process.env.VELOCITY_HOSTED === "1") {
       // Robinhood Chain trades go into the same history Solana's do, so the revival and slow-cook
       // signals can speak about a PONS token instead of silently answering "no trades" for every one.
       onTrade: (t, tr) => radar._revivals.noteTrade(t.ca, { side: tr.side, sol: tr.quote, wallet: tr.wallet, curvePct: tr.curvePct, ts: tr.ts }) }) : null;
+  // Arc (Argus): USDC-quoted launches on Circle's chain, read straight from the Portals and the pool
+  // manager. VELOCITY_ARC=0 turns it off. ARC_RPC_URL should be the operator's own endpoint: blocks
+  // come every half second and the public RPC is rate-limited for a poll this fast.
+  const arcFeed = process.env.VELOCITY_ARC !== "0" ? new ArcFeed({ rpcUrl: process.env.ARC_RPC_URL || ARC_DEFAULT_RPC, pollMs: parseInt(process.env.ARC_POLL_MS || "1500") || 1500,
+      onTrade: (t, tr) => radar._revivals.noteTrade(t.ca, { side: tr.side, sol: tr.quote, wallet: tr.wallet, curvePct: tr.curvePct, ts: tr.ts }) }) : null;
   velocityHub = new VelocityHub({
-    feed: hubFeed, ponsFeed, platformEvmWallet: /^0x[0-9a-fA-F]{40}$/.test(process.env.PLATFORM_EVM_WALLET || "") ? process.env.PLATFORM_EVM_WALLET : null,
+    feed: hubFeed, ponsFeed, arcFeed, platformEvmWallet: /^0x[0-9a-fA-F]{40}$/.test(process.env.PLATFORM_EVM_WALLET || "") ? process.env.PLATFORM_EVM_WALLET : null,
     rootDir: path.resolve(process.env.VELOCITY_DATA_DIR || "data/velocity/users"), platformWallet: process.env.PLATFORM_WALLET || null, rpcUrl: RPC_URL,
     fee: { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser, isOwnerWallet },
     feePct: process.env.VELOCITY_FEE_PCT != null ? Number(process.env.VELOCITY_FEE_PCT) : 5,
   });
   hubFeed.start().then(() => console.log(`[VELOCITY-HUB] radar feed started; fee wallet ${velocityHub.feeOk ? "configured" : "NOT configured"}`)).catch(e => console.error("[VELOCITY-HUB] feed failed to start:", e.message));
   if (ponsFeed) ponsFeed.start().then(() => console.log(`[VELOCITY-HUB] Robinhood Chain (PONS) feed started; ETH fee wallet ${velocityHub.platformEvmWallet ? "configured" : "NOT configured"}`)).catch(e => console.error("[VELOCITY-HUB] pons feed failed to start:", e.message));
+  if (arcFeed) arcFeed.start().then(() => console.log(`[VELOCITY-HUB] Arc (Argus) feed started on ${process.env.ARC_RPC_URL ? "the configured RPC" : "the public RPC"}; USDC fee wallet ${velocityHub.platformEvmWallet ? "configured" : "NOT configured"}`)).catch(e => console.error("[VELOCITY-HUB] arc feed failed to start:", e.message));
   mountVelocityRoutes(app, { hub: velocityHub, requireOwner, getTradingWallet, getUser, resolveTier });
   for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { velocityHub.stopAll().finally(() => process.exit(0)); });
 }

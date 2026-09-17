@@ -220,16 +220,57 @@ function Movers({ T }) {
   </div>;
 }
 
-// The public panel: the launch radar the bot actually acts on, and the wider market beside it.
+// ── Calls ──────────────────────────────────────────────────────────────────────
+// The bot's own live buys, posted the moment they fill: the token, the market cap it paid, the exit
+// plan it declared, the transaction, and later how it went. Each one is written to the ledger with a
+// hash before any channel sees it, so nothing can be edited after the fact -- a track record, not a
+// highlight reel. Paper fills never appear here, and losses stay on the list.
+function Calls({ T }) {
+  const [d, sD] = useState(null);
+  const [err, sErr] = useState(null);
+  useEffect(() => { let on = true; const poll = async () => { try { const r = await a.calls(); if (on) { sD(r); sErr(null); } } catch (e) { if (on) sErr(e.message); } }; poll(); const id = setInterval(poll, 20_000); return () => { on = false; clearInterval(id); }; }, []);
+  const muted = { color: T.ft, fontSize: 12 };
+  if (err && !d) return <div style={{ ...muted, padding: "18px 0", textAlign: "center" }}>calls are unavailable right now — {err}</div>;
+  if (!d) return <div style={{ ...muted, padding: "18px 0", textAlign: "center" }}>reading the record…</div>;
+  const r = d.record || {};
+  const chainOf = v => v === "pons" ? "RH" : v === "arc" ? "ARC" : "SOL";
+  const row = c => {
+    const res = c.result;
+    const col = !res ? T.dm : res.pnl_pct >= 0 ? T.gn : T.rd;
+    return <a key={c.id} href={c.txUrl || c.url} target="_blank" rel="noopener"
+      style={{ display: "grid", gridTemplateColumns: "1fr 78px", gap: 10, alignItems: "center", padding: "9px 12px", borderTop: `1px solid ${T.bd}`, color: "inherit", textDecoration: "none" }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}>
+          <span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name || c.instrument.slice(0, 6)}</span>
+          <span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{c.ticker}</span>
+          <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".05em", color: BLUE, background: BLUE + "1f", padding: "1px 5px", borderRadius: 4, whiteSpace: "nowrap" }}>{chainOf(c.venue)}</span>
+        </div>
+        <div style={{ ...muted, fontFamily: M, fontSize: 12, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{kfmt(c.mcapUsd || 0)} at the call · tier {c.tier} · {ago(Date.now() - c.ts)} ago{c.plan ? ` · ${c.plan}` : ""}</div>
+      </div>
+      <div style={{ textAlign: "right", fontFamily: M, fontWeight: 900, fontSize: 15, color: col }}>{res ? pctOf(res.pnl_pct) : "open"}{res && <div style={{ ...muted, fontSize: 10, fontWeight: 600 }}>in {held(res.held_ms)}</div>}</div>
+    </a>;
+  };
+  return <div>
+    <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+      {[[r.calls || 0, "calls", "tx"], [r.resolved ? `${Math.round(100 * (r.winRate || 0))}%` : "—", "won", r.resolved && r.winRate >= .3 ? "gn" : "dm"], [r.resolved ? pctOf(r.avgPct) : "—", "avg", (r.avgPct || 0) >= 0 ? "gn" : "rd"], [r.best != null ? pctOf(r.best) : "—", "best", "gn"]].map(([n, l, c]) =>
+        <div key={l} className="card" style={{ flex: 1, border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 18, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
+    </div>
+    {d.calls?.length ? <div style={{ background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>{d.calls.map(row)}</div>
+      : <div style={{ ...muted, padding: "18px 0", textAlign: "center" }}>No calls yet. The first live buy the bot rates tier {d.minTier ?? 2} or better lands here with its transaction.</div>}
+    <div style={{ ...muted, marginTop: 8, textAlign: "center" }}>Every call is the bot's own buy, hashed into the ledger before it is posted anywhere. Paper trades never appear. Losses stay on the record.</div>
+  </div>;
+}
+
+// The public panel: the launch radar the bot actually acts on, its own calls, and the wider market beside them.
 function Watch({ T, agg }) {
-  const [tab, sTab] = useState(() => { try { return localStorage.getItem("bondli_watch_tab") === "movers" ? "movers" : "bot"; } catch { return "bot"; } });
+  const [tab, sTab] = useState(() => { try { const k = localStorage.getItem("bondli_watch_tab"); return k === "movers" || k === "calls" ? k : "bot"; } catch { return "bot"; } });
   const pick = (k) => { sTab(k); try { localStorage.setItem("bondli_watch_tab", k); } catch {} };
   return <div style={{ width: "100%", maxWidth: 560, marginTop: 32 }}>
     <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-      {[["bot", "What the bot sees"], ["movers", "Movers"]].map(([k, l]) => <button key={k} onClick={() => pick(k)}
+      {[["bot", "What the bot sees"], ["calls", "Calls"], ["movers", "Movers"]].map(([k, l]) => <button key={k} onClick={() => pick(k)}
         style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1px solid ${tab === k ? T.gn : T.bd}`, background: tab === k ? T.gn + "1c" : "transparent", color: tab === k ? T.gn : T.dm, fontFamily: S, fontWeight: 800, fontSize: 14, cursor: "pointer" }}>{l}</button>)}
     </div>
-    {tab === "bot" ? <Live T={T} agg={agg} /> : <Movers T={T} />}
+    {tab === "bot" ? <Live T={T} agg={agg} /> : tab === "calls" ? <Calls T={T} /> : <Movers T={T} />}
   </div>;
 }
 
@@ -245,7 +286,7 @@ function Live({ T, agg }) {
       <span style={muted}>{d.bots != null ? `${d.bots} bot${d.bots === 1 ? "" : "s"} trading` : ""}</span>
     </div>
     <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-      {[["launched", d.hour.launches, "tx"], ["buy zone", d.hour.hot, "gn"], ["robinhood", d.hour.robinhood ?? 0, "dm"], ["mayhem", d.hour.mayhem, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 22, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
+      {[["launched", d.hour.launches, "tx"], ["buy zone", d.hour.hot, "gn"], ["robinhood", d.hour.robinhood ?? 0, "dm"], ...(d.hour.arc > 0 ? [["arc", d.hour.arc, "dm"]] : []), ["mayhem", d.hour.mayhem, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 22, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
     </div>
     {d.revivals?.length > 0 && <>
       <div style={{ ...muted, marginBottom: 6 }}>waking up · launched hours or days ago, buyers back at 3x</div>

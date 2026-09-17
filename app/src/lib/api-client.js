@@ -63,5 +63,6 @@ class A {
   live(agg) { return this.f("/api/radar/live" + (agg != null ? "?aggression=" + agg : ""), { noauth: true, timeout: 8000 }); }
   pulse() { return this.f("/api/velocity/pulse", { noauth: true, timeout: 8000 }); }
   movers(tf) { return this.f("/api/movers" + (tf ? "?timeframe=" + tf : ""), { noauth: true, timeout: 15000 }); }
+  calls() { return this.f("/api/callouts", { noauth: true, timeout: 8000 }); }
 }
 export const a = new A(); export default a;
