@@ -14,26 +14,24 @@ import path from "node:path";
 const SRC = fs.readFileSync(path.resolve("app/src/Simple.jsx"), "utf8");
 const TILE = SRC.slice(SRC.indexOf("function TokenImg"), SRC.indexOf("// ── Movers"));
 
-test("T18: the picture is decoded before it is mounted, not faded in on load", () => {
+test("T18: the picture is revealed only whole, and a picture that arrived is never thrown away", () => {
   assert.ok(TILE.length > 200, "found the tile component");
-  // The decision to show is decode()'s, and it is made off-screen on a detached Image.
-  assert.match(TILE, /new Image\(\)/);
-  assert.match(TILE, /img\.decode\(\)\.then\(done, fail\)/);
-  // The visible element only exists once that resolved for THIS url -- not a stale one from the
-  // previous token in a recycled row, which is why readiness stores the url rather than a boolean.
+  // Invisible until whole: the element is in the document at opacity 0 (a full paint nobody sees),
+  // and opacity goes to 1 only when `ready` names THIS url -- not a stale one from a recycled row.
   assert.match(TILE, /const loaded = ready === full;/);
-  assert.match(TILE, /\{loaded && <img src=\{full\}/);
-  // The old behaviour is gone: no half-opaque, blurred img sitting in the tree while it loads.
-  assert.doesNotMatch(TILE, /onLoad=/);
-  assert.doesNotMatch(TILE, /opacity: loaded \? 1 : 0/);
-  assert.doesNotMatch(TILE, /filter: loaded \? "blur\(0\)"/);
+  assert.match(TILE, /opacity: loaded \? 1 : 0/);
+  assert.match(TILE, /key=\{full\} src=\{full\}/);
+  // decode() gates the reveal when it resolves...
+  assert.match(TILE, /el\.decode\(\)\.then\(reveal, reveal\)/, "a decode rejection falls through to the pixel check, never to a retry");
+  // ...but onerror is the ONLY thing that counts as a miss. A rejected decode with pixels present is
+  // a WebKit quirk, and the old tile turned it into a permanent blank on every iPhone.
+  assert.match(TILE, /el\.complete && el\.naturalWidth > 0/);
+  assert.doesNotMatch(TILE, /new Image\(\)/, "no detached Image: WebKit's decode() is unreliable off-document");
+  assert.doesNotMatch(TILE, /decode\(\)\.then\(done, fail\)/);
 });
 
-test("T18: a browser without decode() still works, and a failure still retries then gives up", () => {
-  // decode() is not universal; the load event is the fallback, not an excuse to show nothing.
-  assert.match(TILE, /else \{ img\.onload = done; img\.onerror = fail; \}/);
-  // A token's picture usually appears a minute after its launch, so a miss is retried on a backoff
-  // and only then replaced by the ticker. Both bounds are still here.
+test("T18: a miss is retried past the proxy's negative cache for minutes, then the ticker stands in", () => {
+  assert.match(TILE, /onError=\{onError\}/);
   assert.match(TILE, /tries < IMG_RETRY_MS\.length/);
   assert.match(TILE, /else sOk\(false\)/);
   // The schedule has to outlast the metadata (minutes, not a minute) and every gap after the first
@@ -41,6 +39,4 @@ test("T18: a browser without decode() still works, and a failure still retries t
   const sched = JSON.parse(/const IMG_RETRY_MS = (\[[^\]]+\])/.exec(SRC)[1].replace(/_/g, ""));
   assert.ok(sched.reduce((a, b) => a + b, 0) >= 5 * 60_000, "keeps trying for at least five minutes");
   for (const gap of sched.slice(1)) assert.ok(gap >= 30_000, `gap ${gap} is inside the negative cache`);
-  // The effect must not outlive the row: a resolved decode for an unmounted tile sets no state.
-  assert.match(TILE, /return \(\) => \{ on = false; \};/);
 });
