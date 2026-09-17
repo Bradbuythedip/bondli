@@ -7,7 +7,7 @@ violate one has to argue with this file first.
 ## 1. Money leaves only by a trade they asked for or a fee they were told about.
 Nothing else. No route may move funds without the owner's signature (`requireOwner` on all 13 money
 routes, held by `tests/api/t15`). The fee is one rate, stated on the site, taken only from realized
-profit, and zero for anyone holding `$FREN` (`hub.settleFee`, `t14`). A fee whose transfer fails is
+profit, and zero for anyone holding `$JEFF` (`hub.settleFee`, `t14`). A fee whose transfer fails is
 recorded as owed and collected later — never silently dropped (`hub.collectOwed`, `t11`).
 
 ## 2. The bot never holds what it cannot manage.

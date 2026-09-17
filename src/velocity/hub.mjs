@@ -145,19 +145,19 @@ export class VelocityHub {
     this.users = new Map(); // wallet -> { engine, sup, view, settings, startedAt }
     this._sweeps = new Map(); // wallet -> running or finished sweep job
     this._holdingsCache = new Map();
-    // Hold the house token and the fee is zero, on both venues. $FREN is an SPL mint on Solana, read
+    // Hold the house token and the fee is zero, on both venues. $JEFF is an SPL mint on Solana, read
     // against the user's own Solana wallet -- the pubkey they already sign in with -- so there is
     // nothing extra to connect and someone who only trades pump.fun can earn the waiver too. Inert
-    // until the token is launched and FREN_MINT is set; until then every fee is charged as before.
+    // until the token is launched and JEFF_MINT is set; until then every fee is charged as before.
     this.waiver = new HolderWaiver({
-      token: process.env.FREN_MINT || null,
-      minTokens: Number(process.env.FREN_MIN_TOKENS || 1),
-      symbol: process.env.FREN_SYMBOL || "FREN",
+      token: process.env.JEFF_MINT || null,
+      minTokens: Number(process.env.JEFF_MIN_TOKENS || 1),
+      symbol: process.env.JEFF_SYMBOL || "JEFF",
       rpcUrl: rpcUrl || process.env.RPC_URL || null,
       clock, log,
     });
     if (this.waiver.enabled) log.log?.(`[VELOCITY-HUB] fee waiver on: holders of ${this.waiver.minTokens}+ ${this.waiver.symbol} (${this.waiver.token}) pay nothing`);
-    else if (this.waiver.configuredButInvalid) log.error?.(`[VELOCITY-HUB] FREN_MINT is not a Solana address; the holder fee waiver is OFF`);
+    else if (this.waiver.configuredButInvalid) log.error?.(`[VELOCITY-HUB] JEFF_MINT is not a Solana address; the holder fee waiver is OFF`);
     this.feeOk = !!this.platformWallet;
     if (!this.feeOk) log.error?.(`[VELOCITY-HUB] PLATFORM_WALLET is unset: SOL performance fees will NOT be collected`);
     else if (this.platformWallet === EXPOSED_DEFAULT_PLATFORM_WALLET) log.warn?.(`[VELOCITY-HUB] PLATFORM_WALLET is the original wallet whose key was once exposed in a chat: fees go there by the operator's choice; sweep it often`);
@@ -396,7 +396,7 @@ export class VelocityHub {
   }
 
   /** Does this user hold enough of the house token to trade free? Never throws.
-   *  Read against their Solana wallet: $FREN is an SPL mint, and that pubkey is the account they
+   *  Read against their Solana wallet: $JEFF is an SPL mint, and that pubkey is the account they
    *  signed in with, so every user has one whether or not they opted into Robinhood Chain. */
   async holderWaived(wallet) {
     if (!this.waiver.enabled || !wallet) return false;
