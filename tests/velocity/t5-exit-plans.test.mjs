@@ -1,7 +1,7 @@
 // T5: every entry gets a plan; each layer fires in simulation at its trigger.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPlan, evaluateExit, markPosition, assertHasPlan, applyExitStamp, BLIND_EXIT_MS } from "../../src/velocity/core/exits.mjs";
+import { createPlan, evaluateExit, markPosition, assertHasPlan, applyExitStamp, BLIND_EXIT_MS, WAVE_TRIM_MIN_GAIN_PCT } from "../../src/velocity/core/exits.mjs";
 import { makeEvent } from "../../src/velocity/core/events.mjs";
 import { EXIT_PLANS } from "../../src/velocity/core/plans.mjs";
 
@@ -307,4 +307,29 @@ test("T5: a position with no readable price is sold on that fact after a short g
   assert.equal(evaluateExit(pos, readable, { now: now + 50_000 }), null);
   assert.equal(pos._blindSince, null);
   assert.equal(evaluateExit(pos, blind(now + 60_000), { now: now + 60_000 }), null, "the grace starts again");
+});
+
+test("T5: the leader of a fading wave takes half off while it is green, once; a loser, a young wave and a building wave are left to the ladder", () => {
+  const at = ms => T0 + ms;
+  const withWave = (ev, wave) => ({ ...ev, payload: { ...ev.payload, qf: { _wave: wave } } });
+  const fading = { copies: 3, recent: 0, prior: 3, rising: false, fading: true, windowMs: 180_000 };
+  const building = { copies: 3, recent: 3, prior: 0, rising: true, fading: false, windowMs: 180_000 };
+  // Green, old enough, fading: half off, booked as a reduction so DOA and STALL never revisit it.
+  const pos = pumpPos();
+  const r = evaluateExit(pos, withWave(tick(12_000, {}, at(7 * 60_000)), fading));
+  assert.equal(r?.reason, "wave-fade", JSON.stringify(r)); assert.equal(r.action, "PARTIAL_SELL"); assert.equal(r.pct, 50);
+  assert.match(r.detail, /3 copies, none in 3m, \+20%/); assert.equal(r.stamp.tpHit, 1);
+  // Only once: the same fading wave a tick later is the ladder's business.
+  applyExitStamp(pos, r.stamp);
+  assert.notEqual(evaluateExit(pos, withWave(tick(12_100, {}, at(7 * 60_000 + 5_000)), fading))?.reason, "wave-fade");
+  // Under the gain floor: not worth a round trip on a fade alone.
+  assert.notEqual(evaluateExit(pumpPos(), withWave(tick(10_000 * (1 + (WAVE_TRIM_MIN_GAIN_PCT - 1) / 100), {}, at(7 * 60_000)), fading))?.reason, "wave-fade");
+  // A loser is the stop's, never trimmed on a fade.
+  assert.notEqual(evaluateExit(pumpPos(), withWave(tick(9_000, {}, at(7 * 60_000)), fading))?.reason, "wave-fade");
+  // Too soon: inside the first two windows a quiet window is noise, not a fade.
+  assert.notEqual(evaluateExit(pumpPos(), withWave(tick(12_000, {}, at(4 * 60_000)), fading))?.reason, "wave-fade");
+  // Still building: ride it.
+  assert.notEqual(evaluateExit(pumpPos(), withWave(tick(12_000, {}, at(7 * 60_000)), building))?.reason, "wave-fade");
+  // One copy is not a wave.
+  assert.notEqual(evaluateExit(pumpPos(), withWave(tick(12_000, {}, at(7 * 60_000)), { ...fading, copies: 1 }))?.reason, "wave-fade");
 });

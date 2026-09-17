@@ -12,12 +12,12 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 export const DEFAULT_WEIGHTS = Object.freeze({
-  pumpfun: Object.freeze({ apeScore: 0.30, memeticQuick: 0.15, survivorMatch: 0.15, chartHealth: 0.10, whaleBullish: 0.10, walletAge: 0.05, freshWalletRatio: 0.05, smartMoney: 0.10 }),
+  pumpfun: Object.freeze({ apeScore: 0.30, memeticQuick: 0.15, survivorMatch: 0.10, chartHealth: 0.10, whaleBullish: 0.10, walletAge: 0.05, freshWalletRatio: 0.05, smartMoney: 0.10, waveLeader: 0.05 }),
 });
 
 // Signs are fixed here, not learned: a "negative" feature counts against confidence.
 export const FEATURE_SIGNS = Object.freeze({
-  pumpfun: Object.freeze({ apeScore: 1, memeticQuick: 1, survivorMatch: 1, chartHealth: 1, whaleBullish: 1, walletAge: 1, freshWalletRatio: -1, smartMoney: 1 }),
+  pumpfun: Object.freeze({ apeScore: 1, memeticQuick: 1, survivorMatch: 1, chartHealth: 1, whaleBullish: 1, walletAge: 1, freshWalletRatio: -1, smartMoney: 1, waveLeader: 1 }),
 });
 
 export const WEIGHT_CONSTRAINTS = Object.freeze({
@@ -30,6 +30,8 @@ export const WEIGHT_CONSTRAINTS = Object.freeze({
     walletAge: Object.freeze({ min: 0.02, max: 0.15 }),
     freshWalletRatio: Object.freeze({ min: 0.02, max: 0.15 }),
     smartMoney: Object.freeze({ min: 0.03, max: 0.30 }),
+    // Waves are also what a paid shill campaign looks like, so this can never grow into a main signal.
+    waveLeader: Object.freeze({ min: 0.02, max: 0.15 }),
   }),
 });
 

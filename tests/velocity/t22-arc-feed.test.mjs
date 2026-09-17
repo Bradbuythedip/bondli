@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AbiCoder } from "ethers";
-import { ArcFeed, positionReserves, decodeLaunchWords, CANDIDATE_MIN_AGE_MS } from "../../src/velocity/venues/arc/feed.mjs";
+import { pollDelay, ArcFeed, positionReserves, decodeLaunchWords, CANDIDATE_MIN_AGE_MS } from "../../src/velocity/venues/arc/feed.mjs";
 import {
   PORTALS, POOL_MANAGER, USDC_ERC20, TOPICS, SNIPE_TAX_WINDOW_MS, QUOTE_IS_NATIVE, TOKEN_SUPPLY,
   portalIface, poolManagerIface, poolIdFor, liquidityForSupply, sqrtRatioAtTick, sqrtRatioToX96, quoteBuy, priceFromSqrtX96,
@@ -263,4 +263,13 @@ test("T22: a Portal's launches() record decodes by word position, whatever its v
   const r9 = decodeLaunchWords(nine); assert.equal(r9.words, 9); assert.equal(r9.tickBond, null); assert.equal(r9.quoteAsset, null);
   assert.equal(decodeLaunchWords(coder.encode(["address", "int24", "bool", "address", "address", "address", "uint16", "uint16", "uint256", "int24", "address"], [addr(0), 0, false, addr(0), addr(0), addr(0), 0, 0, 0n, 0, addr(0)])), null, "an empty record is no launch");
   assert.equal(decodeLaunchWords("0x"), null); assert.equal(decodeLaunchWords(null), null);
+});
+
+test("T22: a failing RPC is polled less and less, to a minute at most, and the first success brings the cadence straight back", () => {
+  assert.equal(pollDelay(1500, 0), 1500);
+  assert.equal(pollDelay(1500, 1), 3000);
+  assert.equal(pollDelay(1500, 3), 12_000);
+  assert.equal(pollDelay(1500, 6), 60_000, "capped at a minute");
+  assert.equal(pollDelay(1500, 40), 60_000, "and stays there however long the outage");
+  assert.equal(pollDelay(1500, 0), 1500, "errors reset to zero on success means the plain cadence");
 });

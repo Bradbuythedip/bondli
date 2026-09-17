@@ -10,6 +10,12 @@ import { planFor } from "../../core/plans.mjs";
 import { DEFAULT_WEIGHTS, scoreFeatures } from "../../core/learner.mjs";
 
 /** Normalized 0..1 features the learnable ranking weights read. Kill gates never see these. */
+export function waveLeaderOf(w) {
+  if (!w || !(w.copies > 0)) return null;
+  const size = Math.min(1, w.copies / 4);
+  return +(size * (w.rising ? 1 : w.fading ? 0.25 : 0.7)).toFixed(3);
+}
+
 export function pumpfunFeatures(c) {
   const clamp01 = v => Math.min(1, Math.max(0, Number(v) || 0));
   const opt = v => (v == null || Number.isNaN(Number(v)) ? null : clamp01(v)); // absent enrichment is null, never 0
@@ -23,6 +29,10 @@ export function pumpfunFeatures(c) {
     freshWalletRatio: opt(c.qf?._rg_freshWalletRatio),
     // Measured smart money in the first minute: proven wallets only, exclusions applied upstream.
     smartMoney: opt(c.qf?._smartMoney?.score),
+    // The original of a copied name, scored by how big the wave is and which way it is going. Four
+    // copies saturate it; a wave still building counts in full, a steady one for most, a fading one
+    // for little. No wave at all is MISSING, so a token nobody copied is not marked down for it.
+    waveLeader: waveLeaderOf(c.qf?._wave),
   };
 }
 

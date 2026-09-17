@@ -23,6 +23,8 @@ export const PUMPFUN_EXIT_SETTINGS = Object.freeze({ momentumExit: true, sl1Sell
 // How long a held position may go without a readable price before it is sold on that fact alone.
 // Shorter than every stall_ms in the plan table: a blind position is worse than a stalled one,
 // because a stalled one at least has a stop loss standing behind it.
+/** A fading wave only trims a position that has cleared its round trip with room to spare. */
+export const WAVE_TRIM_MIN_GAIN_PCT = 8;
 export const BLIND_EXIT_MS = 45_000;
 
 export function createPlan({ venue, key, entry = {} }) {
@@ -159,6 +161,15 @@ function evaluatePumpfun(position, tick, plan, now, held) {
     // What the stall must still not do is sell something that is working: a token nobody is buying,
     // whose peak never armed the trail, is not working.
     if (Math.abs(chg) <= band && peakPct < band * 1.5 && recentBuys <= 2) return { action: "SELL", pct: 100, reason: "STALL", layer: 2, detail: `${Math.round(held / 60000)}min, ${chg.toFixed(0)}%, ${recentBuys} buys/min` };
+  }
+  // The wave is fading: the copies that were landing every minute have stopped, which means the crowd
+  // that discovers a narrative through its copies has arrived and the leader's best bid is behind it.
+  // Half comes off while it is still green, once; the ladder below keeps the rest. Never on a loser
+  // (the stop loss owns that) and never inside the wave's first minutes, when a quiet window is noise.
+  const wave = p.qf?._wave;
+  if (wave?.fading && wave.copies >= 2 && !pos.waveTrimmed && held >= 2 * (wave.windowMs || 180_000)) {
+    const chg = position.entryMark > 0 ? ((token.mcapUsd - position.entryMark) / position.entryMark) * 100 : 0;
+    if (chg >= WAVE_TRIM_MIN_GAIN_PCT) { pos.waveTrimmed = true; return { action: "PARTIAL_SELL", pct: 50, reason: "wave-fade", layer: 3, detail: `${wave.copies} copies, none in ${Math.round((wave.windowMs || 180_000) / 60_000)}m, +${chg.toFixed(0)}%`, stamp: { tpHit: Math.max(pos.tpHit || 0, 1) } }; }
   }
   pos.liveScore = Number(p.scores?.apeScore ?? pos.liveScore ?? pos.entryScore) || 0;
   pos.liveUB = token.uniqueBuyers?.size ?? pos.liveUB ?? 0;
