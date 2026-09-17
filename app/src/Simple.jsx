@@ -250,12 +250,17 @@ function Calls({ T }) {
       <div style={{ textAlign: "right", fontFamily: M, fontWeight: 900, fontSize: 15, color: col }}>{res ? pctOf(res.pnl_pct) : "open"}{res && <div style={{ ...muted, fontSize: 10, fontWeight: 600 }}>in {held(res.held_ms)}</div>}</div>
     </a>;
   };
+  // A won call is the most shareable thing on the site: the tx is public, the hash was on the ledger
+  // before the post, and the tweet says so. Only wins, only resolved: a share link on an open call
+  // would be an opinion, which a callout is not.
+  const shareCall = c => c.result && c.result.pnl_pct > 0 ? <a key={c.id + ":share"} href={shareUrl({ pnl_pct: c.result.pnl_pct, ticker: c.ticker, instrument: c.instrument, held_ms: c.result.held_ms })} target="_blank" rel="noopener"
+    style={{ display: "block", padding: "4px 12px 8px", textAlign: "right", fontSize: 11, color: T.gn, textDecoration: "none", fontWeight: 700 }}>share this call · the tx is on-chain</a> : null;
   return <div>
     <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
       {[[r.calls || 0, "calls", "tx"], [r.resolved ? `${Math.round(100 * (r.winRate || 0))}%` : "—", "won", r.resolved && r.winRate >= .3 ? "gn" : "dm"], [r.resolved ? pctOf(r.avgPct) : "—", "avg", (r.avgPct || 0) >= 0 ? "gn" : "rd"], [r.best != null ? pctOf(r.best) : "—", "best", "gn"]].map(([n, l, c]) =>
         <div key={l} className="card" style={{ flex: 1, border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 18, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
     </div>
-    {d.calls?.length ? <div style={{ background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>{d.calls.map(row)}</div>
+    {d.calls?.length ? <div style={{ background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>{d.calls.flatMap(c => [row(c), shareCall(c)])}</div>
       : <div style={{ ...muted, padding: "18px 0", textAlign: "center" }}>No calls yet. The first live buy the bot rates tier {d.minTier ?? 2} or better lands here with its transaction.</div>}
     <div style={{ ...muted, marginTop: 8, textAlign: "center" }}>Every call is the bot's own buy, hashed into the ledger before it is posted anywhere. Paper trades never appear. Losses stay on the record.</div>
   </div>;
