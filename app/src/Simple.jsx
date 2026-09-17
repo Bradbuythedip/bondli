@@ -2,8 +2,8 @@
 // The page has one primary action at a time: connect, fund, start, watch, stop. Everything the bot
 // does is shown in its own words; nothing is explained in prose that the narration already shows.
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { TC, D, L, css } from "./lib/theme.js";
-import { M, S, imgUrl, X_URL, DISCORD_URL, NOTAFLY_SYMBOL, NOTAFLY_URL } from "./lib/constants.js";
+import { TC, D, L, BLUE, css } from "./lib/theme.js";
+import { M, S, imgUrl, X_URL, DISCORD_URL, FREN_SYMBOL, FREN_URL } from "./lib/constants.js";
 import a from "./lib/api-client.js";
 
 const FEE_PCT = 5;
@@ -97,24 +97,120 @@ const HUE = s => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) 
 // tile is a soft, shimmering blur in the token's own hue with the ticker over it; the picture blurs in
 // on top. Six retries over ~90s because a token's picture usually exists a minute after its launch.
 function TokenImg({ src, ca, label, size, T }) {
-  const [tries, sTries] = useState(0); const [ok, sOk] = useState(true); const [loaded, sLoaded] = useState(false);
-  useEffect(() => { sTries(0); sOk(true); sLoaded(false); }, [src, ca]);
+  const [tries, sTries] = useState(0); const [ok, sOk] = useState(true); const [ready, sReady] = useState(null);
+  useEffect(() => { sTries(0); sOk(true); sReady(null); }, [src, ca]);
   const h = HUE(ca);
   const tile = { width: size, height: size, borderRadius: Math.round(size / 4), overflow: "hidden", position: "relative", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: M, fontWeight: 900, fontSize: Math.round(size / 3.2), color: "rgba(255,255,255,.55)", background: `radial-gradient(circle at 30% 30%, hsl(${h} 45% 34%), hsl(${(h + 40) % 360} 40% 18%))` };
   const fuzz = <div style={{ position: "absolute", inset: 0, background: `linear-gradient(110deg, transparent 30%, hsl(${h} 60% 60% / .25) 50%, transparent 70%)`, backgroundSize: "200% 100%", animation: "shimmer 1.6s linear infinite", filter: "blur(6px)" }} />;
   const url = imgUrl(src, ca);
+  const full = url ? url + (tries ? `&r=${tries}` : "") : "";
+  // Nothing half-drawn is ever put on screen. The picture is fetched into a detached Image and
+  // decode() is awaited: onLoad alone only says the BYTES arrived, so a progressive JPEG or a large
+  // PNG could be revealed mid-decode and paint in bands. decode() resolves when the frame is ready to
+  // present, so the element is only mounted once there is a whole picture to show. Browsers without
+  // decode() fall back to the load event, which is what we had.
+  useEffect(() => {
+    if (!full) return;
+    let on = true;
+    const img = new Image();
+    img.src = full;
+    const done = () => { if (on) sReady(full); };
+    const fail = () => {
+      if (!on) return;
+      if (tries < 6) setTimeout(() => { if (on) sTries(t => t + 1); }, Math.min(30000, 3000 * (tries + 1)));
+      else sOk(false);
+    };
+    if (img.decode) img.decode().then(done, fail);
+    else { img.onload = done; img.onerror = fail; }
+    return () => { on = false; };
+  }, [full, tries]);
   if (!url || !ok) return <div style={tile}>{label}</div>;
-  return <div style={tile}>{!loaded && fuzz}{!loaded && <span style={{ position: "relative" }}>{label}</span>}<img key={tries} src={url + (tries ? `&r=${tries}` : "")} alt="" loading="lazy" style={{ position: "absolute", inset: 0, width: size, height: size, objectFit: "cover", filter: loaded ? "blur(0)" : "blur(12px)", opacity: loaded ? 1 : 0, transform: loaded ? "scale(1)" : "scale(1.15)", transition: "filter .35s, opacity .35s, transform .35s" }} onLoad={() => sLoaded(true)} onError={() => { if (tries < 6) setTimeout(() => sTries(t => t + 1), Math.min(30000, 3000 * (tries + 1))); else sOk(false); }} /></div>;
+  const loaded = ready === full;
+  return <div style={tile}>{!loaded && fuzz}{!loaded && <span style={{ position: "relative" }}>{label}</span>}
+    {loaded && <img src={full} alt="" style={{ position: "absolute", inset: 0, width: size, height: size, objectFit: "cover", animation: "imgin .35s ease-out" }} />}</div>;
 }
+// ── Movers ─────────────────────────────────────────────────────────────────────
+// The other half of "what is happening": the launch radar above only ever sees tokens in their first
+// hours, so anything that already ran was invisible here. /api/movers has been on the server all
+// along, feeding nothing. These are NOT the bot's picks -- it trades launches, not established
+// tokens -- so the panel says so rather than implying a signal it is not acting on.
+const TF = [["1h", "1h"], ["6h", "6h"], ["24h", "24h"]];
+const pctOf = n => `${n >= 0 ? "+" : ""}${(Number(n) || 0).toFixed(n != null && Math.abs(n) >= 100 ? 0 : 1)}%`;
+function Movers({ T }) {
+  const [tf, sTf] = useState("24h");
+  const [d, sD] = useState(null);
+  const [err, sErr] = useState(null);
+  useEffect(() => {
+    let on = true;
+    sD(null); sErr(null);
+    const poll = async () => { try { const r = await a.movers(tf); if (on) { sD(r); sErr(null); } } catch (e) { if (on && !d) sErr(e.message); } };
+    poll();
+    const id = setInterval(poll, 60_000); // these move on the hour, not the second
+    return () => { on = false; clearInterval(id); };
+  }, [tf]);
+  const muted = { color: T.ft, fontSize: 12 };
+  const row = (t) => {
+    const ch = Number(t.change24h) || 0;
+    const initial = (t.ticker || t.name || "?").slice(0, 2).toUpperCase();
+    return <a key={t.ca} href={t.dexUrl || `https://dexscreener.com/solana/${t.ca}`} target="_blank" rel="noopener"
+      style={{ display: "grid", gridTemplateColumns: "44px 1fr 86px", gap: 12, alignItems: "center", padding: "9px 12px", borderTop: `1px solid ${T.bd}`, color: "inherit", textDecoration: "none" }}>
+      <TokenImg src={t.image} ca={t.ca} label={initial} size={44} T={T} />
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}>
+          <span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name || t.ca.slice(0, 6)}</span>
+          <span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{t.ticker}</span>
+        </div>
+        <div style={{ ...muted, fontFamily: M, fontSize: 12, marginTop: 2 }}>{kfmt(t.mcapUsd || 0)}{t.volume24h ? ` · ${kfmt(t.volume24h)} vol` : ""}{t.liquidity ? ` · ${kfmt(t.liquidity)} liq` : ""}</div>
+      </div>
+      <div style={{ textAlign: "right", fontFamily: M, fontWeight: 900, fontSize: 16, color: ch >= 0 ? T.gn : T.rd }}>{pctOf(ch)}</div>
+    </a>;
+  };
+  const section = (title, note, rows) => rows?.length ? <div key={title} style={{ marginBottom: 14 }}>
+    <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between", gap: 10 }}><span>{title}</span><span style={{ textAlign: "right" }}>{note}</span></div>
+    <div style={{ background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>{rows.slice(0, 12).map(row)}</div>
+  </div> : null;
+  if (err) return <div style={{ ...muted, padding: "18px 0", textAlign: "center" }}>movers are unavailable right now — {err}</div>;
+  if (!d) return <div style={{ ...muted, padding: "18px 0", textAlign: "center" }}>reading the market…</div>;
+  const any = (d.topGainers?.length || 0) + (d.apeTargets?.length || 0) + (d.watchList?.length || 0) + (d.hotGraduated?.length || 0) + (d.trending?.length || 0);
+  return <div>
+    <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+      {TF.map(([k, l]) => <button key={k} onClick={() => sTf(k)} style={{ flex: 1, padding: "8px 0", borderRadius: 10, border: `1px solid ${tf === k ? T.gn : T.bd}`, background: tf === k ? T.gn + "1c" : "transparent", color: tf === k ? T.gn : T.dm, fontFamily: M, fontWeight: 800, cursor: "pointer" }}>{l}</button>)}
+    </div>
+    {!any && <div style={{ ...muted, padding: "18px 0", textAlign: "center" }}>nothing to show for {tf} yet</div>}
+    {section("biggest gainers", "tap to open on DexScreener", d.topGainers)}
+    {section("scored worth a look", "the velocity model, on established tokens", d.apeTargets)}
+    {section("watch list", "moving, not yet convincing", d.watchList)}
+    {section("freshly graduated", "off the curve, onto a pool", d.hotGraduated)}
+    {section("trending", "by attention, not by edge", d.trending)}
+    <div style={{ ...muted, marginTop: 4, textAlign: "center" }}>
+      The bot does not trade these. It trades launches in their first minutes; this is the rest of the market, for context.
+      {d.updatedAt ? ` Updated ${ago(Date.now() - d.updatedAt)} ago.` : ""}
+    </div>
+  </div>;
+}
+
+// The public panel: the launch radar the bot actually acts on, and the wider market beside it.
+function Watch({ T, agg }) {
+  const [tab, sTab] = useState(() => { try { return localStorage.getItem("bondli_watch_tab") === "movers" ? "movers" : "bot"; } catch { return "bot"; } });
+  const pick = (k) => { sTab(k); try { localStorage.setItem("bondli_watch_tab", k); } catch {} };
+  return <div style={{ width: "100%", maxWidth: 560, marginTop: 32 }}>
+    <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+      {[["bot", "What the bot sees"], ["movers", "Movers"]].map(([k, l]) => <button key={k} onClick={() => pick(k)}
+        style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1px solid ${tab === k ? T.gn : T.bd}`, background: tab === k ? T.gn + "1c" : "transparent", color: tab === k ? T.gn : T.dm, fontFamily: S, fontWeight: 800, fontSize: 14, cursor: "pointer" }}>{l}</button>)}
+    </div>
+    {tab === "bot" ? <Live T={T} agg={agg} /> : <Movers T={T} />}
+  </div>;
+}
+
 function Live({ T, agg }) {
   const [d, sD] = useState(null);
   useEffect(() => { let on = true; const poll = async () => { try { const r = await a.live(agg); if (on) sD(r); } catch {} }; poll(); const id = setInterval(poll, 3000); return () => { on = false; clearInterval(id); }; }, [agg]);
   if (!d) return null;
   const now = d.ts || Date.now();
   const muted = { color: T.ft, fontSize: 12 };
-  return <div style={{ width: "100%", maxWidth: 560, marginTop: 32 }}>
+  return <div>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
-      <span style={{ fontWeight: 800, fontSize: 17, display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: d.online ? T.gn : T.rd, animation: d.online ? "gp 2s infinite" : "none" }} />What the bot sees</span>
+      <span style={{ fontWeight: 800, fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: d.online ? T.gn : T.rd, animation: d.online ? "gp 2s infinite" : "none" }} />{d.online ? "live" : "offline"}</span>
       <span style={muted}>{d.bots != null ? `${d.bots} bot${d.bots === 1 ? "" : "s"} trading` : ""}</span>
     </div>
     <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
@@ -137,7 +233,7 @@ function Live({ T, agg }) {
   function rowOf(t, revival = false) { const [label, c] = TAG[t.tag] || TAG.weak; const dim = t.tag === "mayhem" || t.tag === "copy"; const initial = (t.ticker || t.name || "?").slice(0, 2).toUpperCase(); return <a key={t.ca} href={t.url || `https://pump.fun/coin/${t.ca}`} target="_blank" rel="noopener" style={{ display: "grid", gridTemplateColumns: "56px 1fr 100px 68px", gap: 12, alignItems: "center", padding: "9px 12px", borderTop: `1px solid ${T.bd}`, opacity: dim ? .45 : 1, color: "inherit", textDecoration: "none" }}>
         <TokenImg src={t.image} ca={t.ca} label={initial} size={56} T={T} />
         <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}><span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name || t.ca.slice(0, 6)}</span><span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{t.ticker}</span>{t.chain === "robinhood" && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".05em", color: "#e0b3ff", background: "#e0b3ff1a", padding: "1px 5px", borderRadius: 4, whiteSpace: "nowrap" }}>RH</span>}</div>
+          <div style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}><span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name || t.ca.slice(0, 6)}</span><span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{t.ticker}</span>{t.chain === "robinhood" && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".05em", color: BLUE, background: BLUE + "1f", padding: "1px 5px", borderRadius: 4, whiteSpace: "nowrap" }}>RH</span>}</div>
           <div style={{ ...muted, fontFamily: M, fontSize: 12, marginTop: 2 }}>{ago(now - t.createdAt)} · {kfmt(t.mcapUsd)} · {t.buyers} buyers{t.copies ? ` · ${t.copies} copies` : ""}{revival && t.revival ? ` · ${t.revival.buyers5m} in 5m vs ${t.revival.baseline5m}` : ""}{!revival && t.slowCook ? ` · ${t.slowCook.buyers} in ${t.slowCook.windowMin}m, curve +${t.slowCook.curveDelta}` : ""}{t.why ? ` · ${t.why.toLowerCase().replace(/_/g, " ")}` : ""}</div>
         </div>
         <Spark v={t.spark} T={T} w={100} h={30} />
@@ -275,6 +371,10 @@ export default function Simple() {
   const [showKey, sShowKey] = useState(null);
   const [openPos, sOpenPos] = useState(null);
   const [chains, sChains] = useState(() => { try { return { pumpfun: true, ...(JSON.parse(localStorage.getItem("bondli_chains") || "null") || {}) }; } catch { return { pumpfun: true, pons: true }; } });
+  // Paper: the whole bot on the live feed with simulated money. Remembered per device, and never
+  // assumed -- a returning user who paper-traded last time is shown that they are still in paper
+  // rather than quietly going live, and vice versa.
+  const [paper, sPaper] = useState(() => { try { return localStorage.getItem("bondli_paper") === "1"; } catch { return false; } });
   const [copied, sCopied] = useState(false);
   const narRef = useRef(null);
   const running = !!st?.running;
@@ -315,9 +415,13 @@ export default function Simple() {
       try { localStorage.setItem("bondli_chains", JSON.stringify(chains)); } catch {}
       // Only the chains that are on count toward the bankroll: someone trading Robinhood Chain alone
       // must not be sized against SOL they never funded, or against SOL they are keeping out of it.
+      try { localStorage.setItem("bondli_paper", paper ? "1" : "0"); } catch {}
       const usePump = chainsOn.pumpfun, usePons = chainsOn.pons;
-      const bank = (usePump ? (tw?.solBalance || 0) * 200 : 0) + (usePons ? (tw?.ethBalance || 0) * 3000 : 0);
-      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round(bank)), pumpfun: usePump, pons: usePons });
+      // Paper has no wallet to size against, so it gets a stated bankroll: enough to run the same
+      // four positions at the chosen stake, which is what makes the result comparable to going live.
+      const bank = paper ? Math.max(100, size * 20)
+        : (usePump ? (tw?.solBalance || 0) * 200 : 0) + (usePons ? (tw?.ethBalance || 0) * 3000 : 0);
+      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round(bank)), pumpfun: usePump, pons: usePons, paper });
       if (!r.ok) say(r.error || "Could not start", "error"); else sSt(r);
     } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
   };
@@ -404,18 +508,24 @@ export default function Simple() {
   const RELEASE_AFTER = 5; // engine cfg.releaseAfterFailures: keep the two in step
   const fundedSol = (tw?.solBalance || 0) >= MIN_BANKROLL_SOL;
   const fundedEth = (tw?.ethBalance || 0) >= MIN_BANKROLL_ETH;
+  // Paper money needs no funding: nothing can be spent, so nothing has to be there. Every other rule
+  // -- the gates, the sizes, the plans, the exits, the live feed -- is the same one live trading uses.
+  const canTrade = { pumpfun: fundedSol || paper, pons: (fundedEth || paper) && !!tw?.evmAddress };
   // Which chains are actually on: what the user asked for, AND what the wallet can pay for. One
   // definition, read by the Start call and by the chips, so the panel can never show pump.fun off
   // and then start it anyway.
   const chainsOn = {
-    pumpfun: chains.pumpfun !== false && fundedSol,
-    pons: !!chains.pons && fundedEth,
+    pumpfun: chains.pumpfun !== false && canTrade.pumpfun,
+    pons: !!chains.pons && canTrade.pons,
   };
   // Funded means funded on a chain the bot can actually trade -- EITHER chain. This read SOL alone,
   // so a wallet holding 0.024 ETH and no SOL was shown "send SOL to begin" and never rendered the
   // Start button at all: the engine had supported Robinhood Chain on its own for days, and the panel
   // would not let anyone ask for it.
-  const funded = fundedSol || fundedEth;
+  const funded = fundedSol || fundedEth || paper;
+  // What the RUNNING bot is doing, as the server reports it -- not what the switch happens to say
+  // now. Flipping the toggle mid-run must not relabel a run that is spending real money.
+  const onPaper = running ? !!st?.settings?.paper : paper;
   const wrap = { minHeight: "100vh", background: T.bg, color: T.tx, fontFamily: S, display: "flex", flexDirection: "column", alignItems: "center", padding: "48px 16px 32px", boxSizing: "border-box" };
   const card = { width: "100%", maxWidth: 440, background: T.sf, border: `1px solid ${running ? T.gn : T.bd}`, borderRadius: 16, padding: 20, boxSizing: "border-box" };
   const muted = { color: T.ft, fontSize: 13, lineHeight: 1.5 };
@@ -444,6 +554,16 @@ export default function Simple() {
           <span style={{ fontFamily: M, fontWeight: 800, fontSize: 22 }}>{tw.solBalance.toFixed(3)} SOL</span>
         </div>
         <div onClick={() => copy(tw.pubkey)} title="copy" style={{ fontFamily: M, fontSize: 12, color: T.dm, marginTop: 6, wordBreak: "break-all", cursor: "pointer", padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{tw.pubkey}{copied ? "  copied" : ""}</div>
+        {/* Paper first: the cheapest way to find out whether this is worth funding. */}
+        <div onClick={() => sPaper(v => !v)} style={{ marginTop: 14, padding: "10px 12px", borderRadius: 10, border: `1px solid ${paper ? T.yl : T.bd}`, background: paper ? T.yl + "14" : "transparent", cursor: "pointer", display: "flex", gap: 10, alignItems: "flex-start" }}>
+          <span style={{ width: 34, height: 20, borderRadius: 10, background: paper ? T.yl : T.bd, flexShrink: 0, position: "relative", marginTop: 1 }}>
+            <span style={{ position: "absolute", top: 2, left: paper ? 16 : 2, width: 16, height: 16, borderRadius: "50%", background: paper ? "#000" : T.ft, transition: "left .15s" }} />
+          </span>
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ fontWeight: 800, fontSize: 14, color: paper ? T.yl : T.tx }}>Paper trading{paper ? " · on" : ""}</span>
+            <span style={{ display: "block", ...muted, fontSize: 12, marginTop: 2 }}>Same feed, same rules, pretend money. Nothing is bought or sold and no fee is charged, so you can watch it work before funding anything.</span>
+          </span>
+        </div>
         {!funded && <div style={{ ...muted, marginTop: 8 }}>Fund either chain to begin: {MIN_BANKROLL_SOL} SOL here, or {MIN_BANKROLL_ETH} ETH on Robinhood Chain below. Either one on its own is enough. Every trade pays a fixed cost before it earns anything, about {dragPct(SIZES[0], st?.status?.solPrice || 0).toFixed(0)}% at the smallest stake, so a thin bankroll forces small bets and small bets lose to the costs. For Solana, {GOOD_BANKROLL_SOL} SOL is what it actually wants.{(tw?.solBalance || 0) > 0 ? ` You have ${(tw.solBalance).toFixed(3)} SOL` : ""}{(tw?.ethBalance || 0) > 0 ? `${(tw?.solBalance || 0) > 0 ? " and" : " You have"} ${(tw.ethBalance).toFixed(4)} ETH` : ""}{((tw?.solBalance || 0) > 0 || (tw?.ethBalance || 0) > 0) ? "." : ""}</div>}
         {fundedSol && (tw?.solBalance || 0) < GOOD_BANKROLL_SOL && <div style={{ ...muted, marginTop: 8, color: T.yl }}>This works at {(tw.solBalance).toFixed(2)} SOL but it is tight: it can hold one or two positions and the day's loss limit stops it early. {GOOD_BANKROLL_SOL} SOL gives it room.</div>}
         {!fundedSol && fundedEth && <div style={{ ...muted, marginTop: 8, color: T.yl }}>Not enough SOL for pump.fun, so it starts on Robinhood Chain alone. Turn pump.fun back on below once this wallet holds {MIN_BANKROLL_SOL} SOL.</div>}
@@ -471,7 +591,7 @@ export default function Simple() {
               // permanent label -- not clickable, always green -- which meant nobody could trade
               // Robinhood Chain on its own however they had funded the wallets.
               // The same floors the funding copy quotes, not a second set of ad-hoc numbers.
-              const canFund = { pumpfun: fundedSol, pons: fundedEth };
+              const canFund = canTrade;
               const on = chainsOn;
               const toggle = (k) => {
                 if (!canFund[k]) return;                                       // nothing to trade with
@@ -481,7 +601,7 @@ export default function Simple() {
               return [["pumpfun", "pump.fun", "Solana"], ["pons", "PONS", "Robinhood Chain"]].map(([k, l, sub]) => {
                 const isOn = on[k], last = isOn && !on[k === "pumpfun" ? "pons" : "pumpfun"];
                 const can = canFund[k];
-                const note = !can ? (k === "pons" ? ` · fund with ${MIN_BANKROLL_ETH} ETH` : ` · fund with ${MIN_BANKROLL_SOL} SOL`)
+                const note = !can ? (k === "pons" ? (tw?.evmAddress ? ` · fund with ${MIN_BANKROLL_ETH} ETH` : " · no ETH wallet yet") : ` · fund with ${MIN_BANKROLL_SOL} SOL`)
                   : last ? " · on, the only one"
                   : isOn ? " · on" : " · off";
                 return <div key={k} onClick={() => toggle(k)} title={last ? "at least one chain has to stay on" : ""}
@@ -491,14 +611,14 @@ export default function Simple() {
               });
             })()}
           </div>
-          <div style={{ marginTop: 16 }}><Btn big T={T} onClick={start} disabled={busy === "start"}>{busy === "start" ? "Starting…" : "Start"}</Btn></div>
+          <div style={{ marginTop: 16 }}><Btn big T={T} onClick={start} disabled={busy === "start"}>{busy === "start" ? "Starting…" : paper ? "Start paper run" : "Start"}</Btn></div>
         </>}
       </>}
 
       {/* 4. Running: the number, the holdings, the bot's own words, the stop */}
       {running && <>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: T.gn, animation: "gp 2s infinite" }} /><span style={{ fontWeight: 800 }}>Trading</span></span>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: onPaper ? T.yl : T.gn, animation: "gp 2s infinite" }} /><span style={{ fontWeight: 800 }}>{onPaper ? "Paper trading" : "Trading"}</span>{onPaper && <span style={{ fontFamily: M, fontSize: 10, fontWeight: 900, letterSpacing: ".08em", color: "#000", background: T.yl, borderRadius: 5, padding: "2px 6px" }}>PRETEND MONEY</span>}</span>
           <span style={{ fontFamily: M, fontWeight: 900, fontSize: 30, color: pnl >= 0 ? T.gn : T.rd }}>{pnl >= 0 ? "+" : ""}{fmt(pnl)}</span>
         </div>
         <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span title={pnlKind === "wallet" ? "wallet plus open positions now, against when you pressed Start" : "closed trades today plus open positions"}>{pnlKind === "wallet" ? "since start" : "today"}, {day?.trades || 0} trades{tp ? ` · closed ${(day?.realizedUsd || 0) >= 0 ? "+" : ""}${fmt(day?.realizedUsd || 0)} · open ${(tp.unrealized_usd || 0) >= 0 ? "+" : ""}${fmt(tp.unrealized_usd || 0)}` : ""}</span><span>{(() => {
@@ -608,12 +728,12 @@ export default function Simple() {
       <div onClick={() => copy(showKey.evm)} title="tap to copy" style={{ fontFamily: M, fontSize: 12, wordBreak: "break-all", cursor: "pointer", color: T.tx, padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{showKey.evm}</div></>}
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}><Btn ghost T={T} onClick={() => sShowKey(null)}>Hide</Btn></div>
     </div>}
-    <Live T={T} agg={agg} />
+    <Watch T={T} agg={agg} />
     <div style={{ ...muted, fontSize: 12, marginTop: 28, textAlign: "center", maxWidth: 440 }}>
       Bondli keeps {FEE_PCT}% of each profitable trade, taken from the profit. Losing trades cost nothing.{" "}
       {waived === true
-        ? <span style={{ color: T.gn }}>You hold ${NOTAFLY_SYMBOL}, so yours is 0%.</span>
-        : <>Hold one <a href={NOTAFLY_URL} target="_blank" rel="noopener" style={{ color: T.dm, textDecoration: "underline dotted", textUnderlineOffset: 3 }}>${NOTAFLY_SYMBOL}</a> and it is 0%.</>}
+        ? <span style={{ color: T.gn }}>You hold ${FREN_SYMBOL}, so yours is 0%.</span>
+        : <>Hold one <a href={FREN_URL} target="_blank" rel="noopener" style={{ color: T.dm, textDecoration: "underline dotted", textUnderlineOffset: 3 }}>${FREN_SYMBOL}</a> and it is 0%.</>}
       {" "}Memecoins can go to zero; only trade what you can lose.
     </div>
     <Socials T={T} />

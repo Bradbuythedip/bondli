@@ -1,16 +1,18 @@
-// The house-token fee waiver: hold one and the performance fee is zero. What must hold is that it is
-// inert until the token exists, that it never charges someone because a node blinked, and that it
-// never invents a waiver out of a failure.
+// The house-token fee waiver: hold one $FREN and the performance fee is zero. What must hold is that
+// it is inert until the token exists, that it never charges someone because a node blinked, and that
+// it never invents a waiver out of a failure. $FREN is an SPL mint on Solana, read against the user's
+// own Solana wallet -- so the addresses here are base58 pubkeys, not the EVM ones this used to use.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { HolderWaiver } from "../../src/velocity/core/holder-waiver.mjs";
 
-const ADDR = (n) => "0x" + String(n).repeat(40).slice(0, 40);
-const TOKEN = "0x" + "ab".repeat(20);
+// Base58 has no 0, O, I or l; these are shaped like real pubkeys so the address check passes.
+const ADDR = (n) => ("Fren" + String(n).repeat(44)).replace(/0/g, "9").slice(0, 44);
+const TOKEN = "FRENpump" + "1".repeat(36);
 
 function waiver({ balance = 0, clock, minTokens = 1 } = {}) {
   let t = 0;
-  const w = new HolderWaiver({ token: TOKEN, minTokens, provider: {}, clock: clock || (() => t), symbol: "NOTAFLY" });
+  const w = new HolderWaiver({ token: TOKEN, minTokens, connection: {}, clock: clock || (() => t), symbol: "FREN" });
   w._balance = balance;
   w.balanceOf = async () => { if (w._throw) throw new Error("rpc down"); return w._balance; };
   w._advance = (ms) => { t += ms; };
@@ -23,7 +25,7 @@ test("T14: with no token configured nothing is read and nothing is waived", asyn
   assert.equal(await off.holds(ADDR(1)), false);
   assert.equal(off.status().enabled, false);
   // a token that is not an address is a misconfiguration, not a waiver for everyone
-  const bad = new HolderWaiver({ token: "NOTAFLY" });
+  const bad = new HolderWaiver({ token: "FREN" });
   assert.equal(bad.enabled, false);
   assert.equal(bad.status().misconfigured, true);
   assert.equal(await bad.holds(ADDR(1)), false);
@@ -70,7 +72,8 @@ test("T14: an unreadable balance keeps the last good answer and never invents on
 test("T14: a garbage address is never waived and never read", async () => {
   const w = waiver({ balance: 99 });
   const reads = w.reads;
-  for (const bad of [null, undefined, "", "0xnothex", "not-an-address", ADDR(1).slice(0, 20)]) assert.equal(await w.holds(bad), false);
+  // An EVM address is garbage HERE: the waiver moved to Solana, and 0x... must never be read as one.
+  for (const bad of [null, undefined, "", "0x" + "ab".repeat(20), "not-an-address!", ADDR(1).slice(0, 20)]) assert.equal(await w.holds(bad), false);
   assert.equal(w.reads, reads);
 });
 

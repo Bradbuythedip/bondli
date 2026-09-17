@@ -455,3 +455,46 @@ test("T11: a position the venue will not sell can be given up on, and the banner
     assert.equal(e.releasePosition("nope").ok, false);
   } finally { await e.stop(); fsx.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// Paper: the whole machine on the real feed, with only the fills simulated. What must hold is that
+// it needs no funded wallet, can never reach a live router, and is never charged a fee -- and that
+// it is still the same engine, so a paper run tells you something about a live one.
+test("T11: a paper run trades the live feed with simulated money and cannot touch a real wallet", async () => {
+  const root = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  feed.solPrice = 100;
+  const routers = {};
+  const deps = feeDeps("pro");
+  // An empty wallet: a live start would be refused by the preflight before it placed anything.
+  const hub = new VelocityHub({ feed, rootDir: root, platformWallet: "PLATFORM_FRESH_WALLET", fee: deps,
+    makeLiveRouter: ({ secret, wallet }) => (routers[wallet] = new FakeLive({ secret, wallet, balanceSol: 0 })),
+    log: { log() {}, error() {}, warn() {} } });
+  await feed.start();
+  try {
+    const live = await hub.start({ wallet: "Broke", secret: "s0", settings: { bankrollUsd: 100 } });
+    assert.equal(live.ok, false, "an empty wallet cannot start a live run");
+    await hub.stop("Broke").catch(() => {});
+
+    const r = await hub.start({ wallet: "Paper", secret: "s1", settings: { bankrollUsd: 100, paper: true } });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(r.status.venues.pumpfun.mode, "paper", "the venue stays simulated");
+    assert.equal(r.settings.paper, true, "and the panel can see that it did");
+
+    // The same feed, the same gates: a candidate is judged and filled, just not with money.
+    const now = Date.now();
+    feed.emitEvent({ kind: "candidate", id: "MintP", payload: goodCandidatePayload("MintP"), t_venue: now - 100 });
+    await new Promise(res => setTimeout(res, 50));
+    const eng = hub.users.get("Paper").engine;
+    const pos = eng.store.openPositions()[0];
+    assert.ok(pos, "paper still buys: " + JSON.stringify(eng.funnel()));
+    assert.equal(pos.paper, true);
+
+    // Close it at a profit. The real day's ledger never moves and no fee is transferred.
+    feed.emitEvent({ kind: "tick", id: "MintP", payload: tickPayload("MintP", 4_000), t_venue: now + 900 });
+    await new Promise(res => setTimeout(res, 50));
+    assert.equal(eng.store.openPositions().length, 0);
+    assert.equal(eng.store.state.day.realizedUsd, 0, "simulated money never touches the real day");
+    assert.ok(eng.store.state.day.paperTrades >= 1);
+    assert.equal(routers.Paper?.transfers?.length ?? 0, 0, "no fee is taken on pretend profit");
+  } finally { await hub.stop("Paper").catch(() => {}); await feed.stop(); }
+});
