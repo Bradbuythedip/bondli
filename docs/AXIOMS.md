@@ -8,12 +8,15 @@ violate one has to argue with this file first.
 Nothing else. No route may move funds without the owner's signature (`requireOwner` on all 13 money
 routes, held by `tests/api/t15`). The fee is one rate, stated on the site, taken only from realized
 profit, and zero for anyone holding `$JEFF` (`hub.settleFee`, `t14`). A fee whose transfer fails is
-recorded as owed and collected later — never silently dropped (`hub.collectOwed`, `t11`).
+recorded as owed and collected later — never silently dropped (`hub.collectOwed`, `t11`). On
+Robinhood Chain the fee leaves in ETH and on Arc in USDC, each to the EVM fee wallet, never
+converted and never to the Solana one (`QUOTE_OF`, `feeWalletFor`, `t11`).
 
 ## 2. The bot never holds what it cannot manage.
 A position with no readable price has no stop loss behind it, so it is sold on that fact alone after
-45s (`blind-exit`, `t5`). A held token always ticks, readable or not (`t12`). A sell the venue will
-never accept — graduated, or refused five times running the same way — releases the position rather
+45s (`blind-exit`, `t5`). A held token always ticks, readable or not (`t12`, `t22`), and a cached
+price whose pool has stopped answering is reported as unreadable, never as current (`t22`). A sell
+the venue will never accept — graduated, or refused five times running the same way — releases the position rather
 than holding a slot forever and raising an error nobody can clear (`TERMINAL_EXIT_CODES`,
 `releaseAfterFailures`, `t9`).
 
@@ -52,6 +55,21 @@ treated as such. A crash mid-trade reconciles from the ledger and the chain, and
 signature for is recovered before anything is booked as a loss (`findRecentSale`, `t9`, `t13`).
 Alerts go to `ALERT_WEBHOOK_URL`; the code is ready, the variable is the operator's to set.
 
+## 9. A call is a fill, never an opinion.
+Anything the site or a channel says the bot "called" is a buy the bot made with real money: the
+token, the market cap it paid, the plan it declared, and the transaction. The record is written to
+its own ledger with `sha256(venue|instrument|tx|ts)` before any channel sees it, so it cannot be
+edited after the fact; the close is posted the same way, losses included. Paper never posts, below
+the tier never posts, one call per token per hour across every user, and no row names a wallet or a
+user (`Callouts`, `t21`, `t11`, `/api/callouts`).
+
+## 10. A new venue costs trades before it can cost money.
+Arc's Portal events and launch records are pinned to Argus's published documents; its hook
+interface still comes from a reference contract. Everything built on that fails closed: a hook
+whose getters do not answer keeps its launch out of the feed, every swap is dry-run before it is
+sent, a buy inside the snipe window is refused, an RPC that answers for another chain is refused at
+go-live, and an unknown tax is priced at the cap (`arc/chain.mjs`, `arc/router.mjs`, `t20`, `t23`).
+
 ## What is still open
 - Entry quality on Robinhood Chain: 4% win rate over the last 24 live closes. The miss ledger
   (`engine.misses()`) records which hard rule refused each token that then ran; that is the
@@ -59,3 +77,9 @@ Alerts go to `ALERT_WEBHOOK_URL`; the code is ready, the variable is the operato
 - `send failed` appeared in the live failure list once; not yet root-caused.
 - Exposed credentials pasted in chat during development still need rotating (xAI key, X bearer
   tokens, X consumer secret, X access token/secret).
+- The Arc hook ABI (getters, `Bonded`, `TaxCollected`, the snipe-tax formula) is from the reference
+  contract, not the deployed bytecode; the explorer is unreachable from the build box. First live
+  Arc trades should be small and watched, and `ARC_RPC_URL` should be the operator's own endpoint.
+- The narrative-wave feature and the smart-money feature are bounded weights with no realized
+  outcomes behind them yet; the learner will move them once the ledger has enough closes.
+- `app/public/fren.png` is referenced by the boot ring and the background but has not been added.
