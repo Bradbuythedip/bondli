@@ -96,6 +96,7 @@ const HUE = s => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) 
 // A token picture through the proxy (by url, else by mint from DexScreener's copy). While it loads the
 // tile is a soft, shimmering blur in the token's own hue with the ticker over it; the picture blurs in
 // on top. Six retries over ~90s because a token's picture usually exists a minute after its launch.
+const IMG_RETRY_MS = [8_000, 32_000, 32_000, 32_000, 45_000, 45_000, 60_000, 60_000, 60_000, 60_000]; // ~7 min
 function TokenImg({ src, ca, label, size, T }) {
   const [tries, sTries] = useState(0); const [ok, sOk] = useState(true); const [ready, sReady] = useState(null);
   useEffect(() => { sTries(0); sOk(true); sReady(null); }, [src, ca]);
@@ -117,7 +118,12 @@ function TokenImg({ src, ca, label, size, T }) {
     const done = () => { if (on) sReady(full); };
     const fail = () => {
       if (!on) return;
-      if (tries < 6) setTimeout(() => { if (on) sTries(t => t + 1); }, Math.min(30000, 3000 * (tries + 1)));
+      // A token's picture usually exists a minute or three after its launch, and the proxy remembers
+      // a miss for 30s. The old schedule -- six tries, 3s apart and growing -- spent most of them
+      // inside that window and gave up inside 65s, which is why a row of brand-new launches sat on
+      // its initials for good. Try on a schedule that outlasts the metadata, each gap past the
+      // negative cache, and only then settle for the ticker.
+      if (tries < IMG_RETRY_MS.length) setTimeout(() => { if (on) sTries(t => t + 1); }, IMG_RETRY_MS[tries]);
       else sOk(false);
     };
     if (img.decode) img.decode().then(done, fail);
@@ -167,7 +173,7 @@ function Movers({ T }) {
   };
   const section = (title, note, rows) => rows?.length ? <div key={title} style={{ marginBottom: 14 }}>
     <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between", gap: 10 }}><span>{title}</span><span style={{ textAlign: "right" }}>{note}</span></div>
-    <div style={{ background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>{rows.slice(0, 12).map(row)}</div>
+    <div style={{ background: T.sf + "e6", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>{rows.slice(0, 12).map(row)}</div>
   </div> : null;
   if (err) return <div style={{ ...muted, padding: "18px 0", textAlign: "center" }}>movers are unavailable right now — {err}</div>;
   if (!d) return <div style={{ ...muted, padding: "18px 0", textAlign: "center" }}>reading the market…</div>;
@@ -214,18 +220,18 @@ function Live({ T, agg }) {
       <span style={muted}>{d.bots != null ? `${d.bots} bot${d.bots === 1 ? "" : "s"} trading` : ""}</span>
     </div>
     <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-      {[["launched", d.hour.launches, "tx"], ["buy zone", d.hour.hot, "gn"], ["robinhood", d.hour.robinhood ?? 0, "dm"], ["mayhem", d.hour.mayhem, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 22, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
+      {[["launched", d.hour.launches, "tx"], ["buy zone", d.hour.hot, "gn"], ["robinhood", d.hour.robinhood ?? 0, "dm"], ["mayhem", d.hour.mayhem, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf + "e6", border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 22, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
     </div>
     {d.revivals?.length > 0 && <>
       <div style={{ ...muted, marginBottom: 6 }}>waking up · launched hours or days ago, buyers back at 3x</div>
-      <div style={{ background: T.sf, border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.revivals.map(t => rowOf(t, true))}</div>
+      <div style={{ background: T.sf + "e6", border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.revivals.map(t => rowOf(t, true))}</div>
     </>}
     {d.cooking?.length > 0 && <>
       <div style={{ ...muted, marginBottom: 6 }}>still cooking · past the half hour and still filling up</div>
-      <div style={{ background: T.sf, border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.cooking.map(t => rowOf(t))}</div>
+      <div style={{ background: T.sf + "e6", border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.cooking.map(t => rowOf(t))}</div>
     </>}
     <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between" }}><span>last hour · both chains · judged at {AGG[d.aggression ?? agg]?.l || "Normal"}</span><span>tap to open on its launchpad</span></div>
-    <div style={{ background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
+    <div style={{ background: T.sf + "e6", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
       {d.tokens.slice(0, 25).map(t => rowOf(t))}
       {!d.tokens.length && <div style={{ ...muted, padding: 14, textAlign: "center" }}>waiting for the next launch…</div>}
     </div>
@@ -306,7 +312,9 @@ function Boot({ T, done }) {
 function Launch({ T }) {
   const [l, sL] = useState(null); const [copied, sCopied] = useState(false);
   useEffect(() => { let on = true; const poll = async () => { try { const r = await a.launch(); if (on) sL(r); } catch {} }; poll(); const id = setInterval(poll, 15000); return () => { on = false; clearInterval(id); }; }, []);
-  if (!l || l.status === "off") return null;
+  // Jeff is the page, not a card on it. The banner only exists once the token is live -- as the way
+  // in and the number -- never as a "soon" placeholder taking the top of the page.
+  if (!l || l.status === "off" || l.status === "soon") return null;
   const live = l.status === "live" || l.status === "graduated", lv = l.live && !l.live.error ? l.live : null, tr = l.trend || null;
   const copy = async () => { try { await navigator.clipboard.writeText(l.address); sCopied(true); setTimeout(() => sCopied(false), 1500); } catch {} };
   const pill = { display: "inline-block", padding: "4px 10px", borderRadius: 999, fontFamily: M, fontSize: 11, fontWeight: 800, letterSpacing: ".08em", whiteSpace: "nowrap" };
@@ -533,8 +541,8 @@ export default function Simple() {
   // What the RUNNING bot is doing, as the server reports it -- not what the switch happens to say
   // now. Flipping the toggle mid-run must not relabel a run that is spending real money.
   const onPaper = running ? !!st?.settings?.paper : paper;
-  const wrap = { minHeight: "100vh", background: T.bg, color: T.tx, fontFamily: S, display: "flex", flexDirection: "column", alignItems: "center", padding: "48px 16px 32px", boxSizing: "border-box" };
-  const card = { width: "100%", maxWidth: 440, background: T.sf, border: `1px solid ${running ? T.gn : T.bd}`, borderRadius: 16, padding: 20, boxSizing: "border-box" };
+  const wrap = { minHeight: "100vh", color: T.tx, fontFamily: S, display: "flex", flexDirection: "column", alignItems: "center", padding: "48px 16px 32px", boxSizing: "border-box" };
+  const card = { width: "100%", maxWidth: 440, border: `1px solid ${running ? T.gn : T.bd}`, borderRadius: 16, padding: 20, boxSizing: "border-box" };
   const muted = { color: T.ft, fontSize: 13, lineHeight: 1.5 };
 
   return <TC.Provider value={T}><style>{css(T)}</style><Boot T={T} done={booted} /><div style={wrap}>
@@ -546,7 +554,7 @@ export default function Simple() {
 
     <Launch T={T} />
 
-    <div style={card}>
+    <div className="card" style={card}>
       {/* 1. Connect */}
       {!pk && <Btn big T={T} onClick={connect}>Connect wallet</Btn>}
 
