@@ -66,3 +66,20 @@ test("T25: a fill reaches the callouts through the hub with the buy tx on it; th
   assert.match(CLIENT, /calls\(\) \{ return this\.f\("\/api\/callouts", \{ noauth: true/);
   assert.match(ENV, /# CALLOUT_WEBHOOK_URL=\n# CALLOUT_TG_TOKEN=\n# CALLOUT_TG_CHAT_ID=\n# CALLOUT_MIN_TIER=2/);
 });
+
+test("T25: the Arc venue is built in hub.start the way PONS is, on the same EVM key, and every wallet path knows it", () => {
+  assert.match(HUB, /const arc = !!settings\.arc && !!this\.arcFeed && !!evmSecret;/);
+  assert.match(HUB, /if \(arc\) venues\.arc = \{ mode: "paper", feed: new SharedFeedView\(this\.arcFeed, \{ clock: this\.clock \}\), edge: makePumpfunEdge\(\{ venue: "arc", aggression \}\), router: new ArcPaperRouter\(/);
+  assert.match(HUB, /const wanted = \[pumpfun && "pumpfun", pons && "pons", arc && "arc"\]\.filter\(Boolean\);/);
+  assert.match(HUB, /!\["pons", "pumpfun", "arc"\]\.includes\(venue\)/, "the sell route accepts arc");
+  assert.match(HUB, /for \(const venue of \["pumpfun", "pons", "arc"\]\)/, "the sweep closes arc positions through the engine");
+  // The live router refuses an RPC that answers for another chain before it reads a balance.
+  const ROUTER = fs.readFileSync(path.resolve("src/velocity/venues/arc/router.mjs"), "utf8");
+  const pre = ROUTER.indexOf("async preflight()");
+  const body = ROUTER.slice(pre, pre + 900);
+  assert.ok(body.indexOf('this.provider.send("eth_chainId", [])') < body.indexOf("getBalance"), "chain id is checked before the balance is read");
+  assert.match(body, /Number\(chainHex\) !== CHAIN_ID\) throw/);
+  // The site lists Arc holdings and lets a bonded token be sold (the pool keeps trading after the bond).
+  assert.match(SITE, /\[\.\.\.hold\.sol, \.\.\.hold\.eth, \.\.\.\(hold\.usdc \|\| \[\]\)\]\.map/);
+  assert.match(SITE, /h\.state === "bonded" \|\| h\.state === "unknown" && \(h\.venue === "pumpfun" \|\| h\.venue === "arc"\)/);
+});

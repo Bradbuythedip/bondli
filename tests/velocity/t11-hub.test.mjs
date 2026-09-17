@@ -621,3 +621,59 @@ test("T11: a live fill is called out once for the whole hub, with its tx; paper 
     assert.doesNotMatch(text, /UserA|UserB|Pretend|wallet/i, "no wallet and no user in the public record");
   } finally { await hub.stopAll(); await feed.stop(); }
 });
+
+test("T11: Arc trades on the same EVM key with USDC as the quote; its open position is swept through the engine and the fee leaves in USDC", async () => {
+  const root = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] }); feed.solPrice = 100;
+  const arcFeed = new ScriptedFeed({ venue: "arc", script: [] }); arcFeed.solPrice = 1;
+  const routers = {};
+  class FakeArc { constructor({ secret }) { this.secret = secret; this.ready = false; this.address = "0xarcme"; this.known = new Set(); this.tokens = {}; this.transfers = []; this.closed = []; }
+    async init() { this.ready = true; return this.preflight(); } async preflight() { return { wallet: this.address, balanceSol: 40, balanceUsdc: 40, quote: "USDC", chainId: 5042 }; } async health() { return { ok: true, latencyMs: 1 }; }
+    track(t) { this.known.add(t); } async positions() { return [...this.known].filter(t => this.tokens[t] > 0).map(t => ({ instrument: t, qty: this.tokens[t] })); }
+    async submit(o) { const t = Date.now(); this.tokens[o.instrument] = 1000; return { ok: true, fill: { orderId: o.id, decisionId: o.decisionId, venue: "arc", instrument: o.instrument, side: "BUY", price: 0.01, qty: 1000, notional_usd: 10, fee_usd: 0.3, t_sent: t, t_filled: t + 3, latency_ms: 3, venue_ref: "0xbuy", sol_spent: 10 } }; }
+    async close(p) { this.closed.push(p.instrument); this.tokens[p.instrument] = 0; const t = Date.now(); return { ok: true, fill: { price: 0.014, qty: 1000, notional_usd: 14, fee_usd: 0, t_sent: t, t_filled: t + 3, latency_ms: 3, venue_ref: "0xsell", sol_received: 14 } }; }
+    async transferSol(to, amount) { this.transfers.push({ to, amount }); return "0xfee"; } }
+  const hub = new VelocityHub({ feed, arcFeed, rootDir: root, platformWallet: "PLATFORM_FRESH_WALLET", platformEvmWallet: "0x" + "2".repeat(40), fee: feeDeps(), makeLiveRouter: ({ secret, wallet }) => new FakeLive({ secret, wallet }), makeArcRouter: ({ secret }) => (routers.arc = new FakeArc({ secret })), log: { log() {}, error() {}, warn() {} } });
+  await feed.start(); await arcFeed.start();
+  try {
+    // Arc alone, pump.fun off: the SOL wallet is never asked to fund anything.
+    const s = await hub.start({ wallet: "UserArc", secret: "sA", evmSecret: "0xkey", settings: { bankrollUsd: 100, aggression: 2, pumpfun: false, arc: true } });
+    assert.equal(s.ok, true, JSON.stringify(s));
+    assert.equal(s.status.venues.arc.mode, "live"); assert.equal(s.status.venues.pumpfun?.mode ?? "off", "off");
+    assert.equal(routers.arc.secret, "0xkey", "the Arc router signs with the EVM key");
+    assert.equal(s.settings.arc, true);
+    // Without the feed on the site, or without the key, Arc is not offered at all.
+    const noKey = new VelocityHub({ feed, arcFeed, rootDir: tmp(), platformWallet: "P", fee: feeDeps(), makeLiveRouter: ({ secret, wallet }) => new FakeLive({ secret, wallet }), makeArcRouter: () => new FakeArc({}), log: { log() {}, error() {}, warn() {} } });
+    const r0 = await noKey.start({ wallet: "NoKey", secret: "s", settings: { bankrollUsd: 100, pumpfun: false, arc: true } });
+    assert.equal(r0.ok, false); assert.match(r0.error, /turn on at least one chain/);
+    // A candidate on the Arc feed, priced in dollars: the engine buys through the Arc router.
+    const now = Date.now();
+    const payload = { ...goodCandidatePayload("0xjeff"), solPrice: 1, quote: "USDC", mcapUsd: 18_000, vSolInBondingCurve: 18_000,
+      curve: { address: "0xpool", hook: "0xhook", quoteReserve: 18_000, tokenReserve: 8e8, feeBps: 300, sellTaxBps: 300, creatorTaxBps: 0, poolFeeBps: 100, native: false, progress: 0.2, bonded: false } };
+    // Curve venues say where they are; without this the gate reads 18,000 as SOL on a pump.fun curve and calls it too late.
+    payload.token.vSolInBondingCurve = 18_000; payload.token._curvePct = 0.2;
+    arcFeed.emitEvent({ kind: "candidate", id: "0xjeff", payload, t_venue: now - 100 });
+    await new Promise(r => setTimeout(r, 60));
+    const e = hub.users.get("UserArc").engine; await e.enqueue(() => {});
+    const open = e.store.openPositions("arc");
+    assert.equal(open.length, 1, `arc position expected; funnel ${JSON.stringify(e.funnel())}`);
+    assert.equal(open[0].venue_ref, "0xbuy"); assert.equal(open[0].paper, false);
+    // The sweep closes it through the engine (so the ledger sees it) and the fee on the profit leaves as USDC to the EVM fee wallet.
+    const sw = await hub.sweepWallet("UserArc", { secret: "sA", evmSecret: "0xkey" });
+    assert.equal(sw.ok, true);
+    assert.equal(e.store.openPositions("arc").length, 0);
+    assert.ok(sw.report.some(x => x.venue === "arc" && x.instrument === "0xjeff" && x.ok && x.position), JSON.stringify(sw.report));
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(routers.arc.transfers.length, 1, "one fee transfer");
+    assert.equal(routers.arc.transfers[0].to, "0x" + "2".repeat(40), "to the EVM fee wallet, not the Solana one");
+    assert.ok(routers.arc.transfers[0].amount > 0 && routers.arc.transfers[0].amount < 1, `5% of the $4 profit in USDC: ${routers.arc.transfers[0].amount}`);
+    const feeRec = e.ledger.query({ kind: "fee", limit: 1 })[0];
+    assert.equal(feeRec.venue, "arc");
+    // Holdings list the Arc side under its own key; a leftover token the wallet holds can be sold by hand.
+    routers.arc.tokens["0xstray"] = 500; routers.arc.track("0xstray");
+    const h = await hub.listHoldings("UserArc", { secret: "sA", evmSecret: "0xkey" });
+    assert.ok(h.usdc.some(x => x.venue === "arc" && x.instrument === "0xstray" && x.qty === 500 && !x.tracked), JSON.stringify(h));
+    const sold = await hub.sellHolding("UserArc", { venue: "arc", instrument: "0xSTRAY", secret: "sA", evmSecret: "0xkey" });
+    assert.equal(sold.ok, true); assert.ok(routers.arc.closed.includes("0xstray"), "sold through the Arc router, address lower-cased");
+  } finally { await hub.stopAll(); await feed.stop(); await arcFeed.stop(); }
+});

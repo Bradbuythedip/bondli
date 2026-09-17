@@ -564,7 +564,7 @@ export default function Simple() {
   const [selling, sSelling] = useState(null);
   const sellHolding = async (venue, instrument) => {
     sSelling(venue + instrument);
-    try { const r = await a.vsell(pk, venue, instrument, 100); say(r.ok ? `Sold ${instrument.slice(0, 8)}… for ${Number(r.received || 0).toFixed(venue === "pons" ? 5 : 4)} ${venue === "pons" ? "ETH" : "SOL"}` : `${instrument.slice(0, 8)}…: ${r.error}`, r.ok ? "ok" : "error"); loadWallet(); sHold(h => h ? { ...h, sol: h.sol.map(x => x.instrument === instrument ? { ...x, result: r } : x), eth: h.eth.map(x => x.instrument === instrument ? { ...x, result: r } : x) } : h); }
+    try { const r = await a.vsell(pk, venue, instrument, 100); say(r.ok ? `Sold ${instrument.slice(0, 8)}… for ${Number(r.received || 0).toFixed(venue === "pons" ? 5 : venue === "arc" ? 2 : 4)} ${venue === "pons" ? "ETH" : venue === "arc" ? "USDC" : "SOL"}` : `${instrument.slice(0, 8)}…: ${r.error}`, r.ok ? "ok" : "error"); loadWallet(); sHold(h => h ? { ...h, sol: h.sol.map(x => x.instrument === instrument ? { ...x, result: r } : x), eth: h.eth.map(x => x.instrument === instrument ? { ...x, result: r } : x), usdc: (h.usdc || []).map(x => x.instrument === instrument ? { ...x, result: r } : x) } : h); }
     catch (e) { say(e.message, "error"); } finally { sSelling(null); }
   };
   const withdraw = async () => {
@@ -819,10 +819,10 @@ export default function Simple() {
       <Btn ghost T={T} onClick={() => sHoldOpen(o => !o)}>{holdOpen ? "Hide the wallets' tokens" : "Show every token in the wallets"}</Btn>
       {holdOpen && <div style={{ marginTop: 8, background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 12, padding: "10px 12px", fontFamily: M, fontSize: 11, lineHeight: 1.5 }}>
         {!hold && <div style={{ color: T.ft }}>reading both wallets…</div>}
-        {hold && [...hold.sol, ...hold.eth].length === 0 && <div style={{ color: T.ft }}>no tokens in either wallet</div>}
-        {hold && [...hold.sol, ...hold.eth].map(h => { const sellable = h.state === "curve" || h.state === "unknown" && h.venue === "pumpfun"; const k = h.venue + h.instrument; return <div key={k} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, alignItems: "center", padding: "6px 0", borderTop: `1px solid ${T.bd}` }}>
+        {hold && [...hold.sol, ...hold.eth, ...(hold.usdc || [])].length === 0 && <div style={{ color: T.ft }}>no tokens in any wallet</div>}
+        {hold && [...hold.sol, ...hold.eth, ...(hold.usdc || [])].map(h => { const sellable = h.state === "curve" || h.state === "bonded" || h.state === "unknown" && (h.venue === "pumpfun" || h.venue === "arc"); const k = h.venue + h.instrument; return <div key={k} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, alignItems: "center", padding: "6px 0", borderTop: `1px solid ${T.bd}` }}>
           <span style={{ minWidth: 0 }}>
-            <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><a href={h.url} target="_blank" rel="noopener" style={{ color: T.tx, fontWeight: 800, textDecoration: "none" }}>{h.name || h.ticker || h.instrument.slice(0, 10) + "…"}</a> <span style={{ color: T.ft }}>{h.venue === "pons" ? "RH" : "SOL"}{h.tracked ? " · open" : ""}</span></div>
+            <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><a href={h.url} target="_blank" rel="noopener" style={{ color: T.tx, fontWeight: 800, textDecoration: "none" }}>{h.name || h.ticker || h.instrument.slice(0, 10) + "…"}</a> <span style={{ color: T.ft }}>{h.venue === "pons" ? "RH" : h.venue === "arc" ? "ARC" : "SOL"}{h.tracked ? " · open" : ""}</span></div>
             <div style={{ color: h.state === "curve" ? T.ft : T.yl }}>{Number(h.qty).toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens · {h.state}{h.curvePct != null ? ` ${Math.round(h.curvePct * 100)}%` : ""}{h.mcapUsd ? ` · mcap ${kfmt(h.mcapUsd)}` : ""}{h.via === "transfer" ? " (found by its transfer)" : ""}{h.state === "graduated" ? " · sell on the pool by hand" : h.state === "not a curve token" ? " · no curve sells it; see explorer" : ""}</div>
             {h.result && <div style={{ color: h.result.ok ? T.gn : T.rd }}>{h.result.ok ? `sold for ${Number(h.result.received || 0).toFixed(5)}` : h.result.error}</div>}
             {h.explorer && h.state !== "curve" && <a href={h.explorer} target="_blank" rel="noopener" style={{ color: T.dm }}>explorer</a>}
