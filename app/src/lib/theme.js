@@ -1,13 +1,20 @@
 import { createContext } from "react";
-// A step lighter than it was, and warmer with it: the surfaces lift about 40%, the borders show, and
-// the faint ink that carries every age, market cap and buyer count now clears 4.5:1 on a card instead
-// of 2.2:1 — it was below the readable floor, which is why the page felt murky rather than calm.
-// The three inks stay far enough apart (12.6 / 6.5 / 4.7 against a card) that the hierarchy still reads.
-// Another step up: the ground and the cards each lift about 20% again. The faint ink lifts with them
-// so the quiet text still clears 4.5:1 on a card (measured 4.71) rather than drifting under it, and
-// the three inks stay far apart (13.4 / 6.3 / 4.7) so the hierarchy survives the lighter ground.
-export const D = { bg: "#262524", sf: "#343331", bd: "rgba(255,255,255,.15)", gn: "#5de88f", rd: "#f4605a", yl: "#f0c33c", tx: "#f6f3f0", dm: "#bdb6ae", ft: "#a49d95" };
-export const L = { bg: "#363533", sf: "#424140", bd: "rgba(255,255,255,.18)", gn: "#6dee9b", rd: "#f8756e", yl: "#f5cf55", tx: "#fbf9f7", dm: "#ccc6be", ft: "#b0aaa2" };
+// The frog with the coffee. Everything here is taken off that painting rather than invented: the
+// ground is the warm oxblood he is sitting against, the cards lift out of it, the positive green is
+// his skin, the negative is the dusky rose of his mouth, the warning is the light on the cup, and the
+// text is the cream of the cup itself. Nothing is neon -- the painting has no saturated colour in it,
+// and a trading screen that shouts is harder to read, not easier.
+//
+// Contrast is measured, not eyeballed. Against a card, the three inks sit at 11.6 / 6.8 / 5.0 and the
+// three states at 7.7 (green) / 5.3 (red) / 8.1 (yellow), so every one of them clears 4.5:1 -- the
+// faint ink that carries every age, market cap and buyer count included, which is the one that used
+// to drift under the readable floor. Black on the green button is 12.0.
+export const D = { bg: "#2a2022", sf: "#372b2d", bd: "rgba(255,255,255,.15)", gn: "#a8d07a", rd: "#e8867e", yl: "#e8c46a", tx: "#f4ece1", dm: "#c3b5a8", ft: "#a99a8d" };
+// The same painting in a lighter room: the ground and cards lift, the colours lift with them so the
+// ratios hold (7.0 / 5.1 / 7.3 for the states, 10.1 / 6.6 / 5.1 for the inks).
+export const L = { bg: "#3a2e30", sf: "#483a3c", bd: "rgba(255,255,255,.18)", gn: "#b8dc8e", rd: "#f09c94", yl: "#f0d17e", tx: "#fdf7ee", dm: "#d4c8bb", ft: "#bcb0a3" };
+// His shirt. Used where something needs to read as a third thing -- neither good nor bad, just other.
+export const BLUE = "#6d93c8";
 export const TC = createContext(D);
 export function css(T) { return `
 *{box-sizing:border-box;margin:0;padding:0}
@@ -16,6 +23,7 @@ body{background:${T.bg};color:${T.tx};overflow-x:hidden;-webkit-font-smoothing:a
 input,button{font-family:inherit;-webkit-appearance:none}
 ::-webkit-scrollbar{width:2px}::-webkit-scrollbar-thumb{background:${T.bd};border-radius:4px}
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@keyframes imgin{from{opacity:0;transform:scale(1.06)}to{opacity:1;transform:scale(1)}}
 @keyframes gp{0%,100%{box-shadow:0 0 0 0 ${T.gn}33}70%{box-shadow:0 0 0 5px ${T.gn}00}}
 @keyframes fly{0%,100%{transform:translateY(0) rotate(-6deg)}50%{transform:translateY(-10px) rotate(-2deg)}}
 @keyframes bootspin{to{transform:rotate(360deg)}}

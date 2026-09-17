@@ -17,7 +17,6 @@ import { makePumpfunEdge } from "./venues/pumpfun/edge.mjs";
 import { PumpfunPaperRouter, PumpfunLiveRouter } from "./venues/pumpfun/router.mjs";
 import { PonsLiveRouter, PonsPaperRouter } from "./venues/pons/router.mjs";
 import { HolderWaiver } from "./core/holder-waiver.mjs";
-import { Wallet as EvmWallet } from "ethers";
 
 /** The original platform wallet. Its key was pasted into a chat once; the operator chose to keep it,
  *  so it is accepted with a loud warning at boot rather than refused. Sweep it often. */
@@ -146,18 +145,19 @@ export class VelocityHub {
     this.users = new Map(); // wallet -> { engine, sup, view, settings, startedAt }
     this._sweeps = new Map(); // wallet -> running or finished sweep job
     this._holdingsCache = new Map();
-    // Hold the house token and the fee is zero, on both venues. Inert until the token is launched and
-    // NOTAFLY_TOKEN is set; until then every fee is charged exactly as before.
+    // Hold the house token and the fee is zero, on both venues. $FREN is an SPL mint on Solana, read
+    // against the user's own Solana wallet -- the pubkey they already sign in with -- so there is
+    // nothing extra to connect and someone who only trades pump.fun can earn the waiver too. Inert
+    // until the token is launched and FREN_MINT is set; until then every fee is charged as before.
     this.waiver = new HolderWaiver({
-      token: process.env.NOTAFLY_TOKEN || null,
-      minTokens: Number(process.env.NOTAFLY_MIN_TOKENS || 1),
-      symbol: process.env.NOTAFLY_SYMBOL || "NOTAFLY",
-      provider: ponsFeed?.rpc?.provider || null,
-      rpcUrl: process.env.PONS_RPC_URL || null,
+      token: process.env.FREN_MINT || null,
+      minTokens: Number(process.env.FREN_MIN_TOKENS || 1),
+      symbol: process.env.FREN_SYMBOL || "FREN",
+      rpcUrl: rpcUrl || process.env.RPC_URL || null,
       clock, log,
     });
     if (this.waiver.enabled) log.log?.(`[VELOCITY-HUB] fee waiver on: holders of ${this.waiver.minTokens}+ ${this.waiver.symbol} (${this.waiver.token}) pay nothing`);
-    else if (this.waiver.configuredButInvalid) log.error?.(`[VELOCITY-HUB] NOTAFLY_TOKEN is not an address; the holder fee waiver is OFF`);
+    else if (this.waiver.configuredButInvalid) log.error?.(`[VELOCITY-HUB] FREN_MINT is not a Solana address; the holder fee waiver is OFF`);
     this.feeOk = !!this.platformWallet;
     if (!this.feeOk) log.error?.(`[VELOCITY-HUB] PLATFORM_WALLET is unset: SOL performance fees will NOT be collected`);
     else if (this.platformWallet === EXPOSED_DEFAULT_PLATFORM_WALLET) log.warn?.(`[VELOCITY-HUB] PLATFORM_WALLET is the original wallet whose key was once exposed in a chat: fees go there by the operator's choice; sweep it often`);
@@ -178,6 +178,9 @@ export class VelocityHub {
     // stops looking at its feed rather than quietly paper-trading it in the background.
     const pumpfun = settings.pumpfun !== false;
     if (!pumpfun && !pons) return { ok: false, error: "turn on at least one chain: pump.fun, Robinhood Chain, or both" };
+    // Paper: run the whole machine on the real feed and simulate only the fills. Chosen per start, so
+    // a user can paper-trade today and go live tomorrow with the same settings.
+    const paper = !!settings.paper;
     const aggression = Math.max(0, Math.min(3, Math.round(settings.aggression == null || settings.aggression === "" ? 1 : Number(settings.aggression) || 0)));
     const envelope = userEnvelope({ ...settings, pons, aggression });
     const view = new SharedFeedView(this.feed, { clock: this.clock });
@@ -205,9 +208,18 @@ export class VelocityHub {
     // Each wanted venue goes live on its own terms, and the start only fails if NONE of them could.
     // pump.fun used to be mandatory -- its preflight failing stopped the whole engine -- so a user
     // with a funded ETH wallet and an empty SOL one could not trade at all.
+    //
+    // Paper mode is the exception: the venues are built exactly as they are for real money and then
+    // simply left in "paper", so every gate, size, plan and exit runs against the same live feed and
+    // the same rules, and only the router is a simulation. That means it needs no funded wallet and
+    // can never spend one -- the preflight that refuses an empty wallet is the thing being skipped,
+    // so it must not run at all rather than run and be ignored.
     const wanted = [pumpfun && "pumpfun", pons && "pons"].filter(Boolean);
     const results = {};
-    for (const v of wanted) {
+    if (paper) {
+      for (const v of wanted) results[v] = { ok: true, paper: true };
+      engine.log("info", `paper mode: ${wanted.join(" and ")} judged and traded on the live feed, with simulated money`);
+    } else for (const v of wanted) {
       results[v] = await engine.setVenueMode(v, "live", { override: true, by: "user" });
       if (!results[v].ok) engine.log("warn", `${v} stays paper: ${results[v].error || "could not go live"}`);
     }
@@ -222,11 +234,7 @@ export class VelocityHub {
       return { ok: false, error: first.error || "could not go live", preflight: first.preflight || null, venues: results };
     }
     sup.start();
-    // The Robinhood Chain address the fee waiver reads, known whether or not the user trades PONS:
-    // they may hold the house token without opting into that venue.
-    let evmAddress = null;
-    if (evmSecret) { try { evmAddress = new EvmWallet(String(evmSecret).trim()).address; } catch { evmAddress = null; } }
-    this.users.set(wallet, { engine, sup, view, evmAddress, settings: { ...settings, aggression, pons, pumpfun }, startedAt: this.clock() });
+    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, pons, pumpfun, paper }, startedAt: this.clock() });
     // Once a minute, the funnel in the server log: what the candidates hit. The first place to look when nothing fills.
     const fun = setInterval(() => { try { const f = engine.funnel(); this.log.log?.(`[velocity ${wallet.slice(0, 8)}] funnel 10m: judged ${f.judged} (${f.distinct} tokens) go ${f.gos} filled ${f.filled} | ${Object.entries(f.gates).map(([g, n]) => `${g} ${n}`).join(", ") || "no rejects"} | top: ${f.top.map(x => `${x.k} ${x.n}`).join("; ")}${f.sized0 ? ` | no size: ${JSON.stringify(f.sized0)}` : ""}${f.failed ? ` | failed: ${JSON.stringify(f.failed)}` : ""}`); } catch {} }, 60_000);
     fun.unref?.(); this.users.get(wallet).fun = fun;
@@ -309,7 +317,7 @@ export class VelocityHub {
     if (!u) return { running: false, sweep: this._sweepView(this._sweeps.get(wallet)) };
     const s = u.engine.status();
     // The waiver as last read; status must not block on an RPC, so this never triggers a fresh read.
-    const cached = this.waiver.enabled ? this.waiver.cached(this.evmAddressOf(wallet)) : null;
+    const cached = this.waiver.enabled ? this.waiver.cached(wallet) : null;
     const fee = { pct: this.feePct, waiver: this.waiver.enabled ? { symbol: this.waiver.symbol, token: this.waiver.token, minTokens: this.waiver.minTokens, holds: cached ? cached.holds : null } : null };
     return { running: true, startedAt: u.startedAt, settings: u.settings, status: s, funnel: u.engine.funnel(), feeWallet: this.feeOk ? this.platformWallet : null, fee, sweep: this._sweepView(this._sweeps.get(wallet)) };
   }
@@ -350,18 +358,12 @@ export class VelocityHub {
     return { fee: f.fee, net: f.net, collected: true, sig };
   }
 
-  /** The EVM address this user's fees would be waived against: their Robinhood Chain bot wallet. */
-  evmAddressOf(wallet) {
-    const u = this.users.get(wallet);
-    return u?.evmAddress || u?.engine?.venues?.pons?.liveRouter?.address || null;
-  }
-
-  /** Does this user hold enough of the house token to trade free? Never throws. */
+  /** Does this user hold enough of the house token to trade free? Never throws.
+   *  Read against their Solana wallet: $FREN is an SPL mint, and that pubkey is the account they
+   *  signed in with, so every user has one whether or not they opted into Robinhood Chain. */
   async holderWaived(wallet) {
-    if (!this.waiver.enabled) return false;
-    const addr = this.evmAddressOf(wallet);
-    if (!addr) return false; // no Robinhood Chain wallet on file: nothing to hold it in
-    try { return await this.waiver.holds(addr); } catch { return false; }
+    if (!this.waiver.enabled || !wallet) return false;
+    try { return await this.waiver.holds(wallet); } catch { return false; }
   }
 
   /** feePct of realized profit; nothing on a loss or dust; the owner pays nothing. The only other way
