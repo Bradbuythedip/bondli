@@ -587,15 +587,18 @@ test("T11: a live fill is called out once for the whole hub, with its tx; paper 
   assert.equal(hub.callouts, callouts, "the injected object is the hub's, not a second one");
   await feed.start();
   try {
-    assert.equal((await hub.start({ wallet: "UserA", secret: "sA", settings: { bankrollUsd: 100, aggression: 2 } })).ok, true);
-    assert.equal((await hub.start({ wallet: "UserB", secret: "sB", settings: { bankrollUsd: 100, aggression: 2 } })).ok, true);
-    assert.equal((await hub.start({ wallet: "Pretend", secret: "sP", settings: { bankrollUsd: 100, aggression: 2, paper: true } })).ok, true);
+    // Calls are the user's choice: A and B opted in, Pretend is paper (opted in, never posts), Quiet did not opt in.
+    assert.equal((await hub.start({ wallet: "UserA", secret: "sA", settings: { bankrollUsd: 100, aggression: 2, callouts: true } })).ok, true);
+    assert.equal((await hub.start({ wallet: "UserB", secret: "sB", settings: { bankrollUsd: 100, aggression: 2, callouts: true } })).ok, true);
+    assert.equal((await hub.start({ wallet: "Pretend", secret: "sP", settings: { bankrollUsd: 100, aggression: 2, paper: true, callouts: true } })).ok, true);
+    assert.equal((await hub.start({ wallet: "Quiet", secret: "sQ", settings: { bankrollUsd: 100, aggression: 2 } })).ok, true);
+    assert.equal(hub.status("Quiet").settings.callouts, false, "off unless they said so");
     const now = Date.now();
     feed.emitEvent({ kind: "candidate", id: "MintX", payload: goodCandidatePayload("MintX"), t_venue: now - 100 });
     await new Promise(r => setTimeout(r, 60));
-    for (const w of ["UserA", "UserB", "Pretend"]) { await hub.users.get(w).engine.enqueue(() => {}); assert.equal(hub.users.get(w).engine.store.openPositions("pumpfun").length, 1, `${w} holds MintX`); }
+    for (const w of ["UserA", "UserB", "Pretend", "Quiet"]) { await hub.users.get(w).engine.enqueue(() => {}); assert.equal(hub.users.get(w).engine.store.openPositions("pumpfun").length, 1, `${w} holds MintX`); }
     await new Promise(r => setTimeout(r, 20));
-    // Three engines bought the same token; two live, one paper. One call, carrying the buy's own tx.
+    // Four engines bought the same token; two live and opted in, one paper, one quiet. One call, carrying the buy's own tx.
     assert.equal(posts.length, 1, JSON.stringify(posts));
     assert.match(JSON.stringify(posts[0].body), /SIGBUY/);
     assert.equal(hub.users.get("UserA").engine.store.openPositions("pumpfun")[0].venue_ref, "SIGBUY", "the position remembers its buy tx");
@@ -607,8 +610,9 @@ test("T11: a live fill is called out once for the whole hub, with its tx; paper 
     // The close reports back and the record resolves.
     feed.emitEvent({ kind: "tick", id: "MintX", payload: tickPayload("MintX", 17_000, { dynamics: { scores: 5, velocity: -0.6, acceleration: -0.2, trend: "crashing" } }), t_venue: now + 500 });
     await new Promise(r => setTimeout(r, 80));
-    for (const w of ["UserA", "UserB", "Pretend"]) await hub.users.get(w).engine.enqueue(() => {});
+    for (const w of ["UserA", "UserB", "Pretend", "Quiet"]) await hub.users.get(w).engine.enqueue(() => {});
     await new Promise(r => setTimeout(r, 40));
+    // Four closes on the token; only the called fill's own close is its result.
     assert.equal(callouts.record().resolved, 1, JSON.stringify(callouts.record()));
     assert.ok(posts.length >= 2, "the result was posted");
     assert.ok(callouts.feed()[0].result && Number.isFinite(callouts.feed()[0].result.pnl_pct));

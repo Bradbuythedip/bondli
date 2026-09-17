@@ -1,15 +1,22 @@
 // Argus on Arc: the feed, against a fake chain. A Portal launch becomes a tracked token, swaps on
 // the PoolManager become buys and sells attributed to the transaction's sender, the price comes
 // off the pool's sqrtPriceX96, the snipe window is never a candidate, a held token ticks even when
-// the pool cannot be read, and a bonded token keeps trading: never graduated.
+// the pool cannot be read, and a bonded token keeps trading: never graduated. The fake chain logs
+// swaps the way the PoolManager does: the ACTIVE liquidity after the swap, which is 0 once a buy
+// has run the price out of the launch position, with the price wherever the router's limit left it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AbiCoder } from "ethers";
 import { pollDelay, ArcFeed, positionReserves, decodeLaunchWords, CANDIDATE_MIN_AGE_MS } from "../../src/velocity/venues/arc/feed.mjs";
+import { arcFillModel } from "../../src/velocity/venues/arc/router.mjs";
 import {
   PORTALS, POOL_MANAGER, USDC_ERC20, TOPICS, SNIPE_TAX_WINDOW_MS, QUOTE_IS_NATIVE, TOKEN_SUPPLY,
   portalIface, poolManagerIface, poolIdFor, liquidityForSupply, sqrtRatioAtTick, sqrtRatioToX96, quoteBuy, priceFromSqrtX96,
 } from "../../src/velocity/venues/arc/chain.mjs";
+
+// TickMath.MAX_SQRT_PRICE and MAX_TICK: where a v4 swap with no price limit leaves an emptied pool.
+const MAX_SQRT_PRICE = 1461446703485210103287273052203988822378723970342n, MAX_TICK = 887272;
+const KEYED = "execution reverted (request={  }, response={  }, error=null, info={ \"requestUrl\": \"https://arc-mainnet.g.alchemy.com/v2/SECRETKEY123abc\" })";
 
 const addr = n => "0x" + n.toString(16).padStart(40, "0");
 const close = (a, b, rel, msg) => assert.ok(Math.abs(a - b) <= rel * Math.max(Math.abs(a), Math.abs(b), 1e-300), `${msg}: ${a} vs ${b}`);
@@ -26,7 +33,7 @@ const openPool = () => ({ sqrtPriceX96: sqrtRatioToX96(sqrtRatioAtTick(TICK_STAR
 
 /** The chain in memory: Portal and PoolManager logs by block, hook terms, the pool's slot0, and who sent each tx. */
 function fakeChain({ launchedAtMs }) {
-  const s = { head: 1000, logs: [], txFrom: {}, sqrt: sqrtRatioToX96(sqrtRatioAtTick(TICK_START)).toString(), tick: TICK_START, slot0Broken: false, bonded: false, filters: [], hookReads: 0, quoteAsset: USDC_ERC20, launches: {} };
+  const s = { head: 1000, logs: [], txFrom: {}, sqrt: sqrtRatioToX96(sqrtRatioAtTick(TICK_START)).toString(), tick: TICK_START, slot0Broken: false, hookBroken: false, bonded: false, filters: [], hookReads: 0, liquidityReads: 0, quoteAsset: USDC_ERC20, launches: {} };
   const rpc = {
     blockNumber: async () => s.head,
     logs: async (f) => {
@@ -35,9 +42,11 @@ function fakeChain({ launchedAtMs }) {
       const t0 = Array.isArray(f.topics[0]) ? f.topics[0] : [f.topics[0]], t1 = f.topics[1] == null ? null : (Array.isArray(f.topics[1]) ? f.topics[1] : [f.topics[1]]).map(x => x.toLowerCase());
       return s.logs.filter(l => l.blockNumber >= f.fromBlock && l.blockNumber <= f.toBlock && addrs.includes(l.address.toLowerCase()) && t0.includes(l.topics[0]) && (!t1 || t1.includes(String(l.topics[1]).toLowerCase())));
     },
-    hookInfo: async (hook) => { s.hookReads++; assert.equal(hook, HOOK); return { buyTaxBps: 300, sellTaxBps: 500, bonded: s.bonded, launchedAt: launchedAtMs, tickStart: TICK_START, tickBond: TICK_BOND, token: TOKEN, quoteAsset: s.quoteAsset, quoteDecimals: 6, tokenIs0: true, poolId: POOL }; },
-    slot0: async (poolId) => { assert.equal(poolId, POOL); if (s.slot0Broken) throw new Error("execution reverted"); return { sqrtPriceX96: s.sqrt, tick: s.tick, lpFeePips: 10000 }; },
-    liquidity: async () => LIQ.toString(),
+    hookInfo: async (hook) => { s.hookReads++; assert.equal(hook, HOOK); if (s.hookBroken) throw new Error(KEYED); return { buyTaxBps: 300, sellTaxBps: 500, bonded: s.bonded, launchedAt: launchedAtMs, tickStart: TICK_START, tickBond: TICK_BOND, token: TOKEN, quoteAsset: s.quoteAsset, quoteDecimals: 6, tokenIs0: true, poolId: POOL }; },
+    slot0: async (poolId) => { assert.equal(poolId, POOL); if (s.slot0Broken) throw new Error(KEYED); return { sqrtPriceX96: s.sqrt, tick: s.tick, lpFeePips: 10000 }; },
+    // StateView.getLiquidity is the liquidity active at the current tick: the position's while the
+    // price is inside [tickStart, tickBond), nothing once a buy has crossed the bond.
+    liquidity: async () => { s.liquidityReads++; return s.tick >= TICK_START && s.tick < TICK_BOND ? LIQ.toString() : "0"; },
     tokenMeta: async () => ({ name: "Arc Cat", symbol: "ACAT" }),
     txFrom: async (hash) => s.txFrom[hash] ?? null,
     launchInfo: async (token) => s.launches[token] || null,
@@ -49,12 +58,14 @@ const launchLogs = (blk) => [
   asLog(portalIface.encodeEventLog("PartsDeployed", [TOKEN, LOCKER, HOOK, SPLITTER]), PORTAL, blk, "0xlaunch", 1),
   asLog(portalIface.encodeEventLog("CurveOpened", [TOKEN, POOL, LOCKER, 1n, LIQ, TICK_START, TICK_BOND]), PORTAL, blk, "0xlaunch", 2),
 ];
-/** One swap on the pool as the PoolManager logs it: the swapper's deltas, then the pool state after. */
-function swapLog(s, { usdc, tokens, side, blk, tx, wallet, index = 0, pool = openPool() }) {
+/** One swap on the pool as the PoolManager logs it: the swapper's deltas, then the pool state after.
+ *  `liquidity` is what is active after the swap: the position's unless the price left it. A swap
+ *  with `wallet` unset is one whose transaction the fake cannot name. */
+function swapLog(s, { usdc, tokens, side, blk, tx, wallet, index = 0, liquidity = LIQ }) {
   const q = BigInt(Math.round(usdc * 1e6)), tk = BigInt(Math.round(tokens)) * 10n ** 18n;
   const a0 = side === "buy" ? tk : -tk, a1 = side === "buy" ? -q : q;
-  s.txFrom[tx] = wallet;
-  return asLog(poolManagerIface.encodeEventLog("Swap", [POOL, ROUTER, a0, a1, BigInt(s.sqrt), LIQ, s.tick, 10000]), POOL_MANAGER, blk, tx, index);
+  if (wallet) s.txFrom[tx] = wallet;
+  return asLog(poolManagerIface.encodeEventLog("Swap", [POOL, ROUTER, a0, a1, BigInt(s.sqrt), liquidity, s.tick, 10000]), POOL_MANAGER, blk, tx, index);
 }
 /** Walk the fake pool's price up by a buy, the way the chain would. */
 function buyOn(s, usdc, pool = openPool()) {
@@ -79,7 +90,7 @@ test("T22: a Portal launch becomes a tracked token with its hook's terms, its pi
   assert.equal(t.image, "ipfs://QmArcCatPicture", "the launch's picture rides on the token, where the radar row reads it");
   assert.equal(t.website, "https://acat.xyz"); assert.equal(t.twitter, "@acat");
   assert.equal(t.feeBps, 300); assert.equal(t.sellTaxBps, 500); assert.equal(t.tickStart, TICK_START); assert.equal(t.tickBond, TICK_BOND);
-  assert.equal(t.liquidity, LIQ.toString()); assert.equal(t.tokenIs0, true);
+  assert.equal(t.liquidity, LIQ.toString()); assert.equal(t.liquiditySource, "pool", "the pool's own number, read inside the range"); assert.equal(t.activeLiquidity, LIQ.toString()); assert.equal(t.tokenIs0, true);
   close(t.mcapUsd, 5000, 0.02, "opening mcap from slot0"); assert.equal(t.progress, 0); assert.equal(t.bonded, false); assert.equal(t.graduated, false);
   close(t.tokenReserve, TOKEN_SUPPLY, 1e-6, "the whole supply sits in the position"); assert.equal(t.quoteReserve, 0);
   assert.equal(s.hookReads, 1, "the hook's terms are read once");
@@ -174,6 +185,8 @@ test("T22: a held token whose pool read fails still ticks, and the tick says it 
   assert.equal(ticks.length, 1, "a held position still gets a tick when it cannot be priced");
   assert.deepEqual(ticks[0].payload, { unreadable: true, source: "arc", solPrice: 1, solPriceAt: feed.solPriceAt, quote: "USDC", token: { ca: TOKEN, curve: POOL, graduated: false, bonded: false, _ageMs: 130_000 } });
   assert.equal(feed.status().unreadableTicks, 1); assert.equal(feed.status().hydrateErrors, 1); assert.match(feed.status().lastHydrateError, /reverted/);
+  // The revert came back with the request URL in it, key and all; the health page shows the reason, never the URL.
+  assert.doesNotMatch(JSON.stringify(feed.status()), /SECRETKEY|alchemy|https?:/); assert.match(feed.status().lastHydrateError, /<rpc>/);
   assert.equal(events.filter(e => e.kind === "candidate" && e.id === TOKEN).length, 0, "not offered while it cannot be priced");
   // The pool answers again: the very next poll is a priced tick.
   s.slot0Broken = false; t._hydratedAt = 0; events.length = 0; now += 5_000; s.head += 10;
@@ -189,33 +202,62 @@ test("T22: past the bond tick the token is bonded, still ticked, still a candida
   const events = []; feed.on("event", e => { if (e.kind !== "feed_health") events.push(e); });
   s.logs.push(...launchLogs(1001)); s.head = 1001; await feed.pollOnce();
   feed.watch(TOKEN);
-  // A minute later a wall of buys runs the whole position (about 15,600 USDC buys the range):
-  // the last swap is capped at the bond tick.
+  // A minute later a wall of buys runs the whole position (about 15,600 USDC buys the range). The
+  // last swap takes everything left: the PoolManager crosses the position's upper tick, so the log
+  // it emits carries liquidity 0 and, the router's limit being the tick maximum, a price far past
+  // the bond where nothing trades. That is what the chain says; the feed must not repeat it.
   now += 60_000; s.head = 1100;
-  for (let i = 0; i < 5; i++) { const q = buyOn(s, 3_200); s.logs.push(swapLog(s, { usdc: q.usdcUsed, tokens: q.tokensOut, side: "buy", blk: 1050 + i, tx: "0xw" + i, wallet: addr(0x200 + i) })); }
-  assert.equal(s.tick, TICK_BOND, "the fake pool sits on the bond tick");
+  for (let i = 0; i < 4; i++) { const q = buyOn(s, 3_200); s.logs.push(swapLog(s, { usdc: q.usdcUsed, tokens: q.tokensOut, side: "buy", blk: 1050 + i, tx: "0xw" + i, wallet: addr(0x200 + i) })); }
+  const last = buyOn(s, 3_200); assert.equal(last.capped, true); assert.equal(s.tick, TICK_BOND, "the model stops at the bond tick");
+  s.sqrt = (MAX_SQRT_PRICE - 1n).toString(); s.tick = MAX_TICK - 1;
+  s.logs.push(swapLog(s, { usdc: last.usdcUsed, tokens: last.tokensOut, side: "buy", blk: 1054, tx: "0xw4", wallet: addr(0x204), liquidity: 0n }));
   await feed.pollOnce();
   const t = feed.token(TOKEN);
   assert.equal(t.bonded, true); assert.equal(t.progress, 1); assert.equal(t._curvePct, 1);
   assert.equal(t.graduated, false, "Argus never migrates: the pool keeps trading the same position");
+  const bondSqrt = sqrtRatioToX96(sqrtRatioAtTick(TICK_BOND)), bondMcap = priceFromSqrtX96(bondSqrt, { tokenIs0: true }) * TOKEN_SUPPLY;
+  assert.equal(t.sqrtPriceX96, bondSqrt.toString(), "the price is held at the position's edge, not where the router's limit left it");
+  close(t.mcapUsd, bondMcap, 1e-3, "marked at the bond"); close(t.mcapUsd, 45_000, 0.02, "which is the $45,000 bond mcap");
+  assert.equal(t._priceClamped, true); assert.equal(feed.status().clampedReads >= 1, true);
+  assert.equal(t.liquidity, LIQ.toString(), "the position's L survives a log that says the pool has none active"); assert.equal(t.activeLiquidity, "0"); assert.equal(t.liquiditySource, "pool");
   const c = events.find(e => e.kind === "candidate");
   assert.ok(c, "still judged"); assert.equal(c.payload.curve.bonded, true); assert.equal(c.payload.token.graduated, false); assert.equal(c.payload.token.bonded, true);
+  assert.equal(c.payload.curve.liquidity, LIQ.toString()); assert.equal(c.payload.curve.activeLiquidity, "0"); assert.equal(c.payload.curve.sqrtPriceX96, bondSqrt.toString());
   close(c.payload.curve.tokenReserve, 0, 1e-6, "nothing left above the bond"); assert.ok(c.payload.curve.quoteReserve > 14_000 && c.payload.curve.quoteReserve < 16_000, `the range's USDC: ${c.payload.curve.quoteReserve}`);
+  assert.equal(c.payload.vSolInBondingCurve, c.payload.curve.quoteReserve);
+  // What the paper router does with that reference: a sell at the top is a fill, not a $0 close.
+  const sell = arcFillModel({ side: "SELL", qty: 1_000_000, reference: c.payload }, { now });
+  assert.ok(!sell.reject && sell.qty > 0 && sell.notional_usd > 0, `a bonded position can be sold on paper: ${JSON.stringify(sell)}`);
+  close(sell.notional_usd, 1_000_000 * priceFromSqrtX96(bondSqrt, { tokenIs0: true }) * 0.99 * 0.95, 0.01, "at about the bond price less the pool's 1% and the 5% sell tax");
   assert.equal(t.buys, 5); assert.equal(t.uniqueBuyers.size, 5);
+  const reads = s.liquidityReads;
   // The price retreats on a sell: progress reads lower for display, the latch does not clear.
   s.sqrt = sqrtRatioToX96(sqrtRatioAtTick(TICK_START + 11000)).toString(); s.tick = TICK_START + 11000;
   s.logs.push(swapLog(s, { usdc: 1000, tokens: 50_000_000, side: "sell", blk: 1101, tx: "0xdump", wallet: addr(0x200) }));
   now += 2000; s.head = 1101; events.length = 0;
   await feed.pollOnce();
   assert.equal(t.bonded, true, "bonded stays bonded"); assert.ok(t.progress < 1 && t.progress > 0.4, `display progress ${t.progress}`);
-  assert.equal(t.graduated, false);
+  assert.equal(t.graduated, false); assert.equal(t._priceClamped, false, "back inside the range the reading stands");
+  assert.equal(t.liquidity, LIQ.toString()); assert.equal(t.activeLiquidity, LIQ.toString());
+  assert.equal(s.liquidityReads, reads, "the pool is not asked for liquidity again once it has answered inside the range");
   const tick = events.find(e => e.kind === "tick");
   assert.ok(tick, "a held bonded token is still ticked"); assert.equal(tick.payload.token.graduated, false); assert.equal(tick.payload.curve.bonded, true);
+  // A token adopted after bonding: the pool answers 0 for the emptied range, and the position's L
+  // still comes out, implied by the whole supply in the hook's own ticks.
+  const { s: s3, rpc: rpc3 } = fakeChain({ launchedAtMs: now - 600_000 }); s3.bonded = true; s3.sqrt = (MAX_SQRT_PRICE - 1n).toString(); s3.tick = MAX_TICK - 1;
+  s3.launches[TOKEN] = { token: TOKEN, portal: PORTAL.toLowerCase(), creator: DEV, hook: HOOK, locker: LOCKER, splitter: SPLITTER, quoteAsset: USDC_ERC20.toLowerCase(), poolId: POOL };
+  const feed3 = new ArcFeed({ rpc: rpc3, pollMs: 1500, clock }); const events3 = []; feed3.on("event", e => { if (e.kind !== "feed_health") events3.push(e); });
+  feed3.watch(TOKEN); await feed3.pollOnce();
+  const t3 = feed3.token(TOKEN);
+  assert.equal(t3.bonded, true); assert.equal(t3.activeLiquidity, "0"); assert.equal(t3.liquiditySource, "supply"); close(Number(t3.liquidity), Number(LIQ), 1e-9, "the supply's L");
+  close(t3.mcapUsd, bondMcap, 1e-3, "marked at the bond, not at the tick maximum"); assert.ok(t3.quoteReserve > 14_000 && t3.quoteReserve < 16_000, `reserves from the implied L: ${t3.quoteReserve}`);
+  const tick3 = events3.find(e => e.kind === "tick"); assert.ok(tick3 && !tick3.payload.unreadable && tick3.payload.mcapUsd === t3.mcapUsd, "and it ticks readable");
   // The hook's own latch is honoured even when the feed never saw the crossing.
   const { s: s2, rpc: rpc2 } = fakeChain({ launchedAtMs: now }); s2.bonded = true;
   const feed2 = new ArcFeed({ rpc: rpc2, pollMs: 1500, clock });
   s2.logs.push(...launchLogs(1001)); s2.head = 1001; await feed2.pollOnce();
   assert.equal(feed2.token(TOKEN).bonded, true); assert.equal(feed2.token(TOKEN).graduated, false);
+  assert.equal(feed2.token(TOKEN).progress, 0, "the latch is the hook's; the tick is where it is");
 });
 
 test("T22: a launch quoted in something other than USDC is read, then set aside: the router cannot pay for it", async () => {
@@ -241,6 +283,8 @@ test("T22: PartsDeployed arriving before TokenCreated is kept until the launch s
   assert.equal(feed.tokens.size, 0);
   const t = feed.apply({ kind: "launch", token: TOKEN, creator: DEV, name: "Arc Cat", symbol: "ACAT", poolId: POOL, imageURI: "", portal: PORTAL.toLowerCase(), block: 1, tx: "0x" });
   assert.equal(t.hook, HOOK); assert.equal(feed.byHook.get(HOOK), t); assert.equal(feed.byPool.get(POOL), t);
+  assert.equal(feed.status().noImage, 1, "a launch that came with no picture is counted, so an empty radar image can be traced to the Portal");
+  assert.equal(feed.status().lastImageURI, null);
   assert.equal(feed.apply({ kind: "launch", token: TOKEN, creator: DEV, poolId: POOL }), undefined, "a launch is applied once");
   // A swap on a pool the feed does not track is nothing.
   assert.equal(feed.apply({ kind: "swap", poolId: "0x" + "9".repeat(64), amount0: "1", amount1: "-1", sqrtPriceX96: "1", liquidity: "1", tick: 0 }), undefined);
@@ -261,6 +305,59 @@ test("T22: the position's reserves agree with the buy quote, for both currency o
     assert.deepEqual(positionReserves({ ...pool, sqrtPriceX96: sqrtRatioToX96(sqrtRatioAtTick(tokenIs0 ? tickStart - 5000 : tickStart + 5000)) }), open);
     assert.deepEqual(positionReserves({ ...pool, liquidity: 0 }), { quoteReserve: 0, tokenReserve: 0 });
   }
+});
+
+test("T22: the hook failing after a launch leaves the taxes unknown and the token unjudged; swaps the chain cannot attribute count, but never as the router buying", async () => {
+  let now = 1_800_000_000_000; const clock = () => now;
+  const { s, rpc } = fakeChain({ launchedAtMs: now });
+  const feed = new ArcFeed({ rpc, pollMs: 1500, clock });
+  const events = []; feed.on("event", e => { if (e.kind !== "feed_health") events.push(e); });
+  s.hookBroken = true;
+  s.logs.push(...launchLogs(1001)); s.head = 1001; await feed.pollOnce();
+  const t = feed.token(TOKEN);
+  assert.equal(t.feeBps, null); assert.equal(t.sellTaxBps, null); assert.equal(t._pending, true, "not hydrated: the taxes are not known, not zero");
+  assert.equal(feed.status().hydrateErrors, 1); assert.doesNotMatch(JSON.stringify(feed.status()), /SECRETKEY|alchemy/);
+  assert.equal(t.liquidity, LIQ.toString()); assert.equal(t.liquiditySource, "event", "CurveOpened's figure agrees with the supply's L, so it serves until the pool is read");
+  // A minute of buys, one from a transaction the fake cannot name and one whose lookup throws.
+  now += 60_000; s.head = 1100;
+  for (let i = 0; i < 3; i++) { const q = buyOn(s, 50); s.logs.push(swapLog(s, { usdc: 48.5 * 0.99, tokens: q.tokensOut, side: "buy", blk: 1050 + i, tx: "0xb" + i, wallet: addr(0x100 + i) })); }
+  const q1 = buyOn(s, 50); s.logs.push(swapLog(s, { usdc: 48.5 * 0.99, tokens: q1.tokensOut, side: "buy", blk: 1060, tx: "0xnobody" }));
+  const q2 = buyOn(s, 50); s.logs.push(swapLog(s, { usdc: 48.5 * 0.99, tokens: q2.tokensOut, side: "buy", blk: 1061, tx: "0xthrows" }));
+  const txFrom = rpc.txFrom; rpc.txFrom = async (hash) => { if (hash === "0xthrows") throw new Error(KEYED); return txFrom(hash); };
+  await feed.pollOnce();
+  assert.equal(t.buys, 5, "every swap is a trade"); assert.equal(t.uniqueBuyers.size, 3, "but only the three the chain named are buyers");
+  assert.ok(!t.uniqueBuyers.has(ROUTER), "the router is never a buyer");
+  assert.deepEqual(t.trades.slice(-2).map(x => [x.wallet, x.attributed]), [[ROUTER, false], [ROUTER, false]], "named on the trade for the record, marked unattributed");
+  assert.equal(feed.status().unattributedSwaps, 2); assert.equal(feed.status().attributionErrors, 1);
+  assert.equal(feed._txFrom.has("0xnobody"), false, "a lookup that answered nothing is asked again, not cached");
+  assert.equal(events.filter(e => e.kind === "candidate").length, 0, "with the hook unread there is no price (the reads fail together) and nothing to judge");
+  assert.equal(feed.status().hydrateErrors, 2, "the hook is asked again while the token is pending");
+  // The hook answers: taxes known, priced, judged.
+  s.hookBroken = false; now += 2000; s.head = 1101; await feed.pollOnce();
+  assert.equal(t.feeBps, 300); assert.equal(t.sellTaxBps, 500); assert.equal(t._pending, false); assert.equal(t.liquiditySource, "pool");
+  const c = events.find(e => e.kind === "candidate");
+  assert.ok(c, "judged once the terms are known"); assert.equal(c.payload.curve.feeBps, 300); assert.equal(c.payload.token.uniqueBuyers.size, 3); assert.equal(c.payload.token.buys, 5);
+  // A hook that names another token is not this token's hook: its terms are refused.
+  const { s: s2, rpc: rpc2 } = fakeChain({ launchedAtMs: now }); const feed2 = new ArcFeed({ rpc: rpc2, pollMs: 1500, clock });
+  const hookInfo = rpc2.hookInfo; rpc2.hookInfo = async (h) => ({ ...(await hookInfo(h)), token: addr(0x12) });
+  s2.logs.push(...launchLogs(1001)); s2.head = 1001; await feed2.pollOnce();
+  assert.equal(feed2.token(TOKEN).feeBps, null); assert.equal(feed2.token(TOKEN)._pending, true); assert.match(feed2.status().lastHydrateError, /answers for/);
+});
+
+test("T22: a CurveOpened figure that is not the position's L (a Portal logging the supply it passed) is set aside for the L the supply implies", () => {
+  const feed = new ArcFeed({ rpc: { blockNumber: async () => 1, logs: async () => [] }, clock: () => 1_800_000_000_000 });
+  const t = feed.apply({ kind: "launch", token: TOKEN, creator: DEV, name: "Arc Cat", symbol: "ACAT", poolId: POOL, imageURI: "", portal: PORTAL.toLowerCase(), block: 1, tx: "0x" });
+  feed.apply({ kind: "parts", token: TOKEN, locker: LOCKER, hook: HOOK, splitter: SPLITTER });
+  feed.apply({ kind: "opened", token: TOKEN, poolId: POOL, locker: LOCKER, positionId: "1", liquidity: (10n ** 27n).toString(), tickLower: TICK_START, tickUpper: TICK_BOND });
+  assert.equal(t.eventLiquidity, (10n ** 27n).toString()); assert.equal(t.liquiditySource, "supply"); close(Number(t.liquidity), Number(LIQ), 1e-9, "the whole supply between the ticks");
+  // A swap outside the range (liquidity 0, price past the bond) neither overwrites it nor zeroes the reserves.
+  feed.apply({ kind: "swap", poolId: POOL, sender: ROUTER, amount0: (10n ** 24n).toString(), amount1: "-1000000000", sqrtPriceX96: (MAX_SQRT_PRICE - 1n).toString(), liquidity: "0", tick: MAX_TICK - 1, tx: "0x1" });
+  assert.equal(t.activeLiquidity, "0"); close(Number(t.liquidity), Number(LIQ), 1e-9, "kept"); assert.equal(t.bonded, true);
+  assert.ok(t.quoteReserve > 14_000 && t.quoteReserve < 16_000, `the range's USDC: ${t.quoteReserve}`); close(t.mcapUsd, 45_000, 0.02, "held at the bond");
+  // A swap back inside the range with a bigger active liquidity (a third-party LP after bonding) is what a sell would meet, so it is taken.
+  const inside = sqrtRatioToX96(sqrtRatioAtTick(TICK_START + 11000));
+  feed.apply({ kind: "swap", poolId: POOL, sender: ROUTER, amount0: (-(10n ** 24n)).toString(), amount1: "1000000000", sqrtPriceX96: inside.toString(), liquidity: (LIQ * 2n).toString(), tick: TICK_START + 11000, tx: "0x2" });
+  assert.equal(t.liquidity, (LIQ * 2n).toString()); assert.equal(t.liquiditySource, "pool"); assert.equal(t._priceClamped, false);
 });
 
 test("T22: a Portal's launches() record decodes by word position, whatever its version's length", () => {

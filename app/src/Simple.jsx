@@ -469,6 +469,8 @@ export default function Simple() {
   // assumed -- a returning user who paper-traded last time is shown that they are still in paper
   // rather than quietly going live, and vice versa.
   const [paper, sPaper] = useState(() => { try { return localStorage.getItem("bondli_paper") === "1"; } catch { return false; } });
+  // Public calls: off unless they say so. A call links the buy transaction, and the transaction names this bot's wallet.
+  const [calls, sCalls] = useState(() => { try { return localStorage.getItem("bondli_callouts") === "1"; } catch { return false; } });
   const [copied, sCopied] = useState(false);
   const narRef = useRef(null);
   const running = !!st?.running;
@@ -510,12 +512,13 @@ export default function Simple() {
       // Only the chains that are on count toward the bankroll: someone trading Robinhood Chain alone
       // must not be sized against SOL they never funded, or against SOL they are keeping out of it.
       try { localStorage.setItem("bondli_paper", paper ? "1" : "0"); } catch {}
+      try { localStorage.setItem("bondli_callouts", calls ? "1" : "0"); } catch {}
       const usePump = chainsOn.pumpfun, usePons = chainsOn.pons, useArc = chainsOn.arc;
       // Paper has no wallet to size against, so it gets a stated bankroll: enough to run the same
       // four positions at the chosen stake, which is what makes the result comparable to going live.
       const bank = paper ? Math.max(100, size * 20)
         : (usePump ? (tw?.solBalance || 0) * 200 : 0) + (usePons ? (tw?.ethBalance || 0) * 3000 : 0) + (useArc ? (tw?.usdcBalance || 0) : 0);
-      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round(bank)), pumpfun: usePump, pons: usePons, arc: useArc, paper });
+      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round(bank)), pumpfun: usePump, pons: usePons, arc: useArc, paper, callouts: calls });
       if (!r.ok) say(r.error || "Could not start", "error"); else sSt(r);
     } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
   };
@@ -667,6 +670,15 @@ export default function Simple() {
           <span style={{ flex: 1, minWidth: 0 }}>
             <span style={{ fontWeight: 800, fontSize: 14, color: paper ? T.yl : T.tx }}>Paper trading{paper ? " · on" : ""}</span>
             <span style={{ display: "block", ...muted, fontSize: 12, marginTop: 2 }}>Same feed, same rules, pretend money. Nothing is bought or sold and no fee is charged, so you can watch it work before funding anything.</span>
+          </span>
+        </div>
+        <div onClick={() => sCalls(v => !v)} style={{ marginTop: 8, padding: "10px 12px", borderRadius: 10, border: `1px solid ${calls ? T.gn : T.bd}`, background: calls ? T.gn + "14" : "transparent", display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+          <span style={{ width: 34, height: 20, borderRadius: 10, background: calls ? T.gn : T.bd, flexShrink: 0, position: "relative", marginTop: 1 }}>
+            <span style={{ position: "absolute", top: 2, left: calls ? 16 : 2, width: 16, height: 16, borderRadius: "50%", background: calls ? "#000" : T.ft, transition: "left .15s" }} />
+          </span>
+          <span style={{ minWidth: 0 }}>
+            <span style={{ fontWeight: 800, fontSize: 14, color: calls ? T.gn : T.tx }}>Public calls{calls ? " · on" : ""}</span>
+            <div style={{ ...muted, marginTop: 2 }}>Post my live buys to the Calls tab and the channels, with the transaction. The transaction shows this bot's wallet, so anyone can watch it.</div>
           </span>
         </div>
         {!funded && <div style={{ ...muted, marginTop: 8 }}>Fund any chain to begin: {MIN_BANKROLL_SOL} SOL here, {MIN_BANKROLL_ETH} ETH on Robinhood Chain, or {MIN_BANKROLL_USDC} USDC on Arc (both at the 0x address below). Any one on its own is enough. Every trade pays a fixed cost before it earns anything, about {dragPct(SIZES[0], st?.status?.solPrice || 0).toFixed(0)}% at the smallest stake, so a thin bankroll forces small bets and small bets lose to the costs. For Solana, {GOOD_BANKROLL_SOL} SOL is what it actually wants.{(tw?.solBalance || 0) > 0 ? ` You have ${(tw.solBalance).toFixed(3)} SOL` : ""}{(tw?.ethBalance || 0) > 0 ? `${(tw?.solBalance || 0) > 0 ? " and" : " You have"} ${(tw.ethBalance).toFixed(4)} ETH` : ""}{((tw?.solBalance || 0) > 0 || (tw?.ethBalance || 0) > 0) ? "." : ""}</div>}

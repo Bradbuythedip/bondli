@@ -54,7 +54,8 @@ test("T21: a live tier-2 fill is anchored in the ledger first, then posted to bo
   assert.equal(typeof r.id, "string");
 
   // The anchor: the same hash any reader can recompute from the public fields, written before any fetch.
-  const expected = createHash("sha256").update(`pumpfun|MintA|5igAbcSig|${T0}`).digest("hex");
+  // The recipe covers everything the call declares: venue|instrument|tx|ts|mcapUsd|tier|plan.
+  const expected = createHash("sha256").update(`pumpfun|MintA|5igAbcSig|${T0}|18000|2|STRONG, max hold 15m`).digest("hex");
   assert.equal(r.hash, expected);
   const firstLedger = h.log.findIndex(e => e.ledger?.kind === "callout" && e.ledger.phase === "call");
   const firstFetch = h.log.findIndex(e => e.fetch);
@@ -131,7 +132,7 @@ test("T21: the outcome is folded into the record and posted as a reply, losses i
   assert.equal(typeof tgMessageId, "number");
   h.tick(3 * 60_000);
   const before = h.requests.length;
-  const out = await h.callouts.onOutcome({ kind: "outcome", venue: "pumpfun", instrument: "MintO", positionId: "x", pnl_usd: 10.5, pnl_pct: 42, held_ms: 3 * 60_000, reason: "TARGET_2", paper: false });
+  const out = await h.callouts.onOutcome({ kind: "outcome", venue: "pumpfun", instrument: "MintO", positionId: `pumpfun:MintO:${T0}`, pnl_usd: 10.5, pnl_pct: 42, held_ms: 3 * 60_000, reason: "TARGET_2", paper: false });
   assert.equal(out.posted, true);
   assert.equal(out.id, call.id);
   assert.equal(h.requests.length, before + 2);
@@ -244,6 +245,41 @@ test("T21: result lines read the way a person says them", () => {
   assert.equal(resultLine({ pnl_pct: -8, held_ms: 45_000, reason: "STOP_LOSS" }), "-8% stopped after 45s");
   assert.equal(resultLine({ pnl_pct: -3.5, held_ms: 4 * 60_000, reason: "STALL" }), "-3.5% cut flat after 4m");
   assert.equal(resultLine({ pnl_pct: -12, held_ms: 15 * 60_000, reason: "MAX_HOLD" }), "-12% timed out after 15m");
-  assert.equal(resultLine({ pnl_pct: 0, held_ms: 500, reason: "DOA" }), "+0% in 1s");
+  assert.equal(resultLine({ pnl_pct: 0, held_ms: 500, reason: "DOA" }), "0% cut flat after 1s", "flat is not a win");
   assert.equal(heldLabel(75 * 60_000), "1h15m");
+});
+
+test("T21: a call is bound to the fill that made it: a paper close, another engine's close and a second close never resolve it; a fill with no tx is not called", async () => {
+  const h = harness();
+  const call = await h.callouts.onFill(position("MintB"), { venue: "pumpfun", tx: "sigB", mcapUsd: 18_000, tier: 2, paper: false });
+  assert.equal(call.posted, true);
+  const before = h.requests.length, results = () => h.ledgerRecords.filter(r => r.phase === "result").length;
+  // A paper engine on the shared hub closes the same token at -30%: not a result, not posted, not written.
+  let r = await h.callouts.onOutcome({ instrument: "MintB", positionId: `pumpfun:MintB:${T0}`, pnl_pct: -30, held_ms: 59_000, reason: "STOP_LOSS", paper: true });
+  assert.equal(r.posted, false); assert.equal(r.reason, "paper");
+  // Another user's live position on the same token closes first: it is not the called fill.
+  r = await h.callouts.onOutcome({ instrument: "MintB", positionId: `pumpfun:MintB:${T0 + 7}`, pnl_pct: -12, held_ms: 40_000, reason: "CRASH", paper: false });
+  assert.equal(r.posted, false); assert.equal(r.reason, "not the called fill");
+  assert.equal(h.requests.length, before); assert.equal(results(), 0); assert.equal(h.callouts.feed()[0].result, null);
+  // The called fill's own close is the result, and the ledger holds it before any channel hears of it.
+  r = await h.callouts.onOutcome({ instrument: "MintB", positionId: `pumpfun:MintB:${T0}`, pnl_pct: 50, held_ms: 120_000, reason: "TARGET_1", paper: false });
+  assert.equal(r.posted, true); assert.equal(r.id, call.id); assert.equal(h.callouts.feed()[0].result.pnl_pct, 50);
+  const resultAt = h.log.findIndex(e => e.ledger?.phase === "result"), postAt = h.log.findIndex((e, i) => e.fetch && i > h.log.findIndex(x => x.ledger?.phase === "delivery"));
+  assert.ok(resultAt >= 0 && resultAt < postAt, "result anchored before it is posted");
+  // A second close on a resolved call changes nothing and posts nothing.
+  const n = h.requests.length;
+  r = await h.callouts.onOutcome({ instrument: "MintB", positionId: `pumpfun:MintB:${T0}`, pnl_pct: 5, held_ms: 1, reason: "TARGET_2", paper: false });
+  assert.equal(r.posted, false); assert.equal(h.requests.length, n); assert.equal(h.callouts.feed()[0].result.pnl_pct, 50);
+  // A release is a result too, so the call does not stay open forever.
+  const c2 = await h.callouts.onFill(position("MintC"), { venue: "pumpfun", tx: "sigC", mcapUsd: 9_000, tier: 2, paper: false });
+  r = await h.callouts.onOutcome({ instrument: "MintC", positionId: `pumpfun:MintC:${T0}`, pnl: null, reason: "RELEASED", paper: false });
+  assert.equal(r.posted, true); assert.equal(r.id, c2.id); assert.equal(h.callouts.feed()[0].result.reason, "RELEASED");
+  // No transaction, no call: the whole point is something anyone can look up.
+  const none = await h.callouts.onFill(position("MintD"), { venue: "pumpfun", tx: null, mcapUsd: 9_000, tier: 2, paper: false });
+  assert.equal(none.posted, false); assert.equal(none.reason, "no tx"); assert.equal(h.callouts.status().skipped.noTx, 1);
+  assert.ok(!h.ledgerRecords.some(x => x.instrument === "MintD"));
+  // A token named to page a channel cannot: Slack sees escaped brackets, Discord gets no mentions parsed.
+  await h.callouts.onFill(position("MintE", { reference: { name: "<!channel> @everyone", ticker: "PING", mcapUsd: 9_000 } }), { venue: "pumpfun", tx: "sigE", mcapUsd: 9_000, tier: 2, paper: false });
+  const hook = h.requests.filter(q => q.url === HOOK).at(-1).body;
+  assert.doesNotMatch(hook.text, /<!channel>/); assert.match(hook.text, /&lt;!channel&gt;/); assert.deepEqual(hook.allowed_mentions, { parse: [] });
 });

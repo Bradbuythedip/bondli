@@ -9,6 +9,13 @@
 // There is no graduation here. Argus never migrates a pool: the same position trades before and
 // after the bond tick, so `graduated` is always false and the engine's pre-graduation exit must
 // not fire. What the bond tick does flip is `bonded`, which is exposed as its own flag.
+// Two liquidities, never confused: the PoolManager's Swap log and StateView.getLiquidity report the
+// pool's ACTIVE liquidity at the current tick, which is the launch position's L only while the price
+// sits inside the range. A buy that runs to the bond crosses the position's edge and the log says 0
+// (and a price far past the bond, since the router's limit is the tick maximum); a third-party LP
+// after bonding makes it larger. What the engine and both routers need is the POSITION's L, which
+// the Locker holds forever, so `liquidity` on a token is always that, and the raw reading is kept
+// beside it as `activeLiquidity` for the record.
 import { JsonRpcProvider, Contract, zeroPadValue } from "ethers";
 import { Feed, errorText } from "../../core/feed.mjs";
 // Score, features and dynamics read only the per-token state every EVM launchpad feed keeps
@@ -17,7 +24,7 @@ import { Dynamics, quickFeatures, scoreToken } from "../pons/feed.mjs";
 import {
   PORTALS, POOL_MANAGER, STATE_VIEW, USDC_ERC20, DEFAULT_RPC_URL, EXPLORER, SNIPE_TAX_WINDOW_MS, QUOTE_IS_NATIVE, QUOTE_DECIMALS, TOKEN_DECIMALS, POOL_FEE_PIPS,
   HOOK_ABI, STATE_VIEW_ABI, ERC20_ABI, TOPICS, portalIface,
-  decodeLog, classifySwap, priceFromSqrtX96, mcapQuote, progress, poolIdFor, tokenIsToken0, sqrtRatioAtTick, sqrtRatioFromX96, toTokens, CHAIN_ID } from "./chain.mjs";
+  decodeLog, classifySwap, priceFromSqrtX96, mcapQuote, progress, poolIdFor, tokenIsToken0, sqrtRatioAtTick, sqrtRatioFromX96, sqrtRatioToX96, liquidityForSupply, toTokens, CHAIN_ID } from "./chain.mjs";
 
 const zeroPad = (a) => zeroPadValue(String(a).toLowerCase(), 32);
 const lower = (a) => String(a).toLowerCase();
@@ -82,7 +89,11 @@ export function ethersRpc(rpcUrl = process.env.ARC_RPC_URL || DEFAULT_RPC_URL) {
     async hookInfo(hook) {
       const h = new Contract(hook, HOOK_ABI, provider);
       const [buyTaxBps, sellTaxBps, bonded, launchedAt, tickStart, tickBond, token, quoteAsset] = await Promise.all([
-        h.buyTaxBps(), h.sellTaxBps(), h.bonded().catch(() => false), h.launchedAt().catch(() => 0n), h.tickStart(), h.tickBond(), h.token(), h.quoteAsset().catch(() => USDC_ERC20),
+        h.buyTaxBps(), h.sellTaxBps(), h.bonded().catch(() => false), h.launchedAt().catch(() => 0n), h.tickStart(), h.tickBond(), h.token(),
+        // Hooks from before Portal #6 have no quoteAsset() and are USDC by construction: that revert
+        // is an answer. A timeout or a rate limit on the same call is not, and reading it as "USDC"
+        // would relabel an ARGUS-quoted launch as one the router can pay for, so it fails the read.
+        h.quoteAsset().catch((err) => { if (err?.code === "CALL_EXCEPTION") return USDC_ERC20; throw err; }),
       ]);
       const quote = lower(quoteAsset || USDC_ERC20);
       // Only the USDC view has a known face; another quote asset says its own decimals.
@@ -245,7 +256,7 @@ export class ArcFeed extends Feed {
   }
 
   /** Apply one decoded log. Exposed for tests and replays. A swap record carries `wallet` when
-   *  the poll attributed it; without one the swap counts but names the router. */
+   *  the poll attributed it; without one the swap counts as a trade with no buyer behind it. */
   apply(rec, now = this.clock()) {
     if (!rec) return;
     if (rec.kind === "launch") {
@@ -253,15 +264,20 @@ export class ArcFeed extends Feed {
       const quoteAsset = lower(rec.quoteAsset || USDC_ERC20);
       const t = { ca: rec.token, poolId: rec.poolId ? lower(rec.poolId) : null, portal: rec.portal || null, hook: null, locker: null, splitter: null,
         name: rec.name || "", ticker: rec.symbol || "", image: rec.imageURI || "", website: rec.website || "", twitter: rec.twitter || "", telegram: rec.telegram || "",
+        // Against USDC until the hook says otherwise: a launch quoted in another ERC-20 has its swaps
+        // in the launch block read with this order for one poll, then is set aside once the hook is read.
         devWallet: rec.creator, createdAt: now, block: rec.block, quoteAsset, quoteDecimals: QUOTE_DECIMALS, tokenIs0: tokenIsToken0(rec.token, quoteAsset),
         buys: 0, sells: 0, uniqueBuyers: new Set(), trades: [], spark: [], volumeQuote: 0, volumeUsd: 0, devInitialQuote: 0,
         // null, not 0: the taxes are placeholders until _hydrate reads the hook, and a tax of "not
         // known yet" priced as "none" is how the EV gate once approved tokens that charged 10% a
         // side. Everything downstream must be able to tell ignorance from a reading.
         feeBps: null, sellTaxBps: null, creatorTaxBps: 0, poolFeeBps: POOL_FEE_PIPS / 100,
-        sqrtPriceX96: null, liquidity: null, tick: null, tickStart: null, tickBond: null, quoteReserve: 0, tokenReserve: 0,
+        sqrtPriceX96: null, liquidity: null, activeLiquidity: null, liquiditySource: null, tick: null, tickStart: null, tickBond: null, quoteReserve: 0, tokenReserve: 0,
         price: 0, mcapQuote: 0, mcapUsd: 0, progress: 0, bonded: false, graduated: false, _curvePct: 0, _source: "arc", _apeScore: 0, _scoredAt: 0, _pending: true };
       this.tokens.set(t.ca, t);
+      // A launch seen on chain with no picture is counted, and the last picture seen is kept, so the
+      // health page can say whether the radar's empty images are the Portal's doing or this feed's.
+      if (rec.block != null) { if (t.image) this.lastImageURI = t.image; else this.noImage = (this.noImage || 0) + 1; }
       if (t.poolId) this.byPool.set(t.poolId, t);
       const parts = this._parts.get(t.ca); if (parts) { this._parts.delete(t.ca); this.apply(parts, now); }
       // Room is made from tokens nobody holds. A held token is never evicted: an adopted position is
@@ -279,40 +295,91 @@ export class ArcFeed extends Feed {
     }
     if (rec.kind === "opened") {
       const t = this.tokens.get(rec.token); if (!t) return;
-      // The log's `liquidity` is the supply the Portal passed as liquidityDelta, not the position's L,
-      // so it is kept apart and the pool's own liquidity is read from StateView like everything else.
+      // The log's `liquidity` may be the position's L or the supply the Portal passed as liquidityDelta,
+      // depending on the Portal version, so it is kept apart and only serves once it has been checked.
       t.eventLiquidity = rec.liquidity; t.positionId = rec.positionId;
       // The log already carries the range; the hook read confirms it later, and until then these serve.
       if (t.tickStart == null && Number.isFinite(Number(rec.tickLower))) { t.tickStart = Number(rec.tickLower); t.tickBond = Number(rec.tickUpper); }
       if (rec.poolId && !t.poolId) { t.poolId = lower(rec.poolId); this.byPool.set(t.poolId, t); }
+      this._settleLiquidity(t);
       return t;
     }
     if (rec.kind === "swap") {
       const t = this.byPool.get(lower(rec.poolId)); if (!t) return;
       const { side, tokens, quote } = classifySwap(rec, { tokenIs0: t.tokenIs0, quoteDecimals: t.quoteDecimals });
       if (!side) return; // moved no tokens: not a trade of this token
-      const buy = side === "buy", wallet = rec.wallet || rec.sender;
-      if (buy) { t.buys++; t.uniqueBuyers.add(wallet); if (wallet === t.devWallet && t.buys === 1) t.devInitialQuote = quote; } else t.sells++;
+      // Without the transaction's sender the swap still counts as a trade, but the Swap log's own
+      // `sender` is the router, and a router counted as a buyer is one whale across every swap it
+      // relays: it is named on the trade for the record and never among the buyers.
+      const buy = side === "buy", wallet = rec.wallet || null, attributed = !!wallet;
+      if (!attributed) this.unattributedSwaps = (this.unattributedSwaps || 0) + 1;
+      if (buy) { t.buys++; if (attributed) { t.uniqueBuyers.add(wallet); if (wallet === t.devWallet && t.buys === 1) t.devInitialQuote = quote; } } else t.sells++;
       t.volumeQuote += quote; t.volumeUsd = t.volumeQuote * this.solPrice;
-      t.trades.push({ side, quote, sol: quote, tokens, wallet, time: now, tx: rec.tx });
+      t.trades.push({ side, quote, sol: quote, tokens, wallet: wallet || rec.sender, attributed, time: now, tx: rec.tx });
       if (t.trades.length > 100) t.trades = t.trades.slice(-100);
-      // The swap carries the pool's state after it: no read is fresher than this.
-      t.sqrtPriceX96 = rec.sqrtPriceX96; t.liquidity = rec.liquidity; t.tick = rec.tick;
+      // The swap carries the pool's state after it: no read is fresher than this. Its liquidity is
+      // the pool's active liquidity, a reading about the position only while the price is inside it.
+      t.sqrtPriceX96 = rec.sqrtPriceX96; t.tick = rec.tick;
+      this._noteLiquidity(t, rec.liquidity);
       this._remark(t);
       // A listener's failure is its own problem: the feed must not stop applying trades over it.
-      if (this.onTrade) { try { this.onTrade(t, { side, quote, wallet, curvePct: t.progress * 100, ts: now }); } catch {} }
+      if (this.onTrade) { try { this.onTrade(t, { side, quote, wallet: wallet || rec.sender, attributed, curvePct: t.progress * 100, ts: now }); } catch {} }
       return t;
     }
   }
 
-  _forget(t) { this.tokens.delete(t.ca); if (t.poolId) this.byPool.delete(t.poolId); if (t.hook) this.byHook.delete(t.hook); if (this.watched.has(t.ca)) this._adopt.add(t.ca); }
+  _forget(t) {
+    this.tokens.delete(t.ca); if (t.poolId) this.byPool.delete(t.poolId); if (t.hook) this.byHook.delete(t.hook);
+    this._lastEmitted.delete(t.ca); this.dyn.h.delete(t.ca); // or the maps outlive the tokens they are about
+    if (this.watched.has(t.ca)) this._adopt.add(t.ca);
+  }
+
+  /** The tick sits inside the launch position (both edges included: the price can rest on either). */
+  _inRange(t) {
+    if (t.tick == null || t.tickStart == null || t.tickBond == null) return true; // nothing says otherwise yet
+    return Math.min(t.tickStart, t.tickBond) <= t.tick && t.tick <= Math.max(t.tickStart, t.tickBond);
+  }
+  /** One reading of the pool's active liquidity, from a Swap log or StateView. It becomes the
+   *  position's L only when the price is inside the range, where the position is what is active;
+   *  a zero (the price ran past the bond) or a number read outside the range says nothing about the
+   *  position and must not overwrite what is known, or every bonded token would carry L = 0 into
+   *  the reserves, the fill model and the sell quote. */
+  _noteLiquidity(t, reading) {
+    if (reading == null) return;
+    if (!liqKnown(reading)) { t.activeLiquidity = "0"; return; }
+    t.activeLiquidity = String(reading);
+    if (this._inRange(t)) { t.liquidity = String(reading); t.liquiditySource = "pool"; }
+  }
+  /** Until the pool has been read inside the range, the position's L comes from what the launch
+   *  itself says: CurveOpened's figure when it is L (some Portal versions log the supply they passed
+   *  as liquidityDelta instead, off by 1e8 and more), else the L the whole supply in this range
+   *  implies. Either is replaced by the pool's own number the first time it is read in range. */
+  _settleLiquidity(t) {
+    if (liqKnown(t.liquidity) || t.tickStart == null || t.tickBond == null) return;
+    const implied = liquidityForSupply({ tickStart: t.tickStart, tickBond: t.tickBond, tokenIs0: t.tokenIs0 });
+    const ev = liqKnown(t.eventLiquidity) ? Number(t.eventLiquidity) : 0;
+    if (ev > 0 && implied > 0 && Math.abs(ev / implied - 1) < 0.05) { t.liquidity = String(t.eventLiquidity); t.liquiditySource = "event"; }
+    else if (implied > 0 && Number.isFinite(implied)) { t.liquidity = BigInt(Math.round(implied)).toString(); t.liquiditySource = "supply"; }
+  }
 
   _remark(t) {
     if (t.sqrtPriceX96 != null) {
+      // A swap that empties the range leaves the pool's price wherever the router's limit was, far
+      // past the bond, with nothing to trade there. Beyond the position's edge there is no price,
+      // so the reading is held at the edge before anything is marked or scored off it. The tick is
+      // left as read: `progress` clamps it on its own and the bonded latch needs to see the crossing.
+      if (t.tickStart != null && t.tickBond != null) {
+        const a = sqrtRatioToX96(sqrtRatioAtTick(t.tickStart)), b = sqrtRatioToX96(sqrtRatioAtTick(t.tickBond));
+        const lo = a < b ? a : b, hi = a < b ? b : a;
+        let x = null; try { x = BigInt(t.sqrtPriceX96); } catch {}
+        if (x != null && (x < lo || x > hi)) { t.sqrtPriceX96 = (x < lo ? lo : hi).toString(); t._priceClamped = true; this.clampedReads = (this.clampedReads || 0) + 1; }
+        else t._priceClamped = false;
+      }
       t.price = priceFromSqrtX96(t.sqrtPriceX96, { tokenIs0: t.tokenIs0, quoteDecimals: t.quoteDecimals });
       t.mcapQuote = mcapQuote(t.price); t.mcapUsd = Math.round(t.mcapQuote * this.solPrice);
     }
     if (t.tickStart != null && t.tickBond != null) {
+      this._settleLiquidity(t);
       const r = positionReserves(t); t.quoteReserve = r.quoteReserve; t.tokenReserve = r.tokenReserve;
       if (t.tick != null) {
         t.progress = progress(t.tick, t.tickStart, t.tickBond);
@@ -332,10 +399,15 @@ export class ArcFeed extends Feed {
       const [hook, slot, liq, meta] = await Promise.all([
         t._hookRead ? null : this.rpc.hookInfo(t.hook),
         t.poolId ? this.rpc.slot0(t.poolId) : null,
-        t.poolId && !liqKnown(t.liquidity) ? this.rpc.liquidity(t.poolId) : null,
+        // Read until the pool has answered inside the range; out of range it answers 0 for the
+        // position that is still there, so there is nothing to learn from asking.
+        t.poolId && t.liquiditySource !== "pool" && this._inRange(t) ? this.rpc.liquidity(t.poolId) : null,
         t.name ? null : this.rpc.tokenMeta(t.ca),
       ]);
       if (hook) {
+        // An adopted token's hook comes off a Portal record decoded by position; a wrong word would
+        // hand this token another launch's taxes, ticks and age, so the hook has to name it back.
+        if (hook.token && hook.token !== t.ca) throw new Error(`hook ${t.hook.slice(0, 10)} answers for ${hook.token.slice(0, 10)}, not this token`);
         Object.assign(t, { feeBps: hook.buyTaxBps, buyTaxBps: hook.buyTaxBps, sellTaxBps: hook.sellTaxBps, tickStart: hook.tickStart, tickBond: hook.tickBond });
         if (hook.bonded) t.bonded = true;
         if (hook.quoteAsset) { t.quoteAsset = lower(hook.quoteAsset); t.quoteDecimals = hook.quoteDecimals ?? t.quoteDecimals; t.tokenIs0 = hook.tokenIs0 ?? tokenIsToken0(t.ca, t.quoteAsset); }
@@ -349,7 +421,7 @@ export class ArcFeed extends Feed {
       }
       if (slot) { t.sqrtPriceX96 = slot.sqrtPriceX96; t.tick = slot.tick; if (slot.lpFeePips) t.poolFeeBps = slot.lpFeePips / 100; }
       t._readFailedAt = null; // the pool answered: whatever is cached is current again
-      if (liq) t.liquidity = liq;
+      this._noteLiquidity(t, liq);
       if (meta) { t.name = meta.name || t.name; t.ticker = meta.symbol || t.ticker; }
       t._pending = false; t._hydratedAt = this.clock();
       this._remark(t);
@@ -368,7 +440,9 @@ export class ArcFeed extends Feed {
     const dynamics = this.dyn.record(t.ca, t._apeScore, now);
     t._lastQf = qf; t._lastDyn = dynamics;
     const { uniqueBuyers, trades, ...rest } = t;
-    const token = { ...rest, uniqueBuyers: { size: uniqueBuyers.size }, trades: trades.slice(-60), vSolInBondingCurve: t.quoteReserve, mcapSol: t.mcapQuote, _ageMs: now - t.createdAt };
+    // An adopted token whose hook never said when it launched has a placeholder createdAt, not an
+    // age; the router already declines to price a snipe window it cannot measure, and the payload says the same.
+    const token = { ...rest, uniqueBuyers: { size: uniqueBuyers.size }, trades: trades.slice(-60), vSolInBondingCurve: t.quoteReserve, mcapSol: t.mcapQuote, _ageMs: t._ageUnknown ? null : now - t.createdAt };
     return {
       token, qf, dynamics, scores: { apeScore: t._apeScore, scoreTimestamp: now },
       solPrice: this.solPrice, solPriceAt: this.solPriceAt, quote: "USDC",
@@ -376,7 +450,7 @@ export class ArcFeed extends Feed {
       // A round trip here costs buyTax + sellTax + the pool's 1% on each leg; there is no separate
       // creator tax (the creator's share comes out of the leg tax through the splitter).
       curve: { address: t.poolId, hook: t.hook, quoteReserve: t.quoteReserve, tokenReserve: t.tokenReserve, feeBps: t.feeBps, sellTaxBps: t.sellTaxBps, creatorTaxBps: 0, poolFeeBps: t.poolFeeBps, native: QUOTE_IS_NATIVE,
-        progress: t.progress, bonded: t.bonded, tickStart: t.tickStart, tickBond: t.tickBond, sqrtPriceX96: t.sqrtPriceX96, liquidity: t.liquidity, tokenIs0: t.tokenIs0, quoteAsset: t.quoteAsset, quoteDecimals: t.quoteDecimals },
+        progress: t.progress, bonded: t.bonded, tickStart: t.tickStart, tickBond: t.tickBond, sqrtPriceX96: t.sqrtPriceX96, liquidity: t.liquidity, activeLiquidity: t.activeLiquidity, liquiditySource: t.liquiditySource, tokenIs0: t.tokenIs0, quoteAsset: t.quoteAsset, quoteDecimals: t.quoteDecimals },
     };
   }
 
@@ -454,7 +528,7 @@ export class ArcFeed extends Feed {
   // price either: a held one still ticks, as unreadable.
   _emitHeldTick(t, now, readable = this._readable(t)) {
     const payload = readable ? { ...this.payloadFor(t, now), source: "arc" }
-      : { unreadable: true, source: "arc", solPrice: this.solPrice, solPriceAt: this.solPriceAt, quote: "USDC", token: { ca: t.ca, curve: t.poolId, graduated: false, bonded: !!t.bonded, _ageMs: now - t.createdAt } };
+      : { unreadable: true, source: "arc", solPrice: this.solPrice, solPriceAt: this.solPriceAt, quote: "USDC", token: { ca: t.ca, curve: t.poolId, graduated: false, bonded: !!t.bonded, _ageMs: t._ageUnknown ? null : now - t.createdAt } };
     this.emitEvent({ kind: "tick", id: t.ca, payload, t_venue: now });
     this.ticks++;
     if (!readable) this.unreadableTicks = (this.unreadableTicks || 0) + 1;
@@ -488,5 +562,5 @@ export class ArcFeed extends Feed {
   }
   async stop() { this.running = false; for (const t of this._timers) clearTimeout(t); this._timers = []; this.markHealth(false, "stopped"); }
   /** The base status plus what a poll is doing: how many, how many failed, what the last failure said. */
-  status() { return { ...super.status(), polls: this.polls, candidates: this.candidates, ticks: this.ticks, unreadableTicks: this.unreadableTicks || 0, watched: this.watched.size, pendingAdopt: this._adopt?.size || 0, adoptFailures: this.adoptFailures || 0, attributionErrors: this.attributionErrors || 0, block: this._block, errors: this.errors, lastError: this.lastError, hydrateErrors: this.hydrateErrors, lastHydrateError: this.lastHydrateError, skippedQuote: this.skippedQuote || 0 }; }
+  status() { return { ...super.status(), polls: this.polls, candidates: this.candidates, ticks: this.ticks, unreadableTicks: this.unreadableTicks || 0, watched: this.watched.size, pendingAdopt: this._adopt?.size || 0, adoptFailures: this.adoptFailures || 0, attributionErrors: this.attributionErrors || 0, block: this._block, errors: this.errors, lastError: this.lastError, hydrateErrors: this.hydrateErrors, lastHydrateError: this.lastHydrateError, skippedQuote: this.skippedQuote || 0, unattributedSwaps: this.unattributedSwaps || 0, clampedReads: this.clampedReads || 0, noImage: this.noImage || 0, lastImageURI: this.lastImageURI || null }; }
 }

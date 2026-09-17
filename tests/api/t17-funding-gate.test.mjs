@@ -49,7 +49,7 @@ test("T17: paper trading needs no funding, and live still does", () => {
   // toggle during a live run must not relabel money that is real.
   assert.match(SRC, /const onPaper = running \? !!st\?\.settings\?\.paper : paper;/);
   // And the flag actually reaches the server, or the toggle is decoration.
-  assert.match(SRC, /pumpfun: usePump, pons: usePons, arc: useArc, paper \}\)/);
+  assert.match(SRC, /pumpfun: usePump, pons: usePons, arc: useArc, paper, callouts: calls \}\)/);
 
   const MIN_SOL = Number(/const MIN_BANKROLL_SOL = ([\d.]+)/.exec(SRC)[1]);
   const MIN_ETH = Number(/const MIN_BANKROLL_ETH = ([\d.]+)/.exec(SRC)[1]);
