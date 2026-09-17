@@ -168,6 +168,9 @@ const order = (c, over = {}) => ({ id: "arc:o1", decisionId: "d1", instrument: T
 const position = (over = {}) => ({ id: "arc:x", instrument: TOKEN, reference: null, ...over });
 const router = async (c, over = {}) => { const r = new ArcLiveRouter({ secret: KEY, provider: c, confirmTimeoutMs: 3000, clock, ...over }); await r.init(); return r; };
 
+// The default-RPC assertion below reads the environment; the operator's own endpoint must not leak into it.
+delete process.env.ARC_RPC_URL;
+
 test("T23: the paper model prices a buy and a sell through the position with the hook's taxes, and a buy inside the snipe window shows the tax it would pay", () => {
   const c = chain();
   const ref = reference(c);
@@ -310,7 +313,8 @@ test("T23: a wallet that cannot cover the stake and its gas is refused; a slippa
   const c = chain({ ...approvedAll(), native: 20n * 10n ** 18n });
   const r = await router(c);
   const res = await r.submit(order(c));
-  assert.equal(res.failure.code, "INSUFFICIENT_USDC"); assert.match(res.failure.reason, /20\.0000 USDC/); assert.equal(c.sent.length, 0);
+  // The engine's generic name, so its fail cooldown applies; the reason still says USDC.
+  assert.equal(res.failure.code, "INSUFFICIENT_SOL"); assert.match(res.failure.reason, /20\.0000 USDC/); assert.equal(c.sent.length, 0);
   const capped = await r.submit(order(c, { stake_usd: 5, max_slippage_bps: 1 }));
   assert.equal(capped.failure.code, "SLIPPAGE_CAP");
   const o = order(c); o.reference.curve.quoteAsset = addr(0x99);

@@ -94,3 +94,13 @@ test("T25: the public health route never carries a feed's error text, because an
   assert.match(body, /\.\.\.pub\(hub\.ponsFeed\.status\?\.\(\)\)/);
   assert.match(body, /\.\.\.pub\(hub\.arcFeed\.status\?\.\(\)\)/);
 });
+
+test("T25: the engine's fail cooldown and terminal codes know the Arc router's answers", async () => {
+  const { TERMINAL_EXIT_CODES } = await import("../../src/velocity/core/engine.mjs");
+  assert.ok(TERMINAL_EXIT_CODES.has("UNSUPPORTED"), "a sell the venue cannot make is released, not retried five times");
+  const ENGINE = fs.readFileSync(path.resolve("src/velocity/venues/arc/router.mjs"), "utf8");
+  assert.match(ENGINE, /failure\(order, "INSUFFICIENT_SOL", `wallet has \$\{bal\.toFixed\(4\)\} USDC/, "the engine's name for an underfunded quote wallet, so the cooldown applies");
+  assert.doesNotMatch(ENGINE, /INSUFFICIENT_USDC/);
+  const CORE = fs.readFileSync(path.resolve("src/velocity/core/engine.mjs"), "utf8");
+  assert.match(CORE, /\["SEND_FAILED", "UNCONFIRMED", "INSUFFICIENT_SOL", "ROUTER_THREW", "STALE_SOL_PRICE", "REVERT"\]\.includes\(r\.failure\.code\)/);
+});

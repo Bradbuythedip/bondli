@@ -17,7 +17,7 @@ import {
   EXPLORER, CHAIN_ID, DEFAULT_RPC_URLS, PORTALS, POOL_MANAGER, STATE_VIEW, UNIVERSAL_ROUTER, PERMIT2, USDC_ERC20,
   QUOTE_IS_NATIVE, QUOTE_DECIMALS, NATIVE_DECIMALS, TOKEN_DECIMALS, POOL_FEE_PIPS, TICK_SPACING, SNIPE_TAX_WINDOW_MS,
   HOOK_ABI, STATE_VIEW_ABI, ERC20_ABI, TOPICS, hookIface, portalIface, erc20Iface,
-  decodeLog, classifySwap, quoteBuy, quoteSell, snipeTaxBps, poolIdFor, toUsdc, toUsdcUnits, toNativeUsdc, toTokens,
+  decodeLog, classifySwap, quoteBuy, quoteSell, snipeTaxBps, poolIdFor, toUsdc, toUsdcUnits, toNativeUsdc, toTokens, SNIPE_TAX_CAP_BPS,
 } from "./chain.mjs";
 import { decodeLaunchWords } from "./feed.mjs";
 
@@ -147,7 +147,8 @@ export function arcFillModel(order, ctx = {}) {
   if (pool.buyTaxBps == null || pool.sellTaxBps == null) return { reject: "NO_POOL", reason: "reference has no hook terms yet (taxes unknown)" };
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
   const age = launchAgeMs(ref, now);
-  const snipeBps = age == null ? 0 : snipeTaxBps(age);
+  // An unknown launch time is priced as the launch block on a buy, as chain.mjs does; a sell owes no snipe tax.
+  const snipeBps = age == null ? (order.side === "BUY" ? SNIPE_TAX_CAP_BPS : 0) : snipeTaxBps(age);
   if (order.side === "BUY") {
     const usdcIn = Number(order.stake_usd) / price;
     if (!(usdcIn > 0)) return { reject: "ZERO_STAKE", reason: "stake is zero" };
@@ -362,7 +363,8 @@ export class ArcLiveRouter extends Router {
       if (!(q.tokensOut > 0)) return failure(order, "NO_POOL", "the position has nothing left to buy at this price");
       const reserve = await this._gasReserve(this.gasLimitBuy);
       const bal = await this._quoteBalance();
-      if (bal < usdcIn + reserve) return failure(order, "INSUFFICIENT_USDC", `wallet has ${bal.toFixed(4)} USDC, order needs ${(usdcIn + reserve).toFixed(4)} with gas`);
+      // The engine's own name for "quote balance too low" (its fail cooldown is keyed on it), as balanceSol is for the balance.
+      if (bal < usdcIn + reserve) return failure(order, "INSUFFICIENT_SOL", `wallet has ${bal.toFixed(4)} USDC, order needs ${(usdcIn + reserve).toFixed(4)} with gas`);
       const amountIn = QUOTE_IS_NATIVE ? parseUnits(usdcIn.toFixed(NATIVE_DECIMALS), NATIVE_DECIMALS) : toUsdcUnits(usdcIn, pool.quoteDecimals);
       // Whole units of the token, never a float rounding up past what the pool will give.
       const minOut = BigInt(Math.floor(q.tokensOut * (1 - this.slippagePct / 100) * 1e6)) * 10n ** BigInt(TOKEN_DECIMALS - 6);
@@ -384,8 +386,10 @@ export class ArcLiveRouter extends Router {
       if (d.reverted) return failure(order, "SEND_FAILED", `tx ${hash} reverted`, { venue_ref: hash, fee_usd: d.gasUsdc * price });
       const t_filled = this.clock();
       const qty = d.trade?.tokens || q.tokensOut;
-      // Exact input: the wallet paid amountIn whatever the pool did with it, plus the gas.
-      const spent = usdcIn + d.gasUsdc;
+      // What the wallet actually paid: the pool's USDC leg plus the hook's tax, plus the gas. An
+      // exact-input buy that runs into the bond tick consumes less than amountIn and SETTLE_ALL
+      // settles only the debt, so the stake is the ceiling, not the cost; the receipt is the truth.
+      const spent = (d.trade ? d.trade.quote + d.tax : usdcIn) + d.gasUsdc;
       const fee = (d.trade ? d.tax + d.trade.quote * (now.lpFeePips / 1e6) : q.usdcTaxed + q.usdcLpFee) + d.gasUsdc;
       return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "arc", instrument: order.instrument, side: "BUY", price: qty > 0 ? (spent * price) / qty : est.price, qty, notional_usd: +(spent * price).toFixed(4), slippage_bps: +q.slippage_bps.toFixed(2), fee_usd: +(fee * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: hash, sol_spent: spent, exact: !!d.trade } };
     } catch (err) {
@@ -483,6 +487,8 @@ export class ArcLiveRouter extends Router {
     try {
       const pool = await this._poolFor(position.instrument, hint).catch(() => null);
       if (!pool) return failure({ id: position.id }, "NO_POOL", "no Portal knows this token; not an Argus launch, sell by hand");
+      // The same guard as the buy side: a sell paid out in something other than USDC would be booked in the wrong asset.
+      if (pool.quoteAsset && lower(pool.quoteAsset) !== lower(USDC_ERC20)) return failure({ id: position.id }, "UNSUPPORTED", "this launch is quoted in an ERC-20 other than USDC; sell by hand");
       this.track(position.instrument);
       if (position.pendingExit?.sig) {
         const prev = await this.resolvePending({ instrument: position.instrument, side: "SELL", sig: position.pendingExit.sig, at: position.pendingExit.at, reference: { ...ref, solPrice: price }, pool });
@@ -583,6 +589,7 @@ export class ArcLiveRouter extends Router {
     const d = this._receiptDeltas(receipt, p);
     if (d.reverted) return failure({ id: sig }, "SEND_FAILED", `tx ${sig} reverted`, { expired: true, venue_ref: sig, fee_usd: d.gasUsdc * price });
     if (!d.trade) return failure({ id: sig }, "UNREADABLE", `tx ${sig} carries no swap on the pool`, { expired: true, venue_ref: sig });
+    if (!(d.trade.tokens > 0)) return failure({ id: sig }, "UNREADABLE", `tx ${sig}: the swap moved no tokens`, { expired: true, venue_ref: sig });
     if (side === "BUY") { const spent = d.trade.quote + d.tax + d.gasUsdc; return { ok: true, fill: { venue: "arc", instrument, side: "BUY", price: (spent * price) / d.trade.tokens, qty: d.trade.tokens, notional_usd: +(spent * price).toFixed(4), slippage_bps: null, fee_usd: 0, t_sent: at || t, t_filled: t, latency_ms: at ? t - at : 0, venue_ref: sig, sol_spent: spent, late: true } }; }
     const got = Math.max(0, d.trade.quote - d.tax - d.gasUsdc);
     return { ok: true, fill: { venue: "arc", instrument, side: "SELL", price: d.trade.tokens > 0 ? (got * price) / d.trade.tokens : 0, qty: d.trade.tokens, notional_usd: +(got * price).toFixed(4), slippage_bps: null, fee_usd: 0, t_sent: at || t, t_filled: t, latency_ms: at ? t - at : 0, venue_ref: sig, sol_received: got, late: true } };

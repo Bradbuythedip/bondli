@@ -43,7 +43,9 @@ export const FATAL_FLAGS = new Set(["SERIAL_LAUNCHER", "SERIAL_RUGGER", "DEV_SEL
  *  back. Only GRADUATED qualifies today: a PONS curve that completed moved to a Uniswap V4 pool the
  *  router does not speak, and it never un-graduates. Everything else the routers report -- REVERT,
  *  UNREADABLE, NO_CURVE, SEND_FAILED -- can be an RPC having a bad minute, and is retried. */
-export const TERMINAL_EXIT_CODES = new Set(["GRADUATED"]);
+// UNSUPPORTED: a sell the venue itself cannot make (no Permit2 on the chain, a quote asset the router
+// does not pay in); retrying it five times changes nothing.
+export const TERMINAL_EXIT_CODES = new Set(["GRADUATED", "UNSUPPORTED"]);
 
 export class Engine extends EventEmitter {
   constructor({ dataDir, envelope, venues = {}, clock = () => Date.now(), config = {}, alerter = null }) {
@@ -828,7 +830,8 @@ export class Engine extends EventEmitter {
       if (r.unwound) this.ledger.append({ kind: "outcome", venue, instrument: inst, decisionId: decision.id, pnl_usd: -(r.unwound.reduce((s, u) => s + (u.failed ? 0 : Math.max(0, (u.stake_usd || 0) - (u.notional_usd || 0))), 0)), pnl_pct: 0, stake_usd: stake, p_win: decision.p_win, confidence: decision.confidence, model: decision.model, tier: decision.tier, held_ms: 0, reason: "LEG_UNWOUND", paper: !!(r.unwound[0]?.paper) });
       // A venue failure is not retried on the next poll: the candidate re-emits every few seconds
       // and each on-chain failure costs the priority fee.
-      if (["SEND_FAILED", "UNCONFIRMED", "INSUFFICIENT_SOL", "ROUTER_THREW", "STALE_SOL_PRICE"].includes(r.failure.code)) this.cooldown.set(inst, event.t_observed + this.cfg.failCooldownMs);
+      // REVERT is a dry run the pool refused; nothing about it changes on the next re-emit seconds later.
+      if (["SEND_FAILED", "UNCONFIRMED", "INSUFFICIENT_SOL", "ROUTER_THREW", "STALE_SOL_PRICE", "REVERT"].includes(r.failure.code)) this.cooldown.set(inst, event.t_observed + this.cfg.failCooldownMs);
       if (r.failure.fee_usd > 0) this.chargeFee(venue, inst, r.failure.fee_usd, `failed send ${r.failure.venue_ref || ""}`);
       // Sent but not confirmed in time: the transaction may still land. The sweep settles it either way.
       if (r.failure.code === "UNCONFIRMED" && r.failure.venue_ref) this.pendingBuys.set(inst, { venue, sig: r.failure.venue_ref, decision, orderId, stake, sizing, at: t_sent });
