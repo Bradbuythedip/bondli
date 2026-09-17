@@ -15,7 +15,8 @@ const SRC = fs.readFileSync(path.resolve("app/src/Simple.jsx"), "utf8");
 test("T17: funded means either chain, never SOL alone", () => {
   assert.match(SRC, /const fundedSol = \(tw\?\.solBalance \|\| 0\) >= MIN_BANKROLL_SOL/);
   assert.match(SRC, /const fundedEth = \(tw\?\.ethBalance \|\| 0\) >= MIN_BANKROLL_ETH/);
-  assert.match(SRC, /const funded = fundedSol \|\| fundedEth/);
+  assert.match(SRC, /const funded = fundedSol \|\| fundedEth \|\| fundedUsdc/);
+  assert.match(SRC, /const fundedUsdc = \(tw\?\.usdcBalance \|\| 0\) >= MIN_BANKROLL_USDC/, "Arc has a floor of its own, in dollars");
   // The old form gated the whole Start section on SOL. It must not come back.
   assert.doesNotMatch(SRC, /const funded = \(tw\?\.solBalance \|\| 0\) >= MIN_BANKROLL_SOL/);
   assert.match(SRC, /const MIN_BANKROLL_ETH = /, "Robinhood Chain has a floor of its own");
@@ -30,7 +31,8 @@ test("T17: one definition of which chains are on, read by Start and by the chips
   // A chain the wallet cannot pay for is never on, whatever localStorage remembers. What "can pay
   // for" means lives in ONE place -- canTrade -- which the chips and chainsOn both read, so the two
   // can never disagree about whether a chain is affordable.
-  assert.match(SRC, /const canTrade = \{ pumpfun: fundedSol \|\| paper, pons: \(fundedEth \|\| paper\) && !!tw\?\.evmAddress \}/);
+  assert.match(SRC, /const canTrade = \{ pumpfun: fundedSol \|\| paper, pons: \(fundedEth \|\| paper\) && !!tw\?\.evmAddress, arc: \(fundedUsdc \|\| paper\) && !!tw\?\.evmAddress \}/);
+  assert.match(SRC, /arc: !!chains\.arc && canTrade\.arc/);
   assert.match(SRC, /pumpfun: chains\.pumpfun !== false && canTrade\.pumpfun/);
   assert.match(SRC, /pons: !!chains\.pons && canTrade\.pons/);
   assert.match(SRC, /const canFund = canTrade;/, "the chips read the same definition, not a second one");
@@ -42,12 +44,12 @@ test("T17: one definition of which chains are on, read by Start and by the chips
 // Paper money cannot be spent, so it cannot require a balance. The rule that matters is the pair:
 // paper starts on an empty wallet, and turning paper OFF brings the funding gate straight back.
 test("T17: paper trading needs no funding, and live still does", () => {
-  assert.match(SRC, /const funded = fundedSol \|\| fundedEth \|\| paper;/);
+  assert.match(SRC, /const funded = fundedSol \|\| fundedEth \|\| fundedUsdc \|\| paper;/);
   // The run is labelled by what the SERVER says it is doing, not by the local switch: flipping the
   // toggle during a live run must not relabel money that is real.
   assert.match(SRC, /const onPaper = running \? !!st\?\.settings\?\.paper : paper;/);
   // And the flag actually reaches the server, or the toggle is decoration.
-  assert.match(SRC, /pumpfun: usePump, pons: usePons, paper \}\)/);
+  assert.match(SRC, /pumpfun: usePump, pons: usePons, arc: useArc, paper \}\)/);
 
   const MIN_SOL = Number(/const MIN_BANKROLL_SOL = ([\d.]+)/.exec(SRC)[1]);
   const MIN_ETH = Number(/const MIN_BANKROLL_ETH = ([\d.]+)/.exec(SRC)[1]);

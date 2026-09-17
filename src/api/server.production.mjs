@@ -49,8 +49,13 @@ import { LaunchStore } from "./launch.mjs";
 import { LaunchTrend } from "./launch-trend.mjs";
 import { DEFAULT_RPC_URL as PONS_DEFAULT_RPC, CHAIN_ID as PONS_CHAIN_ID } from "../velocity/venues/pons/chain.mjs";
 import { Wallet as EvmWallet, JsonRpcProvider as EvmProvider, formatEther, parseEther } from "ethers";
+import { CHAIN_ID as ARC_CHAIN_ID, DEFAULT_RPC_URL as ARC_DEFAULT_RPC } from "../velocity/venues/arc/chain.mjs";
 // Robinhood Chain: one provider for balances and withdrawals; the PONS feed and routers have their own.
 const ponsProvider = new EvmProvider(process.env.PONS_RPC_URL || PONS_DEFAULT_RPC, { chainId: PONS_CHAIN_ID, name: "robinhood" }, { staticNetwork: true });
+// Arc: the same EVM key the user already has for Robinhood Chain works here -- one 0x address, two
+// chains. Gas and balance are USDC; the native balance is 18-decimal like ETH, so formatEther reads it.
+// ARC_RPC_URL should be a keyed endpoint (the free one throttles sends); the key never enters the repo.
+const arcProvider = new EvmProvider(process.env.ARC_RPC_URL || ARC_DEFAULT_RPC, { chainId: ARC_CHAIN_ID, name: "arc" }, { staticNetwork: true });
 async function ethPriceUsd() {
   const r = await fetch("https://api.coinbase.com/v2/prices/ETH-USD/spot", { signal: AbortSignal.timeout(5000) });
   if (!r.ok) throw new Error(`coinbase ${r.status}`);
@@ -3528,11 +3533,24 @@ app.get("/api/trading-wallet/:wallet", requireOwner, async (req, res) => {
       console.log(`[WALLET-BAL] Robinhood Chain balance failed for ${tw.evmAddress.slice(0, 10)}: ${e.message}${ethBalance != null ? "; serving the last good reading" : ""}`);
     }
   }
-  const result = { ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails, evmAddress: tw.evmAddress || null, ethBalance, as_of: Date.now(), stale: ethFailed ? ["eth"] : null };
+  // Arc, same address, its own RPC, its own failure: a stale Arc reading is marked as such and never
+  // pins the cache, exactly as the Robinhood Chain leg above.
+  let usdcBalance = null, usdcFailed = false;
+  if (tw.evmAddress) {
+    try { usdcBalance = +Number(formatEther(await arcProvider.getBalance(tw.evmAddress))).toFixed(4); }
+    catch (e) {
+      usdcFailed = true;
+      const prev = getStaleCachedBalance(cacheKey);
+      usdcBalance = prev && prev.usdcBalance != null ? prev.usdcBalance : null;
+      console.log(`[WALLET-BAL] Arc balance failed for ${tw.evmAddress.slice(0, 10)}: ${e.message}${usdcBalance != null ? "; serving the last good reading" : ""}`);
+    }
+  }
+  const staleLegs = [ethFailed && "eth", usdcFailed && "arc"].filter(Boolean);
+  const result = { ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails, evmAddress: tw.evmAddress || null, ethBalance, usdcBalance, as_of: Date.now(), stale: staleLegs.length ? staleLegs : null };
   // Cache only a reading every leg of which succeeded. A partial one would be served for the next
   // fifteen seconds as though it were whole, and could then be served indefinitely as "last known
   // good" by the stale path above -- which is how a number stops moving and nobody notices.
-  if (!rpcFailed && !ethFailed) setCachedBalance(cacheKey, result);
+  if (!rpcFailed && !ethFailed && !usdcFailed) setCachedBalance(cacheKey, result);
   console.log(`[WALLET-BAL] ${pubkey.slice(0,8)}: ${solBalance.toFixed(4)} SOL + ${tokenValueSol.toFixed(4)} tokens = ${totalBalance} total (${tokenDetails.length} tokens)`);
   res.json(result);
 });
@@ -3653,6 +3671,19 @@ app.post("/api/trading-wallet/withdraw", requireOwner, async (req, res) => {
     const { wallet, to, sol, chain } = req.body || {};
     const tw = await getTradingWallet(wallet);
     if (!tw?.secret) return res.status(404).json({ error: "No trading wallet" });
+    if (chain === "arc") { // USDC on Arc back to an EVM address the owner names; the balance is native, 18 decimals
+      if (!tw.evmSecret) return res.status(404).json({ error: "No EVM wallet" });
+      if (!/^0x[0-9a-fA-F]{40}$/.test(String(to || ""))) return res.status(400).json({ error: "to must be an EVM address (0x…) for an Arc withdrawal" });
+      if (velocityHub?.has(wallet)) return res.status(409).json({ error: "stop Velocity first" });
+      const w = new EvmWallet(tw.evmSecret, arcProvider);
+      const bal = await arcProvider.getBalance(w.address);
+      const fee = await arcProvider.getFeeData();
+      const gas = 21_000n * ((fee.maxFeePerGas ?? fee.gasPrice ?? 20_000_000_000n) * 2n);
+      const value = sol === "all" || sol == null ? bal - gas : parseEther(String(sol));
+      if (!(value > 0n) || value > bal - gas) return res.status(400).json({ error: `nothing to withdraw (balance ${formatEther(bal)} USDC)` });
+      const tx = await w.sendTransaction({ to, value, gasLimit: 21_000n });
+      return res.json({ ok: true, sig: tx.hash, usdc: Number(formatEther(value)), to });
+    }
     if (chain === "pons") { // ETH on Robinhood Chain back to an EVM address the owner names
       if (!tw.evmSecret) return res.status(404).json({ error: "No Robinhood Chain wallet" });
       if (!/^0x[0-9a-fA-F]{40}$/.test(String(to || ""))) return res.status(400).json({ error: "to must be an EVM address (0x…) for a Robinhood Chain withdrawal" });
