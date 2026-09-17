@@ -261,3 +261,35 @@ test("T9: the give-up tally counts one repeated failure, not a mix of different 
     assert.equal(engine.store.openPositions().length, 1, "and the position is still being tried");
   } finally { await engine.stop(); }
 });
+
+// Pretend money is still a number. With no live venue there is no wallet to measure from, and the
+// header used to fall through to the LIVE day counter (which paper never touches) with the paper
+// positions filtered out of the open value -- so a paper run read $0.00 whatever it did.
+test("T9: a paper run reports its own P&L, as paper, and never touches the wallet number", async () => {
+  const dataDir = tmp();
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] });
+  const engine = mkEngine(dataDir, feed, { reentryCooldownMs: 0 });
+  try {
+    await engine.start({ reconcile: true });
+    const now = Date.now();
+    await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "candidate", id: "MintPnl", t_venue: now - 100, t_observed: now, payload: goodCandidatePayload("MintPnl") })));
+    const pos = engine.store.openPositions()[0];
+    assert.ok(pos?.paper, "a paper position");
+    // Up 20% and still open: the header shows the open gain, on paper.
+    await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "tick", id: "MintPnl", t_venue: now + 500, t_observed: now + 600, payload: tickPayload("MintPnl", 12_000) })));
+    let p = engine.truePnl();
+    assert.equal(p.kind, "paper");
+    assert.ok(p.unrealized_usd > 0, `open gain is visible: ${JSON.stringify(p)}`);
+    assert.equal(p.since_start_usd, p.unrealized_usd, "nothing closed yet: since-start is the open gain");
+    assert.equal(p.wallet_usd, null, "and there is no wallet number to confuse it with");
+    // Closed: the realized paper P&L is the number, the live day counter is untouched.
+    await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "tick", id: "MintPnl", t_venue: now + 900, t_observed: now + 1000, payload: tickPayload("MintPnl", 4_000) })));
+    p = engine.truePnl();
+    const out = engine.ledger.query({ kind: "outcome", limit: 1 })[0];
+    assert.equal(p.since_start_usd, +out.pnl_usd.toFixed(2));
+    assert.equal(p.realized_today_usd, +engine.store.state.day.paperRealizedUsd.toFixed(2));
+    assert.equal(p.trades_today, 1);
+    assert.equal(engine.store.state.day.realizedUsd, 0, "real money never moved");
+    assert.equal(engine.store.state.day.trades, 0);
+  } finally { await engine.stop(); }
+});
