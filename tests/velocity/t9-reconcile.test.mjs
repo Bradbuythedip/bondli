@@ -275,8 +275,8 @@ test("T9: a paper run reports its own P&L, as paper, and never touches the walle
     await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "candidate", id: "MintPnl", t_venue: now - 100, t_observed: now, payload: goodCandidatePayload("MintPnl") })));
     const pos = engine.store.openPositions()[0];
     assert.ok(pos?.paper, "a paper position");
-    // Up 20% and still open: the header shows the open gain, on paper.
-    await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "tick", id: "MintPnl", t_venue: now + 500, t_observed: now + 600, payload: tickPayload("MintPnl", 12_000) })));
+    // Up 150% and still open (ride mode holds all the way up): the header shows the open gain, on paper.
+    await engine.enqueue(() => engine.onEvent(makeEvent({ venue: "pumpfun", kind: "tick", id: "MintPnl", t_venue: now + 500, t_observed: now + 600, payload: tickPayload("MintPnl", 25_000) })));
     let p = engine.truePnl();
     assert.equal(p.kind, "paper");
     assert.ok(p.unrealized_usd > 0, `open gain is visible: ${JSON.stringify(p)}`);
