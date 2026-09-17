@@ -901,26 +901,29 @@ async function fetchPumpFunMetadata(ca) {
 
 // Fetch token image from metadata URI (IPFS JSON → image URL)
 // One try is not enough: pinata often answers slowly or 5xx in the first seconds after a launch.
-// Three attempts (0s, 8s, 25s), the last two through a second gateway, then the pump.fun API
-// fallback in the create handler is the fourth.
+// Every retry stays on pump.fun's own CDN. The second and third tries used to switch to ipfs.io,
+// which does not have a pin that is seconds old -- so the two retries that mattered most were
+// asking the one gateway guaranteed not to have it yet. Five tries over ~2.5 minutes, then the
+// pump.fun API fallback in the create handler, then the picture proxy's own by-mint lookup.
+const IMG_META_RETRY_MS = [6000, 12000, 30000, 60000, 60000];
 async function fetchTokenImage(ca, uri, attempt = 0) {
   const ok = await fetchTokenImageOnce(ca, uri, attempt);
   if (ok) return;
   const t = radar.tokens.get(ca);
-  if (!t || t.image || attempt >= 2) return;
-  setTimeout(() => fetchTokenImage(ca, uri, attempt + 1).catch(() => {}), attempt === 0 ? 8000 : 17000);
+  if (!t || t.image || attempt >= IMG_META_RETRY_MS.length) return;
+  setTimeout(() => fetchTokenImage(ca, uri, attempt + 1).catch(() => {}), IMG_META_RETRY_MS[attempt]);
 }
 async function fetchTokenImageOnce(ca, uri, attempt = 0) {
   try {
     let url = uri;
-    if (attempt > 0 && /pump\.mypinata\.cloud\/ipfs\//.test(url)) url = url.replace("pump.mypinata.cloud/ipfs/", "ipfs.io/ipfs/");
     if (url.startsWith("ipfs://")) url = "https://pump.mypinata.cloud/ipfs/" + url.slice(7);
     // pump.fun uses IPFS for metadata
     if (url.includes("bafkrei") && !url.startsWith("http")) url = "https://pump.mypinata.cloud/ipfs/" + url;
     // Rewrite slow gateways to pump's Pinata CDN
     if (url.includes("cf-ipfs.com/ipfs/")) url = url.replace("cf-ipfs.com/ipfs/", "pump.mypinata.cloud/ipfs/");
     if (url.includes("gateway.pinata.cloud/ipfs/")) url = url.replace("gateway.pinata.cloud/ipfs/", "pump.mypinata.cloud/ipfs/");
-    
+    if (url.includes("ipfs.io/ipfs/")) url = url.replace("ipfs.io/ipfs/", "pump.mypinata.cloud/ipfs/");
+
     const r = await fetch(url, {
       signal: AbortSignal.timeout(8000),
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" }
@@ -1174,7 +1177,12 @@ radar._tradeSource = "pumpportal";
 radar._lastPortalTradeAt = 0;
 radar._onchain = null;
 function onchainForward(msg) {
-  if (radar._tradeSource !== "onchain" || !radar.tokens.has(msg.mint)) return; // radar.tokens IS the subscription filter
+  if (radar._tradeSource !== "onchain") return;
+  // A create is how a mint ENTERS radar.tokens, so it cannot be filtered by membership. It is also
+  // the only signal the radar has of a launch when PumpPortal is down, and it carries the metadata
+  // uri, so the picture is fetched at second zero. processRadarMessage ignores a create it has seen.
+  if (msg.txType === "create") { radar._lastOnchainCreateAt = Date.now(); const st0 = radar._msgStats; if (st0) { st0.create++; st0.onchain = (st0.onchain || 0) + 1; } return processRadarMessage(msg); }
+  if (!radar.tokens.has(msg.mint)) return; // radar.tokens IS the subscription filter for trades
   const st = radar._msgStats;
   if (st) { st.trade++; st.onchain = (st.onchain || 0) + 1; }
   processRadarMessage(msg);
