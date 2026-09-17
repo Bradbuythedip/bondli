@@ -65,6 +65,9 @@ export const AGGRESSION = Object.freeze({
 // at a profit however it moves.
 const PONS_ASSUMED_FEE_BPS = 100;
 const PONS_ASSUMED_TAX_BPS = 500;
+// Arc / Argus: a side's tax is at most 10% (LaunchHook.MAX_LEG_TAX_BPS); the v4 pool tier is 1%.
+export const ARC_MAX_LEG_TAX_BPS = 1000;
+export const ARC_POOL_FEE_BPS = 100;
 // null and undefined mean "not read yet" and must take the fallback. Number(null) is 0, which is
 // finite, so a plain isFinite check would call an unread tax zero -- the exact bug this guards.
 const numOr = (v, fallback) => (v == null || v === "" || !Number.isFinite(Number(v)) ? fallback : Number(v));
@@ -91,7 +94,9 @@ export function makePumpfunEdge({
   // set there and the rule cannot fire. Reading them is the fix, not switching this off.
   const socialsOff = process.env.VELOCITY_REQUIRE_SOCIALS === "0";
   const base = socialsOff ? { ...level, requireSocials: false } : level;
-  const gateOpts = venue === "pons" ? { ...base, minAgeMin: 1.1 } : base; // PONS: up to 99% snipe tax in the first 60s
+  // PONS: up to 99% snipe tax in the first 60s. Arc (Argus): the same idea over the first 3 seconds,
+  // so the floor is six seconds -- past the tax, before the crowd.
+  const gateOpts = venue === "pons" ? { ...base, minAgeMin: 1.1 } : venue === "arc" ? { ...base, minAgeMin: 0.1 } : base;
   return {
     venue,
     name: "bondli_gates",
@@ -178,14 +183,15 @@ export function makePumpfunEdge({
     costs(c, stakeUsd = null) {
       const quotePrice = c.solPrice || c.reference?.solPrice || 0; // SOL on pump.fun, ETH on PONS
       const pons = venue === "pons";
+      const arc = venue === "arc";
       const stakeAt = Number(stakeUsd) > 0 ? Number(stakeUsd) : nominalStakeUsd;
-      const vQuote = Number(c.reference?.vSolInBondingCurve) || (pons ? 3 : 30);
-      const stakeQuote = quotePrice > 0 ? stakeAt / quotePrice : (pons ? 0.01 : 0.1);
+      const vQuote = Number(c.reference?.vSolInBondingCurve) || (venue === "arc" ? 2000 : pons ? 3 : 30);
+      const stakeQuote = quotePrice > 0 ? stakeAt / quotePrice : (venue === "arc" ? 10 : pons ? 0.01 : 0.1);
       // Constant-product curve: buying stake into the quote reserve moves price by about stake/reserve.
       const impact = Math.min(0.25, stakeQuote / Math.max(pons ? 0.1 : 1, vQuote));
       // Fixed cost per side: priority fee + tip on Solana; L2 gas on Robinhood Chain (a few cents).
-      const fixedQuote = pons ? 0.00003 : fixedCostSol;
-      const fixed = quotePrice > 0 ? (2 * fixedQuote * quotePrice + (pons ? 0 : 0.000005 * quotePrice)) / stakeAt : 0.02;
+      const fixedQuote = arc ? 0.02 : pons ? 0.00003 : fixedCostSol; // Arc gas is USDC and a swap costs cents
+      const fixed = quotePrice > 0 ? (2 * fixedQuote * quotePrice + (pons || arc ? 0 : 0.000005 * quotePrice)) / stakeAt : 0.02;
       // Round-trip fee. pump.fun is 1% + 1% and the same for everyone. PONS is not: each curve sets
       // its own feeBps, and the creator sets a tax on top that they choose. A 10% creator tax is a
       // 22% round trip, and no price move recovers that.
@@ -195,7 +201,12 @@ export function makePumpfunEdge({
       // tax; those are null now, and null here means "assume the worst until it is read". And with
       // no curve object at all it fell through to pump.fun's flat 3% -- a number from the other
       // chain entirely. Neither silently under-prices a PONS trade any more.
-      const feeRT = pons
+      // Arc (Argus): the hook's buy tax on the way in, its sell tax on the way out, and the pool's 1%
+      // fee on each leg. The taxes are immutable per launch and read off the hook, so unlike PONS
+      // there is no creator tax to assume; an unread tax is priced at the hook's maximum (10% a side).
+            const feeRT = arc
+        ? (numOr(c.reference?.curve?.feeBps, ARC_MAX_LEG_TAX_BPS) + numOr(c.reference?.curve?.sellTaxBps, ARC_MAX_LEG_TAX_BPS) + 2 * ARC_POOL_FEE_BPS) / 1e4
+        : pons
         ? 2 * ((numOr(c.reference?.curve?.feeBps, PONS_ASSUMED_FEE_BPS) + numOr(c.reference?.curve?.creatorTaxBps, PONS_ASSUMED_TAX_BPS)) / 1e4)
         : feeFractionRoundTrip;
       return { fraction: feeRT + impact + fixed, detail: { feeFractionRoundTrip: feeRT, impact, fixed, stake_usd: stakeAt } };

@@ -32,7 +32,7 @@ export const CURVE_VENUES = new Set(["pumpfun", "pons", "arc"]);
  *  fixed supply: the feed's estimate drifts from the chain by the fees and phantom reserve, which
  *  showed as a +20% "gain" the moment a position opened. pump.fun keeps the radar's market cap. */
 export function curveEntryMark(venue, fill, decision) {
-  if (venue === "pons" && fill?.qty > 0 && fill?.price > 0) return +(fill.price * 1_000_000_000).toFixed(2);
+  if ((venue === "pons" || venue === "arc") && fill?.qty > 0 && fill?.price > 0) return +(fill.price * 1_000_000_000).toFixed(2); // both launch a fixed 1e9 supply
   return CURVE_VENUES.has(venue) ? (decision.reference?.mcapUsd || 0) : fill.price;
 }
 
