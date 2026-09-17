@@ -198,7 +198,7 @@ function Movers({ T }) {
   };
   const section = (title, note, rows) => rows?.length ? <div key={title} style={{ marginBottom: 14 }}>
     <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between", gap: 10 }}><span>{title}</span><span style={{ textAlign: "right" }}>{note}</span></div>
-    <div style={{ background: T.sf + "e6", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>{rows.slice(0, 12).map(row)}</div>
+    <div style={{ background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>{rows.slice(0, 12).map(row)}</div>
   </div> : null;
   if (err) return <div style={{ ...muted, padding: "18px 0", textAlign: "center" }}>movers are unavailable right now — {err}</div>;
   if (!d) return <div style={{ ...muted, padding: "18px 0", textAlign: "center" }}>reading the market…</div>;
@@ -245,18 +245,18 @@ function Live({ T, agg }) {
       <span style={muted}>{d.bots != null ? `${d.bots} bot${d.bots === 1 ? "" : "s"} trading` : ""}</span>
     </div>
     <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-      {[["launched", d.hour.launches, "tx"], ["buy zone", d.hour.hot, "gn"], ["robinhood", d.hour.robinhood ?? 0, "dm"], ["mayhem", d.hour.mayhem, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf + "e6", border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 22, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
+      {[["launched", d.hour.launches, "tx"], ["buy zone", d.hour.hot, "gn"], ["robinhood", d.hour.robinhood ?? 0, "dm"], ["mayhem", d.hour.mayhem, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 22, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{l}</div></div>)}
     </div>
     {d.revivals?.length > 0 && <>
       <div style={{ ...muted, marginBottom: 6 }}>waking up · launched hours or days ago, buyers back at 3x</div>
-      <div style={{ background: T.sf + "e6", border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.revivals.map(t => rowOf(t, true))}</div>
+      <div style={{ background: T.sf + "f5", border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.revivals.map(t => rowOf(t, true))}</div>
     </>}
     {d.cooking?.length > 0 && <>
       <div style={{ ...muted, marginBottom: 6 }}>still cooking · past the half hour and still filling up</div>
-      <div style={{ background: T.sf + "e6", border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.cooking.map(t => rowOf(t))}</div>
+      <div style={{ background: T.sf + "f5", border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.cooking.map(t => rowOf(t))}</div>
     </>}
     <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between" }}><span>last hour · both chains · judged at {AGG[d.aggression ?? agg]?.l || "Normal"}</span><span>tap to open on its launchpad</span></div>
-    <div style={{ background: T.sf + "e6", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
+    <div style={{ background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
       {d.tokens.slice(0, 25).map(t => rowOf(t))}
       {!d.tokens.length && <div style={{ ...muted, padding: 14, textAlign: "center" }}>waiting for the next launch…</div>}
     </div>
@@ -671,7 +671,15 @@ export default function Simple() {
           <span style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: onPaper ? T.yl : T.gn, animation: "gp 2s infinite" }} /><span style={{ fontWeight: 800 }}>{onPaper ? "Paper trading" : "Trading"}</span>{onPaper && <span style={{ fontFamily: M, fontSize: 10, fontWeight: 900, letterSpacing: ".08em", color: "#000", background: T.yl, borderRadius: 5, padding: "2px 6px" }}>PRETEND MONEY</span>}</span>
           <span style={{ fontFamily: M, fontWeight: 900, fontSize: 30, color: pnl >= 0 ? T.gn : T.rd }}>{pnl >= 0 ? "+" : ""}{fmt(pnl)}</span>
         </div>
-        <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span title={pnlKind === "wallet" ? "wallet plus open positions now, against when you pressed Start" : pnlKind === "paper" ? "pretend money: closed paper trades since Start plus open paper positions" : "closed trades today plus open positions"}>{pnlKind === "paper" ? "since start, on paper" : pnlKind === "wallet" ? "since start" : "today"}, {tp?.trades_today ?? day?.trades ?? 0} trades{tp ? ` · closed ${(tp.realized_today_usd ?? day?.realizedUsd ?? 0) >= 0 ? "+" : ""}${fmt(tp.realized_today_usd ?? day?.realizedUsd ?? 0)} · open ${(tp.unrealized_usd || 0) >= 0 ? "+" : ""}${fmt(tp.unrealized_usd || 0)}` : ""}</span><span>{(() => {
+        <div style={{ ...muted, display: "flex", justifyContent: "space-between", marginTop: 2 }}><span title={pnlKind === "wallet" ? "wallet plus open positions now, against when you pressed Start" : pnlKind === "paper" ? "pretend money: closed paper trades since Start plus open paper positions" : "closed trades today plus open positions"}>{(() => {
+          // The words count the same trades the number does. "since start" reads the ledger since
+          // Start (both paper and wallet modes); only the trades-only fallback is a today's number.
+          const ss = tp?.since_start;
+          const n = ss ? ss.trades : (tp?.trades_today ?? day?.trades ?? 0);
+          const closed = ss ? ss.closed_usd : (tp?.realized_today_usd ?? day?.realizedUsd ?? 0);
+          const label = pnlKind === "paper" ? "since start, on paper" : pnlKind === "wallet" ? "since start" : "today";
+          return `${label}, ${n} trade${n === 1 ? "" : "s"}${tp ? ` · closed ${closed >= 0 ? "+" : ""}${fmt(closed)} · open ${(tp.unrealized_usd || 0) >= 0 ? "+" : ""}${fmt(tp.unrealized_usd || 0)}` : ""}`;
+        })()}</span><span>{(() => {
           // Cash AND what is in positions, per venue. Showing only the wallet made a buy look like
           // money disappearing: the balance dropped, nothing said where it went, and the number
           // looked broken rather than spent. A reading the server could not refresh says so instead
@@ -731,9 +739,9 @@ export default function Simple() {
         </div>}
         {s.closes?.length > 0 && <div style={{ marginTop: 12 }}>
           <div style={{ ...muted, marginBottom: 6 }}>your last closes · a win is a tap from X</div>
-          <div style={{ background: T.sf + "e6", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
             {s.closes.slice(0, 5).map((c, i) => <div key={c.ts + ":" + i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderTop: i ? `1px solid ${T.bd}` : "none" }}>
-              <span style={{ flex: 1, minWidth: 0, fontFamily: M, fontSize: 12, color: T.dm, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><b style={{ color: T.tx }}>${(c.ticker || c.instrument.slice(0, 6)).replace(/^\$/, "")}</b> · {held(c.held_ms)} · {c.reason.toLowerCase().replace(/_/g, " ")}{c.paper ? " · paper" : ""}</span>
+              <span style={{ flex: 1, minWidth: 0, fontFamily: M, fontSize: 12, color: T.dm, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><b style={{ color: T.tx }}>${(c.ticker || c.instrument.slice(0, 6)).replace(/^\$/, "")}</b> · {held(c.held_ms)} · {c.reason.toLowerCase().replace(/_/g, " ")}{c.paper ? " · paper" : ""} · {ago(Date.now() - c.ts)} ago</span>
               <span style={{ fontFamily: M, fontWeight: 900, fontSize: 14, color: c.pnl_usd >= 0 ? T.gn : T.rd, flexShrink: 0 }}>{c.pnl_pct >= 0 ? "+" : ""}{Number(c.pnl_pct).toFixed(0)}%</span>
               {c.pnl_usd > 0 && !c.paper && <a href={shareUrl(c)} target="_blank" rel="noopener" style={{ flexShrink: 0, fontFamily: S, fontWeight: 800, fontSize: 12, color: "#000", background: T.gn, borderRadius: 8, padding: "5px 9px", textDecoration: "none" }}>Share</a>}
             </div>)}

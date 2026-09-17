@@ -1283,6 +1283,7 @@ function processRadarMessage(data) {
     };
 
     radar.tokens.set(mint, token);
+    radar._lastLaunchAt = now; // what "online" on the site actually means: a launch was seen just now
     { const v = detectMayhem({ create: data }); if (v.mayhem) markMayhem(mint, v.source); }
     if (!token._mayhem) noteCopycat(token);
     subscribeToToken(mint);
@@ -8266,7 +8267,9 @@ app.get("/api/radar/live", (req, res) => {
   const cooking = both.filter(t => t._slowCook && now - (t.createdAt || 0) >= 30 * 60_000 && now - t._slowCook.at < 5 * 60_000)
     .sort((x, y) => (y._slowCook.buyers || 0) - (x._slowCook.buyers || 0)).slice(0, 10).map(row);
   res.json({
-    ts: now, solPrice: solUsdPrice, online: radar.online, aggression,
+    // radar.online is a count of legacy websocket clients, which the site does not use, so it read
+    // "offline" with bots trading. Online here is the feed itself: a launch or a trade in the last 90s.
+    ts: now, solPrice: solUsdPrice, online: (now - Math.max(radar._lastLaunchAt || 0, radar._lastPortalTradeAt || 0, radar._lastOnchainCreateAt || 0, radar._onchain?.stats?.lastMsg || 0)) < 90_000, aggression,
     hour: { launches: hour.length + ponsTokens.filter(t => now - (t.createdAt || 0) < 3600_000).length, robinhood: ponsTokens.filter(t => now - (t.createdAt || 0) < 3600_000).length, mayhem: hour.filter(t => t._mayhem).length, copies: hour.filter(t => t._copyOf).length, hot: rows.filter(r => r.tag === "hot").length },
     bots: velocityHub ? velocityHub.list().length : null,
     tokens: rows, revivals, cooking,
