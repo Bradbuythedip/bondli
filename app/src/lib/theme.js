@@ -22,8 +22,8 @@ html{-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent}
 body{background:${T.bg};color:${T.tx};overflow-x:hidden;-webkit-font-smoothing:antialiased}
 /* Jeff is the ground, not a card. The painting sits fixed behind the whole page, under a scrim in the
    ground colour so every surface keeps the contrast it was measured at; the cards are translucent and
-   blurred so he shows through them. With no /jeff.jpg the scrim alone is the painting's own colour. */
-body::before{content:"";position:fixed;inset:0;z-index:-2;background:${T.bg} url(/jeff.jpg) center 28%/cover no-repeat}
+   blurred so he shows through them. With no /fren.png the scrim alone is the painting's own colour. */
+body::before{content:"";position:fixed;inset:0;z-index:-2;background:${T.bg} url(/fren.png) center 28%/cover no-repeat}
 body::after{content:"";position:fixed;inset:0;z-index:-1;background:linear-gradient(180deg,${T.bg}b8 0%,${T.bg}d9 45%,${T.bg}f2 100%)}
 .card{background:${T.sf}e6;backdrop-filter:blur(14px) saturate(1.1);-webkit-backdrop-filter:blur(14px) saturate(1.1)}
 input,button{font-family:inherit;-webkit-appearance:none}

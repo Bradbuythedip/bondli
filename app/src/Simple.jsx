@@ -293,15 +293,23 @@ function Boot({ T, done }) {
   useEffect(() => { const t = setTimeout(() => sMinUp(true), 1150); return () => clearTimeout(t); }, []);
   const out = done && minUp;
   useEffect(() => { if (!out) return; const t = setTimeout(() => sGone(true), 700); return () => clearTimeout(t); }, [out]);
+  // Fren is the loading screen: the painting full-bleed and softened behind, and his face inside the
+  // ring. If /fren.png is not there yet the <img> errors, and the ring shows the logo it always did --
+  // a missing file is never a broken splash.
+  const [fren, sFren] = useState(true);
   if (gone) return null;
-  return <div data-boot style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 22, background: `radial-gradient(120% 90% at 50% 35%, ${T.sf} 0%, ${T.bg} 70%)`, animation: out ? "bootout .55s .1s cubic-bezier(.4,0,.2,1) forwards" : "none", pointerEvents: out ? "none" : "auto" }}>
+  return <div data-boot style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 22, background: `radial-gradient(120% 90% at 50% 35%, ${T.sf} 0%, ${T.bg} 70%)`, animation: out ? "bootout .55s .1s cubic-bezier(.4,0,.2,1) forwards" : "none", pointerEvents: out ? "none" : "auto", overflow: "hidden" }}>
+    {fren && <div aria-hidden="true" style={{ position: "absolute", inset: -24, background: `url(/fren.png) center 30%/cover no-repeat`, filter: "blur(18px) saturate(1.1)", opacity: .55 }} />}
+    {fren && <div aria-hidden="true" style={{ position: "absolute", inset: 0, background: `linear-gradient(180deg, ${T.bg}66 0%, ${T.bg}cc 100%)` }} />}
     <div style={{ position: "relative", width: 132, height: 132, display: "grid", placeItems: "center" }}>
       <div style={{ position: "absolute", inset: 0, borderRadius: "50%", background: `conic-gradient(from 0deg, transparent 0deg, transparent 240deg, ${T.gn}00 250deg, ${T.gn} 340deg, ${T.gn}00 360deg)`, animation: "bootspin 1.15s linear infinite", mask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))", WebkitMask: "radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px))" }} />
       <div style={{ position: "absolute", inset: 14, borderRadius: "50%", border: `1px solid ${T.bd}` }} />
-      <img src="/bondli-logo.svg" alt="" style={{ width: 58, animation: "bootrise .7s cubic-bezier(.2,.8,.2,1) both", filter: `drop-shadow(0 0 18px ${T.gn}55)` }} />
+      {fren
+        ? <img src="/fren.png" alt="" onError={() => sFren(false)} style={{ width: 100, height: 100, borderRadius: "50%", objectFit: "cover", objectPosition: "center 30%", animation: "bootrise .7s cubic-bezier(.2,.8,.2,1) both", boxShadow: `0 0 0 2px ${T.bg}, 0 0 28px ${T.gn}55` }} />
+        : <img src="/bondli-logo.svg" alt="" style={{ width: 58, animation: "bootrise .7s cubic-bezier(.2,.8,.2,1) both", filter: `drop-shadow(0 0 18px ${T.gn}55)` }} />}
     </div>
-    <div style={{ fontFamily: M, fontSize: 11, letterSpacing: ".08em", color: T.ft, animation: "bootword .8s .25s cubic-bezier(.2,.8,.2,1) both" }}>reading the chain…</div>
-    <div style={{ width: 150, height: 2, borderRadius: 2, background: T.bd, overflow: "hidden" }}>
+    <div style={{ position: "relative", fontFamily: M, fontSize: 11, letterSpacing: ".08em", color: T.ft, animation: "bootword .8s .25s cubic-bezier(.2,.8,.2,1) both" }}>reading the chain…</div>
+    <div style={{ position: "relative", width: 150, height: 2, borderRadius: 2, background: T.bd, overflow: "hidden" }}>
       <div style={{ width: "33%", height: "100%", background: T.gn, animation: "bootbar 1.25s cubic-bezier(.5,0,.5,1) infinite" }} />
     </div>
   </div>;
