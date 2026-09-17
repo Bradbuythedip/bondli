@@ -22,7 +22,10 @@ import { promotionGate } from "./promote.mjs";
 /** Venues that trade a bonding curve in a quote asset: pump.fun (SOL) and PONS on Robinhood Chain (ETH).
  *  Positions are marked by market cap, plans are the tiered layers, fills carry sol_spent / sol_received
  *  (the quote asset), and reference.solPrice is that quote asset's USD price. */
-export const CURVE_VENUES = new Set(["pumpfun", "pons"]);
+// Arc's Argus is not a virtual curve -- it is one concentrated Uniswap v4 position the price walks
+// up through -- but from the engine's side it trades like one: a launch, a rising price, buyers
+// and sellers, a quote asset. So it shares the curve venues' plans, exits and cost model.
+export const CURVE_VENUES = new Set(["pumpfun", "pons", "arc"]);
 
 /** The market cap a curve position is marked from at entry. On PONS the fill is exact (quote spent
  *  and tokens received from the receipt), so the mark is what was actually paid per token times the

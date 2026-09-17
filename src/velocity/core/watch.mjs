@@ -18,6 +18,7 @@ export function formatRecord(r) {
       const why = (r.reasons || []).slice(0, 3).join(", ");
       return `${at} reject  ${short(r.instrument)} ${r.gate || ""}: ${why}${score}`;
     }
+    case "callout": return `${at} CALLOUT ${r.venue} ${short(r.instrument)} tier ${r.tier ?? "?"}${r.mcapUsd != null ? ` at $${Math.round(r.mcapUsd)}` : ""}${r.result ? ` -> ${(r.result.pnl_pct ?? 0) >= 0 ? "+" : ""}${r.result.pnl_pct}%` : ""}${r.posted === false ? " (not posted)" : ""}`;
     case "order":
       if (r.stage === "sized") return r.stake_usd > 0 ? `${at} sized   ${usd(r.stake_usd)}${(r.sizing?.caps || []).length ? ` (${r.sizing.caps.join(",")})` : ""}` : `${at} no size ${(r.sizing?.reasons || [])[0] || ""}`;
       if (r.stage === "sent") return `${at} SENT    BUY ${short(r.instrument)} ${usd(r.stake_usd)}`;

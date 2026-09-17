@@ -65,6 +65,20 @@
         "send": 100,
         "confirm": 2000
       }
+    },
+    "arc": {
+      "max_exposure_usd": 0,
+      "max_concurrent": 0,
+      "kelly_fraction": 0.25,
+      "min_stake_usd": 5,
+      "worst_case_fraction": 1.0,
+      "max_slippage_bps": 300,
+      "latency_budget_ms": {
+        "observe": 2500,
+        "decide": 30,
+        "send": 300,
+        "confirm": 25000
+      }
     }
   },
   "promotion": {
@@ -72,12 +86,14 @@
       "pumpfun": 200,
       "polymarket": 50,
       "perps": 100,
-      "pons": 200
+      "pons": 200,
+      "arc": 200
     },
     "confidence": 0.9,
     "live_start_fraction": 0.1
   },
   "wallet_reserve_quote": {
-    "pons": 0.001
+    "pons": 0.001,
+    "arc": 2
   }
 }

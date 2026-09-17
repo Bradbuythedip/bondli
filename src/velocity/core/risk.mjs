@@ -6,7 +6,7 @@
 
 import fs from "node:fs";
 
-export const VENUE_KEYS = Object.freeze(["pumpfun", "pons", "polymarket", "perps"]);
+export const VENUE_KEYS = Object.freeze(["pumpfun", "pons", "arc", "polymarket", "perps"]);
 
 export function deepFreeze(o) {
   if (o && typeof o === "object" && !Object.isFrozen(o)) {
