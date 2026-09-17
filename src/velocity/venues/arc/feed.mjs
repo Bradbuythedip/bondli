@@ -177,6 +177,15 @@ export function ethersRpc(rpcUrl = process.env.ARC_RPC_URL || DEFAULT_RPC_URL) {
   };
 }
 
+/** How long to wait before the next poll. A poll every 1.5s against an RPC that has started
+ *  refusing (a rate limit on the public endpoint, an outage) would keep hammering it and fill the
+ *  log with the same line; each consecutive failure doubles the wait, to a minute at most, and the
+ *  first success brings it straight back. */
+export function pollDelay(pollMs, errors) {
+  if (!(errors > 0)) return pollMs;
+  return Math.min(60_000, pollMs * 2 ** Math.min(errors, 6));
+}
+
 export class ArcFeed extends Feed {
   constructor({ rpc = null, rpcUrl, pollMs = 1_500, fromBlock = null, maxTokens = 3000, clock, onTrade = null, ...rest } = {}) {
     super({ venue: "arc", name: "arc-feed", staleAfterMs: rest.staleAfterMs ?? Math.max(8_000, 3 * pollMs), latencyBoundMs: rest.latencyBoundMs ?? 2_500, clock });
@@ -421,7 +430,7 @@ export class ArcFeed extends Feed {
     const tick = async () => {
       if (!this.running) return;
       try { await this.pollOnce(); this.errors = 0; } catch (err) { this.errors++; this.lastError = `${new Date(this.clock()).toISOString()} ${err.message}`.slice(0, 300); this.markHealth(false, err.message); }
-      if (this.running) this._timers.push(setTimeout(tick, this.pollMs));
+      if (this.running) this._timers.push(setTimeout(tick, pollDelay(this.pollMs, this.errors)));
     };
     tick();
   }

@@ -2157,6 +2157,10 @@ function extractQuickFeatures(t) {
     // win rate, early hits on runners, none of the exclusion flags) that bought inside the first
     // minute. count is the number of them; score is bounded so two strong ones saturate it.
     _smartMoney: (() => { const sm = walletIntel.smartBuyers(t.ca || ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }); return { count: sm.count, score: Math.min(1, (sm.sumScore || 0) / 2) }; })(),
+    // The narrative wave behind this launch, if it is the original of a copied name: copies landing
+    // now against the minutes before. The leader of a building wave is the buy; the leader of a
+    // fading one is the exit. A copy never gets here (it is excluded upstream), so null means no wave.
+    _wave: radar._copycats.wave(t.ca || ca, Date.now()),
 
     // ═══ HOLDER QUALITY SCORE — are early buyers proven winners? ═══
     // A token where 5 early buyers each have 3+ past graduated tokens
@@ -8305,7 +8309,7 @@ app.get("/api/radar/live", (req, res) => {
       verdict = judgeToken(t, qf, scoreDynamics.get(t.ca) || null, aggression);
       tag = tagFor(verdict, !!t._slowCook);
     }
-    return { ca: t.ca, chain: pons ? "robinhood" : arc ? "arc" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, smart: pons || arc ? 0 : walletIntel.smartBuyers(t.ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }).count, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated };
+    return { ca: t.ca, chain: pons ? "robinhood" : arc ? "arc" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, smart: pons || arc ? 0 : walletIntel.smartBuyers(t.ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }).count, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, wave: !pons && !arc && t._copies ? radar._copycats.wave(t.ca, now) : null, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated };
   };
   // Robinhood Chain and Arc launches sit in the same list, newest first, marked by chain.
   const ponsTokens = velocityHub?.ponsFeed ? [...velocityHub.ponsFeed.tokens.values()] : [];

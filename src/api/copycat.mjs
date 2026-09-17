@@ -35,13 +35,33 @@ export class CopycatIndex {
     if (!original) return null;
     original.copies = (original.copies || 0) + 1;
     original.lastCopyAt = now;
+    // When each copy landed, so the wave's pace can be read later; bounded, a wave of hundreds is a wave.
+    (original.copyAt ||= []).push(now); if (original.copyAt.length > 60) original.copyAt.shift();
     return { copyOf: original.ca, copies: original.copies, key };
   }
 
+  _find(ca) { for (const list of this.byKey.values()) for (const e of list) if (e.ca === ca) return e; return null; }
+
   /** Copies recorded against an original, and when the latest landed. */
   copiesOf(ca) {
-    for (const list of this.byKey.values()) for (const e of list) if (e.ca === ca) return { copies: e.copies || 0, lastCopyAt: e.lastCopyAt || 0 };
-    return { copies: 0, lastCopyAt: 0 };
+    const e = this._find(ca);
+    return e ? { copies: e.copies || 0, lastCopyAt: e.lastCopyAt || 0 } : { copies: 0, lastCopyAt: 0 };
+  }
+
+  /**
+   * The narrative wave behind an original: how many copies, how fast they are landing now against
+   * the window before, and which way that is going. Copies are a billboard for the first launch of
+   * a name, and the RATE of copying is the leading indicator: rising means the narrative is still
+   * being discovered, fading means the crowd that would buy the leader has already arrived. A copy
+   * has no wave of its own, and an original nobody copied has none yet (null, not zeros).
+   */
+  wave(ca, now = Date.now(), { windowMs = 3 * 60_000 } = {}) {
+    const e = this._find(ca);
+    if (!e || e.copyOf || !(e.copies > 0)) return null;
+    const at = e.copyAt || [];
+    const recent = at.filter(t => now - t <= windowMs).length;
+    const prior = at.filter(t => now - t > windowMs && now - t <= 2 * windowMs).length;
+    return { copies: e.copies, recent, prior, perMin: +(recent / (windowMs / 60_000)).toFixed(2), rising: recent > prior, fading: recent === 0 && prior > 0, lastCopyAt: e.lastCopyAt || 0, windowMs };
   }
 
   prune(now = Date.now()) {
