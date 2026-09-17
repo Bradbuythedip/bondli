@@ -16,6 +16,7 @@ import { formatRecord } from "./core/watch.mjs";
 import { makePumpfunEdge } from "./venues/pumpfun/edge.mjs";
 import { PumpfunPaperRouter, PumpfunLiveRouter } from "./venues/pumpfun/router.mjs";
 import { PonsLiveRouter, PonsPaperRouter } from "./venues/pons/router.mjs";
+import { ArcLiveRouter, ArcPaperRouter } from "./venues/arc/router.mjs";
 import { HolderWaiver } from "./core/holder-waiver.mjs";
 import { Ledger } from "./core/ledger.mjs";
 import { Callouts } from "./core/callouts.mjs";
@@ -138,9 +139,11 @@ export class VelocityHub {
    * @param fee         { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser }
    * @param makeLiveRouter  ({ secret }) => router; tests inject a double
    */
-  constructor({ feed, ponsFeed = null, arcFeed = null, rootDir, platformWallet, platformEvmWallet = null, fee, feePct = null, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, makePonsRouter = null, callouts = null, clock = () => Date.now(), log = console }) {
+  constructor({ feed, ponsFeed = null, arcFeed = null, rootDir, platformWallet, platformEvmWallet = null, fee, feePct = null, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, makePonsRouter = null, makeArcRouter = null, callouts = null, clock = () => Date.now(), log = console }) {
     this.feed = feed; this.ponsFeed = ponsFeed; this.arcFeed = arcFeed; this.rootDir = rootDir; this.platformWallet = platformWallet || null; this.platformEvmWallet = platformEvmWallet || null; this.fee = fee; this.rpcUrl = rpcUrl;
     this.makePonsRouter = makePonsRouter || (({ secret }) => new PonsLiveRouter({ secret, clock }));
+    // Arc signs with the same EVM key as Robinhood Chain: one 0x address, two chains, two balances.
+    this.makeArcRouter = makeArcRouter || (({ secret }) => new ArcLiveRouter({ secret, rpcUrl: process.env.ARC_RPC_URL || null, clock }));
     // A flat rate on realized profit (VELOCITY_FEE_PCT) replaces the site's ladder when set: one number, said plainly.
     // One rate for everyone who does not hold the house token. There are no tiers: the old free /
     // pro / vip ladder was a different revenue model and no longer decides anything here, so an
@@ -193,20 +196,22 @@ export class VelocityHub {
     const dataDir = path.join(this.rootDir, wallet);
     fs.mkdirSync(dataDir, { recursive: true });
     const pons = !!settings.pons && !!this.ponsFeed && !!evmSecret; // Robinhood Chain: opted in, feed running, ETH key on file
+    const arc = !!settings.arc && !!this.arcFeed && !!evmSecret; // Arc (Argus): opted in, feed running, the same EVM key
     // pump.fun is on unless the user says otherwise. Someone who only wants Robinhood Chain turns it
     // off and never has to fund a SOL wallet; the venue goes to "off", not "paper", so the engine
     // stops looking at its feed rather than quietly paper-trading it in the background.
     const pumpfun = settings.pumpfun !== false;
-    if (!pumpfun && !pons) return { ok: false, error: "turn on at least one chain: pump.fun, Robinhood Chain, or both" };
+    if (!pumpfun && !pons && !arc) return { ok: false, error: "turn on at least one chain: pump.fun, Robinhood Chain, or Arc" };
     // Paper: run the whole machine on the real feed and simulate only the fills. Chosen per start, so
     // a user can paper-trade today and go live tomorrow with the same settings.
     const paper = !!settings.paper;
     const aggression = Math.max(0, Math.min(3, Math.round(settings.aggression == null || settings.aggression === "" ? 1 : Number(settings.aggression) || 0)));
-    const envelope = userEnvelope({ ...settings, pons, aggression });
+    const envelope = userEnvelope({ ...settings, pons, arc, aggression });
     const view = new SharedFeedView(this.feed, { clock: this.clock });
     const liveRouter = this.makeLiveRouter({ secret, wallet });
     const venues = { pumpfun: { mode: "paper", feed: view, edge: makePumpfunEdge({ aggression }), router: new PumpfunPaperRouter({ bookFile: path.join(dataDir, "paper-book-pumpfun.json"), clock: this.clock }), liveRouter } };
     if (pons) venues.pons = { mode: "paper", feed: new SharedFeedView(this.ponsFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "pons", aggression }), router: new PonsPaperRouter({ bookFile: path.join(dataDir, "paper-book-pons.json"), clock: this.clock }), liveRouter: this.makePonsRouter({ secret: evmSecret, wallet }) };
+    if (arc) venues.arc = { mode: "paper", feed: new SharedFeedView(this.arcFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "arc", aggression }), router: new ArcPaperRouter({ bookFile: path.join(dataDir, "paper-book-arc.json"), clock: this.clock }), liveRouter: this.makeArcRouter({ secret: evmSecret, wallet }) };
     const engine = new Engine({ dataDir, envelope, venues, clock: this.clock });
     // Everything the engine considers worth waking someone for -- a live router that failed to
     // initialise, a flatten that left positions open, a position booked as a total loss, the governor
@@ -238,7 +243,7 @@ export class VelocityHub {
     // the same rules, and only the router is a simulation. That means it needs no funded wallet and
     // can never spend one -- the preflight that refuses an empty wallet is the thing being skipped,
     // so it must not run at all rather than run and be ignored.
-    const wanted = [pumpfun && "pumpfun", pons && "pons"].filter(Boolean);
+    const wanted = [pumpfun && "pumpfun", pons && "pons", arc && "arc"].filter(Boolean);
     const results = {};
     if (paper) {
       for (const v of wanted) results[v] = { ok: true, paper: true };
@@ -258,7 +263,7 @@ export class VelocityHub {
       return { ok: false, error: first.error || "could not go live", preflight: first.preflight || null, venues: results };
     }
     sup.start();
-    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, pons, pumpfun, paper }, startedAt: this.clock() });
+    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, pons, arc, pumpfun, paper }, startedAt: this.clock() });
     // Once a minute, the funnel in the server log: what the candidates hit. The first place to look when nothing fills.
     const fun = setInterval(() => { try { const f = engine.funnel(); this.log.log?.(`[velocity ${wallet.slice(0, 8)}] funnel 10m: judged ${f.judged} (${f.distinct} tokens) go ${f.gos} filled ${f.filled} | ${Object.entries(f.gates).map(([g, n]) => `${g} ${n}`).join(", ") || "no rejects"} | top: ${f.top.map(x => `${x.k} ${x.n}`).join("; ")}${f.sized0 ? ` | no size: ${JSON.stringify(f.sized0)}` : ""}${f.failed ? ` | failed: ${JSON.stringify(f.failed)}` : ""}`); } catch {} }, 60_000);
     fun.unref?.(); this.users.get(wallet).fun = fun;
@@ -534,7 +539,7 @@ export class VelocityHub {
     const cached = this._holdingsCache.get(wallet);
     if (cached && Date.now() - cached.at < 20_000) return cached.data;
     const u = this.users.get(wallet);
-    const out = { at: Date.now(), sol: [], eth: [], errors: [] };
+    const out = { at: Date.now(), sol: [], eth: [], usdc: [], errors: [] };
     const open = new Map(u ? u.engine.store.openPositions().map(p => [p.venue + ":" + p.instrument.toLowerCase(), p]) : []);
     const solRouter = u?.engine.venues.pumpfun?.liveRouter || (secret ? this.makeLiveRouter({ secret, wallet }) : null);
     if (solRouter) {
@@ -575,6 +580,20 @@ export class VelocityHub {
         }
       } catch (err) { out.errors.push(`robinhood: ${err.message}`); }
     }
+    // Arc: the tokens this process was told about (an EVM wallet has no account list to walk), valued
+    // off the feed when it still has the pool. Only when Arc is on for the site at all.
+    const arcRouter = u?.engine.venues.arc?.liveRouter || (evmSecret && this.arcFeed ? this.makeArcRouter({ secret: evmSecret, wallet }) : null);
+    if (arcRouter) {
+      try {
+        if (!arcRouter.ready) await arcRouter.init();
+        if (u) u.engine.seedRouterKnowledge("arc"); else for (const inst of this._instrumentsFromDisk(wallet, "arc")) arcRouter.track?.(inst);
+        for (const h of await arcRouter.positions()) {
+          if (!(h.qty >= 1)) continue;
+          const inst = String(h.instrument).toLowerCase(), t = this.arcFeed?.tokens?.get(inst) || null, p = open.get("arc:" + inst);
+          out.usdc.push({ venue: "arc", instrument: inst, qty: h.qty, name: t?.name || p?.reference?.name || "", ticker: t?.ticker || p?.reference?.ticker || "", state: t ? (t.bonded ? "bonded" : "curve") : "unknown", valueUsd: t?.mcapUsd > 0 ? +(h.qty / 1e9 * t.mcapUsd).toFixed(2) : null, tracked: !!p, positionId: p?.id || null, url: (process.env.ARC_TOKEN_URL || "https://explorer.arc.io/token/{ca}").replace("{ca}", inst), explorer: `https://explorer.arc.io/token/${inst}` });
+        }
+      } catch (err) { out.errors.push(`arc: ${err.message}`); }
+    }
     this._holdingsCache.set(wallet, { at: Date.now(), data: out });
     return out;
   }
@@ -582,17 +601,19 @@ export class VelocityHub {
   /** Sell one token the wallet holds, tracked or not, straight through the router. */
   async sellHolding(wallet, { venue, instrument, pct = 100, secret = null, evmSecret = null }) {
     const u = this.users.get(wallet);
-    const inst = venue === "pons" ? String(instrument).toLowerCase() : String(instrument);
+    const inst = venue === "pons" || venue === "arc" ? String(instrument).toLowerCase() : String(instrument);
     const open = u?.engine.store.openPositions(venue).find(p => p.instrument === inst || p.instrument.toLowerCase() === inst.toLowerCase());
     if (open) return this.closePosition(wallet, open.id, pct);
-    const router = venue === "pons" ? (u?.engine.venues.pons?.liveRouter || (evmSecret ? this.makePonsRouter({ secret: evmSecret, wallet }) : null)) : (u?.engine.venues.pumpfun?.liveRouter || (secret ? this.makeLiveRouter({ secret, wallet }) : null));
-    if (!router) return { ok: false, error: venue === "pons" ? "no Robinhood Chain wallet" : "no Solana wallet" };
+    const router = venue === "pons" ? (u?.engine.venues.pons?.liveRouter || (evmSecret ? this.makePonsRouter({ secret: evmSecret, wallet }) : null))
+      : venue === "arc" ? (u?.engine.venues.arc?.liveRouter || (evmSecret ? this.makeArcRouter({ secret: evmSecret, wallet }) : null))
+      : (u?.engine.venues.pumpfun?.liveRouter || (secret ? this.makeLiveRouter({ secret, wallet }) : null));
+    if (!router) return { ok: false, error: venue === "pons" ? "no Robinhood Chain wallet" : venue === "arc" ? "no Arc wallet" : "no Solana wallet" };
     if (!router.ready) await router.init();
-    const price = venue === "pons" ? (this.ponsFeed?.solPrice || 0) : (this.feed?.solPrice || 0);
+    const price = venue === "pons" ? (this.ponsFeed?.solPrice || 0) : venue === "arc" ? 1 : (this.feed?.solPrice || 0);
     let curve = null;
     if (venue === "pons") { try { const scan = JSON.parse(fs.readFileSync(path.join(this.rootDir, wallet, "rh-scan.json"), "utf8")); const c = scan.curves?.[inst]; if (c?.curve && !c.graduated) curve = c.curve; if (!curve && this.ponsFeed?.rpc?.curveFor) { const f = await this.ponsFeed.rpc.curveFor(inst, scan.tokens?.[inst] || []); if (f && !f.graduated) curve = f.curve; } } catch {} }
     const r = await router.close({ id: `sell:${inst}`, instrument: inst, curve }, pct, { reference: { solPrice: price, curve: curve ? { address: curve } : undefined } });
-    u?.engine.log("info", `sell ${inst.slice(0, 10)} (${venue}): ${r?.ok ? `sold for ${(r.fill.sol_received ?? 0).toFixed(venue === "pons" ? 5 : 4)} ${venue === "pons" ? "ETH" : "SOL"}` : `${r?.failure?.code || ""} ${r?.failure?.reason || "failed"}`}`);
+    u?.engine.log("info", `sell ${inst.slice(0, 10)} (${venue}): ${r?.ok ? `sold for ${(r.fill.sol_received ?? 0).toFixed(venue === "pons" ? 5 : 4)} ${QUOTE_OF[venue] || "SOL"}` : `${r?.failure?.code || ""} ${r?.failure?.reason || "failed"}`}`);
     this._holdingsCache.delete(wallet);
     if (u) { try { await u.engine.refreshWallet(); } catch {} }
     return r?.ok ? { ok: true, received: r.fill.sol_received ?? null, proceeds_usd: r.fill.notional_usd ?? null } : { ok: false, error: r?.failure?.reason || "sell failed", code: r?.failure?.code || null };
@@ -604,9 +625,10 @@ export class VelocityHub {
     const at = (venue, inst) => { if (job) job.current = { venue, instrument: inst, at: Date.now() }; };
     const note = (venue, instrument, r, extra = {}) => report.push({ venue, instrument, ok: !!r?.ok, proceeds_usd: r?.fill?.notional_usd ?? null, received: r?.fill?.sol_received ?? null, error: r?.ok ? null : (r?.failure?.reason || "failed"), code: r?.ok ? null : (r?.failure?.code || null), ...extra });
     const doSol = chain === "all" || chain === "sol" || chain === "pumpfun", doEth = (chain === "all" || chain === "eth" || chain === "pons" || chain === "rh") && !!(u?.engine.venues.pons || evmSecret);
+    const doUsdc = (chain === "all" || chain === "usdc" || chain === "arc") && !!(u?.engine.venues.arc || (evmSecret && this.arcFeed));
     // 1. open positions, through the engine, so the ledger and P&L see them
-    if (u) for (const venue of ["pumpfun", "pons"]) {
-      if ((venue === "pumpfun" && !doSol) || (venue === "pons" && !doEth) || !u.engine.venues[venue]) continue;
+    if (u) for (const venue of ["pumpfun", "pons", "arc"]) {
+      if ((venue === "pumpfun" && !doSol) || (venue === "pons" && !doEth) || (venue === "arc" && !doUsdc) || !u.engine.venues[venue]) continue;
       for (const p of u.engine.store.openPositions(venue)) { at(venue, p.instrument); const r = await u.engine.enqueue(() => u.engine.closePosition(p, 100, "USER_SWEEP", { by: "user", detail: "wallet sweep" })); note(venue, p.instrument, r, { position: p.id }); }
     }
     // 2. whatever else the wallets hold, through the routers
@@ -645,6 +667,22 @@ export class VelocityHub {
           u?.engine.log("info", `sweep ${h.instrument.slice(0, 10)}: ${r?.ok ? `sold ${h.qty} tokens for ${(r.fill.sol_received ?? 0).toFixed(5)} ETH` : r?.failure?.reason}`);
         }
       } catch (err) { report.push({ venue: "pons", instrument: null, ok: false, error: err.message }); }
+    }
+    // Arc: whatever else the wallet holds of the tokens this process knows, sold through the pool.
+    const arcRouter = u?.engine.venues.arc?.liveRouter || (evmSecret && this.arcFeed ? this.makeArcRouter({ secret: evmSecret, wallet }) : null);
+    if (doUsdc && arcRouter) {
+      try {
+        if (!arcRouter.ready) await arcRouter.init();
+        if (u) u.engine.seedRouterKnowledge("arc"); else for (const inst of this._instrumentsFromDisk(wallet, "arc")) arcRouter.track?.(inst);
+        for (const h of await arcRouter.positions()) {
+          if (!(h.qty >= 1)) continue;
+          if (report.some(x => x.instrument === h.instrument && x.ok)) continue; // sold above as an open position
+          at("arc", h.instrument);
+          const r = await arcRouter.close({ id: `sweep:${h.instrument}`, instrument: h.instrument }, 100, { reference: { solPrice: 1 } });
+          note("arc", h.instrument, r, { qty: h.qty });
+          u?.engine.log("info", `sweep ${h.instrument.slice(0, 10)}: ${r?.ok ? `sold ${h.qty} tokens for ${(r.fill.sol_received ?? 0).toFixed(2)} USDC` : r?.failure?.reason}`);
+        }
+      } catch (err) { report.push({ venue: "arc", instrument: null, ok: false, error: err.message }); }
     }
     if (job) job.current = null;
     this._holdingsCache.delete(wallet);
@@ -702,7 +740,7 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
   app.post("/api/velocity/sell", requireOwner, async (req, res) => {
     try {
       const { wallet, venue, instrument, pct } = req.body || {};
-      if (!instrument || !["pons", "pumpfun"].includes(venue)) return res.status(400).json({ error: "venue (pons|pumpfun) and instrument required" });
+      if (!instrument || !["pons", "pumpfun", "arc"].includes(venue)) return res.status(400).json({ error: "venue (pons|pumpfun|arc) and instrument required" });
       const tw = await getTradingWallet(wallet);
       if (!tw?.secret) return res.status(400).json({ error: "No trading wallet" });
       res.json(await hub.sellHolding(wallet, { venue, instrument, pct: Number(pct) || 100, secret: tw.secret, evmSecret: tw.evmSecret || null }));
