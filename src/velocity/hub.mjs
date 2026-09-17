@@ -754,6 +754,9 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
   app.post("/api/velocity/ack-daily-limit", requireOwner, async (req, res) => { try { res.json(await hub.acknowledgeDailyLimit(req.body.wallet)); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.post("/api/velocity/halt", requireOwner, async (req, res) => { try { res.json(await hub.halt(req.body.wallet, req.body.mode === "freeze" ? "freeze" : "flatten")); } catch (e) { res.status(500).json({ error: e.message }); } });
   app.get("/api/velocity/status", requireOwner, (req, res) => res.json({ ok: true, ...hub.status(req.query.wallet), narration: hub.narration(req.query.wallet, 40) }));
+  // The health route is public, so a feed's error text stays out of it: an RPC error can quote the
+  // request URL, key and all.
+  const pub = s => { const { lastError, lastHydrateError, ...rest } = s || {}; return rest; };
   app.get("/api/velocity/pulse", (req, res) => { res.set("Cache-Control", "public, max-age=10"); res.json({ ok: true, ...hub.pulse() }); });
   // The public track record. Rows carry the token, the tx and the result; never a wallet or a user.
   app.get("/api/callouts", (req, res) => {
@@ -762,5 +765,5 @@ export function mountVelocityRoutes(app, { hub, requireOwner, getTradingWallet }
     const s = hub.callouts.status();
     res.json({ ok: true, calls: hub.callouts.feed(limit), record: hub.callouts.record(), channels: s.channels, minTier: s.minTier });
   });
-  app.get("/api/velocity/health", (req, res) => res.json({ ok: true, users: hub.list().length, feeConfigured: hub.feeOk, feed: hub.feed.status?.() || null, pons: hub.ponsFeed ? { ...(hub.ponsFeed.status?.() || {}), tokens: hub.ponsFeed.tokens?.size ?? null, ethPrice: hub.ponsFeed.solPrice, feeConfigured: !!hub.platformEvmWallet } : null, arc: hub.arcFeed ? { ...(hub.arcFeed.status?.() || {}), tokens: hub.arcFeed.tokens?.size ?? null, feeConfigured: !!hub.platformEvmWallet } : null, callouts: hub.callouts.record() }));
+  app.get("/api/velocity/health", (req, res) => res.json({ ok: true, users: hub.list().length, feeConfigured: hub.feeOk, feed: pub(hub.feed.status?.()), pons: hub.ponsFeed ? { ...pub(hub.ponsFeed.status?.()), tokens: hub.ponsFeed.tokens?.size ?? null, ethPrice: hub.ponsFeed.solPrice, feeConfigured: !!hub.platformEvmWallet } : null, arc: hub.arcFeed ? { ...pub(hub.arcFeed.status?.()), tokens: hub.arcFeed.tokens?.size ?? null, feeConfigured: !!hub.platformEvmWallet } : null, callouts: hub.callouts.record() }));
 }
