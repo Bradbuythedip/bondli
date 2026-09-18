@@ -21,6 +21,22 @@ export const EXIT_PLANS = Object.freeze({
     1: Object.freeze({ key: 1, label: "GOD_CANDLE", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 30 * MIN, doa_ms: 30 * SEC, stall_ms: 4 * MIN, stall_band_pct: 10 }),
     2: Object.freeze({ key: 2, label: "STRONG", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 15 * MIN, doa_ms: 20 * SEC, stall_ms: 3 * MIN, stall_band_pct: 8 }),
     3: Object.freeze({ key: 3, label: "SPECULATIVE", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 10 * MIN, doa_ms: 12 * SEC, stall_ms: 2 * MIN, stall_band_pct: 8 }),
+    // THE FIRST DIP (src/api/dip.mjs). A launch entry is bought seconds after the create, when the
+    // only thing that has moved the price is the crowd arriving, and every exit below then fires on
+    // noise: the measured stretch that prompted this closed nine positions, lost on all nine, and
+    // spread the losses across stall, fade-trim, stop, crash and dead-on-arrival alike. A dip entry
+    // starts from proof instead -- the token ran on someone else's money, gave some back, and is
+    // being bought again -- so its plan is the opposite shape.
+    // No doa_ms: the crowd came already, that is the premise, and cutting at twenty seconds because
+    // nobody NEW arrived would sell the pause between two waves. The stall window is long and its
+    // band narrow, so dead money is still freed but a dip that takes ten minutes to turn is not.
+    // The stop is wider because a dip entry's risk is the dip low, not a launch's 10%.
+    dip: Object.freeze({ key: "dip", label: "FIRST_DIP", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 45 * MIN, stop_pct: 14, tier: 3, doa_ms: null, stall_ms: 10 * MIN, stall_band_pct: 6 }),
+    // The same entry on a token whose curve is filling toward completion: the one worth sitting
+    // through noise for, because the event it is walking toward is real and is not priced yet. No
+    // stall at all (waiting IS the position), three hours of hold, and a stop wide enough that the
+    // ordinary shake on the way up cannot take it out.
+    dip_hold: Object.freeze({ key: "dip_hold", label: "DIP_TO_COMPLETION", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 180 * MIN, stop_pct: 18, tier: 2, doa_ms: null, stall_ms: null, stall_band_pct: 6 }),
     // A revival moves faster on the way down than a launch: tier-3 layers with a tighter stop, a
     // shorter hold, and half the per-trade cap (stake_cap_fraction is read by the sizer).
     revival: Object.freeze({ key: "revival", label: "REVIVAL", mode: "bondli_layers", worst_case_fraction: 1.0, max_hold_ms: 6 * MIN, stop_pct: 8, tier: 3, stake_cap_fraction: 0.5, doa_ms: 10 * SEC, stall_ms: 1.5 * MIN, stall_band_pct: 8 }),

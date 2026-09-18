@@ -56,7 +56,7 @@ test("T25: a fill reaches the callouts through the hub with the buy tx on it; th
   // Every close reports by position, paper flagged, releases included, so another engine's close of the same token is never this call's result.
   assert.match(HUB, /engine\.on\("outcome", \(\{ position: p, pnl \}\) => \{ this\.callouts\.onOutcome\(\{ position: p, pnl, instrument: p\.instrument, positionId: p\.id, paper: !!p\.paper, reason: p\.exitReason \}\)\.catch\(\(\) => \{\}\); \}\);/);
   assert.match(HUB, /engine\.on\("released", \(\{ position: p \}\) => \{ this\.callouts\.onOutcome\(\{ position: p, pnl: null, instrument: p\.instrument, positionId: p\.id, paper: !!p\.paper, reason: "RELEASED" \}\)/);
-  assert.match(SITE, /callouts: calls \}\);/, "the site sends the choice");
+  assert.match(SITE, /callouts: calls, entries: dipsOnly \? "dips" : "all" \}\);/, "the site sends the choice");
   // The toggle's words live in the dictionary under panel.*; the site reads them by key.
   assert.match(SITE, /\{t\("panel\.publicCalls"\)\}\{calls \? t\("panel\.on"\) : ""\}/);
   assert.match(I18N, /"panel\.publicCalls": "Public calls"/);
@@ -84,7 +84,7 @@ test("T25: a fill reaches the callouts through the hub with the buy tx on it; th
 
 test("T25: the Arc venue is built in hub.start the way PONS is, on the same EVM key, and every wallet path knows it", () => {
   assert.match(HUB, /const arc = !!settings\.arc && !!this\.arcFeed && !!evmSecret;/);
-  assert.match(HUB, /if \(arc\) venues\.arc = \{ mode: "paper", feed: new SharedFeedView\(this\.arcFeed, \{ clock: this\.clock \}\), edge: makePumpfunEdge\(\{ venue: "arc", aggression \}\), router: new ArcPaperRouter\(/);
+  assert.match(HUB, /if \(arc\) venues\.arc = \{ mode: "paper", feed: new SharedFeedView\(this\.arcFeed, \{ clock: this\.clock \}\), edge: makePumpfunEdge\(\{ venue: "arc", aggression, entries \}\), router: new ArcPaperRouter\(/);
   assert.match(HUB, /const wanted = \[pumpfun && "pumpfun", pons && "pons", arc && "arc"\]\.filter\(Boolean\);/);
   assert.match(HUB, /!\["pons", "pumpfun", "arc"\]\.includes\(venue\)/, "the sell route accepts arc");
   assert.match(HUB, /for \(const venue of \["pumpfun", "pons", "arc"\]\)/, "the sweep closes arc positions through the engine");

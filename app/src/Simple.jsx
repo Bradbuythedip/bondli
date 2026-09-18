@@ -374,7 +374,7 @@ function Live({ T, agg }) {
       <span style={muted}>{d.bots != null ? t("live.bots", { n: d.bots }) : ""}</span>
     </div>
     <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-      {[["live.launched", d.hour.launches, "tx"], ["live.buyzone", d.hour.hot, "gn"], ["live.robinhood", d.hour.robinhood ?? 0, "dm"], ...(d.hour.arc > 0 ? [["live.arc", d.hour.arc, "dm"]] : []), ["live.mayhem", d.hour.mayhem, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 22, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{t.has(l) ? t(l) : l}</div></div>)}
+      {[["live.launched", d.hour.launches, "tx"], ["live.buyzone", d.hour.hot, "gn"], ["live.robinhood", d.hour.robinhood ?? 0, "dm"], ...(d.hour.arc > 0 ? [["live.arc", d.hour.arc, "dm"]] : []), ...(d.hour.dips > 0 ? [["live.dips", d.hour.dips, "gn"]] : []), ...(d.hour.nearGrad > 0 ? [["live.neargrad", d.hour.nearGrad, "gn"]] : []), ["live.mayhem", d.hour.mayhem, "ft"]].map(([l, n, c]) => <div key={l} style={{ flex: 1, background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 10, padding: "8px 0", textAlign: "center" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 22, color: T[c] }}>{n}</div><div style={{ ...muted, fontSize: 10, textTransform: "uppercase", letterSpacing: ".06em" }}>{t.has(l) ? t(l) : l}</div></div>)}
     </div>
     {d.revivals?.length > 0 && <>
       <div style={{ ...muted, marginBottom: 6 }}>{t("live.revivals")}</div>
@@ -383,6 +383,12 @@ function Live({ T, agg }) {
     {d.cooking?.length > 0 && <>
       <div style={{ ...muted, marginBottom: 6 }}>{t("live.cooking")}</div>
       <div style={{ background: T.sf + "f5", border: `1px solid ${T.yl}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.cooking.map(x => rowOf(x))}</div>
+    </>}
+    {/* The end of the curve is the one number on a launchpad that cannot be washed: it moves only
+        when real money is deposited. Ordered by how soon it gets there at the pace it is filling. */}
+    {d.graduating?.length > 0 && <>
+      <div style={{ ...muted, marginBottom: 6 }}>{t("live.graduating")}</div>
+      <div style={{ background: T.sf + "f5", border: `1px solid ${T.gn}55`, borderRadius: 12, overflow: "hidden", marginBottom: 14 }}>{d.graduating.map(x => rowOf(x))}</div>
     </>}
     <div style={{ ...muted, marginBottom: 6, display: "flex", justifyContent: "space-between" }}><span>{t("live.hour", { level: aggL(t, d.aggression ?? agg) })}</span><span>{t("live.tap")}</span></div>
     <div style={{ background: T.sf + "f5", border: `1px solid ${T.bd}`, borderRadius: 12, overflow: "hidden" }}>
@@ -394,7 +400,7 @@ function Live({ T, agg }) {
         <TokenImg src={tok.image} ca={tok.ca} label={initial} size={56} T={T} />
         <div style={{ minWidth: 0 }}>
           <div style={{ display: "flex", gap: 8, alignItems: "baseline", minWidth: 0 }}><span style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{tok.name || tok.ca.slice(0, 6)}</span><span style={{ ...muted, fontFamily: M, whiteSpace: "nowrap" }}>{tok.ticker}</span>{(tok.chain === "robinhood" || tok.chain === "arc") && <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: ".05em", color: BLUE, background: CHIP_TINT, padding: "1px 5px", borderRadius: 4, whiteSpace: "nowrap" }}>{tok.chain === "arc" ? "ARC" : "RH"}</span>}</div>
-          <div style={{ ...muted, fontFamily: M, fontSize: 12, marginTop: 2 }}>{ago(now - tok.createdAt, t)} · {kfmt(tok.mcapUsd)} · {t("live.buyers", { n: tok.buyers })}{tok.smart > 0 ? t("live.smart", { n: tok.smart }) : ""}{tok.wave ? t("live.wave", { n: tok.copies, state: t(tok.wave.rising ? "live.wave.building" : tok.wave.fading ? "live.wave.fading" : "live.wave.steady") }) : tok.copies ? t("live.copies", { n: tok.copies }) : ""}{revival && tok.revival ? t("live.revival", { a: tok.revival.buyers5m, b: tok.revival.baseline5m }) : ""}{!revival && tok.slowCook ? t("live.slowCook", { n: tok.slowCook.buyers, m: tok.slowCook.windowMin, d: tok.slowCook.curveDelta }) : ""}{tok.why ? ` · ${tok.why.toLowerCase().replace(/_/g, " ")}` : ""}</div>
+          <div style={{ ...muted, fontFamily: M, fontSize: 12, marginTop: 2 }}>{ago(now - tok.createdAt, t)} · {kfmt(tok.mcapUsd)} · {t("live.buyers", { n: tok.buyers })}{tok.smart > 0 ? t("live.smart", { n: tok.smart }) : ""}{tok.wave ? t("live.wave", { n: tok.copies, state: t(tok.wave.rising ? "live.wave.building" : tok.wave.fading ? "live.wave.fading" : "live.wave.steady") }) : tok.copies ? t("live.copies", { n: tok.copies }) : ""}{revival && tok.revival ? t("live.revival", { a: tok.revival.buyers5m, b: tok.revival.baseline5m }) : ""}{!revival && tok.slowCook ? t("live.slowCook", { n: tok.slowCook.buyers, m: tok.slowCook.windowMin, d: tok.slowCook.curveDelta }) : ""}{tok.why ? ` · ${tok.why.toLowerCase().replace(/_/g, " ")}` : ""}{tok.dip?.on ? t("live.dipped", { n: Math.round(tok.dip.drawdownPct) }) : ""}{tok.hold ? t("live.worthholding") : ""}{tok.grad?.pct >= .5 ? ` · ${t("live.curve", { pct: Math.round(tok.grad.pct * 100) })}${tok.grad.stalled ? t("live.stalled") : tok.grad.etaMin != null ? t("live.eta", { n: tok.grad.etaMin }) : ""}` : ""}</div>
         </div>
         <Spark v={tok.spark} T={T} w={100} h={30} />
         <div style={{ textAlign: "right" }}><div style={{ fontFamily: M, fontWeight: 900, fontSize: 18, color: tok.score >= 60 ? T.gn : tok.score >= 40 ? T.tx : T.ft }}>{dim || !tok.score ? "" : tok.score}</div><div style={{ fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: ".05em", color: T[c], whiteSpace: "nowrap" }}>{label}</div></div>
@@ -559,6 +565,9 @@ export default function Simple() {
   const [paper, sPaper] = useState(() => { try { return localStorage.getItem("bondli_paper") === "1"; } catch { return false; } });
   // Public calls: off unless they say so. A call links the buy transaction, and the transaction names this bot's wallet.
   const [calls, sCalls] = useState(() => { try { return localStorage.getItem("bondli_callouts") === "1"; } catch { return false; } });
+  // Entries: a launch is bought on a create event, a dip after the token proved itself. The launch
+  // entry is the one that has been losing money, and this is how the operator turns it off.
+  const [dipsOnly, sDips] = useState(() => { try { return localStorage.getItem("bondli_dips") === "1"; } catch { return false; } });
   const [copied, sCopied] = useState(false);
   const narRef = useRef(null);
   const running = !!st?.running;
@@ -601,12 +610,13 @@ export default function Simple() {
       // must not be sized against SOL they never funded, or against SOL they are keeping out of it.
       try { localStorage.setItem("bondli_paper", paper ? "1" : "0"); } catch {}
       try { localStorage.setItem("bondli_callouts", calls ? "1" : "0"); } catch {}
+      try { localStorage.setItem("bondli_dips", dipsOnly ? "1" : "0"); } catch {}
       const usePump = chainsOn.pumpfun, usePons = chainsOn.pons, useArc = chainsOn.arc;
       // Paper has no wallet to size against, so it gets a stated bankroll: enough to run the same
       // four positions at the chosen stake, which is what makes the result comparable to going live.
       const bank = paper ? Math.max(100, size * 20)
         : (usePump ? (tw?.solBalance || 0) * 200 : 0) + (usePons ? (tw?.ethBalance || 0) * 3000 : 0) + (useArc ? (tw?.usdcBalance || 0) : 0);
-      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round(bank)), pumpfun: usePump, pons: usePons, arc: useArc, paper, callouts: calls });
+      const r = await a.vst(pk, { aggression: agg, perTradeMaxUsd: size, maxPositions: 4, dailyLossUsd: Math.max(15, size * 3), bankrollUsd: Math.max(20, Math.round(bank)), pumpfun: usePump, pons: usePons, arc: useArc, paper, callouts: calls, entries: dipsOnly ? "dips" : "all" });
       if (!r.ok) say(r.error || t("toast.noStart"), "error"); else sSt(r);
     } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
   };
@@ -771,6 +781,15 @@ export default function Simple() {
           <span style={{ minWidth: 0 }}>
             <span style={{ fontWeight: 800, fontSize: 14, color: calls ? T.gn : T.tx }}>{t("panel.publicCalls")}{calls ? t("panel.on") : ""}</span>
             <div style={{ ...muted, marginTop: 2 }}>{t("panel.publicCallsDesc")}</div>
+          </span>
+        </div>
+        <div onClick={() => sDips(v => !v)} style={{ marginTop: 8, padding: "10px 12px", borderRadius: 10, border: `1px solid ${dipsOnly ? T.gn : T.bd}`, background: dipsOnly ? T.gn + "14" : "transparent", display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+          <span style={{ width: 34, height: 20, borderRadius: 10, background: dipsOnly ? T.gn : T.bd, flexShrink: 0, position: "relative", marginTop: 1 }}>
+            <span style={{ position: "absolute", top: 2, left: dipsOnly ? 16 : 2, width: 16, height: 16, borderRadius: "50%", background: dipsOnly ? "#000" : T.ft, transition: "left .15s" }} />
+          </span>
+          <span style={{ minWidth: 0 }}>
+            <span style={{ fontWeight: 800, fontSize: 14, color: dipsOnly ? T.gn : T.tx }}>{t("panel.dips")}{dipsOnly ? " · on" : ""}</span>
+            <div style={{ ...muted, marginTop: 2 }}>{t("panel.dipsDesc")}</div>
           </span>
         </div>
         {!funded && <div style={{ ...muted, marginTop: 8 }}>{t("panel.fund", { sol: MIN_BANKROLL_SOL, eth: MIN_BANKROLL_ETH, usdc: MIN_BANKROLL_USDC, drag: dragPct(SIZES[0], st?.status?.solPrice || 0).toFixed(0), good: GOOD_BANKROLL_SOL })}{t("panel.have", { sol: tw?.solBalance || 0, eth: tw?.ethBalance || 0 })}</div>}

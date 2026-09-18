@@ -828,7 +828,7 @@ export class Engine extends EventEmitter {
     this.inflight.delete(inst);
     if (!r.ok) {
       this.ledger.append({ kind: "order", venue, orderId, decisionId: decision.id, stage: r.unwound ? "unwound" : "failed", reason: r.failure.reason, code: r.failure.code, venue_ref: r.failure.venue_ref || null, unwound: r.unwound || null });
-      if (r.unwound) this.ledger.append({ kind: "outcome", venue, instrument: inst, decisionId: decision.id, pnl_usd: -(r.unwound.reduce((s, u) => s + (u.failed ? 0 : Math.max(0, (u.stake_usd || 0) - (u.notional_usd || 0))), 0)), pnl_pct: 0, stake_usd: stake, p_win: decision.p_win, confidence: decision.confidence, model: decision.model, tier: decision.tier, held_ms: 0, reason: "LEG_UNWOUND", paper: !!(r.unwound[0]?.paper) });
+      if (r.unwound) this.ledger.append({ kind: "outcome", venue, instrument: inst, decisionId: decision.id, pnl_usd: -(r.unwound.reduce((s, u) => s + (u.failed ? 0 : Math.max(0, (u.stake_usd || 0) - (u.notional_usd || 0))), 0)), pnl_pct: 0, stake_usd: stake, p_win: decision.p_win, confidence: decision.confidence, model: decision.model, tier: decision.tier, plan_key: decision.plan_key ?? null, held_ms: 0, reason: "LEG_UNWOUND", paper: !!(r.unwound[0]?.paper) });
       // A venue failure is not retried on the next poll: the candidate re-emits every few seconds
       // and each on-chain failure costs the priority fee.
       // REVERT is a dry run the pool refused; nothing about it changes on the next re-emit seconds later.
@@ -1064,7 +1064,7 @@ export class Engine extends EventEmitter {
       // imaginary gains.
       if (f.paper) { this.store.state.day.paperRealizedUsd = +(this.store.state.day.paperRealizedUsd + pnl).toFixed(4); this.store.state.day.paperTrades++; }
       else { this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4); this.store.state.day.trades++; }
-      this.ledger.append({ kind: "outcome", venue, instrument: p.instrument, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: held, reason, features: p.features, paper: !!f.paper, by, flat_at_venue: flat || undefined });
+      this.ledger.append({ kind: "outcome", venue, instrument: p.instrument, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, plan_key: p.plan?.key ?? null, held_ms: held, reason, features: p.features, paper: !!f.paper, by, flat_at_venue: flat || undefined });
       // How long before this mint may be bought again depends on WHY we left. A stop loss, a crash or
       // a rug is a judgement that the token is bad, and five minutes is right. DOA and STALL are not:
       // they say nothing was happening YET. Holding those out for five minutes turns a cheap step
@@ -1213,7 +1213,7 @@ export class Engine extends EventEmitter {
         this.ledger.append({ kind: "exit", venue, positionId: p.id, decisionId: p.decisionId, instrument: inst, pct: 100, reason: "MISSING_AT_VENUE", price: 0, qty: p.remaining_qty ?? p.qty, proceeds_usd: 0, fee_usd: 0, final: true, by: "reconcile" });
         this.store.closePosition(p.id, { exitReason: "MISSING_AT_VENUE", pnl_usd: pnl, remaining_qty: 0 });
         if (!p.paper) { this.store.rollDay(); this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + pnl).toFixed(4); this.store.state.day.trades++; }
-        this.ledger.append({ kind: "outcome", venue, instrument: inst, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, held_ms: this.clock() - p.entryTime, reason: "MISSING_AT_VENUE", reconciled: true, paper: !!p.paper });
+        this.ledger.append({ kind: "outcome", venue, instrument: inst, positionId: p.id, decisionId: p.decisionId, pnl_usd: pnl, pnl_pct: p.cost_usd > 0 ? +((pnl / p.cost_usd) * 100).toFixed(2) : 0, stake_usd: p.stake_usd, p_win: p.p_win, confidence: p.confidence, model: p.model, tier: p.tier, plan_key: p.plan?.key ?? null, held_ms: this.clock() - p.entryTime, reason: "MISSING_AT_VENUE", reconciled: true, paper: !!p.paper });
         this.emit("outcome", { position: p, pnl }); // the hub's fee and record hooks hear this close like any other
         rep.closed.push(inst);
       }

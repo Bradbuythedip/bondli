@@ -18,6 +18,7 @@
 // beside it as `activeLiquidity` for the record.
 import { JsonRpcProvider, Contract, zeroPadValue } from "ethers";
 import { Feed, errorText } from "../../core/feed.mjs";
+import { pushTrack, dipSignal, gradSignal } from "../../../api/dip.mjs";
 // Score, features and dynamics read only the per-token state every EVM launchpad feed keeps
 // (trades with full wallets, buyers, spark, mcap), nothing chain-specific: imported, not copied.
 import { Dynamics, quickFeatures, scoreToken } from "../pons/feed.mjs";
@@ -389,7 +390,11 @@ export class ArcFeed extends Feed {
       }
     }
     t._curvePct = t.progress; // never 1 for "graduated": there is no graduation on this venue
-    if (t.mcapUsd > 0) { t.spark.push(t.mcapUsd); if (t.spark.length > 60) t.spark = t.spark.slice(-60); }
+    if (t.mcapUsd > 0) {
+      t.spark.push(t.mcapUsd); if (t.spark.length > 60) t.spark = t.spark.slice(-60);
+      // The time-stamped track the first-dip read needs (src/api/dip.mjs); the sparkline has no clock on it.
+      pushTrack(t._track || (t._track = []), this.clock(), t.mcapUsd, { cv: t._curvePct });
+    }
   }
 
   /** Taxes and ticks from the hook once, the pool's price and liquidity every time, names once. */
@@ -439,6 +444,9 @@ export class ArcFeed extends Feed {
     t._apeScore = scoreToken(t, qf, now); t._scoredAt = now;
     const dynamics = this.dyn.record(t.ca, t._apeScore, now);
     t._lastQf = qf; t._lastDyn = dynamics;
+    // The same second entry the radar offers on Solana: ran, gave some back, is being bought again.
+    t._grad = gradSignal(t, { now, pctNow: t._curvePct });
+    t._dip = dipSignal(t, { now });
     const { uniqueBuyers, trades, ...rest } = t;
     // An adopted token whose hook never said when it launched has a placeholder createdAt, not an
     // age; the router already declines to price a snipe window it cannot measure, and the payload says the same.
