@@ -693,3 +693,16 @@ test("T11: Arc trades on the same EVM key with USDC as the quote; its open posit
     assert.equal(sold.ok, true); assert.ok(routers.arc.closed.includes("0xstray"), "sold through the Arc router, address lower-cased");
   } finally { await hub.stopAll(); await feed.stop(); await arcFeed.stop(); }
 });
+
+test("T11: the hub tells the activity gate how many bots run, on every start and stop", async () => {
+  const feed = new ScriptedFeed({ venue: "pumpfun", script: [] }); feed.solPrice = 100; await feed.start();
+  const counts = [];
+  const hub = new VelocityHub({ feed, rootDir: tmp(), platformWallet: "P", fee: feeDeps(), onUsers: n => counts.push(n), makeLiveRouter: ({ secret, wallet }) => new FakeLive({ secret, wallet }), log: { log() {}, error() {}, warn() {} } });
+  try {
+    assert.equal((await hub.start({ wallet: "A", secret: "s", settings: { bankrollUsd: 100, paper: true } })).ok, true);
+    assert.equal((await hub.start({ wallet: "B", secret: "s", settings: { bankrollUsd: 100, paper: true } })).ok, true);
+    await hub.stop("A");
+    assert.deepEqual(counts, [1, 2, 1]);
+  } finally { await hub.stopAll(); await feed.stop(); }
+  assert.deepEqual(counts, [1, 2, 1, 0], "stopAll reports zero: the gate can idle");
+});

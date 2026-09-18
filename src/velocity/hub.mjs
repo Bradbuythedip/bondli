@@ -139,8 +139,11 @@ export class VelocityHub {
    * @param fee         { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser }
    * @param makeLiveRouter  ({ secret }) => router; tests inject a double
    */
-  constructor({ feed, ponsFeed = null, arcFeed = null, rootDir, platformWallet, platformEvmWallet = null, fee, feePct = null, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, makePonsRouter = null, makeArcRouter = null, callouts = null, clock = () => Date.now(), log = console }) {
-    this.feed = feed; this.ponsFeed = ponsFeed; this.arcFeed = arcFeed; this.rootDir = rootDir; this.platformWallet = platformWallet || null; this.platformEvmWallet = platformEvmWallet || null; this.fee = fee; this.rpcUrl = rpcUrl;
+  constructor({ feed, ponsFeed = null, arcFeed = null, rootDir, platformWallet, platformEvmWallet = null, fee, feePct = null, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, makePonsRouter = null, makeArcRouter = null, callouts = null, onUsers = null, clock = () => Date.now(), log = console }) {
+    this.feed = feed; this.ponsFeed = ponsFeed; this.arcFeed = arcFeed; this.rootDir = rootDir;
+    // The activity gate asks how many bots run, on every change.
+    this.onUsers = typeof onUsers === "function" ? onUsers : null;
+    this.platformWallet = platformWallet || null; this.platformEvmWallet = platformEvmWallet || null; this.fee = fee; this.rpcUrl = rpcUrl;
     this.makePonsRouter = makePonsRouter || (({ secret }) => new PonsLiveRouter({ secret, clock }));
     // Arc signs with the same EVM key as Robinhood Chain: one 0x address, two chains, two balances.
     this.makeArcRouter = makeArcRouter || (({ secret }) => new ArcLiveRouter({ secret, rpcUrl: process.env.ARC_RPC_URL || null, clock }));
@@ -273,6 +276,7 @@ export class VelocityHub {
     }
     sup.start();
     this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, pons, arc, pumpfun, paper, callouts }, startedAt: this.clock() });
+    this.onUsers?.(this.users.size);
     // Once a minute, the funnel in the server log: what the candidates hit. The first place to look when nothing fills.
     const fun = setInterval(() => { try { const f = engine.funnel(); this.log.log?.(`[velocity ${wallet.slice(0, 8)}] funnel 10m: judged ${f.judged} (${f.distinct} tokens) go ${f.gos} filled ${f.filled} | ${Object.entries(f.gates).map(([g, n]) => `${g} ${n}`).join(", ") || "no rejects"} | top: ${f.top.map(x => `${x.k} ${x.n}`).join("; ")}${f.sized0 ? ` | no size: ${JSON.stringify(f.sized0)}` : ""}${f.failed ? ` | failed: ${JSON.stringify(f.failed)}` : ""}`); } catch {} }, 60_000);
     fun.unref?.(); this.users.get(wallet).fun = fun;
@@ -311,6 +315,7 @@ export class VelocityHub {
     u.sup.stop(); clearInterval(u.fun);
     await u.engine.stop();
     this.users.delete(wallet);
+    this.onUsers?.(this.users.size);
     return { ok: true, closed: result?.closed?.length || 0, failed: result?.failed || [] };
   }
 

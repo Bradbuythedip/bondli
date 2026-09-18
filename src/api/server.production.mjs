@@ -51,6 +51,7 @@ import { DEFAULT_RPC_URL as PONS_DEFAULT_RPC, CHAIN_ID as PONS_CHAIN_ID } from "
 import { Wallet as EvmWallet, JsonRpcProvider as EvmProvider, formatEther, parseEther } from "ethers";
 import { CHAIN_ID as ARC_CHAIN_ID, DEFAULT_RPC_URL as ARC_DEFAULT_RPC } from "../velocity/venues/arc/chain.mjs";
 import { ArcFeed } from "../velocity/venues/arc/feed.mjs";
+import { ActivityGate } from "./activity.mjs";
 // Robinhood Chain: one provider for balances and withdrawals; the PONS feed and routers have their own.
 const ponsProvider = new EvmProvider(process.env.PONS_RPC_URL || PONS_DEFAULT_RPC, { chainId: PONS_CHAIN_ID, name: "robinhood" }, { staticNetwork: true });
 // Arc: the same EVM key the user already has for Robinhood Chain works here -- one 0x address, two
@@ -149,6 +150,11 @@ async function fastSend(connection, tx, signers) {
 const REDIS_URL = process.env.REDIS_URL || null;
 // No default: an admin route on a deploy without the variable is closed, not open to a well-known word.
 const ADMIN_SECRET = process.env.ADMIN_SECRET || null;
+// Nothing outside is polled unless someone is trading (src/api/activity.mjs). Every module-level
+// poller below goes through gated(), and the feeds and streams start on the first bot and stop after
+// the grace. ALWAYS_ON=1 keeps the old behaviour for an operator who wants the radar warm at all times.
+const activity = new ActivityGate({ graceMs: (parseInt(process.env.ACTIVITY_GRACE_MIN || "10") || 10) * 60_000, alwaysOn: process.env.ALWAYS_ON === "1" });
+const gated = (fn) => (...a) => activity.active() ? fn(...a) : undefined;
 const DEFAULT_REFERRAL_CODE = "ilikethetech"; // owner's referral code — applied to all new users unless they have another referrer
 // PumpPortal requires an API key (its wallet funded with >= 0.02 SOL) for
 // subscribeTokenTrade since 2025. Without it the radar sees creates but no trades.
@@ -409,10 +415,10 @@ if (redis) {
 }
 
 // Persist artwork scanner every 10 min
-setInterval(async () => {
+setInterval(gated(async () => {
   if (!redis) return;
   try { await redis.set("intel:artwork", JSON.stringify(artworkScanner.export()), { EX: 604800 }); } catch {}
-}, 10 * 60 * 1000);
+}), 10 * 60 * 1000);
 
 // ═══ WALLET AGE CACHE — check how old buyer wallets are on-chain ═══
 // Aged wallets = real users. Fresh wallets = likely dev sybils.
@@ -616,11 +622,11 @@ async function enrichDevCredibility(token) {
 }
 
 // Clean dev cred caches periodically
-setInterval(() => {
+setInterval(gated(() => {
   const now = Date.now();
   for (const [k, v] of devCredCache) { if (now - v.ts > 600000) devCredCache.delete(k); }
   for (const [k, v] of nameCheckCache) { if (now - v.ts > 1200000) nameCheckCache.delete(k); }
-}, 300000);
+}), 300000);
 
 // Register owner wallet
 if (process.env.OWNER_WALLET) registerOwner(process.env.OWNER_WALLET);
@@ -666,7 +672,7 @@ async function pollSolPrice() {
   console.warn(`[sol-price] every source failed; serving ${solUsdPrice} from ${solUsdPriceAt ? new Date(solUsdPriceAt).toISOString() : "the default"}`);
 }
 pollSolPrice();
-setInterval(pollSolPrice, 60000); // 60s — SOL price doesn't move fast enough to justify 30s
+setInterval(gated(pollSolPrice), 60000); // 60s — SOL price doesn't move fast enough to justify 30s
 
 // ═══════════════════════════════════════
 // DEXSCREENER BOOST POLLER — paid/boosted token detection
@@ -696,7 +702,7 @@ async function pollDexBoosted() {
   } catch {}
 }
 pollDexBoosted();
-setInterval(pollDexBoosted, 120000); // every 2 min
+setInterval(gated(pollDexBoosted), 120000); // every 2 min
 
 // ═══════════════════════════════════════
 // PUMPPORTAL WEBSOCKET — RADAR ENGINE (v2)
@@ -743,10 +749,10 @@ function noteWalletTrade(wallet8, ca, now) {
   }
   return false;
 }
-setInterval(() => {
+setInterval(gated(() => {
   const now = Date.now();
   for (const [k, w] of radar.walletTokens) if (now - w.last > HUB_WINDOW_MS) radar.walletTokens.delete(k);
-}, 60_000);
+}), 60_000);
 
 // ═══ SMART WALLET LABELING ═══
 // Track which wallets historically pick winners, weight their buys 3-5x in scoring
@@ -997,6 +1003,7 @@ async function fetchTokenImageOnce(ca, uri, attempt = 0) {
 }
 
 function connectPumpPortal() {
+  if (!activity.active()) return; // nobody is trading: no socket
   try {
     radar.ws = new WebSocket(PUMPPORTAL_WS_URL);
 
@@ -1052,8 +1059,9 @@ function connectPumpPortal() {
     });
 
     radar.ws.on("close", () => {
-      console.log("[RADAR] WS disconnected — reconnecting in 5s");
       radar.subscribedTokens.clear();
+      if (!activity.active()) { console.log("[RADAR] WS closed: idle"); radar.ws = null; return; }
+      console.log("[RADAR] WS disconnected — reconnecting in 5s");
       setTimeout(connectPumpPortal, 5000);
       radar.reconnects++;
     });
@@ -1176,7 +1184,7 @@ function flushSubscriptions() {
     sendSubscribeKeys([...radar.subscribedTokens].filter(k => radar.tokens.has(k)), "resync");
   }
 }
-setInterval(flushSubscriptions, SUB_FLUSH_MS);
+setInterval(gated(flushSubscriptions), SUB_FLUSH_MS);
 
 // ═══ TRADE SOURCE — PumpPortal (keyed, metered) or on-chain logsSubscribe (free) ═══
 // PumpPortal meters its trade stream (about 0.01 SOL per 10,000 events) and refuses
@@ -1203,6 +1211,7 @@ function onchainForward(msg) {
   processRadarMessage(msg);
 }
 function chooseTradeSource() {
+  if (!activity.active()) { if (radar._onchain) { radar._onchain.stop().catch(() => {}); radar._onchain = null; radar._tradeSource = null; } return; }
   const forced = tradeSourceMode();
   const lastSignal = Math.max(radar._lastPortalTradeAt || 0, radar._connectedAt || 0);
   const portalDead = radar._tradeSubsRefused || (radar.subscribedTokens.size > 0 && Date.now() - lastSignal > 90_000);
@@ -1220,7 +1229,7 @@ function chooseTradeSource() {
   }
   if (want === "pumpportal" && radar._onchain) { radar._onchain.stop().catch(() => {}); radar._onchain = null; }
 }
-setInterval(chooseTradeSource, 15_000);
+setInterval(gated(chooseTradeSource), 15_000);
 setTimeout(chooseTradeSource, 3_000);
 
 // After (re)connect, every token still on the radar must be subscribed again.
@@ -1588,7 +1597,7 @@ const gradWatchlist = new Map(); // ca → { name, ticker, gradMcap, gradTime, s
 const GRAD_WATCH_TTL = 86400000; // 24h
 
 // Periodically refresh MC for all graduated tokens (every 10s — batched so only 1-2 requests)
-setInterval(async () => {
+setInterval(gated(async () => {
   // Batch refresh all graduated radar tokens in one request
   const graduatedMints = [...radar.tokens.entries()].filter(([, t]) => t.graduated).map(([ca]) => ca);
   await batchRefreshMcap(graduatedMints);
@@ -1647,7 +1656,7 @@ setInterval(async () => {
       if (redis) { try { await redis.hDel("grad:watchlist", ca); } catch {} }
     }
   }
-}, 10000);
+}), 10000);
 
 // Load watchlist from Redis on startup
 (async () => {
@@ -2389,7 +2398,7 @@ async function getChartPatternStats() {
 }
 
 // ═══ TAB BUILDER — runs every 5 seconds ═══
-setInterval(() => {
+setInterval(gated(() => {
   const now = Date.now();
 
   // Clean old tokens — graduated/high MC get 4h, rest get 2h
@@ -2836,9 +2845,13 @@ setInterval(() => {
     .slice(0, 50).map(serialize);
 
   radar.poolSize = radar.tokens.size;
-}, 2000);
+}), 2000);
 
-connectPumpPortal();
+// The socket follows the gate: up on the first bot, closed once nobody has traded for the grace.
+activity.on((active) => {
+  if (active) { if (!radar.ws || radar.ws.readyState > 1) connectPumpPortal(); setTimeout(chooseTradeSource, 2_000); pollSolPrice(); }
+  else { try { radar.ws?.close(); } catch {} chooseTradeSource(); }
+});
 
 // ═══════════════════════════════════════
 // BAGS.FM FEED MONITOR
@@ -2993,7 +3006,7 @@ async function refreshBagsMcap() {
   }
 }
 // Refresh bags MC every 30s
-setInterval(() => refreshBagsMcap().catch(() => {}), 30_000);
+setInterval(gated(() => refreshBagsMcap().catch(() => {})), 30_000);
 // Initial refresh after 5s (let bags ingest first)
 setTimeout(() => refreshBagsMcap().catch(() => {}), 5000);
 
@@ -5007,10 +5020,10 @@ const tradeLearner = {
 // Load trade history on startup
 tradeLearner.load();
 // Recompute insights every 60s
-setInterval(() => { if (tradeLearner.history.length >= 5) tradeLearner.compute(); }, 60000);
+setInterval(gated(() => { if (tradeLearner.history.length >= 5) tradeLearner.compute(); }), 60000);
 
 // ── SURVIVORSHIP BIAS: log survivor profile every 5 min when enough data ──
-setInterval(() => {
+setInterval(gated(() => {
   if (survivorBias.survivors.size >= 5) {
     const profile = survivorBias.getSurvivorProfile();
     if (profile.ready && profile.insights.length > 0) {
@@ -5021,7 +5034,7 @@ setInterval(() => {
       }
     }
   }
-}, 300000);
+}), 300000);
 
 // ═══════════════════════════════════════
 // AUTO-APE ENGINE — walk-away auto-trading
@@ -7232,7 +7245,7 @@ async function autoExitSell(wallet, ca, sellPct, reason) {
 }
 
 // Main auto-exit check loop — runs every 5 seconds
-setInterval(() => {
+setInterval(gated(() => {
   const now = Date.now();
   for (const [wallet, positions] of autoExitPositions) {
     for (const [ca, plan] of positions) {
@@ -7291,7 +7304,7 @@ setInterval(() => {
       }
     }
   }
-}, 5000);
+}), 5000);
 
 // ── Auto-Exit API Routes ──
 
@@ -8277,6 +8290,7 @@ app.get("/api/radar/scored", (req, res) => res.json(buildScoredResponse(req.quer
 // Smart money. The aggregate is public; the list of wallets is the operator's. A public list of the
 // wallets a bot copies is bait for the wallets themselves (buy, be copied, sell into the copiers) and
 // a gift to every other bot, so it stays behind the admin key.
+app.get("/api/activity", (req, res) => { res.set("Cache-Control", "public, max-age=5"); res.json({ ok: true, ...activity.status() }); });
 app.get("/api/smart-money/status", (req, res) => { res.set("Cache-Control", "public, max-age=30"); res.json({ ok: true, ...walletIntel.status() }); });
 app.get("/api/smart-money/top", requireAdmin, (req, res) => res.json({ ok: true, top: walletIntel.top(Math.min(200, parseInt(req.query.n || "50") || 50)), status: walletIntel.status() }));
 
@@ -8396,7 +8410,7 @@ async function launchOnChain(st) {
 }
 // The chart must not depend on someone having the page open: while the token is live, read the chain
 // on our own clock so the history fills at a steady rate. launchOnChain returns at once when it is not.
-setInterval(() => { launchOnChain(launchStore.state).catch(() => {}); }, 30_000).unref?.();
+setInterval(gated(() => { launchOnChain(launchStore.state).catch(() => {}); }), 30_000).unref?.();
 app.get("/api/launch", async (req, res) => {
   const st = launchStore.state;
   const ponsUrl = (process.env.PONS_TOKEN_URL || "https://www.ponsfamily.com/launchpad/{ca}");
@@ -11352,14 +11366,21 @@ if (process.env.VELOCITY_HOSTED === "1") {
   const arcFeed = process.env.VELOCITY_ARC !== "0" ? new ArcFeed({ rpcUrl: process.env.ARC_RPC_URL || ARC_DEFAULT_RPC, pollMs: parseInt(process.env.ARC_POLL_MS || "1500") || 1500,
       onTrade: (t, tr) => radar._revivals.noteTrade(t.ca, { side: tr.side, sol: tr.quote, wallet: tr.wallet, curvePct: tr.curvePct, ts: tr.ts }) }) : null;
   velocityHub = new VelocityHub({
-    feed: hubFeed, ponsFeed, arcFeed, platformEvmWallet: /^0x[0-9a-fA-F]{40}$/.test(process.env.PLATFORM_EVM_WALLET || "") ? process.env.PLATFORM_EVM_WALLET : null,
+    feed: hubFeed, ponsFeed, arcFeed, onUsers: (n) => activity.note(n), platformEvmWallet: /^0x[0-9a-fA-F]{40}$/.test(process.env.PLATFORM_EVM_WALLET || "") ? process.env.PLATFORM_EVM_WALLET : null,
     rootDir: path.resolve(process.env.VELOCITY_DATA_DIR || "data/velocity/users"), platformWallet: process.env.PLATFORM_WALLET || null, rpcUrl: RPC_URL,
     fee: { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser, isOwnerWallet },
     feePct: process.env.VELOCITY_FEE_PCT != null ? Number(process.env.VELOCITY_FEE_PCT) : 5,
   });
-  hubFeed.start().then(() => console.log(`[VELOCITY-HUB] radar feed started; fee wallet ${velocityHub.feeOk ? "configured" : "NOT configured"}`)).catch(e => console.error("[VELOCITY-HUB] feed failed to start:", e.message));
-  if (ponsFeed) ponsFeed.start().then(() => console.log(`[VELOCITY-HUB] Robinhood Chain (PONS) feed started; ETH fee wallet ${velocityHub.platformEvmWallet ? "configured" : "NOT configured"}`)).catch(e => console.error("[VELOCITY-HUB] pons feed failed to start:", e.message));
-  if (arcFeed) arcFeed.start().then(() => console.log(`[VELOCITY-HUB] Arc (Argus) feed started on ${process.env.ARC_RPC_URL ? "the configured RPC" : "the public RPC"}; USDC fee wallet ${velocityHub.platformEvmWallet ? "configured" : "NOT configured"}`)).catch(e => console.error("[VELOCITY-HUB] arc feed failed to start:", e.message));
+  // The three feeds run only while someone is trading. A feed restarted after idling reads from
+  // the chain's head, not from the block it stopped at, so nothing is replayed as new.
+  const feeds = [["radar", hubFeed], ["Robinhood Chain (PONS)", ponsFeed], ["Arc (Argus)", arcFeed]].filter(([, f]) => f);
+  activity.on((active) => {
+    for (const [name, f] of feeds) {
+      if (active && !f.running) f.start().then(() => console.log(`[VELOCITY-HUB] ${name} feed started`)).catch(e => console.error(`[VELOCITY-HUB] ${name} feed failed to start:`, e.message));
+      else if (!active && f.running) { f.stop().catch(() => {}); if ("_block" in f) f._block = null; console.log(`[VELOCITY-HUB] ${name} feed stopped: idle`); }
+    }
+  });
+  console.log(`[VELOCITY-HUB] fee wallet ${velocityHub.feeOk ? "configured" : "NOT configured"}; ETH/USDC fee wallet ${velocityHub.platformEvmWallet ? "configured" : "NOT configured"}; feeds ${activity.active() ? "running" : "idle until the first bot starts"}`);
   mountVelocityRoutes(app, { hub: velocityHub, requireOwner, getTradingWallet, getUser, resolveTier });
   for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => { velocityHub.stopAll().finally(() => process.exit(0)); });
 }
