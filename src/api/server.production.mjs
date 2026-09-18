@@ -392,6 +392,10 @@ function recordKolMention(ca, handle) {
 // "how many proven wallets bought this in its first minute". Snapshots go to Redis, the only store
 // that survives a redeploy; the filesystem does not.
 const walletIntel = new WalletIntel({ store: redis ? { get: (k) => redis.get(k), set: (k, v) => redis.set(k, v) } : null, storeKey: "wallet-intel:v1", log: console });
+// The same scorer over Arc addresses. Argus has no creation slot, so the sniper rule there is the
+// hold-time rule only; everything else (FIFO cost basis, Wilson-bounded win rate, rings, wash) is
+// the same measure, and its smart-buyer count reaches the radar row for Arc launches.
+const arcIntel = new WalletIntel({ store: redis ? { get: (k) => redis.get(k), set: (k, v) => redis.set(k, v) } : null, storeKey: "wallet-intel:arc:v1", log: console });
 walletIntel.load().then(ok => console.log(`[WALLET-INTEL] ${ok ? "restored from Redis" : "starting fresh"}`)).catch(e => console.warn("[WALLET-INTEL] load:", e.message));
 const devWalletTracker = new DevWalletTracker({ redis, connection });
 // Load persisted dev wallet data from Redis
@@ -8290,6 +8294,26 @@ app.get("/api/radar/scored", (req, res) => res.json(buildScoredResponse(req.quer
 // Smart money. The aggregate is public; the list of wallets is the operator's. A public list of the
 // wallets a bot copies is bait for the wallets themselves (buy, be copied, sell into the copiers) and
 // a gift to every other bot, so it stays behind the admin key.
+// ═══ Argus on Arc, as public data: what the feed sees, aggregated. No wallet in any row. ═══
+// Launches per hour, how many bonded, the tax terms creators choose, and how much a launch's
+// first hour took in. Live only while a bot runs (the feed follows the activity gate).
+app.get("/api/arc/stats", (req, res) => {
+  res.set("Cache-Control", "public, max-age=15");
+  const feed = velocityHub?.arcFeed;
+  if (!feed) return res.json({ ok: true, enabled: false, live: false, launches: [] });
+  const now = Date.now(), tokens = [...feed.tokens.values()], hour = tokens.filter(t => now - (t.createdAt || 0) < 3600_000), day = tokens.filter(t => now - (t.createdAt || 0) < 86400_000);
+  const taxOf = t => (Number(t.feeBps) || 0) + (Number(t.sellTaxBps) || 0);
+  const hist = {}; for (const t of day) if (t.feeBps != null) { const k = `${t.feeBps}/${t.sellTaxBps}`; hist[k] = (hist[k] || 0) + 1; }
+  const bonded = day.filter(t => t.bonded).length;
+  const launches = tokens.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).slice(0, 50).map(t => ({
+    ca: t.ca, name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt, mcapUsd: Math.round(t.mcapUsd || 0), progress: +(Number(t.progress) || 0).toFixed(3), bonded: !!t.bonded,
+    buyTaxBps: t.feeBps ?? null, sellTaxBps: t.sellTaxBps ?? null, buys: t.buys || 0, sells: t.sells || 0, buyers: t.uniqueBuyers?.size || 0, volumeUsd: Math.round(t.volumeUsd || 0), url: (process.env.ARC_TOKEN_URL || "https://explorer.arc.io/token/{ca}").replace("{ca}", t.ca),
+  }));
+  res.json({ ok: true, enabled: true, live: activity.active() && !!feed.running, feed: { polls: feed.polls, block: feed._block ?? null, tokens: tokens.length, healthy: feed.healthy },
+    hour: { launches: hour.length, buyers: hour.reduce((s, t) => s + (t.uniqueBuyers?.size || 0), 0), volumeUsd: Math.round(hour.reduce((s, t) => s + (t.volumeUsd || 0), 0)) },
+    day: { launches: day.length, bonded, bondedRate: day.length ? +(bonded / day.length).toFixed(3) : 0, avgRoundTripTaxBps: day.length ? Math.round(day.reduce((s, t) => s + taxOf(t), 0) / day.length) : null, taxTerms: hist },
+    smart: { ...arcIntel.status(), wallets: undefined }, launches });
+});
 app.get("/api/activity", (req, res) => { res.set("Cache-Control", "public, max-age=5"); res.json({ ok: true, ...activity.status() }); });
 app.get("/api/smart-money/status", (req, res) => { res.set("Cache-Control", "public, max-age=30"); res.json({ ok: true, ...walletIntel.status() }); });
 app.get("/api/smart-money/top", requireAdmin, (req, res) => res.json({ ok: true, top: walletIntel.top(Math.min(200, parseInt(req.query.n || "50") || 50)), status: walletIntel.status() }));
@@ -8328,7 +8352,7 @@ app.get("/api/radar/live", (req, res) => {
       verdict = judgeToken(t, qf, scoreDynamics.get(t.ca) || null, aggression);
       tag = tagFor(verdict, !!t._slowCook);
     }
-    return { ca: t.ca, chain: pons ? "robinhood" : arc ? "arc" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, smart: pons || arc ? 0 : walletIntel.smartBuyers(t.ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }).count, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, wave: !pons && !arc && t._copies ? radar._copycats.wave(t.ca, now) : null, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated };
+    return { ca: t.ca, chain: pons ? "robinhood" : arc ? "arc" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, smart: pons ? 0 : (arc ? arcIntel : walletIntel).smartBuyers(t.ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }).count, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, wave: !pons && !arc && t._copies ? radar._copycats.wave(t.ca, now) : null, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated };
   };
   // Robinhood Chain and Arc launches sit in the same list, newest first, marked by chain.
   const ponsTokens = velocityHub?.ponsFeed ? [...velocityHub.ponsFeed.tokens.values()] : [];
@@ -11364,7 +11388,15 @@ if (process.env.VELOCITY_HOSTED === "1") {
   // manager. VELOCITY_ARC=0 turns it off. ARC_RPC_URL should be the operator's own endpoint: blocks
   // come every half second and the public RPC is rate-limited for a poll this fast.
   const arcFeed = process.env.VELOCITY_ARC !== "0" ? new ArcFeed({ rpcUrl: process.env.ARC_RPC_URL || ARC_DEFAULT_RPC, pollMs: parseInt(process.env.ARC_POLL_MS || "1500") || 1500,
-      onTrade: (t, tr) => radar._revivals.noteTrade(t.ca, { side: tr.side, sol: tr.quote, wallet: tr.wallet, curvePct: tr.curvePct, ts: tr.ts }) }) : null;
+      onTrade: (t, tr) => {
+        radar._revivals.noteTrade(t.ca, { side: tr.side, sol: tr.quote, wallet: tr.wallet, curvePct: tr.curvePct, ts: tr.ts });
+        // The same wallet ledger pump.fun has, on Arc addresses: only a swap whose sender was
+        // resolved (never the router's own address) and whose USDC leg is known feeds it.
+        if (!tr.attributed || !(tr.quote > 0) || !(tr.tokens > 0)) return;
+        if (!arcIntel.mints.has(t.ca)) arcIntel.onCreate({ mint: t.ca, creator: t.devWallet || t.creator || null, ts: t.createdAt || tr.ts, slot: null });
+        arcIntel.onTrade({ mint: t.ca, wallet: tr.wallet, isBuy: tr.side === "buy", sol: tr.quote, tokens: tr.tokens, ts: tr.ts, slot: null, signature: tr.tx, mcapUsd: t.mcapUsd || null });
+        if (t.mcapUsd > 0) arcIntel.markMcap(t.ca, t.mcapUsd, tr.ts);
+      } }) : null;
   velocityHub = new VelocityHub({
     feed: hubFeed, ponsFeed, arcFeed, onUsers: (n) => activity.note(n), platformEvmWallet: /^0x[0-9a-fA-F]{40}$/.test(process.env.PLATFORM_EVM_WALLET || "") ? process.env.PLATFORM_EVM_WALLET : null,
     rootDir: path.resolve(process.env.VELOCITY_DATA_DIR || "data/velocity/users"), platformWallet: process.env.PLATFORM_WALLET || null, rpcUrl: RPC_URL,

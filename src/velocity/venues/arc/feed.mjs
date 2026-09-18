@@ -323,7 +323,7 @@ export class ArcFeed extends Feed {
       this._noteLiquidity(t, rec.liquidity);
       this._remark(t);
       // A listener's failure is its own problem: the feed must not stop applying trades over it.
-      if (this.onTrade) { try { this.onTrade(t, { side, quote, wallet: wallet || rec.sender, attributed, curvePct: t.progress * 100, ts: now }); } catch {} }
+      if (this.onTrade) { try { this.onTrade(t, { side, quote, tokens, wallet: wallet || rec.sender, attributed, curvePct: t.progress * 100, ts: now, tx: rec.tx || null }); } catch {} }
       return t;
     }
   }
