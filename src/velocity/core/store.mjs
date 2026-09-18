@@ -17,6 +17,12 @@ function defaultState(now) {
     heartbeatAt: now,
     reconciledAt: null,
     positions: {},            // positionId -> position
+    // instrument -> when it may be bought again, and how many round trips this engine has already
+    // paid for on that name. Both are persisted: an in-memory cooldown hands a restarted bot a
+    // fresh licence to re-buy the token it just stopped out of, which is the cheapest way to pay
+    // the round trip twice for one idea.
+    cooldown: {},             // instrument -> until (ms)
+    touches: {},              // instrument -> { n, at }
     halt: { mode: null, reason: null, since: null, venues: {} },
     throttle: 1,
     governor: { reasons: [], blindSpots: {} },
@@ -74,6 +80,10 @@ export class Store {
    *  harmless -- the reset is a function of the clock and nothing else, and whoever rolls it first
    *  gets the same fresh counters everyone else would have -- but it is worth knowing that a day can
    *  turn over without any money having moved. */
+  /** When the current UTC day ends. A name retired for the day comes back when the loss budget and
+   *  the statistics do, which is the same moment. */
+  dayEndsAt(now = this.now()) { const d = new Date(now); d.setUTCHours(24, 0, 0, 0); return d.getTime(); }
+
   rollDay() {
     const key = dayKey(this.now());
     // Paper and live are counted apart. They fund the same daily loss limit only when there is no
@@ -84,6 +94,7 @@ export class Store {
     // caller and crash the next, so a state file written before budgets existed gets its empty ones.
     if (!this.state.day.probes) this.state.day.probes = {};
     if (!this.state.day.paperProbes) this.state.day.paperProbes = {};
+    this.pruneCooldowns();
     return this.state.day;
   }
 
@@ -94,6 +105,26 @@ export class Store {
   upsertPosition(pos) {
     this.state.positions[pos.id] = pos;
     return pos;
+  }
+
+  /** Closed positions are kept so a restart can still answer questions about them, but not forever:
+   *  this map is written to disk on every save, and an account that trades for months would carry
+   *  every position it ever had in one JSON file. The open ones are never touched. */
+  prunePositions(keepClosed = 200) {
+    const closed = Object.values(this.state.positions).filter(p => p.status !== "open")
+      .sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
+    let dropped = 0;
+    for (const p of closed.slice(keepClosed)) { delete this.state.positions[p.id]; dropped++; }
+    return dropped;
+  }
+
+  /** Expired cooldowns and the touch counts behind them, dropped on the day roll. */
+  pruneCooldowns(now = this.now()) {
+    const cd = this.state.cooldown || (this.state.cooldown = {});
+    const tc = this.state.touches || (this.state.touches = {});
+    let dropped = 0;
+    for (const [inst, until] of Object.entries(cd)) if (!(until > now)) { delete cd[inst]; delete tc[inst]; dropped++; }
+    return dropped;
   }
   closePosition(id, patch = {}) {
     const p = this.state.positions[id];

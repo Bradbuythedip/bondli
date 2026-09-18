@@ -56,6 +56,12 @@ export class Engine extends EventEmitter {
     this.cfg = { governorMs: 5_000, saveMs: 5_000, sweepMs: 5_000, reentryCooldownMs: 5 * 60_000,
       // After a DOA or STALL exit: we left because nothing was happening, not because it was bad.
       retryCooldownMs: 45_000,
+      // Each completed round trip on the same name doubles the wait before another one, and after
+      // maxTouches that name is done for the day. Taking one token four times in an afternoon is
+      // four round trips of costs paid to learn the same thing, and the record says the same thing
+      // each time. This is the brake the in-memory cooldown could never apply, because it forgot.
+      maxCooldownMult: 8,
+      maxTouches: 3,
       failCooldownMs: 60_000, sweepRetryMs: 15_000, tickSilenceMs: 15_000, walletRefreshMs: 30_000, walletMaxAgeMs: 5 * 60_000, retrainEvery: 50, disqualifyMs: 5 * 60_000, rejudgeMs: 30_000, haltNoticeMs: 5 * 60_000, releaseAfterFailures: 5,
       // How far a refused token has to run before the refusal counts as a miss, and for how long
       // after the refusal it stays under observation.
@@ -80,7 +86,7 @@ export class Engine extends EventEmitter {
     this.blocked = {};          // venue -> reason from the supervisor (feed stale, router down)
     this.inflight = new Set();  // instruments with an ENTRY in flight
     this.exiting = new Set();   // position ids with a SELL in flight (see closePosition)
-    this.cooldown = new Map();  // instrument -> until
+    this.cooldown = new Map();  // instrument -> until; hydrated from the store on start
     // instrument -> { until, at, mcap, gate, reasons, tier, peak, missed }. Two jobs: a gate-1 reject
     // is not re-judged every poll (see FATAL_FLAGS), and the token is kept under observation
     // afterwards so a rule that refused a runner leaves a record. See noteRejected/watchRejected.
@@ -106,8 +112,35 @@ export class Engine extends EventEmitter {
   }
 
   // ── lifecycle ──
+  /** How long this instrument is off the table, and the record of why. `exit` marks a completed
+   *  round trip, which is what escalates: the second time this engine trades a name it waits twice
+   *  as long before a third, and past maxTouches the name is finished for the UTC day. A send that
+   *  failed is not a round trip and does not escalate -- nothing was learned and nothing was paid. */
+  coolOff(instrument, baseMs, { exit = false } = {}) {
+    if (!instrument) return 0;
+    const now = this.clock();
+    const touches = this.store.state.touches || (this.store.state.touches = {});
+    if (exit) touches[instrument] = { n: (touches[instrument]?.n || 0) + 1, at: now };
+    const n = touches[instrument]?.n || 0;
+    const retired = exit && n >= this.cfg.maxTouches;
+    const mult = exit ? Math.min(2 ** Math.max(0, n - 1), this.cfg.maxCooldownMult) : 1;
+    // Retired: until the day rolls, which is when the loss budget and the statistics roll too.
+    const until = retired ? this.store.dayEndsAt?.(now) ?? now + 24 * 60 * 60_000 : now + baseMs * mult;
+    const prev = this.cooldown.get(instrument) || 0;
+    const at = Math.max(prev, until);
+    this.cooldown.set(instrument, at);
+    (this.store.state.cooldown || (this.store.state.cooldown = {}))[instrument] = at;
+    if (retired) this.log("info", `${instrument.slice(0, 10)} is done for the day: ${n} round trips already paid for on this name`);
+    return at;
+  }
+
   async start({ reconcile = true } = {}) {
     this.running = true;
+    // A cooldown that lives only in memory hands a restarted bot a fresh licence to re-buy the token
+    // it just stopped out of. They are read back, and the expired ones dropped rather than carried.
+    this.store.pruneCooldowns(this.clock());
+    for (const [inst, until] of Object.entries(this.store.state.cooldown || {})) if (until > this.clock()) this.cooldown.set(inst, until);
+    this.store.prunePositions();
     this.store.state.startedAt = this.clock();
     this.store.state.baseline = null; // the header P&L restarts from the wallet as it is now
     this.store.rollDay();
@@ -312,7 +345,7 @@ export class Engine extends EventEmitter {
     // teach the learner and the governor something that did not happen.
     this._knownForeign.delete(p.venue + ":" + p.instrument); // so it shows up as a wallet holding again
     this.venues[p.venue]?.feed?.unwatch(p.instrument);
-    this.cooldown.set(p.instrument, this.clock() + this.cfg.reentryCooldownMs);
+    this.coolOff(p.instrument, this.cfg.reentryCooldownMs, { exit: true });
     this.emit("released", { position: p });
     this.log("warn", `RELEASED ${p.venue} ${p.instrument}: ${note || p.lastExitError?.reason || "by the operator"}; ${held} tokens stay in the wallet`);
     this.store.save();
@@ -858,7 +891,7 @@ export class Engine extends EventEmitter {
       // A venue failure is not retried on the next poll: the candidate re-emits every few seconds
       // and each on-chain failure costs the priority fee.
       // REVERT is a dry run the pool refused; nothing about it changes on the next re-emit seconds later.
-      if (["SEND_FAILED", "UNCONFIRMED", "INSUFFICIENT_SOL", "ROUTER_THREW", "STALE_SOL_PRICE", "REVERT"].includes(r.failure.code)) this.cooldown.set(inst, event.t_observed + this.cfg.failCooldownMs);
+      if (["SEND_FAILED", "UNCONFIRMED", "INSUFFICIENT_SOL", "ROUTER_THREW", "STALE_SOL_PRICE", "REVERT"].includes(r.failure.code)) this.coolOff(inst, this.cfg.failCooldownMs);
       if (r.failure.fee_usd > 0) this.chargeFee(venue, inst, r.failure.fee_usd, `failed send ${r.failure.venue_ref || ""}`);
       // Sent but not confirmed in time: the transaction may still land. The sweep settles it either way.
       if (r.failure.code === "UNCONFIRMED" && r.failure.venue_ref) this.pendingBuys.set(inst, { venue, sig: r.failure.venue_ref, decision, orderId, stake, sizing, at: t_sent });
@@ -883,7 +916,9 @@ export class Engine extends EventEmitter {
     const fill = r.fill;
     this.latency[venue].confirm.record(fill.latency_ms || 0);
     const key = CURVE_VENUES.has(venue) ? (decision.plan_key || decision.tier) : decision.model;
-    const plan = createPlan({ venue, key, entry: { score: decision.features ? Math.round((decision.features.apeScore || 0) * 100) : 0, price: fill.price } });
+    const plan = createPlan({ venue, key, entry: { score: decision.features ? Math.round((decision.features.apeScore || 0) * 100) : 0, price: fill.price,
+      // A dip entry stops under the low it bought above; every other entry ignores these two.
+      dipLowMcap: Number(decision.reference?.dipLowMcap) || 0, mcapUsd: Number(decision.reference?.mcapUsd) || 0 } });
     const position = {
       id: `${venue}:${inst}:${fill.t_filled}`, venue, instrument: inst, model: decision.model, tier: decision.tier, group: decision.group,
       decisionId: decision.id, orderId, entryTime: fill.t_filled, entryPrice: fill.price, qty: fill.qty, notional_usd: fill.notional_usd, stake_usd: stake,
@@ -1146,7 +1181,9 @@ export class Engine extends EventEmitter {
       // stepping aside is cheap and reversible -- 3.5% to keep the right to come back when the crowd
       // arrives. The miss ledger records what these cost, so the number is checkable.
       const notYet = /^(DOA|STALL)/.test(reason);
-      this.cooldown.set(p.instrument, this.clock() + (notYet ? this.cfg.retryCooldownMs : this.cfg.reentryCooldownMs));
+      // DOA and STALL say nothing happened YET, so they retry soon and do not count as a round trip
+      // paid for an idea; every other reason is a real exit and escalates.
+      this.coolOff(p.instrument, notYet ? this.cfg.retryCooldownMs : this.cfg.reentryCooldownMs, { exit: !notYet });
       this.venues[venue].feed?.unwatch(p.instrument);
       for (const l of p.legs || []) this.venues[venue].feed?.unwatch(l.instrument);
       this.stats = this.modeStats();

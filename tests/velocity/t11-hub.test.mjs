@@ -89,9 +89,9 @@ test("T11: one feed, two users, isolated ledgers, fee paid on the profitable clo
   assert.equal(hub.feeOk, true);
   await feed.start();
   try {
-    const a = await hub.start({ wallet: "UserA", secret: "sA", settings: { bankrollUsd: 100, aggression: 2 } });
+    const a = await hub.start({ wallet: "UserA", secret: "sA", settings: { bankrollUsd: 100, aggression: 2, entries: "all" } });
     assert.equal(a.ok, true, JSON.stringify(a)); assert.equal(a.status.venues.pumpfun.mode, "live"); assert.equal(a.settings.aggression, 2);
-    const b = await hub.start({ wallet: "UserB", secret: "sB", settings: { bankrollUsd: 50 } });
+    const b = await hub.start({ wallet: "UserB", secret: "sB", settings: { bankrollUsd: 50, entries: "all" } });
     assert.equal(b.ok, true); assert.equal(hub.list().length, 2);
     assert.equal(routers.UserA.secret, "sA"); assert.equal(routers.UserB.secret, "sB", "each engine signs with its own key");
     assert.ok(fs.existsSync(path.join(root, "UserA", "ledger.jsonl")) && fs.existsSync(path.join(root, "UserB", "ledger.jsonl")));
@@ -131,7 +131,7 @@ test("T11: one feed, two users, isolated ledgers, fee paid on the profitable clo
     // $400: one $25 stake, and a $60 day budget that still covers a second stake after the first loses.
     // On a $100 bankroll the day's budget is one stake, so a single loss ends the day — which is the
     // governor working, and the reason the page no longer suggests anyone try this with pocket change.
-    assert.equal((await hub2.start({ wallet: "UserC", secret: "sC", settings: { bankrollUsd: 400 } })).ok, true);
+    assert.equal((await hub2.start({ wallet: "UserC", secret: "sC", settings: { bankrollUsd: 400, entries: "all" } })).ok, true);
     const now = Date.now();
     feed2.emitEvent({ kind: "candidate", id: "MintY", payload: goodCandidatePayload("MintY"), t_venue: now - 100 });
     await new Promise(r => setTimeout(r, 50)); await hub2.users.get("UserC").engine.enqueue(() => {});
@@ -204,9 +204,9 @@ test("T11: a stop's halt does not outlive the next start; pause freezes entries 
   const hub = new VelocityHub({ feed, rootDir: root, platformWallet: "PLATFORM_FRESH_WALLET", fee: feeDeps("pro"), makeLiveRouter: ({ secret, wallet }) => new FakeLive({ secret, wallet }), log: { log() {}, error() {}, warn() {} } });
   await feed.start();
   try {
-    await hub.start({ wallet: "UserC", secret: "sC", settings: { bankrollUsd: 100 } });
+    await hub.start({ wallet: "UserC", secret: "sC", settings: { bankrollUsd: 100, entries: "all" } });
     await hub.stop("UserC"); // halt("flatten", "user stop") is persisted in the user's store
-    const again = await hub.start({ wallet: "UserC", secret: "sC", settings: { bankrollUsd: 100 } });
+    const again = await hub.start({ wallet: "UserC", secret: "sC", settings: { bankrollUsd: 100, entries: "all" } });
     assert.equal(again.ok, true);
     assert.equal(again.status.halt.mode, null, "the old user stop is gone: the bot judges tokens again");
     const p = await hub.pause("UserC");
@@ -241,7 +241,7 @@ test("T11: the sweep sells every token in both wallets: open positions through t
   const hub = new VelocityHub({ feed, ponsFeed, rootDir: root, platformWallet: "PLATFORM_FRESH_WALLET", platformEvmWallet: "0x" + "1".repeat(40), fee: feeDeps("pro"), makeLiveRouter: ({ secret, wallet }) => (routers[wallet] = new FakeLive({ secret, wallet })), makePonsRouter: () => (routers.evm = new FakeEvm()), log: { log() {}, error() {}, warn() {} } });
   await feed.start(); await ponsFeed.start();
   try {
-    await hub.start({ wallet: "UserS", secret: "sS", evmSecret: "0xkey", settings: { bankrollUsd: 100, pons: true } });
+    await hub.start({ wallet: "UserS", secret: "sS", evmSecret: "0xkey", settings: { bankrollUsd: 100, pons: true, entries: "all" } });
     // an open pump.fun position, plus a token the wallet holds that the store never tracked
     const now = Date.now();
     feed.emitEvent({ kind: "candidate", id: "MintX", payload: goodCandidatePayload("MintX"), t_venue: now - 100 });
@@ -473,11 +473,11 @@ test("T11: a paper run trades the live feed with simulated money and cannot touc
     log: { log() {}, error() {}, warn() {} } });
   await feed.start();
   try {
-    const live = await hub.start({ wallet: "Broke", secret: "s0", settings: { bankrollUsd: 100 } });
+    const live = await hub.start({ wallet: "Broke", secret: "s0", settings: { bankrollUsd: 100, entries: "all" } });
     assert.equal(live.ok, false, "an empty wallet cannot start a live run");
     await hub.stop("Broke").catch(() => {});
 
-    const r = await hub.start({ wallet: "Paper", secret: "s1", settings: { bankrollUsd: 100, paper: true } });
+    const r = await hub.start({ wallet: "Paper", secret: "s1", settings: { bankrollUsd: 100, paper: true, entries: "all" } });
     assert.equal(r.ok, true, JSON.stringify(r));
     assert.equal(r.status.venues.pumpfun.mode, "paper", "the venue stays simulated");
     assert.equal(r.settings.paper, true, "and the panel can see that it did");
@@ -511,7 +511,7 @@ test("T11: a fee whose transfer fails is recorded as owed and collected on the n
   const hub = new VelocityHub({ feed, rootDir: root, platformWallet: "PLATFORM_FRESH_WALLET", fee: feeDeps("pro"), makeLiveRouter: ({ secret, wallet }) => (routers[wallet] = new FakeLive({ secret, wallet })), log: { log() {}, error() {}, warn() {} } });
   await feed.start();
   try {
-    const r = await hub.start({ wallet: "Owed", secret: "s", settings: { bankrollUsd: 100, aggression: 2 } });
+    const r = await hub.start({ wallet: "Owed", secret: "s", settings: { bankrollUsd: 100, aggression: 2, entries: "all" } });
     assert.equal(r.ok, true, JSON.stringify(r));
     const live = routers.Owed;
     let fail = true;
@@ -553,8 +553,8 @@ test("T11: the public pulse names no wallet and counts no paper money", async ()
   await feed.start();
   try {
     assert.deepEqual({ ...hub.pulse(), ts: 0 }, { bots: 0, live: 0, closes: 0, wins: 0, pnl_usd: 0, best: [], recent: [], tape: [], windowMs: 24 * 60 * 60_000, ts: 0 }, "an empty site has an empty pulse, not an invented one");
-    const live = await hub.start({ wallet: "Real", secret: "s1", settings: { bankrollUsd: 100, aggression: 2 } });
-    const paper = await hub.start({ wallet: "Pretend", secret: "s2", settings: { bankrollUsd: 100, aggression: 2, paper: true } });
+    const live = await hub.start({ wallet: "Real", secret: "s1", settings: { bankrollUsd: 100, aggression: 2, entries: "all" } });
+    const paper = await hub.start({ wallet: "Pretend", secret: "s2", settings: { bankrollUsd: 100, aggression: 2, paper: true, entries: "all" } });
     assert.ok(live.ok && paper.ok);
     const now = Date.now();
     feed.emitEvent({ kind: "candidate", id: "MintP", payload: goodCandidatePayload("MintP"), t_venue: now - 100 });
@@ -600,10 +600,10 @@ test("T11: a live fill is called out once for the whole hub, with its tx; paper 
   await feed.start();
   try {
     // Calls are the user's choice: A and B opted in, Pretend is paper (opted in, never posts), Quiet did not opt in.
-    assert.equal((await hub.start({ wallet: "UserA", secret: "sA", settings: { bankrollUsd: 100, aggression: 2, callouts: true } })).ok, true);
-    assert.equal((await hub.start({ wallet: "UserB", secret: "sB", settings: { bankrollUsd: 100, aggression: 2, callouts: true } })).ok, true);
-    assert.equal((await hub.start({ wallet: "Pretend", secret: "sP", settings: { bankrollUsd: 100, aggression: 2, paper: true, callouts: true } })).ok, true);
-    assert.equal((await hub.start({ wallet: "Quiet", secret: "sQ", settings: { bankrollUsd: 100, aggression: 2 } })).ok, true);
+    assert.equal((await hub.start({ wallet: "UserA", secret: "sA", settings: { bankrollUsd: 100, aggression: 2, callouts: true, entries: "all" } })).ok, true);
+    assert.equal((await hub.start({ wallet: "UserB", secret: "sB", settings: { bankrollUsd: 100, aggression: 2, callouts: true, entries: "all" } })).ok, true);
+    assert.equal((await hub.start({ wallet: "Pretend", secret: "sP", settings: { bankrollUsd: 100, aggression: 2, paper: true, callouts: true, entries: "all" } })).ok, true);
+    assert.equal((await hub.start({ wallet: "Quiet", secret: "sQ", settings: { bankrollUsd: 100, aggression: 2, entries: "all" } })).ok, true);
     assert.equal(hub.status("Quiet").settings.callouts, false, "off unless they said so");
     const now = Date.now();
     feed.emitEvent({ kind: "candidate", id: "MintX", payload: goodCandidatePayload("MintX"), t_venue: now - 100 });
@@ -653,14 +653,14 @@ test("T11: Arc trades on the same EVM key with USDC as the quote; its open posit
   await feed.start(); await arcFeed.start();
   try {
     // Arc alone, pump.fun off: the SOL wallet is never asked to fund anything.
-    const s = await hub.start({ wallet: "UserArc", secret: "sA", evmSecret: "0xkey", settings: { bankrollUsd: 100, aggression: 2, pumpfun: false, arc: true } });
+    const s = await hub.start({ wallet: "UserArc", secret: "sA", evmSecret: "0xkey", settings: { bankrollUsd: 100, aggression: 2, pumpfun: false, arc: true, entries: "all" } });
     assert.equal(s.ok, true, JSON.stringify(s));
     assert.equal(s.status.venues.arc.mode, "live"); assert.equal(s.status.venues.pumpfun?.mode ?? "off", "off");
     assert.equal(routers.arc.secret, "0xkey", "the Arc router signs with the EVM key");
     assert.equal(s.settings.arc, true);
     // Without the feed on the site, or without the key, Arc is not offered at all.
     const noKey = new VelocityHub({ feed, arcFeed, rootDir: tmp(), platformWallet: "P", fee: feeDeps(), makeLiveRouter: ({ secret, wallet }) => new FakeLive({ secret, wallet }), makeArcRouter: () => new FakeArc({}), log: { log() {}, error() {}, warn() {} } });
-    const r0 = await noKey.start({ wallet: "NoKey", secret: "s", settings: { bankrollUsd: 100, pumpfun: false, arc: true } });
+    const r0 = await noKey.start({ wallet: "NoKey", secret: "s", settings: { bankrollUsd: 100, pumpfun: false, arc: true, entries: "all" } });
     assert.equal(r0.ok, false); assert.match(r0.error, /turn on at least one chain/);
     // A candidate on the Arc feed, priced in dollars: the engine buys through the Arc router.
     const now = Date.now();
@@ -702,8 +702,8 @@ test("T11: the hub tells the activity gate how many bots run, on every start and
   const counts = [];
   const hub = new VelocityHub({ feed, rootDir: tmp(), platformWallet: "P", fee: feeDeps(), onUsers: n => counts.push(n), makeLiveRouter: ({ secret, wallet }) => new FakeLive({ secret, wallet }), log: { log() {}, error() {}, warn() {} } });
   try {
-    assert.equal((await hub.start({ wallet: "A", secret: "s", settings: { bankrollUsd: 100, paper: true } })).ok, true);
-    assert.equal((await hub.start({ wallet: "B", secret: "s", settings: { bankrollUsd: 100, paper: true } })).ok, true);
+    assert.equal((await hub.start({ wallet: "A", secret: "s", settings: { bankrollUsd: 100, paper: true, entries: "all" } })).ok, true);
+    assert.equal((await hub.start({ wallet: "B", secret: "s", settings: { bankrollUsd: 100, paper: true, entries: "all" } })).ok, true);
     await hub.stop("A");
     assert.deepEqual(counts, [1, 2, 1]);
   } finally { await hub.stopAll(); await feed.stop(); }

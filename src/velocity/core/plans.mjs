@@ -55,6 +55,20 @@ export const EXIT_PLANS = Object.freeze({
 // PONS trades the same way pump.fun does: same tiers, same layers, same revival plan.
 const ALIAS = Object.freeze({ pons: "pumpfun", arc: "pumpfun" });
 
+// A dip entry's risk is not a percentage somebody chose, it is the low failing. Entering ten per
+// cent above the low and stopping at fourteen puts the stop under the low, which is right; entering
+// thirty per cent above it and stopping at fourteen puts the stop in the middle of the move, where
+// ordinary noise reaches it and the thing the trade was premised on has not even been tested. The
+// stop is therefore the distance back to the low plus a buffer, never tighter than the plan's own
+// and never wider than the cap, because a stop nobody can afford is not risk management.
+export const DIP_STOP = Object.freeze({ bufferPct: 3, maxPct: 26 });
+export function dipStopPct(planStopPct, { entryMcap, lowMcap } = {}) {
+  const base = Number(planStopPct) || 0;
+  if (!(entryMcap > 0) || !(lowMcap > 0) || lowMcap >= entryMcap) return base;
+  const toLow = ((entryMcap - lowMcap) / entryMcap) * 100;
+  return +Math.min(DIP_STOP.maxPct, Math.max(base, toLow + DIP_STOP.bufferPct)).toFixed(2);
+}
+
 export function planFor(venue, key) {
   const p = EXIT_PLANS[ALIAS[venue] || venue]?.[key];
   if (!p) throw new Error(`no exit plan for ${venue}/${key}`);

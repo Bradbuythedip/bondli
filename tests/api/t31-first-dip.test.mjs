@@ -241,7 +241,9 @@ test("T31: dips-only takes the second entry and nothing else, and the operator o
   const p2 = goodCandidatePayload("MintN"); p2.token._dip = { dip: false, phase: "dipping", reasons: ["NOT_TURNING"] };
   assert.equal(only.ingest({ kind: "candidate", payload: p2 }).length, 0);
   const HUB = fs.readFileSync(path.resolve("src/velocity/hub.mjs"), "utf8");
-  assert.match(HUB, /const entries = settings\.entries === "dips" \? "dips" : "all";/);
+  // The hosted default is the dip; "all" is what an operator asks for by name when they want the
+  // create-event entry back. The edge itself stays permissive, because it is a library.
+  assert.match(HUB, /const entries = settings\.entries === "all" \? "all" : "dips";/);
   assert.equal((HUB.match(/makePumpfunEdge\(\{[^)]*entries \}\)/g) || []).length, 3, "every venue's edge, not just pump.fun");
   const SITE = fs.readFileSync(path.resolve("app/src/Simple.jsx"), "utf8");
   assert.match(SITE, /entries: dipsOnly \? "dips" : "all" \}\);/);
