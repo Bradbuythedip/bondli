@@ -144,7 +144,7 @@ test("T8: realized statistics age out, so a tier the EV gate closed can reopen",
     venues: { pumpfun: { mode: "paper", edge, router: new PumpfunPaperRouter({ bookFile: path.join(dir, "b.json"), latencyMs: 0 }) } } });
   let now = 1_800_000_000_000; e.clock = () => now;
 
-  // Forty losing tier-3 outcomes. Past minOutcomesForStats, so the edge stops using priors.
+  // Forty losing tier-3 outcomes: a record long enough that the edge is almost entirely off its priors.
   for (let i = 0; i < 40; i++) e.ledger.append({ kind: "outcome", ts: now, venue: "pumpfun", instrument: `M${i}`, tier: 3, paper: true, pnl_usd: -2, stake_usd: 25, reason: "SL2" });
   assert.ok(e.modeStats().pumpfun[3].n >= 30, "the tier is being judged on its own record");
   assert.equal(e.modeStats().pumpfun[3].p_win, 0);
@@ -156,7 +156,7 @@ test("T8: realized statistics age out, so a tier the EV gate closed can reopen",
 });
 
 test("T8: the shared judge reads the record of the venue it is judging", async () => {
-  const { makePumpfunEdge } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
+  const { makePumpfunEdge, PUMPFUN_PRIORS } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
   const cand = { tier: 3, instrument: "X", token: { ca: "X", uniqueBuyers: { size: 9 }, buys: 12, sells: 2, createdAt: Date.now() - 120_000, mcapUsd: 9000, trades: [] }, qf: {}, scores: { apeScore: 50 }, reference: {} };
   // Two very different records under the same tier, one per venue.
   const stats = {
@@ -165,10 +165,26 @@ test("T8: the shared judge reads the record of the venue it is judging", async (
   };
   const onPump = makePumpfunEdge({ venue: "pumpfun", aggression: 1 }).estimate(cand, { stats });
   const onPons = makePumpfunEdge({ venue: "pons", aggression: 1 }).estimate(cand, { stats });
-  assert.equal(onPump.p_win, 0.60);
-  assert.equal(onPons.p_win, 0.10, "Robinhood Chain is not priced with pump.fun's win rate");
-  assert.equal(onPons.loss_fraction, 0.20);
+  // A record is blended toward the prior by its length and then clamped so it can only ever lower the
+  // estimate, so pump.fun's better-than-prior record comes back AT the prior while Robinhood Chain's
+  // worse-than-prior record pulls the estimate down. What is pinned is that each venue is priced by
+  // its own bucket and the two are priced apart.
+  assert.equal(onPump.p_win, PUMPFUN_PRIORS[3].p_win, "a 60% record does not raise the estimate above the prior");
+  assert.ok(onPons.p_win < onPump.p_win, "Robinhood Chain is not priced with pump.fun's win rate");
+  assert.ok(onPons.p_win > 0.10 && onPons.p_win < 0.30, `blended toward its own 10%, not set to it: ${onPons.p_win}`);
+  assert.ok(onPons.payoff < onPump.payoff, "and its thinner payoff carries through too");
+  // The realized loss size is blended at the same weight as everything else rather than taken raw:
+  // taken raw it was the one input a record could use to make the gate KEENER, and it made it
+  // keenest for the keys that lost biggest. A hundred closes own most of the distance.
+  const w100 = 100 / 112;
+  assert.ok(Math.abs(onPons.loss_fraction - (PUMPFUN_PRIORS[3].loss_fraction + (0.20 - PUMPFUN_PRIORS[3].loss_fraction) * w100)) < 1e-12, `blended: ${onPons.loss_fraction}`);
   assert.equal(onPons.on_priors, false, "and its own record is what makes it stop using priors");
+  // The pump.fun side is the other half of the same rule and the one that used to shut winning keys.
+  // Its record is BETTER than the prior, so the clamp pins the estimate at the prior -- which means
+  // the prior is what is speaking, and the flag that says so has to agree, or a key doing well would
+  // lose the probe that keeps it trading while its costs are priced above its prior.
+  assert.equal(onPump.on_priors, true, "a record that only ever gets clamped away is not the speaker");
+  assert.equal(onPump.outcomes_seen, 100, "which is not the same as pretending the hundred closes are not there");
   // A venue with no record of its own still falls back to priors rather than borrowing another's.
   const noRecord = makePumpfunEdge({ venue: "pons", aggression: 1 }).estimate(cand, { stats: { pumpfun: stats.pumpfun } });
   assert.equal(noRecord.on_priors, true);

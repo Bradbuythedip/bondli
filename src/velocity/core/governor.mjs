@@ -12,10 +12,14 @@ import { withClock } from "./pipeline.mjs";
 export const REGIME_MULT = Object.freeze({ EUPHORIA: 1.0, RISK_ON: 1.0, GRINDING: 0.7, PVP: 0.4, DEAD: 0 });
 
 export class Governor {
-  constructor({ ledger, envelope, clock = () => Date.now(), config = {} } = {}) {
+  constructor({ ledger, envelope, clock = () => Date.now(), venueMode = null, anyLive = null, config = {} } = {}) {
     this.ledger = ledger;
     this.env = envelope;
     this.clock = clock;
+    // How the governor tells a receipt from a model's opinion. Both are readers rather than values
+    // because a venue is promoted while the engine is running; see _outcomes.
+    this.venueMode = venueMode;
+    this.anyLive = anyLive;
     this.cfg = {
       dailyFloorThrottle: 0.25,      // the smallest the daily-loss taper shrinks a stake to; never zero
       dailyBreakerMult: 3,           // x the daily limit in one day: a fault, and the only hard stop left
@@ -31,20 +35,94 @@ export class Governor {
       ...config,
     };
     this.tilt = new TiltDetector();
-    this._tiltFed = 0;
+    this._tiltFedSeq = 0;
+    this._tiltSig = null;
     this.last = null;
   }
 
+  // Every brake below -- overconfidence, tilt, the losing-streak count, the recency check, loss
+  // aversion -- is fed from this one pool, and until now the pool was every close in the ledger
+  // whether or not the money was real. The hosted default makes that the normal shape rather than a
+  // corner case: hub.start leaves a venue in paper when its preflight fails, so a user funded in SOL
+  // but not in ETH runs pump.fun live beside PONS in simulation, and each imaginary PONS loss was
+  // quartering the stake on their real pump.fun entries. The leak the house rule is actually about
+  // is the other direction: a simulated hot streak lifting a brake that the live record had not
+  // earned. Nothing here can grow a stake -- the ceiling is 1.0, the unthrottled default -- so the
+  // whole of this is removing a brake that was resting on fiction.
+  //
+  // The rule is the one realizedToday and the day counters already keep: as soon as any real money
+  // is at work the governor hears only from live closes, and an all-paper run is still governed by
+  // its own simulated ones, or the record the promote gate reads would be of a bot trading without
+  // brakes. Within that, a venue's closes are read back only in the mode it is in now, exactly as
+  // engine.modeStats does, so the paper closes a venue earned before its go-live do not follow it
+  // across. An outcome whose venue cannot be resolved is evidence about neither book.
+  /** True once any real money is at work, which is when simulated records stop being evidence. A
+   *  bare governor has no reader, and a missing reader must fail toward the stricter answer. */
+  _liveRunning() { return typeof this.anyLive === "function" ? !!this.anyLive() : true; }
+
+  /** The same mode test the outcome pool applies, for any record that carries a venue and a `paper`
+   *  flag. A venue's records are read back only in the mode it is in NOW, so the paper closes a venue
+   *  earned before its go-live do not follow it across. */
+  _inBook(r) {
+    if (!r) return false;
+    const mode = this.venueMode;
+    if (typeof mode !== "function") return r.paper !== true;
+    return !!r.venue && !!r.paper === (mode(r.venue) === "paper") && (!this._liveRunning() || r.paper !== true);
+  }
+
+  /** The ledger applies its limit BEFORE any of this filtering, so asking for exactly `lookback`
+   *  records and then dropping the simulated ones leaves a live pool of roughly lookback/venues. The
+   *  overconfidence brake needs twenty closes before it will speak at all, so on a mixed run where
+   *  the paper venues are busier the brake could switch itself off without saying so. Ask wide,
+   *  filter, then take the newest `lookback` of what is actually in this book. */
+  _pool(kind, extra = null) {
+    const wide = this.ledger.query({ kind, limit: this.cfg.lookback * 4 }).filter(r => this._inBook(r) && (!extra || extra(r)));
+    return wide.slice(-this.cfg.lookback);
+  }
+
   _outcomes() {
-    return this.ledger.query({ kind: "outcome", limit: this.cfg.lookback });
+    const mode = this.venueMode;
+    const out = this.ledger.query({ kind: "outcome", limit: this.cfg.lookback * 4 });
+    // A bare governor has no reader. A missing reader must fail toward the stricter answer, so
+    // simulated closes are dropped rather than trusted.
+    if (typeof mode !== "function") return out.filter(o => o && o.paper !== true).slice(-this.cfg.lookback);
+    return out.filter(o => this._inBook(o)).slice(-this.cfg.lookback);
+  }
+
+  /** Which book the detector is holding: whether real money is at work, and what mode each venue in
+   *  the pool is in now. This changes when, and only when, a venue is promoted or retired -- which is
+   *  the one event that invalidates what the detector has already heard. */
+  _modeSignature(outcomes) {
+    const mode = this.venueMode;
+    const venues = [...new Set(outcomes.map(o => o?.venue).filter(Boolean))].sort();
+    return `${this._liveRunning() ? "live" : "paper"}|${venues.map(v => `${v}:${typeof mode === "function" ? mode(v) : "?"}`).join(",")}`;
   }
 
   _feedTilt(outcomes) {
-    // TiltDetector timestamps with Date.now(); pin it to each outcome's time.
-    for (const o of outcomes.slice(this._tiltFed)) {
-      withClock(o.ts || o.closedAt || this.clock(), () => this.tilt.recordTrade({ pnl: o.pnl_usd, pnlPct: o.pnl_pct, size: o.stake_usd, score: (o.confidence || 0) * 100 }));
+    // Promoting a venue takes its simulated closes out of the pool, and a detector that had already
+    // heard them would be holding both books at once -- the exact mixing the filter above exists to
+    // stop. It is a pure function of the closes fed to it, so it is rebuilt when the book changes.
+    //
+    // What it is NOT rebuilt on is the pool sliding. The previous watermark compared the seq of the
+    // last record the detector had heard against the record at that INDEX, and once the pool reaches
+    // cfg.lookback that index holds a different record on every close: measured on a saturated
+    // live-only pool, the detector was torn down and re-fed two hundred records on every one of the
+    // five-second evaluations. That is not just waste -- rebuilding re-anchors the detector's clock
+    // on the oldest close in the window, so its "session" P&L quietly stopped meaning the session and
+    // started meaning the last two hundred closes. A monotone sequence watermark cannot slide.
+    const sig = this._modeSignature(outcomes);
+    if (this._tiltSig !== sig) {
+      withClock(outcomes[0]?.ts || this.clock(), () => { this.tilt = new TiltDetector(); });
+      this._tiltSig = sig;
+      this._tiltFedSeq = 0;
     }
-    this._tiltFed = outcomes.length;
+    // TiltDetector timestamps with Date.now(); pin it to each outcome's time.
+    for (const o of outcomes) {
+      const seq = Number(o.seq) || 0;
+      if (seq && seq <= this._tiltFedSeq) continue;
+      withClock(o.ts || o.closedAt || this.clock(), () => this.tilt.recordTrade({ pnl: o.pnl_usd, pnlPct: o.pnl_pct, size: o.stake_usd, score: (o.confidence || 0) * 100 }));
+      if (seq > this._tiltFedSeq) this._tiltFedSeq = seq;
+    }
   }
 
   evaluate({ regime = "RISK_ON", realized_today_usd = 0, open = [] } = {}) {
@@ -110,7 +188,13 @@ export class Governor {
     }
 
     // Revenge trading: a bigger entry right after a loss, repeatedly.
-    const entries = this.ledger.query({ kind: "fill", limit: this.cfg.lookback }).filter(f => f.side === "BUY");
+    //
+    // The BUYS are filtered the same way the outcome pool is. They were not, and on the ordinary
+    // hosted shape -- pump.fun live beside PONS in paper because its preflight failed -- a simulated
+    // PONS buy landing within two minutes of a real pump.fun loss counted as revenge, and two of them
+    // halved the stake on real entries. Half a rule applied to real money and imaginary money at once
+    // fails in exactly the direction it exists to prevent.
+    const entries = this._pool("fill", f => f.side === "BUY");
     let revenge = 0;
     for (const o of outcomes.filter(o => o.pnl_usd < 0)) {
       const next = entries.find(e => e.ts > o.ts && e.ts - o.ts <= this.cfg.revengeWindowMs && e.notional_usd > (o.stake_usd || 0) * 1.2);

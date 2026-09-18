@@ -665,7 +665,10 @@ test("T11: Arc trades on the same EVM key with USDC as the quote; its open posit
     // A candidate on the Arc feed, priced in dollars: the engine buys through the Arc router.
     const now = Date.now();
     const payload = { ...goodCandidatePayload("0xjeff"), solPrice: 1, quote: "USDC", mcapUsd: 18_000, vSolInBondingCurve: 18_000,
-      curve: { address: "0xpool", hook: "0xhook", quoteReserve: 18_000, tokenReserve: 8e8, feeBps: 300, sellTaxBps: 300, creatorTaxBps: 0, poolFeeBps: 100, native: false, progress: 0.2, bonded: false } };
+      // A 3% buy tax and a 3% sell tax on top of the pool's 1% each way is an 8% round trip, and the
+      // gate now refuses that outright: the tier-2 prior is worth 4.8% of the stake at its designed
+      // stop, so no probe buys it either. The hook this test wants is a cheap one.
+      curve: { address: "0xpool", hook: "0xhook", quoteReserve: 18_000, tokenReserve: 8e8, feeBps: 100, sellTaxBps: 0, creatorTaxBps: 0, poolFeeBps: 100, native: false, progress: 0.2, bonded: false } };
     // Curve venues say where they are; without this the gate reads 18,000 as SOL on a pump.fun curve and calls it too late.
     payload.token.vSolInBondingCurve = 18_000; payload.token._curvePct = 0.2;
     arcFeed.emitEvent({ kind: "candidate", id: "0xjeff", payload, t_venue: now - 100 });

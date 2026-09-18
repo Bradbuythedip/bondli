@@ -7,7 +7,7 @@ import { convictionOf } from "../../../api/dip.mjs";
 import { checkViability } from "../../../autoape/gates/viability.js";
 import { classifyConfidence } from "../../../autoape/gates/confidence.js";
 import { checkExecutionWindow } from "../../../autoape/gates/execution-window.js";
-import { planFor } from "../../core/plans.mjs";
+import { planFor, designedStopFraction } from "../../core/plans.mjs";
 import { DEFAULT_WEIGHTS, scoreFeatures } from "../../core/learner.mjs";
 
 /** Normalized 0..1 features the learnable ranking weights read. Kill gates never see these. */
@@ -37,10 +37,14 @@ export function pumpfunFeatures(c) {
   };
 }
 
-// Priors until the ledger has enough realized outcomes for the tier. Every tier must clear the EV
-// gate after ~5% costs on priors alone, or the tier can never trade and never earn the outcomes
-// that would replace the prior: the old tier-3 prior (0.25 x 3.0) had EV -0.05 after costs, which
-// silently refused every speculative entry.
+// Priors until the ledger has enough realized outcomes for the tier.
+//
+// These are R-denominated and were calibrated before EV was rescaled into stake units, and they have
+// not been recalibrated since. Measured against the shipped costs() at the $10 hosted floor: tier 1
+// clears its own costs on priors, tiers 2 and 3 do not, and neither does the dip or the revival --
+// they reach the market only through the probe branch and its daily budget. That is a real
+// limitation, stated rather than papered over: the honest fix is to recalibrate this table against
+// realized closes, not to loosen the gate that is reading it.
 export const PUMPFUN_PRIORS = Object.freeze({
   // loss_fraction is the tier's designed stop loss: how much of the stake one average loss costs,
   // and therefore the unit that `payoff` is measured in. See stats.mjs.
@@ -82,12 +86,32 @@ export const ARC_POOL_FEE_BPS = 100;
 // null and undefined mean "not read yet" and must take the fallback. Number(null) is 0, which is
 // finite, so a plain isFinite check would call an unread tax zero -- the exact bug this guards.
 const numOr = (v, fallback) => (v == null || v === "" || !Number.isFinite(Number(v)) ? fallback : Number(v));
+/** Did this input have to be guessed? Same test as numOr, reported instead of applied. A cost built
+ *  out of a fail-closed placeholder is a measurement of our own ignorance, and the gate needs to be
+ *  able to tell that apart from a toll we have actually read off the chain. */
+const unread = v => v == null || v === "" || !Number.isFinite(Number(v));
+
+/** Is there a realized record here at all? One close with arithmetic that parses is a record. An
+ *  absent bucket, an empty one, or one whose numbers came back NaN is the absence of evidence and
+ *  takes the prior instead. A zero win rate is emphatically not in that set: it is evidence, and the
+ *  worst kind there is. */
+const isRecord = s => !!s && Number.isFinite(s.n) && s.n > 0
+  && Number.isFinite(s.p_win) && s.p_win >= 0 && s.p_win <= 1
+  // A NULL payoff is not a malformed one: it is a bucket with no loss in it yet, so there is no
+  // average loss to divide the average win by. That key still has a win rate worth reading. NaN,
+  // a negative, or a string is arithmetic that did not parse, and that is the absence of evidence.
+  && (s.payoff == null || (Number.isFinite(s.payoff) && s.payoff >= 0));
 
 export function makePumpfunEdge({
   venue = "pumpfun",               // "pons": the same judge on Robinhood Chain; snipe-tax window refused
   aggression = 1,
   priors = PUMPFUN_PRIORS,
-  minOutcomesForStats = 30,
+  // How fast a realized record displaces the prior. The estimate moves from the prior toward the
+  // record with weight n/(n+k), so k is the number of closes at which the two count equally. Twelve,
+  // because these buckets see dozens of closes and not hundreds: the shape this replaced was a cliff
+  // at thirty, and with one bucket per plan key per venue a cliff means almost every key is priced on
+  // a guess for as long as it lives.
+  statsShrinkK = 12,
   feeFractionRoundTrip = 0.03,     // pump.fun 1% in + 1% out, plus the router's 0.5% each way
   // What a round trip really costs in fixed SOL, from the router's own constants: a priority fee and
   // a base fee on the buy, the same on the sell, and one more base fee to close the token account and
@@ -192,14 +216,75 @@ export function makePumpfunEdge({
       const plan = planFor(venue, c.revival ? "revival" : c.dip ? (c.hold ? "dip_hold" : "dip") : c.tier);
       const stats = ctx.stats?.[venue]?.[plan.key];
       const prior = priors[c.tier] || priors[3];
-      const useStats = stats && stats.n >= minOutcomesForStats && stats.p_win > 0 && stats.payoff > 0;
-      const p_win = useStats ? stats.p_win : prior.p_win;
-      const payoff = useStats ? stats.payoff : prior.payoff;
+      // A plan key that had lost every trade it ever took used to be indistinguishable from one that
+      // had never traded. The old test wanted thirty closes AND a win rate above zero, so the worst
+      // record obtainable read as no record: it fell back to the priors, went out to probe again, and
+      // statsWindowMs aged those losses out before they could ever become an argument against taking
+      // the trade. A zero win rate is a measurement. Only an absent or malformed bucket is the
+      // absence of one.
+      const measured = isRecord(stats);
+      // Shrinkage, and deliberately one-directional. The estimate starts at the prior and moves
+      // toward the record with weight n/(n+k): eight closes carry two fifths of what they claim
+      // instead of nothing at all, thirty carry five sixths. That is what makes bucketing by plan key
+      // survivable -- six keys across three venues is eighteen buckets, each needing its own n, against
+      // a live history counted in dozens of closes. Then min() against the prior, because a record may
+      // lower this estimate and must never raise it: a key beating its prior is still priced as though
+      // it were only meeting it. The pessimism is chosen, not an oversight, and it has a known cost --
+      // three bad closes out of eight can switch off a key that was fine. The 14-day window is the
+      // release valve: once those closes are no longer about today the key is on priors again.
+      const weight = measured ? stats.n / (stats.n + statsShrinkK) : 0;
+      const shrink = (recorded, priorValue) => Math.min(priorValue + (recorded - priorValue) * weight, priorValue);
+      const p_win = measured ? shrink(stats.p_win, prior.p_win) : prior.p_win;
+      // A bucket that has not lost yet has no average loss to divide by, so it has no measured payoff
+      // ratio either -- stats.mjs says so by leaving the field null rather than inventing a divisor.
+      // An all-wins key is not evidence that its payoff is poor.
+      const payoffMeasured = measured && Number.isFinite(stats.payoff);
+      const payoffRaw = payoffMeasured ? shrink(stats.payoff, prior.payoff) : prior.payoff;
+      // on_priors is not "is there a record", it is "is the prior still the thing speaking" -- because
+      // the only consumer is the probe branch, which exists to buy measurements while the refusal
+      // would otherwise rest on a guess. Flipping it on the very first close would end probing before
+      // a key had any record worth the name: one forced exit at a mode change, a flatten, a user sell,
+      // and a key whose prior does not clear costs on its own is shut for the fourteen days the window
+      // runs -- so the shrinkage could never reach the eight or twelve closes that are the whole point
+      // of it. The record takes the floor when it owns a third of the estimate, which at k = 12 is six
+      // closes; three bad closes out of eight is then enough to close a key, and one is not.
+      //
+      // And only when the record is what the estimate is actually made of. min() against the prior
+      // means a key BEATING its prior comes back at the prior exactly -- the prior is then what is
+      // speaking, whatever n says -- and flipping the flag anyway closed the probe branch on keys
+      // that were winning. Measured against this file before the change: a tier-2 key with twenty
+      // closes at a 50% win rate and a 4.0 payoff priced out at the prior's own EV, lost its probe,
+      // and stopped trading until the fourteen-day window aged the winning record out -- whereupon it
+      // probed, won, and shut itself again. Tiers 2 and 3 are most of the flow.
+      const recordSpeaks = weight >= 1 / 3 && (stats.p_win < prior.p_win || (payoffMeasured && stats.payoff < prior.payoff));
       // How much one average loss is worth, as a fraction of the stake. payoff is a ratio measured in
-      // these units, so without it the EV gate cannot compare an edge against a cost. Realized losses
-      // when there are enough of them; before that the tier's designed stop, which is what the exit
-      // plan is actually aiming to lose.
-      const lossFraction = useStats && stats.loss_fraction > 0 ? stats.loss_fraction : (prior.loss_fraction ?? 0.12);
+      // these units, so without it the EV gate cannot compare an edge against a cost. Before there is
+      // a record it is the tier's designed stop, which is what the exit plan is actually aiming to
+      // lose; after that it is the realized average, shrunk toward the designed one at the SAME
+      // weight as everything else, and for the same reason. Taken raw it was the one channel through
+      // which a record could make the gate keener, because the EV multiplies the edge by it: one
+      // -60% rug, or one -100% bookkeeping close on a position the bot could not sell, came back as
+      // the strongest argument the gate had for trading that key again at full size. Measured against
+      // this file before the change, at $25 and tier 2: no record +0.0060, one -5% stop -0.0311, one
+      // -60% rug +0.0886, one FLAT_AT_VENUE -100% +0.1757. That is the bot's own worst outcomes
+      // feeding back with the wrong sign.
+      const priorLoss = prior.loss_fraction ?? 0.12;
+      const lossFraction = measured && stats.loss_fraction > 0 ? priorLoss + (stats.loss_fraction - priorLoss) * weight : priorLoss;
+      // The last hole in "a record may lower this estimate and never raise it". p_win and payoff are
+      // clamped in R -- units of one average loss -- while the gate decides in units of stake, and
+      // lossFraction is the converter between the two. Shrinking it is not enough on its own: a key
+      // whose realized losses run bigger than its designed stop (the normal case on a bonding curve:
+      // gaps, rugs, chunked sells) still converts a prior-sized edge into a bigger stake-denominated
+      // one. So the clamp is applied where the decision is actually made. If the blended edge is
+      // worth more of the stake than the prior's is, the payoff is walked back until it is worth
+      // exactly the prior's -- which leaves EV(record) <= EV(priors) for every bucket, at every n,
+      // whatever the record says. The pessimism is chosen; its cost is that a key can never argue
+      // its way to a bigger size, only to a smaller one.
+      const edgeStakeOf = (pw, po, lf) => (pw * po - (1 - pw)) * lf;
+      const priorEdgeStake = edgeStakeOf(prior.p_win, prior.payoff, priorLoss);
+      const payoff = edgeStakeOf(p_win, payoffRaw, lossFraction) > priorEdgeStake && p_win > 0
+        ? Math.max(0, (priorEdgeStake / lossFraction + (1 - p_win)) / p_win)
+        : payoffRaw;
       // Ranking weights are still pump.fun's: the learner only trains that set, and the features are
       // the same shape on both venues. Unlike the statistics above, this is a shared prior rather
       // than one venue's record being read as another's.
@@ -208,12 +293,20 @@ export function makePumpfunEdge({
       const ranked = scoreFeatures(features, weights);
       const confidence = Math.min(0.95, ranked + (c.tier === 1 ? 0.15 : c.tier === 2 ? 0.05 : 0));
       return {
-        p_win, payoff, loss_fraction: lossFraction, on_priors: !useStats, outcomes_seen: stats?.n || 0, confidence, tier: c.tier,
+        p_win, payoff, loss_fraction: lossFraction, on_priors: !recordSpeaks, outcomes_seen: measured ? stats.n : 0, confidence, tier: c.tier,
         plan_key: plan.key, stake_cap_fraction: plan.stake_cap_fraction ?? null,
         stop_fraction: plan.worst_case_fraction,
+        // The loss this entry is actually aiming at, which is a different question from the one
+        // stop_fraction answers. stop_fraction is the sizer's worst case and is 1.0 on every curve
+        // plan, because a token can go to zero between two blocks. This one is the level the attached
+        // exit plan cuts at. Nothing gates on it -- the probe branch used to and it was an absorbing
+        // state, see pipeline.mjs -- but it travels on the decision so the ledger records what the
+        // plan meant to risk beside what the gate charged for it, which is the comparison an operator
+        // needs to tell a cost model that is working from a prior that is wrong.
+        designed_stop_fraction: designedStopFraction(venue, plan.key),
         group: c.token.devWallet || null,
         features,
-        reasons: [c.tierLabel, ...(c.tierReasons || []), ...(c.waived?.length ? [`momentum waived ${c.waived.join("+")}`] : []), useStats ? `stats n=${stats.n}` : "priors", `rank ${ranked.toFixed(3)}`],
+        reasons: [c.tierLabel, ...(c.tierReasons || []), ...(c.waived?.length ? [`momentum waived ${c.waived.join("+")}`] : []), measured ? `stats n=${stats.n}${Number.isFinite(stats.wins) ? ` wins=${stats.wins}` : ""} weight ${weight.toFixed(2)}` : "priors", `rank ${ranked.toFixed(3)}`],
       };
     },
 
@@ -245,12 +338,21 @@ export function makePumpfunEdge({
       // Arc (Argus): the hook's buy tax on the way in, its sell tax on the way out, and the pool's 1%
       // fee on each leg. The taxes are immutable per launch and read off the hook, so unlike PONS
       // there is no creator tax to assume; an unread tax is priced at the hook's maximum (10% a side).
-            const feeRT = arc
+      // Which of these numbers we had to assume. On pump.fun the round trip is a published constant
+      // and there is nothing to read; on PONS and Arc the curve carries the figures and until they
+      // arrive the maximum is charged. See the probe branch in pipeline.mjs: an entry refused by a
+      // toll we have not read must not be bought to find out, because reading the curve answers it.
+      const assumed = arc
+        ? unread(c.reference?.curve?.feeBps) || unread(c.reference?.curve?.sellTaxBps)
+        : pons
+        ? unread(c.reference?.curve?.feeBps) || unread(c.reference?.curve?.creatorTaxBps)
+        : false;
+      const feeRT = arc
         ? (numOr(c.reference?.curve?.feeBps, ARC_MAX_LEG_TAX_BPS) + numOr(c.reference?.curve?.sellTaxBps, ARC_MAX_LEG_TAX_BPS) + 2 * ARC_POOL_FEE_BPS) / 1e4
         : pons
         ? 2 * ((numOr(c.reference?.curve?.feeBps, PONS_ASSUMED_FEE_BPS) + numOr(c.reference?.curve?.creatorTaxBps, PONS_ASSUMED_TAX_BPS)) / 1e4)
         : feeFractionRoundTrip;
-      return { fraction: feeRT + impact + fixed, detail: { feeFractionRoundTrip: feeRT, impact, fixed, stake_usd: stakeAt } };
+      return { fraction: feeRT + impact + fixed, assumed, detail: { feeFractionRoundTrip: feeRT, impact, fixed, stake_usd: stakeAt } };
     },
   };
 }

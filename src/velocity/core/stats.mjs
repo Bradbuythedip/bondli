@@ -22,15 +22,26 @@ export function statsFromOutcomes(outcomes) {
   }
   for (const v of Object.values(byKey)) {
     for (const s of Object.values(v)) {
+      // n and wins stay on the finished bucket alongside the ratios, and the edge model depends on
+      // both: it shrinks toward its prior by a weight built from n, and it has to be able to tell a
+      // key that has never traded from one that has traded and lost every time. p_win 0 describes
+      // both of those until you can see how many closes it was computed over.
       const losses = s.n - s.wins;
       const avgWin = s.wins ? s.winSum / s.wins : 0;
-      const avgLoss = losses ? s.lossSum / losses : 1;
       s.p_win = s.n ? s.wins / s.n : 0;
-      s.payoff = avgLoss > 0 ? avgWin / avgLoss : avgWin;
       // payoff is a RATIO of average win to average loss, so it is denominated in "one average loss"
       // (one R), not in stake. Anything that wants to compare it against a cost -- which is a
       // fraction of stake -- needs to know how big one R actually is.
-      s.loss_fraction = losses ? avgLoss : 0;
+      //
+      // With no loss in the bucket there is no average loss, so both of these are unmeasured and say
+      // so. Dividing by a fabricated avgLoss of 1 reported a key that had won every trade it took as
+      // having a payoff of 0.25 against a prior of 3.0 -- a number in stake units masquerading as one
+      // in R -- and the edge model's one-directional clamp then took that 0.25 as the key's ceiling
+      // and shut it. Null means "take the prior"; zero would mean "measured at zero", which is what a
+      // bucket of nothing but losses honestly is.
+      const avgLoss = losses ? s.lossSum / losses : 0;
+      s.payoff = losses ? (avgLoss > 0 ? avgWin / avgLoss : avgWin) : null;
+      s.loss_fraction = avgLoss;
       s.expectancy = s.n ? s.pnlSum / s.n : 0;
     }
   }

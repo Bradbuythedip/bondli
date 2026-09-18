@@ -11,6 +11,10 @@ import { loadRiskEnvelope } from "../../src/velocity/core/risk.mjs";
 
 const env = loadRiskEnvelope(path.resolve("src/velocity/config/risk.example.json")); // daily limit 100
 
+// Every fixture below books paper: false. The governor reads live closes only once real money is at
+// work, so an outcome with no mode is no longer a trade it has an opinion about; saying so keeps
+// these cases pinning the brakes they were written to pin rather than the new filter.
+
 function mkLedger() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "velocity-t7-"));
   return new Ledger(path.join(dir, "ledger.jsonl"), { fsync: false });
@@ -26,7 +30,7 @@ test("T7: losing streak throttles at 3, cuts at 4, halts at 5, all before the da
     t += 5 * 60_000;
     realized -= 8;
     ledger.append({ kind: "fill", venue: "pumpfun", side: "BUY", notional_usd: 10, ts: t - 60_000 });
-    ledger.append({ kind: "outcome", venue: "pumpfun", pnl_usd: -8, pnl_pct: -80, stake_usd: 10, p_win: 0.35, confidence: 0.6, held_ms: 60_000, ts: t });
+    ledger.append({ kind: "outcome", venue: "pumpfun", paper: false, pnl_usd: -8, pnl_pct: -80, stake_usd: 10, p_win: 0.35, confidence: 0.6, held_ms: 60_000, ts: t });
     const v = gov.evaluate({ regime: "RISK_ON", realized_today_usd: realized, open: [] });
     seen.push({ i, throttle: v.throttle, halt: v.halt, reason: v.haltReason, realized });
     assert.ok(v.throttle <= 1);
@@ -46,7 +50,7 @@ test("T7: the daily loss limit tapers the stake instead of halting; only a 3x da
   let verdict;
   for (const p of pnls) {
     t += 60_000;
-    ledger.append({ kind: "outcome", venue: "polymarket", pnl_usd: p, stake_usd: 50, p_win: 0.9, ts: t });
+    ledger.append({ kind: "outcome", venue: "polymarket", paper: false, pnl_usd: p, stake_usd: 50, p_win: 0.9, ts: t });
     realized += p;
     verdict = gov.evaluate({ realized_today_usd: realized, open: [] });
   }
@@ -83,7 +87,7 @@ test("T7: regime caps, overconfidence, revenge, and never above 1", () => {
   // 24 outcomes stating p_win 0.8, winning 30%: overconfident.
   for (let i = 0; i < 24; i++) {
     t += 10 * 60_000;
-    ledger.append({ kind: "outcome", venue: "pumpfun", pnl_usd: i % 10 < 3 ? 12 : -5, stake_usd: 10, p_win: 0.8, ts: t });
+    ledger.append({ kind: "outcome", venue: "pumpfun", paper: false, pnl_usd: i % 10 < 3 ? 12 : -5, stake_usd: 10, p_win: 0.8, ts: t });
   }
   const v = gov.evaluate({ regime: "RISK_ON", realized_today_usd: 0 });
   assert.ok(v.blindSpots.overconfidence?.triggered, JSON.stringify(v.blindSpots));
@@ -95,12 +99,44 @@ test("T7: regime caps, overconfidence, revenge, and never above 1", () => {
   t = 1_700_000_000_000;
   for (let i = 0; i < 3; i++) {
     t += 30 * 60_000;
-    l2.append({ kind: "outcome", venue: "pumpfun", pnl_usd: -5, stake_usd: 10, p_win: 0.35, ts: t });
+    l2.append({ kind: "outcome", venue: "pumpfun", paper: false, pnl_usd: -5, stake_usd: 10, p_win: 0.35, ts: t });
     l2.append({ kind: "fill", venue: "pumpfun", side: "BUY", notional_usd: 25, ts: t + 30_000 });
   }
   const r = g2.evaluate({ regime: "RISK_ON" });
   assert.ok(r.blindSpots.revenge_trading?.triggered);
   assert.equal(r.throttle, 0.5);
+});
+
+test("T7: a simulated buy after a real loss is not revenge trading", () => {
+  // The outcome pool is live-only once real money is at work; the BUYS the revenge rule cross-checks
+  // against it were not. On the ordinary hosted shape -- pump.fun live beside PONS in paper because
+  // its preflight failed -- a simulated PONS buy landing within two minutes of a real pump.fun loss
+  // counted as a larger re-entry, and two of them halved the stake on every real entry. Half a rule
+  // applied to real and imaginary money at once fails in the direction it exists to prevent.
+  const modes = { pumpfun: "live", pons: "paper" };
+  const gov = () => new Governor({ ledger, envelope: env, venueMode: v => modes[v] || "off", anyLive: () => Object.values(modes).includes("live") });
+  const ledger = mkLedger();
+  let t = 1_700_000_000_000;
+  for (let i = 0; i < 3; i++) {
+    t += 30 * 60_000;
+    ledger.append({ kind: "outcome", venue: "pumpfun", paper: false, pnl_usd: -5, stake_usd: 10, p_win: 0.35, ts: t });
+    ledger.append({ kind: "fill", venue: "pons", paper: true, side: "BUY", notional_usd: 25, ts: t + 30_000 });
+  }
+  const imagined = gov().evaluate({ regime: "RISK_ON" });
+  assert.equal(imagined.blindSpots.revenge_trading, undefined, `no real money chased anything: ${JSON.stringify(imagined.blindSpots)}`);
+  assert.equal(imagined.throttle, 1, "so nothing is throttled");
+
+  // Non-vacuous: the same buys with real money behind them still flag it and still halve the stake.
+  const real = mkLedger();
+  let t2 = 1_700_000_000_000;
+  for (let i = 0; i < 3; i++) {
+    t2 += 30 * 60_000;
+    real.append({ kind: "outcome", venue: "pumpfun", paper: false, pnl_usd: -5, stake_usd: 10, p_win: 0.35, ts: t2 });
+    real.append({ kind: "fill", venue: "pumpfun", paper: false, side: "BUY", notional_usd: 25, ts: t2 + 30_000 });
+  }
+  const g = new Governor({ ledger: real, envelope: env, venueMode: v => modes[v] || "off", anyLive: () => true }).evaluate({ regime: "RISK_ON" });
+  assert.ok(g.blindSpots.revenge_trading?.triggered, JSON.stringify(g.blindSpots));
+  assert.equal(g.throttle, 0.5);
 });
 
 test("T7: a paper venue's losses cannot halt live trading, nor fund it", async () => {
@@ -169,4 +205,109 @@ test("T7: a simulated position does not hold a real concurrency slot", async () 
   add("real1", false);
   assert.equal(e.portfolioSnapshot().open.length, 1);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// The governor's throttle is spent on real stakes, so it must be earned by real closes. These three
+// cases pin the filter in _outcomes: what a simulation says is not evidence about the live book.
+test("T7: simulated closes cannot move the live throttle", () => {
+  const ledger = mkLedger();
+  // The hosted default shape: one chain funded and live, another left in simulation by preflight.
+  const modes = { pumpfun: "live", pons: "paper" };
+  const gov = new Governor({ ledger, envelope: env, venueMode: v => modes[v] || "off", anyLive: () => Object.values(modes).includes("live") });
+  let t = 1_700_000_000_000;
+  // 25 simulated closes stating p_win 0.8 and winning 9 of 25: overconfident, if it were money.
+  for (let i = 0; i < 25; i++) {
+    t += 10 * 60_000;
+    ledger.append({ kind: "outcome", venue: "pons", paper: true, pnl_usd: i % 10 < 3 ? 12 : -5, stake_usd: 10, p_win: 0.8, ts: t });
+  }
+  const v = gov.evaluate({ regime: "RISK_ON", realized_today_usd: 0 });
+  assert.equal(v.outcomes, 0, "a simulated venue's closes are not in the pool at all");
+  assert.equal(v.blindSpots.overconfidence, undefined, JSON.stringify(v.blindSpots));
+  assert.equal(v.throttle, 1, "the real chain's stake is not quartered by what the simulation did");
+  assert.equal(v.halt, false);
+});
+
+test("T7: the same record in live money still cuts the stake to a quarter", () => {
+  const ledger = mkLedger();
+  const modes = { pumpfun: "live", pons: "paper" };
+  const gov = new Governor({ ledger, envelope: env, venueMode: v => modes[v] || "off", anyLive: () => true });
+  let t = 1_700_000_000_000;
+  for (let i = 0; i < 25; i++) {
+    t += 10 * 60_000;
+    ledger.append({ kind: "outcome", venue: "pumpfun", paper: false, pnl_usd: i % 10 < 3 ? 12 : -5, stake_usd: 10, p_win: 0.8, ts: t });
+  }
+  const v = gov.evaluate({ regime: "RISK_ON", realized_today_usd: 0 });
+  assert.equal(v.outcomes, 25);
+  assert.ok(v.blindSpots.overconfidence?.triggered, JSON.stringify(v.blindSpots));
+  // Word for word the reason the operator would have read before the filter existed.
+  assert.ok(v.reasons.includes("overconfidence: stated 0.80 vs realized 0.36; the edge is not showing up, sizes cut to a quarter"), JSON.stringify(v.reasons));
+  assert.equal(v.throttle, 0.25);
+});
+
+test("T7: with no venue-mode reader the governor still refuses simulated closes", () => {
+  const ledger = mkLedger();
+  // A bare governor cannot tell which venue is live, so it must fail toward the stricter answer.
+  const gov = new Governor({ ledger, envelope: env });
+  let t = 1_700_000_000_000;
+  for (let i = 0; i < 25; i++) {
+    t += 10 * 60_000;
+    ledger.append({ kind: "outcome", venue: "pons", paper: true, pnl_usd: i % 10 < 3 ? 12 : -5, stake_usd: 10, p_win: 0.8, ts: t });
+  }
+  const v = gov.evaluate({ regime: "RISK_ON", realized_today_usd: 0 });
+  assert.equal(v.outcomes, 0, "no reader means live-only, never pass-through");
+  assert.equal(v.throttle, 1);
+});
+
+test("T7: an all-paper run is still governed by its own simulated closes", () => {
+  const ledger = mkLedger();
+  // Before any go-live there is no live record to govern by, and a paper run with the brakes off
+  // would hand the promote gate the results of a bot that is not the one that would trade.
+  const modes = { pons: "paper" };
+  const gov = new Governor({ ledger, envelope: env, venueMode: v => modes[v] || "off", anyLive: () => false });
+  let t = 1_700_000_000_000;
+  for (let i = 0; i < 25; i++) {
+    t += 10 * 60_000;
+    ledger.append({ kind: "outcome", venue: "pons", paper: true, pnl_usd: i % 10 < 3 ? 12 : -5, stake_usd: 10, p_win: 0.8, ts: t });
+  }
+  const v = gov.evaluate({ regime: "RISK_ON", realized_today_usd: 0 });
+  assert.equal(v.outcomes, 25);
+  assert.equal(v.throttle, 0.25, "the simulation is held to the same brakes it would be live");
+});
+
+test("T7: a venue's pre-promotion paper closes do not follow it live", () => {
+  const ledger = mkLedger();
+  const modes = { pumpfun: "paper" };
+  const gov = new Governor({ ledger, envelope: env, venueMode: v => modes[v] || "off", anyLive: () => Object.values(modes).includes("live") });
+  let t = 1_700_000_000_000;
+  for (let i = 0; i < 25; i++) {
+    t += 10 * 60_000;
+    ledger.append({ kind: "outcome", venue: "pumpfun", paper: true, pnl_usd: i % 10 < 3 ? 12 : -5, stake_usd: 10, p_win: 0.8, ts: t });
+  }
+  assert.equal(gov.evaluate({ regime: "RISK_ON" }).throttle, 0.25, "while it is paper, its paper record governs it");
+  // The operator promotes it. The same closes are now a model's opinion about a venue trading money.
+  modes.pumpfun = "live";
+  const v = gov.evaluate({ regime: "RISK_ON" });
+  assert.equal(v.outcomes, 0);
+  assert.equal(v.throttle, 1, "the live book starts with no record, which is the truth about it");
+});
+
+test("T7: promoting a venue empties the tilt detector of its simulated closes", () => {
+  const ledger = mkLedger();
+  const modes = { pumpfun: "paper" };
+  const gov = new Governor({ ledger, envelope: env, venueMode: v => modes[v] || "off", anyLive: () => Object.values(modes).includes("live") });
+  let t = 1_700_000_000_000;
+  // A simulated run bad enough to put the detector on tilt.
+  for (let i = 0; i < 12; i++) {
+    t += 60_000;
+    ledger.append({ kind: "outcome", venue: "pumpfun", paper: true, pnl_usd: -40, pnl_pct: -80, stake_usd: 50, p_win: 0.35, confidence: 0.6, held_ms: 60_000, ts: t });
+  }
+  const sim = gov.evaluate({ regime: "RISK_ON" });
+  assert.ok(sim.tiltLevel > 0, `the simulation is on tilt: ${JSON.stringify(sim.blindSpots)}`);
+  // Go live. The detector must not still be carrying a tilt nobody paid for.
+  modes.pumpfun = "live";
+  const live = gov.evaluate({ regime: "RISK_ON" });
+  assert.equal(live.outcomes, 0);
+  assert.equal(live.tiltLevel, 0, "a tilt built out of imaginary money does not survive the go-live");
+  assert.equal(gov.tilt.getStatus().stats?.sessionPnl ?? 0, 0, "and neither does its session P&L");
+  assert.equal(live.throttle, 1);
 });

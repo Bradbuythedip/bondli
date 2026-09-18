@@ -32,19 +32,29 @@ export function expectedValue({ p_win, payoff, costs, lossFraction = null }) {
 }
 
 export class GateRunner {
-  // probeStakeFraction: while a tier has no realized outcomes of its own it is judged on priors, and
-  // a prior that prices a trade out is a claim about a guess. A tier whose edge is positive BEFORE
-  // costs, and only negative after them, is exactly the case where the assumed loss size is what
-  // decides -- and that is the number the priors are least entitled to. Rather than refuse forever
-  // and never learn otherwise, such a trade is taken at this fraction of the normal cap until the
-  // tier has enough outcomes to be measured. Set to 0 to refuse instead.
-  constructor({ venue, edge, minConfidence = edge?.minConfidence ?? 0.5, minEv = 0, probeStakeFraction = 0.4 }) {
+  // probeStakeFraction: while a plan key has no realized outcomes of its own it is judged on priors,
+  // and a prior that prices a trade out is a claim about a guess. Where the guess is what refused it
+  // -- see the test in evaluate, which asks whether the trade would clear its costs at the loss the
+  // exit plan is designed to take -- refusing forever means never learning otherwise, so the trade is
+  // taken at this fraction of the normal cap until the key has a record. Set to 0 to refuse instead.
+  //
+  // probeBudget: how many probes one (venue, plan key) may be sold in a UTC day. A probe is not a
+  // trade that was judged worth taking -- it is a measurement being bought, and it is paid for in
+  // toll at the same rate as any other round trip. Left uncounted it is not a probe at all but a
+  // standing licence to trade on a guess, which is how a daily risk budget quietly becomes a fee
+  // budget. Three is chosen, not rounded to: at three a day a key reaches the six closes where its
+  // own record takes over the estimate inside two days, and about forty inside the fourteen-day
+  // statistics window, which is enough for that record to mean something -- while the most the
+  // whole idea can cost a key is three reduced-size round trips a day. Zero would be a lockout and
+  // is refused as a setting; a large number would make this cosmetic.
+  constructor({ venue, edge, minConfidence = edge?.minConfidence ?? 0.5, minEv = 0, probeStakeFraction = 0.4, probeBudget = 3 }) {
     if (!edge || edge.venue !== venue) throw new Error(`edge model must be for venue ${venue}`);
     this.venue = venue;
     this.edge = edge;
     this.minConfidence = minConfidence;
     this.minEv = minEv;
     this.probeStakeFraction = Number(probeStakeFraction) > 0 ? Math.min(1, Number(probeStakeFraction)) : 0;
+    this.probeBudget = Number(probeBudget) >= 1 ? Math.floor(Number(probeBudget)) : 3;
     this.evaluated = 0;
     this.gos = 0;
   }
@@ -104,21 +114,58 @@ export class GateRunner {
     const lossFraction = Number(est.loss_fraction) > 0 ? Number(est.loss_fraction) : null;
     const ev = expectedValue({ p_win, payoff, costs: costs.fraction || 0, lossFraction });
     const tier = est.tier ?? cand.tier ?? 0;
-    const common = { ...base, tier, p_win: round(p_win), payoff: round(payoff), confidence: round(confidence), ev: round(ev), loss_fraction: lossFraction, costs: { ...costs, fraction: round(costs.fraction || 0) }, stop_fraction: est.stop_fraction ?? cand.stop_fraction ?? null, plan_key: est.plan_key ?? null, stake_cap_fraction: est.stake_cap_fraction ?? null, group: est.group ?? base.group, size_hint: est.size_hint ?? null, features: est.features || null };
+    const common = { ...base, tier, p_win: round(p_win), payoff: round(payoff), confidence: round(confidence), ev: round(ev), loss_fraction: lossFraction, costs: { ...costs, fraction: round(costs.fraction || 0) }, stop_fraction: est.stop_fraction ?? cand.stop_fraction ?? null, designed_stop_fraction: est.designed_stop_fraction ?? null, plan_key: est.plan_key ?? null, stake_cap_fraction: est.stake_cap_fraction ?? null, group: est.group ?? base.group, size_hint: est.size_hint ?? null, features: est.features || null };
     if (!(p_win > 0) || !(payoff > 0)) return { ...common, action: "REJECT", gate: "estimate", reasons: ["NO_EDGE_ESTIMATE"] };
     if (confidence < this.minConfidence) return { ...common, action: "REJECT", gate: "confidence", reasons: [`CONFIDENCE_${confidence.toFixed(2)}_BELOW_${this.minConfidence}`] };
     if (ev <= this.minEv) {
-      // A refusal that came from an assumption, not a measurement. See probeStakeFraction: if the
-      // edge is positive before costs and the tier has never been measured, buy the measurement at a
-      // reduced size instead of refusing forever on the strength of a guess.
-      const edgeBeforeCosts = p_win * payoff - (1 - p_win);
-      if (est.on_priors && this.probeStakeFraction > 0 && edgeBeforeCosts > 0) {
+      // A refusal that rests on a guess. See probeStakeFraction: while the estimate is still the
+      // prior's, refusing forever means never learning otherwise, so the trade is bought at a
+      // reduced size instead of refused -- and bought out of a small daily budget, because an
+      // uncounted probe is not a probe but a standing licence to trade on a guess.
+      //
+      // `on_priors` is the whole test, and it means what its name says: is the prior still the
+      // thing speaking. That is exactly the condition a probe can revise and the only one it can.
+      // Two narrower tests were tried here and both were absorbing states. "Edge positive before
+      // costs" approved every EV refusal there is, because every prior in the table is positive
+      // before costs -- which made the fail-closed cost model decorative. Its replacement, "the
+      // edge clears the costs at the loss the exit plan is DESIGNED to take", is a comparison
+      // between constants for any key that has not traded: measured on priors at every stake the
+      // sizer can return, tier 3 (0.0200), the first dip (0.0280) and revival (0.0160) all fall
+      // under a round trip, so all three were refused identically for the life of the account and
+      // could never earn the record that would revise them. And a key one close old is in the same
+      // position: the close moves the estimate by a thirteenth and cannot clear that bar either, so
+      // a single ordinary loss shut a key for the fourteen days the window runs.
+      //
+      // What the probe must NOT buy is a refusal that came from a toll we have not read. An unread
+      // PONS creator tax or an unread Arc leg tax is priced at the hook's maximum on purpose; the
+      // answer to that is to fetch the curve, not to spend a round trip finding out. costs.assumed
+      // says which, so the fail-closed pricing stays load-bearing rather than decorative.
+      const tollAssumed = !!costs.assumed;
+      if (est.on_priors && this.probeStakeFraction > 0 && !tollAssumed) {
+        // What survives is still bought, not taken. ctx.probes is the day's tally, one count per
+        // (venue, plan key), and the caller hands over the live one or the paper one. No tally means
+        // no day to charge it to, and an untracked probe is the thing this exists to stop, so it is
+        // refused rather than waved through. Either way the refusal is an ordinary REJECT and says
+        // why, so the funnel and the ledger record what the selectivity cost instead of going quiet.
+        const budgetKey = `${this.venue}|${common.plan_key ?? tier}`;
+        if (!ctx.probes) return { ...common, action: "REJECT", gate: "ev", reasons: [`PROBE_BUDGET_SPENT: no day budget was supplied to charge ${budgetKey} against`] };
+        const spent = Number(ctx.probes[budgetKey]) || 0;
+        if (spent >= this.probeBudget) return { ...common, action: "REJECT", gate: "ev", reasons: [`PROBE_BUDGET_SPENT: ${budgetKey} has spent ${spent} of ${this.probeBudget} probes today`] };
+        // The tally is READ here and CHARGED where the buy lands (engine._openPosition). Charged
+        // here it counted approvals rather than trades, and an approval that dies on a full slot
+        // table, a stake throttled under the floor or a router failure buys no measurement at all.
         this.gos++;
         return { ...common, action: "GO", gate: null, probe: true,
           stake_cap_fraction: Math.min(common.stake_cap_fraction ?? 1, this.probeStakeFraction),
-          reasons: [`PROBE: tier ${tier} has ${est.outcomes_seen || 0} outcomes, EV ${ev.toFixed(4)} rests on priors`, ...(est.reasons || [])].map(String) };
+          reasons: [`PROBE ${spent + 1}/${this.probeBudget}: tier ${tier} has ${est.outcomes_seen || 0} outcomes, EV ${ev.toFixed(4)} rests on priors`, ...(est.reasons || [])].map(String) };
       }
-      return { ...common, action: "REJECT", gate: "ev", reasons: [`EV_${ev.toFixed(4)}_NOT_POSITIVE_AFTER_COSTS${est.on_priors ? "_ON_PRIORS" : ""}`] };
+      // Say which of the two refused it. A trade the probe would have taken and does not is the
+      // whole behavioural change here, and if the ledger only records EV_NOT_POSITIVE it looks
+      // identical to every other refusal -- so an operator watching entries dry up has nothing to
+      // read, and no way to tell a cost model that is working from one that is too strict.
+      return { ...common, action: "REJECT", gate: "ev",
+        reasons: [`EV_${ev.toFixed(4)}_NOT_POSITIVE_AFTER_COSTS${est.on_priors ? "_ON_PRIORS" : ""}`,
+          ...(tollAssumed ? [`no probe: the toll here is assumed at ${(costs.fraction || 0).toFixed(4)} because the curve's own fees have not been read; read them rather than buying a token to price them`] : [])] };
     }
     this.gos++;
     return { ...common, action: "GO", gate: null, reasons: [].concat(est.reasons || ["all gates passed"]).map(String) };

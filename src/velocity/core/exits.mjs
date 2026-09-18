@@ -91,13 +91,67 @@ export function evaluateExit(position, tick, { now = tick.t_observed } = {}) {
   return null;
 }
 
+/**
+ * Has this position's peak switched the ride trail on -- is the trail, rather than the clock, the
+ * thing that is going to sell it?
+ *
+ * The test is the arm alone, not the arm and the trigger. Once armed the trail decides every tick
+ * one of two ways: the mark is above the trigger and it holds, or the mark is at or below it and it
+ * sells this very tick. Re-testing the trigger here would hand the clock exactly the tick the trail
+ * was about to act on, and that tick is not a neutral choice -- it decides whether the runner is
+ * booked as the trail exit it is, with the moonbag the trail grants it, or as a timeout.
+ *
+ * The threshold is the trail's own arm and nothing else's: see the note on the time stop below for
+ * why this is not the same number as the engine's stall exemption, which is a different question.
+ *
+ * Read off the same numbers the trail itself uses (src/autoape/exit-plan.js checkTrailingExit): the
+ * position's own copy of the plan when it has one, the designed plan before the first tick, and a
+ * peak that includes this tick's mark the way runExitChecks recomputes it. No readable price is no
+ * answer, and the answer to an unanswerable question is not an exemption -- a blind position is not
+ * a runner, so the clock keeps it.
+ */
+function rideTrailArmed(position, plan, mcapUsd) {
+  const tp = position._bondli?.exitPlan?.tpLevels || plan?.bondli?.tpLevels;
+  const entry = position.entryMark;
+  if (!tp?.ride || !(entry > 0) || !(mcapUsd > 0)) return false;
+  const peak = Math.max(position.peak || entry, position._bondli?.peakMcap || 0, mcapUsd);
+  return ((peak - entry) / entry) * 100 >= (tp.rideArm ?? 30);
+}
+
 function evaluatePumpfun(position, tick, plan, now, held) {
   const p = tick.payload || {};
   const token = p.token ? { ...p.token, mcapUsd: Number(p.mcapUsd) || p.token.mcapUsd || 0, vSolInBondingCurve: Number(p.vSolInBondingCurve) || p.token.vSolInBondingCurve || 0 }
     : { mcapUsd: Number(p.mcapUsd) || 0, vSolInBondingCurve: Number(p.vSolInBondingCurve) || 0 };
   // The time stop needs no price: a token that left the radar or went to zero still gets sold.
   // A moonbag has no time limit: it rides until it dies (-80%) or gives back its own trail.
-  if (held > plan.max_hold_ms && !position._bondli?.isMoonbag) return { action: "SELL", pct: 100, reason: "MAX_HOLD", layer: 2, detail: `${Math.round(held / 60000)}min` };
+  // Nor does a position whose trail is armed, for as long as it is armed. A clock is a poor judge of
+  // a token that is still running, and this strategy is all right tail: an average win of +24.1%
+  // against an average loss of -5.3% only pays because the winners are allowed to get large. Selling
+  // a runner at +358% because fifteen minutes elapsed, while the trail that exists to sell it is
+  // switched on and has not fired, is the most expensive thing this file can do -- no improvement in
+  // win rate buys that gain back. The engine already makes an exemption of this SHAPE for the stall, one
+  // evaluator over (engine.mjs:470-474: a position whose peak armed the trail is the trail's to
+  // manage, and a quiet feed is not a reason to give it up); the bondli layer this evaluator replaced
+  // carried the same guard on the time stop itself (src/autoape/exit-plan.js, checkThresholdExit:
+  // its MAX_HOLD_TIME never fires on a position that is up, `changePct < 20`).
+  // It cannot widen a loser: a loser never reaches rideArm, and SL1/SL2, DOA, the crash exit and
+  // blind-exit all take it out long before this line. And it defers the clock rather than removing
+  // it -- past twice max_hold MAX_HOLD fires whatever the position is doing, because a token that
+  // goes vertical and then rugs between ticks must not be held for ever, and a position that is
+  // deferring is holding one of a handful of slots while it does so.
+  //
+  // Two bounds worth stating plainly rather than leaving to be discovered. The per-position one is
+  // 2x max_hold, which on dip_hold is six hours. Nothing bounds how MANY positions may defer at
+  // once, so on a four-slot table all four can sit past their clocks for that long; engine.status()
+  // marks each such position `deferring` so an operator can see the table filling rather than infer
+  // it from timestamps. And the threshold here is the ride trail's own arm (tp.rideArm, 30%), which
+  // is NOT the threshold the engine's stall exemption uses -- that one is stall_band_pct * 1.5, 12%
+  // on tier 2. They are two different questions wearing one word: this asks whether the trail will
+  // be the thing that sells, the stall's asks whether a quiet position has moved enough to be worth
+  // waiting on. A position between 12% and 30% off entry is exempt from the stall and not from the
+  // clock, which is the intended order.
+  if (held > plan.max_hold_ms && !position._bondli?.isMoonbag && !(held <= plan.max_hold_ms * 2 && rideTrailArmed(position, plan, token.mcapUsd)))
+    return { action: "SELL", pct: 100, reason: "MAX_HOLD", layer: 2, detail: `${Math.round(held / 60000)}min` };
   // Blind: the venue is answering, but not with a price for this token -- a reverting curve read, a
   // pool that graduated out from under us, a quote-asset price gap. Every second blind is unbounded
   // downside with no stop loss behind it, because every price rule below this line needs a price.
@@ -206,6 +260,14 @@ function evaluatePumpfun(position, tick, plan, now, held) {
     if (r.reason === "TP2") stamp.tpHit = Math.max(pos.tpHit, 2);
     if (r.reason === "TP3" || (/^(TP-trail|RIDE-trail)$/.test(r.reason) && r.moonbag)) { stamp.tpHit = 3; stamp.isMoonbag = !!r.moonbag; }
     if (r.reason === "SL1") stamp.slHit = 1;
+    // Everything else that takes some off is stamped too, by default rather than by name. A rule
+    // that says "sell a quarter and keep the rest" only means that if something remembers it fired:
+    // volume-sell, pre-graduation-profit and brad-partial left no mark, so on the next tick the same
+    // condition was still true, they sold a quarter of what was LEFT, and a token that ran drained
+    // itself to nothing over a couple of minutes of ticks. SL1 is the one exclusion, by name: a
+    // position 13% under water has not taken profit, and saying it has hands the stop's remaining
+    // job to the post-TP1 rules and tells every other reader of tpHit that this one is a winner.
+    if (stamp.tpHit == null && stamp.slHit == null) stamp.tpHit = Math.max(pos.tpHit || 0, 1);
     return { action: "PARTIAL_SELL", pct: r.pct, reason: r.reason, layer: r.layer, detail: r.detail || null, stamp };
   }
   return { action: "SELL", pct: 100, reason: r.reason, layer: r.layer, detail: r.detail || null };
