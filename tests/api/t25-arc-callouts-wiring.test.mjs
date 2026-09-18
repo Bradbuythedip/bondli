@@ -22,7 +22,7 @@ test("T25: the Arc feed is built from ARC_RPC_URL, handed to the hub, started, a
   assert.match(SERVER, /\["Arc \(Argus\)", arcFeed\]\]\.filter\(\(\[, f\]\) => f\)/);
   // Its trades join the same history the Solana and PONS trades feed, so revival and slow-cook can speak about Arc tokens.
   const ctor = SERVER.indexOf("new ArcFeed({");
-  assert.match(SERVER.slice(ctor, ctor + 600), /onTrade: \(t, tr\) => radar\._revivals\.noteTrade/);
+  assert.match(SERVER.slice(ctor, ctor + 700), /onTrade: \(t, tr\) => \{\n\s+radar\._revivals\.noteTrade/);
   // The hub keeps it beside the PONS feed and reports it on the health route.
   assert.match(HUB, /this\.arcFeed = arcFeed;/);
   assert.match(HUB, /arc: hub\.arcFeed \? \{ \.\.\.pub\(hub\.arcFeed\.status\?\.\(\)\), tokens: hub\.arcFeed\.tokens\?\.size \?\? null/);

@@ -70,6 +70,14 @@ whose getters do not answer keeps its launch out of the feed, every swap is dry-
 sent, a buy inside the snipe window is refused, an RPC that answers for another chain is refused at
 go-live, and an unknown tax is priced at the cap (`arc/chain.mjs`, `arc/router.mjs`, `t20`, `t23`).
 
+## 11. On Arc the quote asset is the dollar, and nothing is priced through anything else.
+Every venue before this one carried a price feed between the trade and the money: SOL or ETH, read
+from an exchange, stale by a minute, gone in an outage, and behind a whole class of loss (`t12`,
+`t22`: the unreadable tick). On Arc the pool is quoted in USDC, gas is USDC, the fee is USDC, the
+stake, the mark, the P&L and the platform's cut are all the same unit, and `solPrice` on the venue is
+the constant 1 (`arc/feed.mjs`, `QUOTE_OF`). There is no price to lose, so the only unreadable
+price on Arc is a pool that will not answer, and that is reported as such (axiom 2).
+
 ## What is still open
 - Entry quality on Robinhood Chain: 4% win rate over the last 24 live closes. The miss ledger
   (`engine.misses()`) records which hard rule refused each token that then ran; that is the
