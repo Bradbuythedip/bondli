@@ -72,7 +72,7 @@ import { PumpfunFeed } from "../velocity/venues/pumpfun/feed.mjs";
 import { generateChallenge, verifySolanaSignature, issueAuthToken, makeRequireOwner, nonces as authNonces } from "../middleware/wallet-auth.mjs";
 import CONFIG from "../engine/config.mjs";
 import { smartSend, getOptimalPriorityFee } from "../engine/rpc-enhanced.mjs";
-import { MemeIntelligence, ScoreDynamics, loraClient } from "../engine/meme-intelligence.mjs";
+import { MemeIntelligence, ScoreDynamics } from "../engine/meme-intelligence.mjs";
 import { startOnchainTrades } from "./radar-onchain.mjs";
 import { ArtworkScanner } from "../engine/artwork-scanner.mjs";
 import { XSocialIntel } from "../engine/x-social-intel.mjs";
@@ -88,14 +88,9 @@ import { scoreMemeticQuick, scoreTokenMemetic, loadBlacklists as loadMemeticBlac
 import { runPipeline, runExitChecks, classifyConfidence, calculatePositionSize, createExitPlan, checkPostExitReentry, checkDipDCA } from "../autoape/pipeline.js";
 import { getSpotPrice, getMultiSpotPrices, getCandlesByMint, findPool, analyzeCandles } from "../engine/price-feeds.mjs";
 import { BagsClient } from "../engine/bags-client.mjs";
-import { mountGpuRoutes } from "../engine/gpu-earnings.mjs";
-import { NosanaJobRouter } from "../engine/nosana-job-router.mjs";
-import { ComputeEngine } from "../engine/compute-engine.mjs";
-import { PremiumComputeEngine } from "../engine/premium-compute.mjs";
-import { mountChatRoutes } from "../engine/grok-client.mjs";
 import bradClient from "../engine/brad-client.mjs";
 import { getBradMind, getThoughtLog } from "../engine/brad-mind.mjs";
-import { startPaperTrading, stopPaperTrading, paperEvaluate, paperCheckExit, getPaperStatus, isPaperEnabled, GPU_SCALING_CONFIG } from "../engine/brad-paper.mjs";
+import { startPaperTrading, stopPaperTrading, paperEvaluate, paperCheckExit, getPaperStatus, isPaperEnabled } from "../engine/brad-paper.mjs";
 
 // ═══════════════════════════════════════
 // ENVIRONMENT
@@ -3864,7 +3859,7 @@ app.post("/api/trading-wallet/import", requireOwner, async (req, res) => {
 // ═══════════════════════════════════════
 // ROUTES: SESSION LIFECYCLE
 // ═══════════════════════════════════════
-app.post("/api/session/create", async (req, res) => {
+app.post("/api/session/create", requireOwner, async (req, res) => {
   try {
     const { totalSol, tokenConfig, wallet, fleetConfig } = req.body;
     if (!wallet) return res.status(400).json({ error: "wallet required" });
@@ -3886,7 +3881,7 @@ app.post("/api/session/create", async (req, res) => {
   }
 });
 
-app.get("/api/session/balance", async (req, res) => {
+app.get("/api/session/balance", requireOwner, async (req, res) => {
   const { sessionId, wallet } = req.query;
   const session = await sessionManager.get(sessionId);
   if (!session) return res.status(404).json({ error: "Session not found" });
@@ -3907,13 +3902,13 @@ app.get("/api/session/balance", async (req, res) => {
   }
 });
 
-app.post("/api/session/fund", async (req, res) => {
+app.post("/api/session/fund", requireOwner, async (req, res) => {
   const { sessionId, txSig, wallet } = req.body;
   const result = await sessionManager.verifyDeposit(sessionId, txSig);
   res.json(result);
 });
 
-app.post("/api/session/launch", async (req, res) => {
+app.post("/api/session/launch", requireOwner, async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
     const session = await sessionManager.get(sessionId);
@@ -3973,12 +3968,12 @@ app.post("/api/session/launch", async (req, res) => {
   }
 });
 
-app.post("/api/session/resume", async (req, res) => {
+app.post("/api/session/resume", requireOwner, async (req, res) => {
   res.json({ ok: false, error: "Resume not yet implemented" });
 });
 
 // ── FLEET COMMAND (War Room controls) ──
-app.post("/api/session/command", async (req, res) => {
+app.post("/api/session/command", requireOwner, async (req, res) => {
   try {
     const { sessionId, wallet, command, params } = req.body || {};
     if (!sessionId || !wallet || !command) return res.status(400).json({ error: "sessionId, wallet, command required" });
@@ -4248,7 +4243,7 @@ app.post("/api/session/force-recover", requireOwner, async (req, res) => {
 });
 
 // ── EXPORT KEYS ──
-app.post("/api/session/export-keys", async (req, res) => {
+app.post("/api/session/export-keys", requireOwner, async (req, res) => {
   try {
     const { sessionId, wallet } = req.body;
     const session = await sessionManager.get(sessionId);
@@ -4273,7 +4268,7 @@ app.post("/api/session/export-keys", async (req, res) => {
 });
 
 // ── DELETE SESSION ──
-app.post("/api/session/delete", async (req, res) => {
+app.post("/api/session/delete", requireOwner, async (req, res) => {
   const { sessionId, wallet } = req.body;
   const session = await sessionManager.get(sessionId);
   if (!session) return res.json({ ok: true }); // already gone
@@ -4283,7 +4278,7 @@ app.post("/api/session/delete", async (req, res) => {
 });
 
 // ── LIST SESSIONS ──
-app.get("/api/sessions", async (req, res) => {
+app.get("/api/sessions", requireOwner, async (req, res) => {
   const wallet = req.query.wallet;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const sessions = await sessionManager.listForUser(wallet);
@@ -4293,7 +4288,7 @@ app.get("/api/sessions", async (req, res) => {
 });
 
 // ── CLEAR ALL SESSIONS ──
-app.post("/api/sessions/clear", async (req, res) => {
+app.post("/api/sessions/clear", requireOwner, async (req, res) => {
   const { wallet } = req.body;
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const count = await sessionManager.deleteAllForUser(wallet);
@@ -8763,12 +8758,12 @@ app.get("/api/resurgence/score/:ca", async (req, res) => {
 // ═══════════════════════════════════════
 // ROUTES: FLEET STATUS
 // ═══════════════════════════════════════
-app.get("/api/fleet", (req, res) => {
+app.get("/api/fleet", requireAdmin, (req, res) => {
   const status = fleetTrader.status();
   res.json(status);
 });
 
-app.get("/api/fleet/wallets/:ca", (req, res) => {
+app.get("/api/fleet/wallets/:ca", requireAdmin, (req, res) => {
   const status = fleetTrader.status();
   const session = status.sessions?.[req.params.ca];
   if (!session) return res.json({ wallets: [] });
@@ -8776,7 +8771,7 @@ app.get("/api/fleet/wallets/:ca", (req, res) => {
 });
 
 // Per-wallet sell — sell a specific percentage from a specific fleet wallet
-app.post("/api/fleet/wallet-sell", async (req, res) => {
+app.post("/api/fleet/wallet-sell", requireAdmin, async (req, res) => {
   try {
     const { wallet, ca, walletPubkey, percent } = req.body;
     if (!ca || !walletPubkey || !percent) return res.status(400).json({ error: "ca, walletPubkey, percent required" });
@@ -8790,7 +8785,7 @@ app.post("/api/fleet/wallet-sell", async (req, res) => {
 });
 
 // Per-wallet balances — get live token + SOL balances for all wallets in a session
-app.get("/api/fleet/balances/:ca", async (req, res) => {
+app.get("/api/fleet/balances/:ca", requireAdmin, async (req, res) => {
   try {
     const wallets = await fleetTrader.getWalletBalances(req.params.ca);
     res.json({ ok: true, wallets });
@@ -8799,7 +8794,7 @@ app.get("/api/fleet/balances/:ca", async (req, res) => {
   }
 });
 
-app.post("/api/close", async (req, res) => {
+app.post("/api/close", requireAdmin, async (req, res) => {
   try {
     const { ca, wallet } = req.body;
     if (!ca) return res.status(400).json({ error: "ca required" });
@@ -9217,8 +9212,6 @@ app.get("/api/admin/demo-profits", requireAdmin, (req, res) => {
   const totalVolume = r(18, 320);
   const platformFees = r(totalVolume * 0.02, totalVolume * 0.06);
   const networkFees = r(totalVolume * 0.015, totalVolume * 0.025);
-  const gpuEarningsNOS = r(12, 480);
-  const gpuTreasuryNOS = r(gpuEarningsNOS * 0.04, gpuEarningsNOS * 0.09);
   const referralPayouts = r(0.05, platformFees * 0.2);
 
   // Per-session breakdown (3-8 recent sessions)
@@ -9274,13 +9267,6 @@ app.get("/api/admin/demo-profits", requireAdmin, (req, res) => {
       totalRevenueSol: +(platformFees + networkFees).toFixed(4),
       referralPayoutsSol: referralPayouts,
       netRevenueSol: +(platformFees + networkFees - referralPayouts).toFixed(4),
-    },
-    gpu: {
-      totalEarnedNOS: gpuEarningsNOS,
-      treasuryCutNOS: gpuTreasuryNOS,
-      userPaidNOS: +(gpuEarningsNOS - gpuTreasuryNOS).toFixed(4),
-      activeNodes: ri(1, 6),
-      jobsCompleted: ri(40, 600),
     },
     sessions,
     topTokens,
@@ -9594,7 +9580,6 @@ app.get("/api/engine-state", (req, res) => {
     { id: "rug_detector", name: "Rug Detector", status: "active", throughput: decisions.rug },
     { id: "trade_router", name: "Trade Router", status: graduated.length > 0 ? "active" : "idle", throughput: graduated.length },
     { id: "grad_watch", name: "Grad Watchlist", status: gradWatchlist.size > 0 ? "active" : "idle", throughput: gradWatchlist.size },
-    { id: "lora_gpu", name: "LoRA GPU", status: loraClient.available ? "active" : "offline", throughput: loraClient.stats.hits, gpu: loraClient.stats.gpuName || null },
   ];
 
   // Feature activation heatmap (which scoring dimensions are firing)
@@ -9641,7 +9626,6 @@ app.get("/api/engine-state", (req, res) => {
     },
     solPrice: solUsdPrice,
     gradMc: gradMcUsd(),
-    lora: loraClient.getStats(),
   });
 });
 
@@ -9998,19 +9982,6 @@ app.post("/api/brad/paper/stop", (_req, res) => {
 
 app.get("/api/brad/paper/status", (_req, res) => {
   res.json(getPaperStatus());
-});
-
-// ═══ BRAD GPU SCALING — multi-instance deployment config ═══
-app.get("/api/brad/gpu-scaling", (_req, res) => {
-  res.json({
-    config: GPU_SCALING_CONFIG.instances,
-    description: "Deploy multiple BRAD instances on GPU nodes, each running a different strategy. Query all and take the highest-confidence APE across the ensemble.",
-    deployGuide: {
-      railway: "Add each instance as a separate Railway service with BRAIN_DEFAULT_STRATEGY env var",
-      nosana: "Deploy via Nosana GPU marketplace — each instance is a Docker container",
-      docker: GPU_SCALING_CONFIG.instances.map(i => GPU_SCALING_CONFIG.dockerCmd(i)),
-    },
-  });
 });
 
 // ═══ BRAD CHAT — Talk to BRAD Mind about tokens ═══
@@ -11324,54 +11295,6 @@ app.get("/", (req, res) => {
 app.get("/health", (req, res) => res.json({ ok: true }));
 
 // ═══════════════════════════════════════
-// GPU EARNINGS — 1 user = 1 GPU = 1 node
-// ═══════════════════════════════════════
-mountGpuRoutes(app, {
-  redis,
-  connection,
-  getUser,
-  saveUser,
-  resolveTier,
-  rateLimit: null, // production server uses its own rate limiting
-});
-
-// ═══════════════════════════════════════
-// NOSANA JOB ROUTER — AI inference via GPU fleet
-// ═══════════════════════════════════════
-const nosanaRouter = new NosanaJobRouter({
-  redis,
-  loraClient,
-});
-nosanaRouter.mountRoutes(app);
-nosanaRouter.init().catch(err => console.warn("[NOSANA] Init error:", err.message));
-
-// ═══════════════════════════════════════
-// COMPUTE ENGINE — Demand-side GPU marketplace client
-// ═══════════════════════════════════════
-const computeEngine = new ComputeEngine({
-  redis,
-  connection,
-  broadcastWS,
-});
-computeEngine.mountRoutes(app, { getUser, resolveTier, isOwnerWallet });
-
-// ═══════════════════════════════════════
-// PREMIUM COMPUTE — Paid GPU features (NOS burn flywheel)
-// ═══════════════════════════════════════
-const premiumCompute = new PremiumComputeEngine({
-  redis,
-  connection,
-  computeEngine,
-  broadcastWS,
-});
-premiumCompute.mountRoutes(app, { getUser, resolveTier, isOwnerWallet });
-
-// ═══════════════════════════════════════
-// GROK AI CHAT — GPU support & help
-// ═══════════════════════════════════════
-mountChatRoutes(app, { redis, getUser, resolveTier });
-
-// ═══════════════════════════════════════
 // HOSTED VELOCITY — one radar, one engine per user, fee on realized profit (src/velocity/HOSTED_DESIGN.md)
 // ═══════════════════════════════════════
 let velocityHub = null;
@@ -11439,11 +11362,6 @@ server.listen(PORT, async () => {
   console.log(`  SOL: $${solUsdPrice}`);
   console.log(`  Radar: PumpPortal WS connecting... (API key ${PUMPPORTAL_API_KEY ? "set" : "not set"}; trade source ${tradeSourceMode()})`);
 
-  // LoRA GPU scorer: check if local inference server is running
-  loraClient.checkHealth().then(ok => {
-    if (ok) console.log(`  LoRA: ACTIVE — ${loraClient.stats.gpuName || "CPU"}`);
-    else console.log(`  LoRA: offline (start with: python src/ml/serve.py)`);
-  });
   // BRAD cognitive engine: check if sidecar is running
   bradClient.initBrad().then(ok => {
     if (ok) {
@@ -11456,9 +11374,6 @@ server.listen(PORT, async () => {
       console.log(`  BRAD: offline (start with: cd brad && python -m bondli_bridge)`);
     }
   });
-  // Nosana GPU fleet status
-  const nosanaSummary = nosanaRouter.getStats();
-  console.log(`  Nosana: ${nosanaRouter.enabled ? "ACTIVE" : "disabled"} — ${nosanaSummary.endpointsTotal || 0} endpoints`);
   console.log(`═══════════════════════════════════════\n`);
 
   // Load smart wallet profiles from Redis

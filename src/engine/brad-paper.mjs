@@ -17,11 +17,6 @@
  * Paper trading runs continuously alongside real trading. BRAD's L2
  * learns from BOTH paper and real outcomes. When paper win rate
  * exceeds threshold, BRAD can recommend graduating to real SOL.
- *
- * GPU Scaling: Paper trading is CPU-light (~0.5ms per eval). Can run
- * hundreds of concurrent paper positions. For heavier workloads
- * (running multiple BRAD instances with different strategies), deploy
- * additional BRAD sidecars on Nosana GPU nodes.
  */
 
 import bradClient from "./brad-client.mjs";
@@ -353,48 +348,6 @@ export function recordSkipOutcome(ca, name, entryMcap, currentMcap) {
   }
 }
 
-// ═══ GPU SCALING ═══
-
-/**
- * Configuration for running multiple BRAD instances on GPU nodes.
- *
- * Each instance can run a different strategy, creating an ensemble:
- * - Instance 1: momentum strategy (default)
- * - Instance 2: snipe strategy (early entries)
- * - Instance 3: smart_follow strategy (copy whales)
- * - Instance 4: survivor strategy (archetype matching only)
- *
- * Deploy via Nosana: each instance is a separate Docker container
- * running the BRAD sidecar with different BRAIN_DEFAULT_STRATEGY env.
- * The main bondli server queries all instances and takes the highest-
- * confidence APE across the ensemble.
- */
-export const GPU_SCALING_CONFIG = {
-  // Environment variables for multi-instance BRAD
-  instances: [
-    { id: "brad-momentum", strategy: "momentum", port: 8421, description: "Rides sustained buying pressure" },
-    { id: "brad-snipe", strategy: "snipe", port: 8422, description: "Early entry on fresh launches" },
-    { id: "brad-smart", strategy: "smart_follow", port: 8423, description: "Copies smart money wallets" },
-    { id: "brad-survivor", strategy: "survivor", port: 8424, description: "Only matches winner archetype" },
-  ],
-
-  // Docker run command for Nosana GPU deployment
-  dockerCmd: (instance) =>
-    `docker run -d --name ${instance.id} -p ${instance.port}:8421 -e BRAIN_PORT=8421 -e BRAIN_DEFAULT_STRATEGY=${instance.strategy} brad-engine:latest`,
-
-  // Railway service template
-  railwayConfig: (instance) => ({
-    name: instance.id,
-    repo: "bradbuythedip/brad",
-    branch: "claude/integrate-brad-engine-RTMA2",
-    envVars: {
-      BRAIN_HOST: "0.0.0.0",
-      BRAIN_PORT: "8421",
-      BRAIN_DEFAULT_STRATEGY: instance.strategy,
-    },
-  }),
-};
-
 export default {
   startPaperTrading,
   stopPaperTrading,
@@ -403,5 +356,4 @@ export default {
   getPaperStatus,
   isPaperEnabled,
   recordSkipOutcome,
-  GPU_SCALING_CONFIG,
 };

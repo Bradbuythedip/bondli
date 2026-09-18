@@ -15,10 +15,6 @@
  *
  * Output: demand_authenticity_score (0 = manufactured, 1 = organic)
  *
- * GPU upgrade path: train a classifier on these features + labeled
- * outcomes, serve inference via Nosana. The rule-based engine
- * becomes the feature extractor for the neural model.
- *
  * ═══════════════════════════════════════════════════════════════
  */
 

@@ -11,7 +11,7 @@ memory: `{{...}}` values come from the live record at submission time.
 @shitanalystXBT
 
 **Project GitHub URL**
-https://github.com/Bradbuythedip/bondli
+https://github.com/Bradbuythedip/Bondli_public
 
 **Where are you and your founders located?**
 United States

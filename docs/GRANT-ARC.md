@@ -14,7 +14,9 @@ included. It runs on pump.fun, on Robinhood Chain, and now on Arc through Argus,
 first trading system whose quote asset is the dollar itself: sizing, marks, P&L and the platform's
 fee are all USDC, with no price feed between the trade and the money. The Arc integration is open
 source as a standalone package, `@bondli/arc-argus`, the only published Argus indexer and pool-math
-library we know of. We are asking for `{{AMOUNT}}` against three public deliverables in 90 days.
+library we know of; the package, the Arc venue that uses it and the tests that hold every claim below
+are public at https://github.com/Bradbuythedip/Bondli_public. We are asking for `{{AMOUNT}}` against
+three public deliverables in 90 days.
 
 ## What exists today
 

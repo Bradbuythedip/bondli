@@ -6,7 +6,7 @@
   "main": "index.mjs",
   "exports": { ".": "./index.mjs", "./chain": "./chain.mjs" },
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/Bradbuythedip/bondli", "directory": "packages/arc-argus" },
+  "repository": { "type": "git", "url": "https://github.com/Bradbuythedip/Bondli_public", "directory": "packages/arc-argus" },
   "keywords": ["arc", "argus", "uniswap-v4", "usdc", "launchpad", "indexer"],
   "peerDependencies": { "ethers": "^6" },
   "scripts": { "test": "cd ../.. && node --test tests/velocity/t20-arc-chain.test.mjs" }

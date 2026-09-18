@@ -7,7 +7,7 @@ versions, the Uniswap v4 pool a launch opens, the hook's tax model including the
 decays over the first three seconds, and the exact swap encodings for the UniversalRouter through
 Permit2. Pure functions over `ethers`; nothing in the module touches the network.
 
-Lifted out of [bondli](https://github.com/Bradbuythedip/bondli), where the same code drives a feed
+Lifted out of [bondli](https://github.com/Bradbuythedip/Bondli_public), where the same code drives a feed
 (`src/velocity/venues/arc/feed.mjs`) and a fail-closed router (`src/velocity/venues/arc/router.mjs`)
 that trade launches live. Those two files are the worked example of how to use it.
 
