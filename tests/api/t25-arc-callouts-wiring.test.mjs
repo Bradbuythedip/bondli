@@ -18,7 +18,8 @@ const ENV = fs.readFileSync(path.resolve(".env.example"), "utf8");
 test("T25: the Arc feed is built from ARC_RPC_URL, handed to the hub, started, and switchable off", () => {
   assert.match(SERVER, /const arcFeed = process\.env\.VELOCITY_ARC !== "0" \? new ArcFeed\(\{ rpcUrl: process\.env\.ARC_RPC_URL \|\| ARC_DEFAULT_RPC/);
   assert.match(SERVER, /feed: hubFeed, ponsFeed, arcFeed,/, "the hub receives the feed");
-  assert.match(SERVER, /if \(arcFeed\) arcFeed\.start\(\)/);
+  // Started by the activity gate with the other feeds, not at boot: nothing polls unless someone is trading.
+  assert.match(SERVER, /\["Arc \(Argus\)", arcFeed\]\]\.filter\(\(\[, f\]\) => f\)/);
   // Its trades join the same history the Solana and PONS trades feed, so revival and slow-cook can speak about Arc tokens.
   const ctor = SERVER.indexOf("new ArcFeed({");
   assert.match(SERVER.slice(ctor, ctor + 600), /onTrade: \(t, tr\) => radar\._revivals\.noteTrade/);
