@@ -13,7 +13,7 @@ test("launch: a pushed address goes live on its own, ticker and links merge, upd
   s = mergeLaunch(s, { chain: "robinhood", address: "0x" + "ab".repeat(20), ticker: "FLY", links: { x: "https://x.com/bondli" } }, 1000);
   assert.equal(s.status, "live"); assert.equal(s.address, "0x" + "ab".repeat(20)); assert.equal(s.ticker, "FLY"); assert.equal(s.links.x, "https://x.com/bondli");
   s = mergeLaunch(s, { update: "one" }, 2000); s = mergeLaunch(s, { update: "two" }, 3000);
-  assert.deepEqual(s.updates.map(u => u.text), ["two", "one"]); assert.equal(s.name, "Jeff");
+  assert.deepEqual(s.updates.map(u => u.text), ["two", "one"]); assert.equal(s.name, "Bondli");
   for (let i = 0; i < 30; i++) s = mergeLaunch(s, { update: "u" + i }, 4000 + i);
   assert.equal(s.updates.length, 20); assert.equal(s.updates[0].text, "u29");
   s = mergeLaunch(s, { links: { x: "" }, status: "graduated" }, 9000);

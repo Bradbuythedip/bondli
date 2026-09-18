@@ -7,7 +7,7 @@ violate one has to argue with this file first.
 ## 1. Money leaves only by a trade they asked for or a fee they were told about.
 Nothing else. No route may move funds without the owner's signature (`requireOwner` on all 13 money
 routes, held by `tests/api/t15`). The fee is one rate, stated on the site, taken only from realized
-profit, and zero for anyone holding `$JEFF` (`hub.settleFee`, `t14`). A fee whose transfer fails is
+profit, and zero for anyone holding `$BNDLI` (`hub.settleFee`, `t14`). A fee whose transfer fails is
 recorded as owed and collected later — never silently dropped (`hub.collectOwed`, `t11`). On
 Robinhood Chain the fee leaves in ETH and on Arc in USDC, each to the EVM fee wallet, never
 converted and never to the Solana one (`QUOTE_OF`, `feeWalletFor`, `t11`).
@@ -82,4 +82,12 @@ go-live, and an unknown tax is priced at the cap (`arc/chain.mjs`, `arc/router.m
   Arc trades should be small and watched, and `ARC_RPC_URL` should be the operator's own endpoint.
 - The narrative-wave feature and the smart-money feature are bounded weights with no realized
   outcomes behind them yet; the learner will move them once the ledger has enough closes.
-- `app/public/fren.png` is referenced by the boot ring and the background but has not been added.
+- `$BNDLI` is not launched. Until the mint exists and `BNDLI_MINT` is set, every fee is charged as
+  before and the site's ticker links to the X profile instead of pump.fun. The mint address goes into
+  the launch banner and the env, never into a doc.
+- The launch thread (`docs/TWEETS.md`) carries placeholders for every number; each must be copied
+  from `/api/callouts` at posting time, and a tweet whose number cannot be filled from the record is
+  dropped, not estimated. The lore (`docs/LORE.md`) is checked against this file and against the
+  site copy; when either changes, the lore is re-read before it is quoted anywhere.
+- The frog is in (`app/public/fren.png`); the palette in `app/src/lib/theme.js` is measured off it.
+  Any new ink or state colour has to be measured against the card again, not eyeballed.

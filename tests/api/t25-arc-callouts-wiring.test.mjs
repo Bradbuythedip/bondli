@@ -12,6 +12,7 @@ const HUB = fs.readFileSync(path.resolve("src/velocity/hub.mjs"), "utf8");
 const ENGINE = fs.readFileSync(path.resolve("src/velocity/core/engine.mjs"), "utf8");
 const SITE = fs.readFileSync(path.resolve("app/src/Simple.jsx"), "utf8");
 const CLIENT = fs.readFileSync(path.resolve("app/src/lib/api-client.js"), "utf8");
+const I18N = fs.readFileSync(path.resolve("app/src/lib/i18n.js"), "utf8");
 const ENV = fs.readFileSync(path.resolve(".env.example"), "utf8");
 
 test("T25: the Arc feed is built from ARC_RPC_URL, handed to the hub, started, and switchable off", () => {
@@ -38,8 +39,9 @@ test("T25: Arc launches sit in the radar's list with their own chain and link, a
   assert.match(SERVER, /const pons = t\._source === "pons", arc = t\._source === "arc";[\s\S]{0,400}if \(pons \|\| arc\) \{/);
   assert.match(SERVER, /robinhood: ponsHour, arc: arcHour/);
   // The site shows the chain on the row and the count in the hour strip.
-  assert.match(SITE, /t\.chain === "arc" \? "ARC" : "RH"/);
-  assert.match(SITE, /d\.hour\.arc > 0 \? \[\["arc", d\.hour\.arc, "dm"\]\] : \[\]/);
+  assert.match(SITE, /tok\.chain === "arc" \? "ARC" : "RH"/);
+  // The strip's label is a dictionary key, so the Chinese page does not print the English word.
+  assert.match(SITE, /d\.hour\.arc > 0 \? \[\["live\.arc", d\.hour\.arc, "dm"\]\] : \[\]/);
 });
 
 test("T25: a fill reaches the callouts through the hub with the buy tx on it; the record is public and hub-wide", () => {
@@ -54,8 +56,12 @@ test("T25: a fill reaches the callouts through the hub with the buy tx on it; th
   assert.match(HUB, /engine\.on\("outcome", \(\{ position: p, pnl \}\) => \{ this\.callouts\.onOutcome\(\{ position: p, pnl, instrument: p\.instrument, positionId: p\.id, paper: !!p\.paper, reason: p\.exitReason \}\)\.catch\(\(\) => \{\}\); \}\);/);
   assert.match(HUB, /engine\.on\("released", \(\{ position: p \}\) => \{ this\.callouts\.onOutcome\(\{ position: p, pnl: null, instrument: p\.instrument, positionId: p\.id, paper: !!p\.paper, reason: "RELEASED" \}\)/);
   assert.match(SITE, /callouts: calls \}\);/, "the site sends the choice");
-  assert.match(SITE, /Public calls\{calls \? " · on" : ""\}/);
-  assert.match(SITE, /The transaction shows this bot's wallet/);
+  // The toggle's words live in the dictionary under panel.*; the site reads them by key.
+  assert.match(SITE, /\{t\("panel\.publicCalls"\)\}\{calls \? t\("panel\.on"\) : ""\}/);
+  assert.match(I18N, /"panel\.publicCalls": "Public calls"/);
+  assert.match(I18N, /"panel\.on": " · on"/);
+  assert.match(SITE, /\{t\("panel\.publicCallsDesc"\)\}/);
+  assert.match(I18N, /"panel\.publicCallsDesc": "[^"]*The transaction shows this bot's wallet/);
   // Channels come from the environment; none set still leaves the record on the site.
   assert.match(HUB, /webhookUrl: process\.env\.CALLOUT_WEBHOOK_URL \|\| null/);
   assert.match(HUB, /telegram: process\.env\.CALLOUT_TG_TOKEN && process\.env\.CALLOUT_TG_CHAT_ID \? \{ token: process\.env\.CALLOUT_TG_TOKEN, chatId: process\.env\.CALLOUT_TG_CHAT_ID \} : null/);
@@ -67,7 +73,8 @@ test("T25: a fill reaches the callouts through the hub with the buy tx on it; th
   assert.match(body, /calls: hub\.callouts\.feed\(limit\), record: hub\.callouts\.record\(\)/);
   assert.doesNotMatch(body, /lastError|wallet/);
   // The site has a Calls tab that reads it, and the client knows the route.
-  assert.match(SITE, /\["calls", "Calls"\]/);
+  assert.match(SITE, /\["calls", "watch\.calls"\]/);
+  assert.match(I18N, /"watch\.calls": "Calls"/);
   assert.match(SITE, /tab === "calls" \? <Calls T=\{T\} \/>/);
   assert.match(SITE, /function Calls\(\{ T \}\)/);
   assert.match(CLIENT, /calls\(\) \{ return this\.f\("\/api\/callouts", \{ noauth: true/);

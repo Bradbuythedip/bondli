@@ -79,8 +79,8 @@ test("the CreateEvent discriminator prefix is the sha256 of the Anchor event nam
 
 test("decodes a CreateEvent: name, symbol, uri and the keys, with and without the appended fields", () => {
   const mint = KEY(1), curve = KEY(2), user = KEY(3);
-  const full = decodeCreateEvent(createEventBytes({ name: "Jeff", symbol: "JEFF", uri: "https://ipfs.io/ipfs/bafkreiabc", mint, curve, user }));
-  assert.equal(full.name, "Jeff"); assert.equal(full.symbol, "JEFF"); assert.equal(full.uri, "https://ipfs.io/ipfs/bafkreiabc");
+  const full = decodeCreateEvent(createEventBytes({ name: "Frog", symbol: "FROG", uri: "https://ipfs.io/ipfs/bafkreiabc", mint, curve, user }));
+  assert.equal(full.name, "Frog"); assert.equal(full.symbol, "FROG"); assert.equal(full.uri, "https://ipfs.io/ipfs/bafkreiabc");
   assert.equal(full.mint, mint.toBase58()); assert.equal(full.bondingCurve, curve.toBase58()); assert.equal(full.user, user.toBase58());
   assert.equal(full.creator, KEY(9).toBase58()); assert.equal(full.timestamp, 1758000000); assert.equal(full.vSol, 30000000000); assert.equal(full.vTok, 1073000000000000);
   // The layout pump.fun shipped first, before creator/timestamp/reserves were appended.
@@ -108,10 +108,10 @@ test("one walk of the logs yields creates and trades, only while pump.fun is exe
 
 test("a create maps to PumpPortal's create shape so the radar's create branch needs no change", () => {
   const mint = KEY(7), curve = KEY(8), user = KEY(3);
-  const c = decodeCreateEvent(createEventBytes({ name: "Jeff", symbol: "JEFF", uri: "ipfs://Qm2", mint, curve, user }));
+  const c = decodeCreateEvent(createEventBytes({ name: "Frog", symbol: "FROG", uri: "ipfs://Qm2", mint, curve, user }));
   const p = toPortalCreate(c, "sigC", 456);
   assert.equal(p.txType, "create"); assert.equal(p.mint, mint.toBase58()); assert.equal(p.traderPublicKey, user.toBase58());
-  assert.equal(p.name, "Jeff"); assert.equal(p.symbol, "JEFF"); assert.equal(p.uri, "ipfs://Qm2", "the uri is what makes the picture fetchable at second zero");
+  assert.equal(p.name, "Frog"); assert.equal(p.symbol, "FROG"); assert.equal(p.uri, "ipfs://Qm2", "the uri is what makes the picture fetchable at second zero");
   assert.equal(p.vSolInBondingCurve, 30); assert.ok(Math.abs(p.marketCapSol - 27.96) < 0.05, "opening market cap from the opening reserves");
   assert.equal(p.source, "onchain"); assert.equal(p.signature, "sigC"); assert.equal(p.slot, 456);
 });

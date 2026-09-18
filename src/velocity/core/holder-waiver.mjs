@@ -4,7 +4,7 @@
 // extra for them to connect -- and cached, so a close costs at most one balance read every few
 // minutes rather than one per trade.
 //
-// The house token is $JEFF, an SPL mint on Solana. It used to be an ERC-20 on Robinhood Chain, keyed
+// The house token is $BNDLI, an SPL mint on Solana. It used to be an ERC-20 on Robinhood Chain, keyed
 // on the user's EVM address; that asked everyone to hold a token on the chain most of them never
 // opted into, and left anyone trading only pump.fun unable to earn the waiver at all.
 //
@@ -31,7 +31,7 @@ export class HolderWaiver {
    *   minTokens  how many whole tokens count as holding (default 1)
    *   connection a @solana/web3.js Connection; else one is built from rpcUrl
    */
-  constructor({ token = null, minTokens = 1, connection = null, rpcUrl = null, ttlMs = 5 * 60_000, timeoutMs = 6_000, clock = () => Date.now(), log = null, symbol = "JEFF" } = {}) {
+  constructor({ token = null, minTokens = 1, connection = null, rpcUrl = null, ttlMs = 5 * 60_000, timeoutMs = 6_000, clock = () => Date.now(), log = null, symbol = "BNDLI" } = {}) {
     this.token = isAddress(token) ? token : null;
     this.configuredButInvalid = !!token && !this.token;
     this.minTokens = Number(minTokens) > 0 ? Number(minTokens) : 1;
