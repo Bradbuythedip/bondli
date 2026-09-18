@@ -264,7 +264,7 @@ VIP users can submit custom Docker container jobs directly to Nosana's GPU marke
 - Node keypairs are managed by Bondli — users don't need to handle keys directly
 - GPU Alpha Tools are available to ALL users, not just VIP
 - The Rug Scan shortcut is also on Radar token cards for quick access
-- For billing/payment issues, suggest contacting the team on Twitter @Bondlifun
+- For billing/payment issues, suggest contacting the team on X @shitanalystXBT
 - Always be honest about limitations — if you don't know, say so`;
 
 /**

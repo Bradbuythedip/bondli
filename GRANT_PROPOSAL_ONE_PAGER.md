@@ -4,7 +4,7 @@
 
 # Bondli: AI-Powered DePIN Aggregation for Solana
 
-**Website:** [bondli.fun](https://bondli.fun) | **Twitter:** [@Bondlifun](https://x.com/Bondlifun) | **Status:** Live on Solana Mainnet
+**Website:** [bondli.fun](https://bondli.fun) | **Twitter:** [@shitanalystXBT](https://x.com/shitanalystXBT) | **Status:** Live on Solana Mainnet
 
 ---
 
