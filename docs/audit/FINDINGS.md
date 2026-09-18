@@ -9,6 +9,12 @@ dismissed is worth as much as the list of what was not.
 Nothing here is fixed by being written down. Items already dealt with are noted in the git log;
 everything else is open.
 
+One class of finding has been closed by deletion rather than by a fix: the Nosana / GPU-earning /
+NOS-burn product it audited no longer exists. Findings that cite `src/engine/gpu-earnings.mjs`, the
+`/api/compute/*` and `/api/premium/*` routes or the GPU tier ladder describe code that was removed
+in full, so their evidence is gone with them. Where such a finding also named a live consumer — the
+`PLATFORM_WALLET` default, for one — that consumer was fixed on its own terms.
+
 **109 confirmed** (5 critical, 23 high, 45 medium, 36 low), 17 refuted.
 
 ---
