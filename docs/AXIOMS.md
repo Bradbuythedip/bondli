@@ -78,10 +78,25 @@ stake, the mark, the P&L and the platform's cut are all the same unit, and `solP
 the constant 1 (`arc/feed.mjs`, `QUOTE_OF`). There is no price to lose, so the only unreadable
 price on Arc is a pool that will not answer, and that is reported as such (axiom 2).
 
+## 12. An entry is bought on proof, not on a create event.
+The record that prompted this closed nine live positions and lost on all nine, spread across stall,
+fade-trim, stop, crash and dead-on-arrival alike. A loss under every exit rule is not an exit
+problem: seconds after a create the only thing that has moved the price is the crowd arriving, so
+there is nothing to be right about. The other entry is the first dip -- the token ran on someone
+else's money, gave some back while the first buyers took profit, and is being bought again, inside
+its first hour (`src/api/dip.mjs`, `t31`). It is measured, not eyeballed: the run, the drawdown, the
+recovery, who bought the low, and whether the dev sold into it. Its exits are its own shape -- no
+dead-on-arrival cut, because the crowd already came -- and it is priced by its OWN realized record,
+because bucketing a new entry with the tier it shares a number with prices it by the record that was
+losing (`statsFromOutcomes`, keyed on the plan). Turning the launch entry off entirely is one
+setting, and the operator owns it.
+
 ## What is still open
-- Entry quality on Robinhood Chain: 4% win rate over the last 24 live closes. The miss ledger
-  (`engine.misses()`) records which hard rule refused each token that then ran; that is the
-  instrument. Not yet acted on.
+- Entry quality: 4% win rate over the last 24 live closes on Robinhood Chain, and a measured stretch
+  of nine closes that lost on all nine. Acted on by axiom 12 (the first dip and the `dips` entry
+  mode), which is a hypothesis with no realized record behind it yet: the dip plans start on priors
+  and must earn their own statistics before the EV gate will size them up. The miss ledger
+  (`engine.misses()`) records which hard rule refused each token that then ran; still not read.
 - `send failed` appeared in the live failure list once; not yet root-caused.
 - Exposed credentials pasted in chat during development still need rotating (xAI key, X bearer
   tokens, X consumer secret, X access token/secret).

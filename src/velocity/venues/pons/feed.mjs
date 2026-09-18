@@ -7,6 +7,7 @@
 import { JsonRpcProvider, Contract, zeroPadValue } from "ethers";
 const zeroPad = (a) => zeroPadValue(String(a).toLowerCase(), 32);
 import { Feed, errorText } from "../../core/feed.mjs";
+import { pushTrack, dipSignal, gradSignal } from "../../../api/dip.mjs";
 import { FACTORY, FACTORY_ABI, TOPICS, CURVE_ABI, ERC20_ABI, DEFAULT_RPC_URL, EXPLORER, SNIPE_TAX_WINDOW_MS, decodeLog, mcapQuote, curveProgress, toEth, toTokens, CHAIN_ID } from "./chain.mjs";
 
 /** The chain, behind four calls, so a test can fake it. */
@@ -255,7 +256,11 @@ export class PonsFeed extends Feed {
   _remark(t) {
     if (t.quoteReserve > 0 && t.tokenReserve > 0) { t.mcapQuote = mcapQuote(t); t.mcapUsd = Math.round(t.mcapQuote * this.solPrice); }
     t.progress = curveProgress(t.realQuoteReserve, t.graduationThreshold); t._curvePct = t.graduated ? 1 : t.progress;
-    if (t.mcapUsd > 0) { t.spark.push(t.mcapUsd); if (t.spark.length > 60) t.spark = t.spark.slice(-60); }
+    if (t.mcapUsd > 0) {
+      t.spark.push(t.mcapUsd); if (t.spark.length > 60) t.spark = t.spark.slice(-60);
+      // The time-stamped track the first-dip read needs (src/api/dip.mjs); the sparkline has no clock on it.
+      pushTrack(t._track || (t._track = []), this.clock(), t.mcapUsd, { cv: t._curvePct });
+    }
   }
 
   /** Reserves and names straight from the chain, once per token (and after a burst, for drift). */
@@ -280,6 +285,9 @@ export class PonsFeed extends Feed {
     t._apeScore = scoreToken(t, qf, now); t._scoredAt = now;
     const dynamics = this.dyn.record(t.ca, t._apeScore, now);
     t._lastQf = qf; t._lastDyn = dynamics;
+    // The same second entry the radar offers on Solana: ran, gave some back, is being bought again.
+    t._grad = gradSignal(t, { now, pctNow: t._curvePct });
+    t._dip = dipSignal(t, { now });
     const { uniqueBuyers, trades, ...rest } = t;
     const token = { ...rest, uniqueBuyers: { size: uniqueBuyers.size }, trades: trades.slice(-60), vSolInBondingCurve: t.quoteReserve, mcapSol: t.mcapQuote, _ageMs: now - t.createdAt };
     return {

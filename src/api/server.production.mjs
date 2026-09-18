@@ -25,6 +25,7 @@
 import path from "node:path";
 import express from "express";
 import { pumpCurvePct } from "../autoape/gates/curve.js";
+import { pushTrack, dipSignal, gradSignal, convictionOf } from "./dip.mjs";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { createClient as createRedisClient } from "redis";
@@ -1301,7 +1302,7 @@ function processRadarMessage(data) {
       mcapUsd: mcUsd,
       prevVSol: vSol, vSolInBondingCurve: vSol,
       uniqueBuyers: new Set(),
-      spark: mcUsd > 0 ? [mcUsd] : [],
+      spark: mcUsd > 0 ? [mcUsd] : [], _track: [],
       h1Change: 0,
       devWallet: trader,
       graduated: false,
@@ -1423,7 +1424,7 @@ function processRadarMessage(data) {
         twitter: "", website: "", telegram: "",
         createdAt: now, trades: [], buys: 0, sells: 0, volumeSol: 0,
         mcapSol: mcSol, mcapUsd: mcUsd, prevVSol: vSol, vSolInBondingCurve: vSol,
-        uniqueBuyers: new Set(), spark: mcUsd > 0 ? [mcUsd] : [],
+        uniqueBuyers: new Set(), spark: mcUsd > 0 ? [mcUsd] : [], _track: [],
         h1Change: 0, devWallet: "", graduated: false, bundled: false, initialBuy: 0,
         _firstSeenByTrade: now, _ageUnknown: true, // createdAt is a guess until the coin API says when it launched
       };
@@ -1481,10 +1482,13 @@ function processRadarMessage(data) {
       if (token.mcapUsd < gradMcUsd()) token.mcapUsd = gradMcUsd();
     }
 
-    // Sparkline
+    // Sparkline, and the time-stamped track the dip read is computed off (src/api/dip.mjs): the
+    // sparkline is a shape for the eye, with no clock on it, and "ran, gave some back, is being
+    // bought again" cannot be said without one.
     if (token.mcapUsd > 0) {
       token.spark.push(token.mcapUsd);
       if (token.spark.length > 60) token.spark = token.spark.slice(-60);
+      pushTrack(token._track || (token._track = []), now, token.mcapUsd, { cv: pumpCurvePct(token.vSolInBondingCurve) });
     }
 
     // Track trade (hub = bot/router wallet: counts for volume, not for identity)
@@ -1560,6 +1564,7 @@ function applyMcapUpdate(mint, pair) {
     token.mcapSol = solUsdPrice > 0 ? Math.round(newMcap / solUsdPrice) : token.mcapSol;
     token.spark.push(token.mcapUsd);
     if (token.spark.length > 60) token.spark = token.spark.slice(-60);
+    pushTrack(token._track || (token._track = []), Date.now(), token.mcapUsd, { cv: pumpCurvePct(token.vSolInBondingCurve) });
     token.raydiumPool = pair.pairAddress || true;
     // Push MC update to frontend immediately via WebSocket
     if (changed) broadcastWS({ event: "mcap-update", data: { ca: mint, mcap: token.mcapUsd, mcapSol: token.mcapSol } });
@@ -8217,6 +8222,19 @@ function slowCookOf(t, qf, now = Date.now()) {
   return t._slowCook;
 }
 
+/** The first dip and the road to completion, stamped on the token so the edge, the row and the
+ *  near-graduation list all read the same numbers. Recomputed at most once every ten seconds: it
+ *  walks one bounded track and the recent trades, and the scored loop touches hundreds of tokens. */
+function dipOf(t, now = Date.now()) {
+  if (t._dipAt && now - t._dipAt < 10_000) return t._dip || null;
+  t._dipAt = now;
+  try {
+    t._grad = gradSignal(t, { now, pctNow: t._curvePct != null ? t._curvePct : pumpCurvePct(t.vSolInBondingCurve) });
+    t._dip = dipSignal(t, { now });
+  } catch { t._dip = null; t._grad = null; }
+  return t._dip;
+}
+
 /** The velocity judge, as the bot runs it, at one aggression: what would it do with this token now? */
 function judgeToken(t, qf, dyn, aggression = 2) {
   const opts = VELOCITY_AGGRESSION[Math.max(0, Math.min(3, aggression))] || VELOCITY_AGGRESSION[1];
@@ -8263,6 +8281,7 @@ function buildScoredResponse(query = {}) {
     if (!qf) { try { qf = extractQuickFeatures(t); } catch {} }
     // Stamped here, not only in judgeToken, so the row carries it to the live engine's own gates.
     if (!revival) slowCookOf(t, qf, now);
+    dipOf(t, now);
     try { dyn = scoreDynamics.get(t.ca) || null; } catch {}
     const { uniqueBuyers, trades, spark, _bradEval, _slowCookAt, ...rest } = t;
     const lastTrade = trades?.length ? trades[trades.length - 1] : null;
@@ -8352,7 +8371,12 @@ app.get("/api/radar/live", (req, res) => {
       verdict = judgeToken(t, qf, scoreDynamics.get(t.ca) || null, aggression);
       tag = tagFor(verdict, !!t._slowCook);
     }
-    return { ca: t.ca, chain: pons ? "robinhood" : arc ? "arc" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, smart: pons ? 0 : (arc ? arcIntel : walletIntel).smartBuyers(t.ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }).count, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, wave: !pons && !arc && t._copies ? radar._copycats.wave(t.ca, now) : null, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated };
+    // What the token is doing beyond its score: the dip read, and how far up the curve it is.
+    const dp = dipOf(t, now), gd = t._grad || null;
+    return { ca: t.ca, chain: pons ? "robinhood" : arc ? "arc" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, smart: pons ? 0 : (arc ? arcIntel : walletIntel).smartBuyers(t.ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }).count, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, wave: !pons && !arc && t._copies ? radar._copycats.wave(t.ca, now) : null, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated,
+      dip: dp ? { on: dp.dip, phase: dp.phase, runPct: dp.runPct, drawdownPct: dp.drawdownPct, recoveryPct: dp.recoveryPct, buyers: dp.buyers } : null,
+      grad: gd && gd.pct != null ? { pct: gd.pct, phase: gd.phase, ptsPerMin: gd.ptsPerMin, etaMin: gd.etaMin, stalled: gd.stalled } : null,
+      hold: dp?.dip ? convictionOf(dp, gd).conviction === "hold" : false };
   };
   // Robinhood Chain and Arc launches sit in the same list, newest first, marked by chain.
   const ponsTokens = velocityHub?.ponsFeed ? [...velocityHub.ponsFeed.tokens.values()] : [];
@@ -8372,13 +8396,20 @@ app.get("/api/radar/live", (req, res) => {
   }
   const cooking = both.filter(t => t._slowCook && now - (t.createdAt || 0) >= 30 * 60_000 && now - t._slowCook.at < 5 * 60_000)
     .sort((x, y) => (y._slowCook.buyers || 0) - (x._slowCook.buyers || 0)).slice(0, 10).map(row);
+  // Near the end of the curve: the one number on a launchpad that cannot be washed, because it moves
+  // only when real money is deposited. Ordered by how soon it completes at the pace it is filling,
+  // with the ones that stopped filling at the back -- an 85% token that stalled an hour ago is a trap,
+  // not a queue position.
+  const graduating = both.filter(t => { const g = (dipOf(t, now), t._grad); return g && g.near && !g.graduated; })
+    .sort((a, b) => (a._grad.stalled === b._grad.stalled ? (a._grad.etaMin ?? 1e9) - (b._grad.etaMin ?? 1e9) : a._grad.stalled ? 1 : -1))
+    .slice(0, 12).map(row);
   res.json({
     // radar.online is a count of legacy websocket clients, which the site does not use, so it read
     // "offline" with bots trading. Online here is the feed itself: a launch or a trade in the last 90s.
     ts: now, solPrice: solUsdPrice, online: (now - Math.max(radar._lastLaunchAt || 0, radar._lastPortalTradeAt || 0, radar._lastOnchainCreateAt || 0, radar._onchain?.stats?.lastMsg || 0)) < 90_000, aggression,
-    hour: { launches: hour.length + ponsHour + arcHour, robinhood: ponsHour, arc: arcHour, mayhem: hour.filter(t => t._mayhem).length, copies: hour.filter(t => t._copyOf).length, hot: rows.filter(r => r.tag === "hot").length },
+    hour: { launches: hour.length + ponsHour + arcHour, robinhood: ponsHour, arc: arcHour, mayhem: hour.filter(t => t._mayhem).length, copies: hour.filter(t => t._copyOf).length, hot: rows.filter(r => r.tag === "hot").length, dips: rows.filter(r => r.dip?.on).length, nearGrad: graduating.length },
     bots: velocityHub ? velocityHub.list().length : null,
-    tokens: rows, revivals, cooking,
+    tokens: rows, revivals, cooking, graduating,
   });
 });
 

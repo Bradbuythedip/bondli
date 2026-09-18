@@ -3,6 +3,7 @@
 // is deliberately absent: caps belong to the risk envelope (DP3), not here.
 
 import { checkDisqualifiers } from "../../../autoape/gates/disqualifiers.js";
+import { convictionOf } from "../../../api/dip.mjs";
 import { checkViability } from "../../../autoape/gates/viability.js";
 import { classifyConfidence } from "../../../autoape/gates/confidence.js";
 import { checkExecutionWindow } from "../../../autoape/gates/execution-window.js";
@@ -96,7 +97,10 @@ export function makePumpfunEdge({
   // sizer hands it $5 approves trades that cannot clear their own costs, which is how a fixed cost
   // becomes an invisible one.
   nominalStakeUsd = 25,
+  // "all" takes launches, dips, slow cooks and revivals; "dips" takes only the first dip.
+  entries = "all",
 } = {}) {
+  const dipsOnly = entries === "dips";
   const level = AGGRESSION[Math.max(0, Math.min(3, Math.round(Number(aggression) || 0)))] || AGGRESSION[1];
   // A launch with no twitter, telegram or website is refused at every risk level. Set
   // VELOCITY_REQUIRE_SOCIALS=0 to turn it off. On PONS the gate is inert rather than disabled: the
@@ -110,6 +114,7 @@ export function makePumpfunEdge({
   return {
     venue,
     name: "bondli_gates",
+    entries: dipsOnly ? "dips" : "all",
     aggression: Number(aggression),
     gateOpts,
     minConfidence: gateOpts.minConfidence ?? 0.5, // the post-gate confidence floor, read by the GateRunner
@@ -119,11 +124,19 @@ export function makePumpfunEdge({
       if (event.kind !== "candidate") return [];
       const p = event.payload || {};
       if (!p.token || !p.token.ca) return [];
+      // Dips only: the launch entry is the one that has been losing, and an operator who wants the
+      // bot to wait for proof rather than for a create event says so here. The dip read is stamped
+      // by the feed, so this is a filter on which entries are offered, not a second judgement.
+      if (dipsOnly && !p.token._dip?.dip) return [];
       if (p.token._mayhem) return []; // Mayhem launches are never looked at
       if (p.token._copyOf) return []; // a same-name copy is an advert for another token, never a trade
       return [{
-        model: p.token._revival ? "bondli_revival" : p.token._slowCook ? "bondli_slowcook" : "bondli_gates",
+        // A dip outranks a slow cook: both describe a token past the launch window, but one of them
+        // says the crowd already paid up and came back, which is the whole reason to be here.
+        model: p.token._revival ? "bondli_revival" : p.token._dip?.dip ? "bondli_dip" : p.token._slowCook ? "bondli_slowcook" : "bondli_gates",
         revival: p.token._revival || null,
+        dip: p.token._revival ? null : (p.token._dip?.dip ? p.token._dip : null),
+        grad: p.token._grad || null,
         // Still building, just slowly (src/api/revival.mjs). Waives the stale clock and nothing else.
         slowCook: p.token._revival ? null : (p.token._slowCook || null),
         instrument: p.token.ca,
@@ -138,11 +151,26 @@ export function makePumpfunEdge({
     gates: [
       // A revival is hours old by definition and a slow cook is older than the stale clock on purpose:
       // for both, the age rule (STALE) does not apply and every rug rule still does.
-      { name: "disqualifiers", check: c => { const r = checkDisqualifiers(c.token, c.qf, { ...gateOpts, ...(c.revival || c.slowCook ? { staleMin: Infinity } : {}), freezeAuthority: !!c.token.freezeAuthority }); if (r.waived?.length) c.waived = r.waived; return { pass: r.pass, reasons: r.flags, timingOnly: r.timingOnly }; } },
+      // A dip is four to sixty minutes old by definition, so the stale clock cannot judge it; and a
+      // dip on a token most of the way up its curve is the best kind, not a late one, so the curve
+      // cap lifts to just short of completion. Every rug rule still applies, unchanged.
+      { name: "disqualifiers", check: c => { const r = checkDisqualifiers(c.token, c.qf, { ...gateOpts, ...(c.revival || c.slowCook ? { staleMin: Infinity } : {}), ...(c.dip ? { staleMin: Infinity, tooLateCurve: 0.95 } : {}), freezeAuthority: !!c.token.freezeAuthority }); if (r.waived?.length) c.waived = r.waived; return { pass: r.pass, reasons: r.flags, timingOnly: r.timingOnly }; } },
       { name: "viability", check: c => { const r = checkViability(c.token, c.qf, c.scores, c.dynamics, gateOpts); return { pass: r.pass, reasons: r.checks }; } },
       { name: "confidence", check: c => {
           // A revival is always a speculative entry: its own plan, half the stake, never a bigger tier.
           if (c.revival) { c.tier = 3; c.tierLabel = "REVIVAL"; c.tierReasons = [`buyers5m ${c.revival.buyers5m} vs ${c.revival.baseline5m}`, `curve +${c.revival.curveDelta}`]; return { pass: true }; }
+          // A dip is its own judgement, the way a revival is: the score classifier reads a token at
+          // the top of its run, and the whole point here is the one that gave some back. The tier
+          // is the conviction -- a dip on a curve walking toward completion is worth more size and
+          // a longer leash than a dip on a token going nowhere.
+          if (c.dip) {
+            const { conviction, why } = convictionOf(c.dip, c.grad);
+            c.hold = conviction === "hold";
+            c.tier = c.hold ? 2 : 3;
+            c.tierLabel = c.hold ? "DIP_TO_COMPLETION" : "FIRST_DIP";
+            c.tierReasons = [`ran +${c.dip.runPct}% then gave back ${c.dip.drawdownPct}%`, `${c.dip.buyers} bought the dip, ${Math.round(c.dip.buyShare * 100)}% of the flow`, why];
+            return { pass: true };
+          }
           const r = classifyConfidence(c.token, c.qf, c.scores, c.dynamics, gateOpts);
           c.tier = r.tier; c.tierLabel = r.label; c.tierReasons = r.reasons;
           if (r.tier >= 1 && r.tier <= 3) return { pass: true };
@@ -158,7 +186,11 @@ export function makePumpfunEdge({
       // actually judging. Keyed to "pumpfun" it priced Robinhood Chain entries with pump.fun's win
       // rate and payoff -- a different chain, launchpad, fee schedule and crowd -- while the PONS
       // statistics modeStats computes were never read by anything.
-      const stats = ctx.stats?.[venue]?.[c.tier];
+      // Priced by the plan this entry will actually run, which is how a dip escapes the launch
+      // tiers' record. A key with no closes behind it falls to the priors and probes at the size
+      // an unproven mode gets, which is the point of having priors at all.
+      const plan = planFor(venue, c.revival ? "revival" : c.dip ? (c.hold ? "dip_hold" : "dip") : c.tier);
+      const stats = ctx.stats?.[venue]?.[plan.key];
       const prior = priors[c.tier] || priors[3];
       const useStats = stats && stats.n >= minOutcomesForStats && stats.p_win > 0 && stats.payoff > 0;
       const p_win = useStats ? stats.p_win : prior.p_win;
@@ -175,7 +207,6 @@ export function makePumpfunEdge({
       const features = pumpfunFeatures(c);
       const ranked = scoreFeatures(features, weights);
       const confidence = Math.min(0.95, ranked + (c.tier === 1 ? 0.15 : c.tier === 2 ? 0.05 : 0));
-      const plan = planFor(venue, c.revival ? "revival" : c.tier);
       return {
         p_win, payoff, loss_fraction: lossFraction, on_priors: !useStats, outcomes_seen: stats?.n || 0, confidence, tier: c.tier,
         plan_key: plan.key, stake_cap_fraction: plan.stake_cap_fraction ?? null,

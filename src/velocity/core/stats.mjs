@@ -7,7 +7,12 @@ export function statsFromOutcomes(outcomes) {
   const byKey = {};
   for (const o of outcomes) {
     if (!o || !o.venue || !Number.isFinite(o.pnl_usd) || !(o.stake_usd > 0)) continue;
-    const key = o.tier != null && o.tier !== 0 ? o.tier : o.model || "default";
+    // The PLAN is the bucket, and the tier is only its fallback. A dip entry and a launch entry can
+    // both be tier 2 while being different trades with different exits, and bucketing them together
+    // prices the new one with the old one's record: the launch tiers had closed at a loss, so the EV
+    // gate would have refused every dip before the first one was ever taken. For a launch the plan
+    // key IS the tier, so nothing that was already bucketed moves.
+    const key = o.plan_key != null && o.plan_key !== "" ? o.plan_key : (o.tier != null && o.tier !== 0 ? o.tier : o.model || "default");
     const v = (byKey[o.venue] = byKey[o.venue] || {});
     const s = (v[key] = v[key] || { n: 0, wins: 0, winSum: 0, lossSum: 0, pnlSum: 0 });
     const r = o.pnl_usd / o.stake_usd;

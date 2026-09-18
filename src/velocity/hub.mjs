@@ -217,12 +217,15 @@ export class VelocityHub {
     // transaction names the trading wallet. Nobody's wallet goes public because someone else's did.
     const callouts = settings.callouts === true;
     const aggression = Math.max(0, Math.min(3, Math.round(settings.aggression == null || settings.aggression === "" ? 1 : Number(settings.aggression) || 0)));
+    // Which entries to take. A launch is bought on a create event; a dip is bought after the token
+    // ran on someone else's money and was bought again. "dips" waits for the second one only.
+    const entries = settings.entries === "dips" ? "dips" : "all";
     const envelope = userEnvelope({ ...settings, pons, arc, aggression });
     const view = new SharedFeedView(this.feed, { clock: this.clock });
     const liveRouter = this.makeLiveRouter({ secret, wallet });
-    const venues = { pumpfun: { mode: "paper", feed: view, edge: makePumpfunEdge({ aggression }), router: new PumpfunPaperRouter({ bookFile: path.join(dataDir, "paper-book-pumpfun.json"), clock: this.clock }), liveRouter } };
-    if (pons) venues.pons = { mode: "paper", feed: new SharedFeedView(this.ponsFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "pons", aggression }), router: new PonsPaperRouter({ bookFile: path.join(dataDir, "paper-book-pons.json"), clock: this.clock }), liveRouter: this.makePonsRouter({ secret: evmSecret, wallet }) };
-    if (arc) venues.arc = { mode: "paper", feed: new SharedFeedView(this.arcFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "arc", aggression }), router: new ArcPaperRouter({ bookFile: path.join(dataDir, "paper-book-arc.json"), clock: this.clock }), liveRouter: this.makeArcRouter({ secret: evmSecret, wallet }) };
+    const venues = { pumpfun: { mode: "paper", feed: view, edge: makePumpfunEdge({ aggression, entries }), router: new PumpfunPaperRouter({ bookFile: path.join(dataDir, "paper-book-pumpfun.json"), clock: this.clock }), liveRouter } };
+    if (pons) venues.pons = { mode: "paper", feed: new SharedFeedView(this.ponsFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "pons", aggression, entries }), router: new PonsPaperRouter({ bookFile: path.join(dataDir, "paper-book-pons.json"), clock: this.clock }), liveRouter: this.makePonsRouter({ secret: evmSecret, wallet }) };
+    if (arc) venues.arc = { mode: "paper", feed: new SharedFeedView(this.arcFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "arc", aggression, entries }), router: new ArcPaperRouter({ bookFile: path.join(dataDir, "paper-book-arc.json"), clock: this.clock }), liveRouter: this.makeArcRouter({ secret: evmSecret, wallet }) };
     const engine = new Engine({ dataDir, envelope, venues, clock: this.clock });
     // Everything the engine considers worth waking someone for -- a live router that failed to
     // initialise, a flatten that left positions open, a position booked as a total loss, the governor
@@ -275,7 +278,7 @@ export class VelocityHub {
       return { ok: false, error: first.error || "could not go live", preflight: first.preflight || null, venues: results };
     }
     sup.start();
-    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, pons, arc, pumpfun, paper, callouts }, startedAt: this.clock() });
+    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, entries, pons, arc, pumpfun, paper, callouts }, startedAt: this.clock() });
     this.onUsers?.(this.users.size);
     // Once a minute, the funnel in the server log: what the candidates hit. The first place to look when nothing fills.
     const fun = setInterval(() => { try { const f = engine.funnel(); this.log.log?.(`[velocity ${wallet.slice(0, 8)}] funnel 10m: judged ${f.judged} (${f.distinct} tokens) go ${f.gos} filled ${f.filled} | ${Object.entries(f.gates).map(([g, n]) => `${g} ${n}`).join(", ") || "no rejects"} | top: ${f.top.map(x => `${x.k} ${x.n}`).join("; ")}${f.sized0 ? ` | no size: ${JSON.stringify(f.sized0)}` : ""}${f.failed ? ` | failed: ${JSON.stringify(f.failed)}` : ""}`); } catch {} }, 60_000);
