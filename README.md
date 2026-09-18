@@ -7,7 +7,7 @@
 **ML-powered Solana trading terminal.** Scores every token. Exits before the rug. Burns NOS on Nosana GPUs.
 
 [![Live](https://img.shields.io/badge/Live-bondli.fun-00ff88?style=flat-square)](https://bondli.fun)
-[![Twitter](https://img.shields.io/badge/Twitter-@Bondlifun-1DA1F2?style=flat-square)](https://x.com/Bondlifun)
+[![Twitter](https://img.shields.io/badge/Twitter-@shitanalystXBT-1DA1F2?style=flat-square)](https://x.com/shitanalystXBT)
 [![Nosana](https://img.shields.io/badge/GPU-Nosana%20Network-8B5CF6?style=flat-square)](https://nosana.com)
 
 ---

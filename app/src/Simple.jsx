@@ -31,7 +31,7 @@ function Socials({ T }) {
   const t = useT();
   const link = { display: "inline-flex", alignItems: "center", gap: 7, padding: "8px 13px", borderRadius: 10, border: `1px solid ${T.bd}`, color: T.dm, textDecoration: "none", fontFamily: S, fontWeight: 800, fontSize: 13 };
   return <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 18 }}>
-    <a href={X_URL} target="_blank" rel="noopener" style={link} aria-label={t("social.x")}><XIcon /> <span>@notafruitfly</span></a>
+    <a href={X_URL} target="_blank" rel="noopener" style={link} aria-label={t("social.x")}><XIcon /> <span>@shitanalystXBT</span></a>
     <a href={DISCORD_URL} target="_blank" rel="noopener" style={link} aria-label={t("social.discord")}><DiscordIcon /> <span>Discord</span></a>
   </div>;
 }

@@ -1,5 +1,5 @@
 export const API = "https://bondli-production.up.railway.app";
-export const X_URL = "https://x.com/notafruitfly";
+export const X_URL = "https://x.com/shitanalystXBT";
 export const DISCORD_URL = "https://discord.gg/SHueKKXRkv";
 // The house token. Holding one waives the performance fee; the server decides, this is only the label
 // and the link. $BNDLI is an SPL mint on Solana -- the same wallet you sign in with holds it, so there
