@@ -116,7 +116,7 @@ Internal adversarial review, September 2026, eleven reviews across the Arc chain
 [FILL]. Suggested: packages/arc-argus/chain.mjs lines defining USDC_ERC20, QUOTE_DECIMALS, NATIVE_DECIMALS and toUsdc/toNativeUsdc; router.mjs preflight() and _ensurePermit2(); hub.mjs QUOTE_OF and settleFee; docs/AXIOMS.md axiom 11.
 
 **Investor deck**
-[FILL: link]. GRANT_PROPOSAL_ONE_PAGER.md in the repository is out of date (it describes an earlier product) and should not be sent as-is.
+[FILL: link].
 
 ---
 
