@@ -552,7 +552,7 @@ test("T11: the public pulse names no wallet and counts no paper money", async ()
   const hub = new VelocityHub({ feed, rootDir: root, platformWallet: "PLATFORM_FRESH_WALLET", fee: feeDeps("pro"), makeLiveRouter: ({ secret, wallet }) => (routers[wallet] = new FakeLive({ secret, wallet })), log: { log() {}, error() {}, warn() {} } });
   await feed.start();
   try {
-    assert.deepEqual({ ...hub.pulse(), ts: 0 }, { bots: 0, live: 0, closes: 0, wins: 0, pnl_usd: 0, best: [], recent: [], windowMs: 24 * 60 * 60_000, ts: 0 }, "an empty site has an empty pulse, not an invented one");
+    assert.deepEqual({ ...hub.pulse(), ts: 0 }, { bots: 0, live: 0, closes: 0, wins: 0, pnl_usd: 0, best: [], recent: [], tape: [], windowMs: 24 * 60 * 60_000, ts: 0 }, "an empty site has an empty pulse, not an invented one");
     const live = await hub.start({ wallet: "Real", secret: "s1", settings: { bankrollUsd: 100, aggression: 2 } });
     const paper = await hub.start({ wallet: "Pretend", secret: "s2", settings: { bankrollUsd: 100, aggression: 2, paper: true } });
     assert.ok(live.ok && paper.ok);
@@ -567,7 +567,19 @@ test("T11: the public pulse names no wallet and counts no paper money", async ()
     assert.equal(p.bots, 2); assert.equal(p.live, 1, "the paper bot is a bot, not a live one");
     assert.equal(p.closes, 1, "the paper close is not a close that happened with money");
     for (const c of [...p.recent, ...p.best]) { assert.equal("wallet" in c, false); assert.equal(c.paper, false); assert.ok(c.instrument && Number.isFinite(c.pnl_pct)); }
-    assert.equal(JSON.stringify(p).includes("Real"), false, "no wallet, anywhere in it");
+    // The tape shows the paper close too, but flagged, and with nothing on it that sizes a bankroll
+    // or points back at a person: no wallet, no position id, no dollar figure.
+    assert.equal(p.tape.length, 2, "both closes are on the tape, newest first");
+    assert.ok(p.tape[0].ts >= p.tape[1].ts);
+    assert.deepEqual(p.tape.map(c => c.paper).sort(), [false, true], "the paper close is on the tape as paper");
+    for (const c of p.tape) {
+      assert.deepEqual(Object.keys(c).sort(), ["held_ms", "instrument", "paper", "pnl_pct", "reason", "ticker", "ts", "venue"]);
+      assert.ok(Number.isFinite(c.pnl_pct) && Number.isFinite(c.held_ms));
+    }
+    const flat = JSON.stringify(p);
+    assert.equal(flat.includes("Real"), false, "no wallet, anywhere in it");
+    assert.equal(flat.includes("Pretend"), false);
+    assert.doesNotMatch(flat, /"(wallet|user|positionId)"/, "no wallet, user or position id key anywhere in the pulse");
     // The user's own card sees their own closes, paper flagged as paper.
     const mine = hub.status("Pretend").status.closes;
     assert.equal(mine.length, 1); assert.equal(mine[0].paper, true);

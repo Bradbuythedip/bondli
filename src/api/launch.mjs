@@ -8,23 +8,27 @@ import path from "node:path";
 export const LAUNCH_STATUSES = Object.freeze(["soon", "live", "graduated", "off"]);
 export const LAUNCH_VENUES = Object.freeze(["pump.fun", "pons", "uniswap-v2"]);
 export const LAUNCH_CHAINS = Object.freeze(["solana", "robinhood"]);
-/** The post the token is about. Shown on the banner as "the post"; overridable via links.post. */
+/** The post the previous token was about. No longer a default link: $BNDLI is Bondli's own token and
+ *  needs no one else's post. Kept only so the legacy check and its tests can name the record that
+ *  used to carry it; an operator who wants a post on the banner pushes links.post explicitly. */
 export const JEFF_POST_URL = "https://x.com/elonmusk/status/1935370021439705302";
 export const LAUNCH_FIELDS = Object.freeze(["name", "ticker", "chain", "venue", "address", "curve", "pair", "status", "tagline", "image", "links"]);
 const MAX_UPDATES = 20;
 
 export function defaultLaunch() {
-  return { name: "Jeff", ticker: "JEFF", chain: "solana", venue: "pump.fun", address: "", curve: "", pair: "", status: "soon", tagline: "Bondli's own token. Launching on pump.fun.", image: "", links: { post: JEFF_POST_URL }, updates: [], updatedAt: 0 };
+  return { name: "Bondli", ticker: "BNDLI", chain: "solana", venue: "pump.fun", address: "", curve: "", pair: "", status: "soon", tagline: "Bondli's own token. Hold it, trade free.", image: "", links: {}, updates: [], updatedAt: 0 };
 }
 
-/** The record the store held before the token moved to Solana. Recognised so a volume that still
- *  carries it comes up as $JEFF, not as a fruit fly: the defaults only apply when the file is
- *  missing, and the file was not missing. Only a record that never launched is migrated -- a live
- *  address, on any chain, is left exactly as it is. */
+/** A record the store held under an earlier name: the fruit fly from before the token moved to
+ *  Solana, or the $JEFF placeholder that came after it. Recognised so a volume that still carries
+ *  either comes up as $BNDLI: the defaults only apply when the file is missing, and the file was
+ *  not missing. Only a record that never launched is migrated -- a live address, on any chain, is
+ *  left exactly as it is, because a token that exists is never renamed under the people holding it. */
 export function isLegacyLaunch(st) {
   if (!st || typeof st !== "object") return false;
-  const name = String(st.name || "").toLowerCase();
-  return !st.address && (name === "not a fruit fly" || name === "notafly" || (st.chain === "robinhood" && !st.ticker));
+  const name = String(st.name || "").toLowerCase(), ticker = String(st.ticker || "").toLowerCase();
+  if (st.address) return false;
+  return name === "not a fruit fly" || name === "notafly" || (st.chain === "robinhood" && !st.ticker) || name === "jeff" || ticker === "jeff";
 }
 
 const isEvmAddr = (a) => /^0x[0-9a-fA-F]{40}$/.test(String(a || ""));
@@ -63,7 +67,7 @@ export class LaunchStore {
   _read() {
     let stored = null;
     try { stored = JSON.parse(fs.readFileSync(this.file, "utf8")); } catch { return defaultLaunch(); }
-    if (isLegacyLaunch(stored)) { console.log("[LAUNCH] stored banner is the pre-Solana token; starting over as $JEFF"); return defaultLaunch(); }
+    if (isLegacyLaunch(stored)) { console.log("[LAUNCH] stored banner is an earlier, never-launched token; starting over as $BNDLI"); return defaultLaunch(); }
     const d = defaultLaunch();
     return { ...d, ...stored, links: { ...d.links, ...(stored.links || {}) } };
   }

@@ -1,18 +1,18 @@
-// The house-token fee waiver: hold one $JEFF and the performance fee is zero. What must hold is that
+// The house-token fee waiver: hold one $BNDLI and the performance fee is zero. What must hold is that
 // it is inert until the token exists, that it never charges someone because a node blinked, and that
-// it never invents a waiver out of a failure. $JEFF is an SPL mint on Solana, read against the user's
+// it never invents a waiver out of a failure. $BNDLI is an SPL mint on Solana, read against the user's
 // own Solana wallet -- so the addresses here are base58 pubkeys, not the EVM ones this used to use.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { HolderWaiver } from "../../src/velocity/core/holder-waiver.mjs";
 
 // Base58 has no 0, O, I or l; these are shaped like real pubkeys so the address check passes.
-const ADDR = (n) => ("Jeff" + String(n).repeat(44)).replace(/0/g, "9").slice(0, 44);
-const TOKEN = "JEFFpump" + "1".repeat(36);
+const ADDR = (n) => ("Bndi" + String(n).repeat(44)).replace(/0/g, "9").slice(0, 44);
+const TOKEN = "BNDLpump" + "1".repeat(36);
 
 function waiver({ balance = 0, clock, minTokens = 1 } = {}) {
   let t = 0;
-  const w = new HolderWaiver({ token: TOKEN, minTokens, connection: {}, clock: clock || (() => t), symbol: "JEFF" });
+  const w = new HolderWaiver({ token: TOKEN, minTokens, connection: {}, clock: clock || (() => t), symbol: "BNDLI" });
   w._balance = balance;
   w.balanceOf = async () => { if (w._throw) throw new Error("rpc down"); return w._balance; };
   w._advance = (ms) => { t += ms; };
@@ -25,7 +25,7 @@ test("T14: with no token configured nothing is read and nothing is waived", asyn
   assert.equal(await off.holds(ADDR(1)), false);
   assert.equal(off.status().enabled, false);
   // a token that is not an address is a misconfiguration, not a waiver for everyone
-  const bad = new HolderWaiver({ token: "JEFF" });
+  const bad = new HolderWaiver({ token: "BNDLI" });
   assert.equal(bad.enabled, false);
   assert.equal(bad.status().misconfigured, true);
   assert.equal(await bad.holds(ADDR(1)), false);

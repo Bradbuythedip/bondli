@@ -168,19 +168,24 @@ export class VelocityHub {
     });
     this._sweeps = new Map(); // wallet -> running or finished sweep job
     this._holdingsCache = new Map();
-    // Hold the house token and the fee is zero, on both venues. $JEFF is an SPL mint on Solana, read
+    // Hold the house token and the fee is zero, on both venues. $BNDLI is an SPL mint on Solana, read
     // against the user's own Solana wallet -- the pubkey they already sign in with -- so there is
     // nothing extra to connect and someone who only trades pump.fun can earn the waiver too. Inert
-    // until the token is launched and JEFF_MINT is set; until then every fee is charged as before.
+    // until the token is launched and BNDLI_MINT is set; until then every fee is charged as before.
+    // The variables used to be named JEFF_*; they are still read as a fallback for one deploy so a
+    // host whose env was set under the old name does not switch the waiver off in silence.
+    const waiverEnv = (name) => process.env[`BNDLI_${name}`] || process.env[`JEFF_${name}`] || "";
+    const usesOldWaiverEnv = ["MINT", "MIN_TOKENS", "SYMBOL"].filter(n => !process.env[`BNDLI_${n}`] && process.env[`JEFF_${n}`]);
+    if (usesOldWaiverEnv.length) log.warn?.(`[VELOCITY-HUB] ${usesOldWaiverEnv.map(n => `JEFF_${n}`).join(", ")} still set under the old name; rename to ${usesOldWaiverEnv.map(n => `BNDLI_${n}`).join(", ")} -- the JEFF_* fallback goes away next release`);
     this.waiver = new HolderWaiver({
-      token: process.env.JEFF_MINT || null,
-      minTokens: Number(process.env.JEFF_MIN_TOKENS || 1),
-      symbol: process.env.JEFF_SYMBOL || "JEFF",
+      token: waiverEnv("MINT") || null,
+      minTokens: Number(waiverEnv("MIN_TOKENS") || 1),
+      symbol: waiverEnv("SYMBOL") || "BNDLI",
       rpcUrl: rpcUrl || process.env.RPC_URL || null,
       clock, log,
     });
     if (this.waiver.enabled) log.log?.(`[VELOCITY-HUB] fee waiver on: holders of ${this.waiver.minTokens}+ ${this.waiver.symbol} (${this.waiver.token}) pay nothing`);
-    else if (this.waiver.configuredButInvalid) log.error?.(`[VELOCITY-HUB] JEFF_MINT is not a Solana address; the holder fee waiver is OFF`);
+    else if (this.waiver.configuredButInvalid) log.error?.(`[VELOCITY-HUB] BNDLI_MINT is not a Solana address; the holder fee waiver is OFF`);
     this.feeOk = !!this.platformWallet;
     if (!this.feeOk) log.error?.(`[VELOCITY-HUB] PLATFORM_WALLET is unset: SOL performance fees will NOT be collected`);
     else if (this.platformWallet === EXPOSED_DEFAULT_PLATFORM_WALLET) log.warn?.(`[VELOCITY-HUB] PLATFORM_WALLET is the original wallet whose key was once exposed in a chat: fees go there by the operator's choice; sweep it often`);
@@ -356,9 +361,11 @@ export class VelocityHub {
   }
 
   /** What every bot on the site did lately, with no wallet named. This is the landing page's proof
-   *  that the thing is real: bots trading now, closes in the last day, the best of them. A wallet is
-   *  never in it, and a paper close is counted as paper, never as money. */
-  pulse({ windowMs = 24 * 60 * 60_000, limit = 8 } = {}) {
+   *  that the thing is real: bots trading now, closes in the last day, the best of them, and the tape
+   *  -- the last dozen closes across every bot, paper included but flagged so the page can say
+   *  "paper" rather than a number that looks like money. A wallet is never in it, nor a position id,
+   *  and a paper close is never counted in the money figures. */
+  pulse({ windowMs = 24 * 60 * 60_000, limit = 8, tapeLimit = 12 } = {}) {
     const since = this.clock() - windowMs;
     const closes = [];
     for (const u of this.users.values()) {
@@ -372,12 +379,16 @@ export class VelocityHub {
     const wins = live.filter(c => c.pnl_usd > 0);
     const best = [...wins].sort((a, b) => b.pnl_pct - a.pnl_pct).slice(0, limit);
     const recent = [...live].sort((a, b) => b.ts - a.ts).slice(0, limit);
+    // The tape carries no dollar figure at all: a percentage and a hold time say what happened, a
+    // USD size would say how big someone's bankroll is.
+    const tape = [...closes].sort((a, b) => b.ts - a.ts).slice(0, tapeLimit)
+      .map(c => ({ ts: c.ts, venue: c.venue, ticker: c.ticker, instrument: c.instrument, pnl_pct: c.pnl_pct, held_ms: c.held_ms, paper: c.paper, reason: c.reason }));
     return {
       bots: this.users.size,
       live: [...this.users.values()].filter(u => !u.settings?.paper).length,
       closes: live.length, wins: wins.length,
       pnl_usd: +live.reduce((s, c) => s + c.pnl_usd, 0).toFixed(2),
-      best, recent, windowMs, ts: this.clock(),
+      best, recent, tape, windowMs, ts: this.clock(),
     };
   }
 
@@ -459,7 +470,7 @@ export class VelocityHub {
   }
 
   /** Does this user hold enough of the house token to trade free? Never throws.
-   *  Read against their Solana wallet: $JEFF is an SPL mint, and that pubkey is the account they
+   *  Read against their Solana wallet: $BNDLI is an SPL mint, and that pubkey is the account they
    *  signed in with, so every user has one whether or not they opted into Robinhood Chain. */
   async holderWaived(wallet) {
     if (!this.waiver.enabled || !wallet) return false;

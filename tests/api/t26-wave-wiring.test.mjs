@@ -9,6 +9,7 @@ import { DEFAULT_WEIGHTS, FEATURE_SIGNS, WEIGHT_CONSTRAINTS, SACRED_INVERSIONS }
 const SERVER = fs.readFileSync(path.resolve("src/api/server.production.mjs"), "utf8");
 const FEED = fs.readFileSync(path.resolve("src/velocity/venues/pumpfun/feed.mjs"), "utf8");
 const SITE = fs.readFileSync(path.resolve("app/src/Simple.jsx"), "utf8");
+const I18N = fs.readFileSync(path.resolve("app/src/lib/i18n.js"), "utf8");
 
 test("T26: the wave rides in the quick features, so the edge and the exits read the same reading", () => {
   assert.match(SERVER, /_wave: radar\._copycats\.wave\(t\.ca \|\| ca, Date\.now\(\)\),/);
@@ -16,7 +17,10 @@ test("T26: the wave rides in the quick features, so the edge and the exits read 
   assert.match(FEED, /qf: r\.qf \|\| null,/);
   // The live row carries the wave for the site, only for a Solana original with copies.
   assert.match(SERVER, /wave: !pons && !arc && t\._copies \? radar\._copycats\.wave\(t\.ca, now\) : null/);
-  assert.match(SITE, /wave of \$\{t\.copies\}, \$\{t\.wave\.rising \? "building" : t\.wave\.fading \? "fading" : "steady"\}/);
+  // The row says how many copies and which way the wave is going, in the page's language.
+  assert.match(SITE, /t\("live\.wave", \{ n: tok\.copies, state: t\(tok\.wave\.rising \? "live\.wave\.building" : tok\.wave\.fading \? "live\.wave\.fading" : "live\.wave\.steady"\) \}\)/);
+  assert.match(I18N, /"live\.wave": " · wave of \{n\}, \{state\}"/);
+  assert.match(I18N, /"live\.wave\.building": "building",\n\s+"live\.wave\.fading": "fading",\n\s+"live\.wave\.steady": "steady"/);
 });
 
 test("T26: the learner's weight for it is bounded, positive, not sacred, and the weights still sum to one", () => {
