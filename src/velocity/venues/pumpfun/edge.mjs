@@ -121,7 +121,9 @@ export function makePumpfunEdge({
   // sizer hands it $5 approves trades that cannot clear their own costs, which is how a fixed cost
   // becomes an invisible one.
   nominalStakeUsd = 25,
-  // "all" takes launches, dips, slow cooks and revivals; "dips" takes only the first dip.
+  // Which entries this edge will offer. The permissive value is the default HERE because this is a
+  // library: the product decision that a hosted bot waits for the dip lives in hub.start, which is
+  // where an operator's settings are read, and every venue is built with it.
   entries = "all",
 } = {}) {
   const dipsOnly = entries === "dips";
@@ -160,6 +162,9 @@ export function makePumpfunEdge({
         model: p.token._revival ? "bondli_revival" : p.token._dip?.dip ? "bondli_dip" : p.token._slowCook ? "bondli_slowcook" : "bondli_gates",
         revival: p.token._revival || null,
         dip: p.token._revival ? null : (p.token._dip?.dip ? p.token._dip : null),
+        // The low this entry is buying above. The exit plan puts the stop under it rather than at a
+        // round percentage, because the thing being risked is that the low fails.
+        dipLowMcap: p.token._dip?.dip ? (Number(p.token._dip.lowMcap) || 0) : 0,
         grad: p.token._grad || null,
         // Still building, just slowly (src/api/revival.mjs). Waives the stale clock and nothing else.
         slowCook: p.token._revival ? null : (p.token._slowCook || null),
@@ -167,7 +172,7 @@ export function makePumpfunEdge({
         token: p.token, qf: p.qf, scores: p.scores || {}, dynamics: p.dynamics,
         solPrice: p.solPrice || 0,
         // The router sizes and routes from this: on PONS it needs the curve contract and its reserves.
-        reference: { mcapUsd: p.mcapUsd || p.token.mcapUsd || 0, vSolInBondingCurve: p.vSolInBondingCurve || p.token.vSolInBondingCurve || 0, solPrice: p.solPrice || 0, solPriceAt: p.solPriceAt || 0, name: p.token.name || "", ticker: p.token.ticker || "", ...(p.curve ? { curve: p.curve, quote: p.quote || "ETH" } : {}) },
+        reference: { dipLowMcap: p.token._dip?.dip ? (Number(p.token._dip.lowMcap) || 0) : 0, mcapUsd: p.mcapUsd || p.token.mcapUsd || 0, vSolInBondingCurve: p.vSolInBondingCurve || p.token.vSolInBondingCurve || 0, solPrice: p.solPrice || 0, solPriceAt: p.solPriceAt || 0, name: p.token.name || "", ticker: p.token.ticker || "", ...(p.curve ? { curve: p.curve, quote: p.quote || "ETH" } : {}) },
         group: p.token.devWallet || null,
       }];
     },

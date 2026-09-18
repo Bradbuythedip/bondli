@@ -64,6 +64,13 @@ export const DIP_DEFAULTS = Object.freeze({
   maxDrawdownPct: 65,       // past this it is not a dip, it is the exit
   minRecoveryPct: 5,        // and be this far back up off the low: the crowd voting a second time
   maxFromPeakPct: 45,       // while still this close to the peak, so a knife is never caught
+  // ...and no closer than this, because the discount is the whole reason to be here. A token that
+  // gave back twenty per cent and took all of it back passed every other test while offering
+  // nothing: the drawdown was real, the recovery was real, and the entry was the peak.
+  minFromPeakPct: 8,
+  // The bounce has to have outlived one print. A single sample above the low is a tick, not a turn,
+  // and on a thin curve it is often just the spread. Two samples is the cheapest honest wait.
+  minSamplesSinceLow: 2,
   freshLowMs: 12 * MIN,     // the low has to be recent, or this is a slow bleed with a bounce in it
   minBuyersSinceLow: 4,     // distinct wallets that bought the dip
   minBuyShareSinceLow: 0.55,// and the flow since the low is mostly buying
@@ -83,7 +90,7 @@ export function dipSignal(token, { now = Date.now(), track = token?._track, trad
   const o = { ...DIP_DEFAULTS, ...over };
   const out = { dip: false, phase: "unknown", reasons: [], runPct: 0, drawdownPct: 0, recoveryPct: 0, fromPeakPct: 0,
     peakMcap: 0, lowMcap: 0, openMcap: 0, mcapUsd: Number(token?.mcapUsd) || 0, peakAt: 0, lowAt: 0, ageMs: null,
-    buyers: 0, buyShare: 0, devSellShare: 0, at: now };
+    buyers: 0, buyShare: 0, devSellShare: 0, samplesSinceLow: 0, at: now };
   if (!token?.ca) { out.reasons.push("NO_TOKEN"); return out; }
   const age = token.createdAt ? now - token.createdAt : null;
   out.ageMs = age;
@@ -103,6 +110,8 @@ export function dipSignal(token, { now = Date.now(), track = token?._track, trad
   out.drawdownPct = +(peak > 0 ? ((peak - low) / peak) * 100 : 0).toFixed(1);
   out.recoveryPct = +pct(mc, low).toFixed(1);
   out.fromPeakPct = +(peak > 0 ? ((peak - mc) / peak) * 100 : 0).toFixed(1);
+  // How many readings have printed above the low since it was set. One is the bounce itself.
+  out.samplesSinceLow = t.filter(s => s.t > lowAt && s.mc > low).length;
 
   // The flow since the low: who bought the dip, and did the dev sell into it.
   const since = (Array.isArray(trades) ? trades : []).filter(x => (x?.time || 0) >= lowAt);
@@ -130,6 +139,8 @@ export function dipSignal(token, { now = Date.now(), track = token?._track, trad
   if (out.drawdownPct > o.maxDrawdownPct) no.push("NOT_A_DIP_A_COLLAPSE");
   if (out.recoveryPct < o.minRecoveryPct) no.push("NOT_TURNING");
   if (out.fromPeakPct > o.maxFromPeakPct) no.push("STILL_FAR_UNDER_PEAK");
+  if (out.fromPeakPct < o.minFromPeakPct) no.push("NO_DISCOUNT_LEFT");
+  if (out.samplesSinceLow < o.minSamplesSinceLow) no.push("BOUNCE_HAS_NOT_HELD");
   if (now - lowAt > o.freshLowMs) no.push("LOW_IS_OLD");
   if (out.buyers < o.minBuyersSinceLow) no.push("NOBODY_BOUGHT_THE_DIP");
   if (out.buyShare < o.minBuyShareSinceLow) no.push("STILL_SELLING");

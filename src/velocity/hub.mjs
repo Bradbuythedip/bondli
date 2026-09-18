@@ -219,7 +219,9 @@ export class VelocityHub {
     const aggression = Math.max(0, Math.min(3, Math.round(settings.aggression == null || settings.aggression === "" ? 1 : Number(settings.aggression) || 0)));
     // Which entries to take. A launch is bought on a create event; a dip is bought after the token
     // ran on someone else's money and was bought again. "dips" waits for the second one only.
-    const entries = settings.entries === "dips" ? "dips" : "all";
+    // The dip is the entry, and the launch is the exception. The create-event entry is the one the
+    // record says loses; an operator who wants it back asks for it by name.
+    const entries = settings.entries === "all" ? "all" : "dips";
     const envelope = userEnvelope({ ...settings, pons, arc, aggression });
     const view = new SharedFeedView(this.feed, { clock: this.clock });
     const liveRouter = this.makeLiveRouter({ secret, wallet });
@@ -315,11 +317,24 @@ export class VelocityHub {
     let result = null;
     // Through the engine queue: off it, this flatten races the tick-driven exits already running on it.
     if (flatten) result = await u.engine.enqueue(() => u.engine.halt("flatten", "user stop", { by: "user" }));
+    // A stop is the user saying they are done, so the book ends empty. Whatever the flatten could not
+    // sell -- a graduated curve, a token the venue keeps refusing -- is RELEASED rather than carried:
+    // it leaves the bot's book, the tokens stay in the wallet, and they show up under the holdings
+    // list where they can be sold by hand. Carrying them meant a restart re-adopted a position with
+    // a three-day-old entry time and a plan built for a token that no longer exists, and the panel
+    // showed a running position belonging to a bot that was not running.
+    const released = [];
+    if (flatten) {
+      for (const p of u.engine.store.openPositions()) {
+        const r = u.engine.releasePosition(p.id, { by: "user", note: "the stop could not sell it; the tokens are in your wallet" });
+        if (r.ok) released.push({ instrument: r.instrument, venue: r.venue, qty: r.qty });
+      }
+    }
     u.sup.stop(); clearInterval(u.fun);
     await u.engine.stop();
     this.users.delete(wallet);
     this.onUsers?.(this.users.size);
-    return { ok: true, closed: result?.closed?.length || 0, failed: result?.failed || [] };
+    return { ok: true, closed: result?.closed?.length || 0, failed: result?.failed || [], released };
   }
 
   async halt(wallet, mode = "flatten") {

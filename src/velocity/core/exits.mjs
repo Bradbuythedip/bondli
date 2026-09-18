@@ -11,7 +11,7 @@ import { createExitPlan, runExitChecks } from "../../autoape/pipeline.js";
 const MAX_STOP_TIGHTEN = 0.5;  // never tighter than half the designed stop
 const MIN_STOP_PCT = 4;        // nor tighter than 4% in absolute terms
 const MAX_TP_WIDEN = 3;        // nor a target more than 3x its designed level
-import { planFor } from "./plans.mjs";
+import { planFor, dipStopPct } from "./plans.mjs";
 import { withClock } from "./pipeline.mjs";
 // Arc's Argus trades like a curve from here (a launch, a price walking up one position, buyers and
 // sellers, a quote asset), so every price rule applies. It never graduates -- the pool keeps trading
@@ -29,11 +29,14 @@ export const BLIND_EXIT_MS = 45_000;
 
 export function createPlan({ venue, key, entry = {} }) {
   const base = planFor(venue, key);
+  // A dip entry carries the low it bought above, so its stop can sit under that low rather than at
+  // the table's round number. Every other entry keeps exactly the stop it had.
+  const stopPct = entry.dipLowMcap > 0 ? dipStopPct(base.stop_pct, { entryMcap: entry.mcapUsd, lowMcap: entry.dipLowMcap }) : base.stop_pct;
   if (CURVE(venue)) {
     return {
       venue, key, mode: base.mode, worst_case_fraction: base.worst_case_fraction, max_hold_ms: base.max_hold_ms,
       doa_ms: base.doa_ms ?? null, stall_ms: base.stall_ms ?? null, stall_band_pct: base.stall_band_pct ?? 8,
-      bondli: { ...createExitPlan(base.tier ?? Number(key), Number(entry.score) || 0, base.stop_pct ? { ...PUMPFUN_EXIT_SETTINGS, sl2: base.stop_pct } : PUMPFUN_EXIT_SETTINGS), maxHoldMs: base.max_hold_ms },
+      bondli: { ...createExitPlan(base.tier ?? Number(key), Number(entry.score) || 0, stopPct ? { ...PUMPFUN_EXIT_SETTINGS, sl2: stopPct } : PUMPFUN_EXIT_SETTINGS), maxHoldMs: base.max_hold_ms },
       settings: { ...PUMPFUN_EXIT_SETTINGS },
     };
   }

@@ -565,9 +565,10 @@ export default function Simple() {
   const [paper, sPaper] = useState(() => { try { return localStorage.getItem("bondli_paper") === "1"; } catch { return false; } });
   // Public calls: off unless they say so. A call links the buy transaction, and the transaction names this bot's wallet.
   const [calls, sCalls] = useState(() => { try { return localStorage.getItem("bondli_callouts") === "1"; } catch { return false; } });
-  // Entries: a launch is bought on a create event, a dip after the token proved itself. The launch
-  // entry is the one that has been losing money, and this is how the operator turns it off.
-  const [dipsOnly, sDips] = useState(() => { try { return localStorage.getItem("bondli_dips") === "1"; } catch { return false; } });
+  // Entries: a launch is bought on a create event, a dip after the token proved itself. The dip is
+  // the default because the launch entry is the one the record says loses money; an operator who
+  // wants create events back turns this off deliberately, and only then is it stored as "0".
+  const [dipsOnly, sDips] = useState(() => { try { return localStorage.getItem("bondli_dips") !== "0"; } catch { return true; } });
   const [copied, sCopied] = useState(false);
   const narRef = useRef(null);
   const running = !!st?.running;
@@ -620,7 +621,7 @@ export default function Simple() {
       if (!r.ok) say(r.error || t("toast.noStart"), "error"); else sSt(r);
     } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
   };
-  const stop = async () => { if (!confirm(t("toast.stopConfirm"))) return; sBusy("stop"); try { const r = await a.vsp(pk); sSt({ running: false }); if (r.failed?.length) say(t("toast.stopRetry", { n: r.failed.length }), "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
+  const stop = async () => { if (!confirm(t("toast.stopConfirm"))) return; sBusy("stop"); try { const r = await a.vsp(pk); sSt({ running: false }); if (r.failed?.length) say(t("toast.stopRetry", { n: r.failed.length }), "error"); else if (r.released?.length) say(t("toast.stopReleased", { n: r.released.length }), "info"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
   const paused = !!s?.halt?.mode;
   const pause = async () => { sBusy("pause"); try { const r = await a.vpause(pk); if (r.ok) sSt(x => ({ ...x, ...r })); else say(r.error, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
   const resume = async () => { sBusy("pause"); try { const r = await a.vresume(pk); if (r.ok) sSt(x => ({ ...x, ...r })); else say(r.error, "error"); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
