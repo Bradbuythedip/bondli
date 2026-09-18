@@ -12,7 +12,7 @@ import { Engine } from "../../src/velocity/core/engine.mjs";
 import { Sizer, loadRiskEnvelope } from "../../src/velocity/core/risk.mjs";
 import { ScriptedFeed } from "../../src/velocity/core/feed.mjs";
 import { makeEvent } from "../../src/velocity/core/events.mjs";
-import { evaluateExit, createPlan } from "../../src/velocity/core/exits.mjs";
+import { evaluateExit, createPlan, markPosition } from "../../src/velocity/core/exits.mjs";
 import { buildEngine, DEFAULT_CONFIG } from "../../src/velocity/core/build.mjs";
 import { failure } from "../../src/velocity/core/router.mjs";
 import { makePumpfunEdge } from "../../src/velocity/venues/pumpfun/edge.mjs";
@@ -21,11 +21,18 @@ import { goodCandidatePayload, tickPayload } from "./helpers/fixtures.mjs";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "velocity-t10-"));
 
-/** The operator's envelope: $50 bankroll, $5 minimum stake. */
+/** The operator's envelope: a $50 bankroll on top of whatever the example config ships.
+ *
+ *  The floor is the config's own -- $10, the hosted floor (MIN_STAKE_USD) and the size every cost
+ *  figure is quoted at. It used to be overridden here because the config shipped $5, where the
+ *  pump.fun round trip is 5.0% of the stake against a tier-2 prior worth 4.8% at its designed stop:
+ *  the gate refuses that, correctly, and every engine test below would open nothing. The config was
+ *  corrected instead, so these run against what an operator actually gets. Tests about the FLOOR
+ *  itself pass min_stake_usd back down; they never reach the cost model. */
 function smallEnvelope(dir, over = {}) {
   const base = JSON.parse(fs.readFileSync(path.resolve("src/velocity/config/risk.example.json"), "utf8"));
   const cfg = { ...base, bankroll_usd: 50, per_trade_max_usd: 10, portfolio_max_exposure_usd: 40, daily_loss_limit_usd: 15, max_concurrent_positions: 4, max_per_group: 1, ...over };
-  cfg.venues = { ...base.venues, pumpfun: { ...base.venues.pumpfun, max_exposure_usd: 40, min_stake_usd: 5, ...(over.pumpfun || {}) }, polymarket: { ...base.venues.polymarket, max_exposure_usd: 0 } };
+  cfg.venues = { ...base.venues, pumpfun: { ...base.venues.pumpfun, max_exposure_usd: 40, ...(over.pumpfun || {}) }, polymarket: { ...base.venues.polymarket, max_exposure_usd: 0 } };
   const file = path.join(dir, "risk.json");
   fs.writeFileSync(file, JSON.stringify(cfg));
   return loadRiskEnvelope(file);
@@ -63,7 +70,8 @@ function mkEngine(dataDir, { envelope, mode = "paper", live = null, feed = new S
 const cand = (id, t = Date.now()) => makeEvent({ venue: "pumpfun", kind: "candidate", id, t_venue: t - 100, t_observed: t, payload: goodCandidatePayload(id) });
 
 test("T10: a $50 bankroll trades the venue minimum instead of nothing", () => {
-  const env = smallEnvelope(tmp());
+  // The floor itself is what is under test, so it is set here rather than taken from the helper.
+  const env = smallEnvelope(tmp(), { pumpfun: { min_stake_usd: 5 } });
   const sizer = new Sizer(env);
   const portfolio = { open: [], realized_today_usd: 0 };
   const tier1 = sizer.size({ decision: { venue: "pumpfun", p_win: 0.45, payoff: 3, stop_fraction: 1 }, portfolio });
@@ -115,7 +123,7 @@ test("T10: the persisted venue mode survives a restart and the live router is in
 test("T10: going live closes paper positions through the paper router first; going back refuses with live positions open", async () => {
   const dir = tmp(); const env = smallEnvelope(dir);
   const live = new FakeLive();
-  const engine = mkEngine(dir, { envelope: env, mode: "paper", live, config: { reentryCooldownMs: 0 } });
+  const engine = (mkEngine(dir, { envelope: env, mode: "paper", live, config: { reentryCooldownMs: 0 } }));
   try {
     await engine.start({ reconcile: false });
     await engine.enqueue(() => engine.onEvent(cand("MintPaper")));
@@ -354,7 +362,7 @@ test("T10: no ticks is not no exit: the time stop fires on a quiet position and 
 
   const dir = tmp(); const env = smallEnvelope(dir);
   let now = Date.now();
-  const engine = mkEngine(dir, { envelope: env, mode: "paper", config: { reentryCooldownMs: 0, sweepRetryMs: 0 } });
+  const engine = (mkEngine(dir, { envelope: env, mode: "paper", config: { reentryCooldownMs: 0, sweepRetryMs: 0 } }));
   engine.clock = () => now;
   try {
     await engine.start({ reconcile: false });
@@ -398,9 +406,13 @@ test("T10: no ticks is not no exit: the time stop fires on a quiet position and 
 });
 
 test("T10: reconcile leaves unknown tokens alone, books a missing live position, and a failed send cools the instrument down", async () => {
-  const dir = tmp(); const env = smallEnvelope(dir);
+  // Room above the $10 minimum stake the config ships. This test books a loss and then needs another
+  // entry, and on the helper's $50 bankroll fractional Kelly after that loss lands under the floor
+  // and sizes nothing -- which is the sizer working, not a workaround: $50 is genuinely too little
+  // bankroll to take a second $10 position after a loss. Kept at $200 so the subject stays reconcile.
+  const dir = tmp(); const env = smallEnvelope(dir, { bankroll_usd: 200, per_trade_max_usd: 20, portfolio_max_exposure_usd: 80, daily_loss_limit_usd: 40 });
   const live = new FakeLive({ wallet: { AirdropSpam: 5_000_000, MintOurs: 1000 } });
-  const engine = mkEngine(dir, { envelope: env, mode: "live", live, config: { reentryCooldownMs: 0 } });
+  const engine = (mkEngine(dir, { envelope: env, mode: "live", live, config: { reentryCooldownMs: 0 } }));
   engine.store.upsertPosition({ id: "pumpfun:MintOurs:1", venue: "pumpfun", instrument: "MintOurs", status: "open", paper: false, qty: 1000, remaining_qty: 1000, cost_usd: 5, notional_usd: 5, stake_usd: 5, proceeds_usd: 0, entryTime: Date.now(), entryMark: 9000, plan: createPlan({ venue: "pumpfun", key: 2, entry: { score: 60 } }) });
   engine.store.upsertPosition({ id: "pumpfun:MintSold:1", venue: "pumpfun", instrument: "MintSold", status: "open", paper: false, qty: 1000, remaining_qty: 1000, cost_usd: 2, notional_usd: 2, stake_usd: 2, proceeds_usd: 0, entryTime: Date.now(), entryMark: 9000, plan: createPlan({ venue: "pumpfun", key: 2, entry: { score: 60 } }) });
   try {
@@ -485,7 +497,9 @@ test("T10: a signature survives an RPC that drops the reply; a zero read is re-r
 });
 
 test("T10: a throttled bot at the minimum order trades fewer positions, not none; a failed startup freeze lifts on a good restart; stopping opens no new risk", async () => {
-  const dir = tmp(); const env = smallEnvelope(dir);
+  // The $5 floor, because the arithmetic below is about the floor and the throttle. Nothing here
+  // reaches the cost model, which is the only thing the hosted $10 minimum changes.
+  const dir = tmp(); const env = smallEnvelope(dir, { pumpfun: { min_stake_usd: 5 } });
   const sizer = new Sizer(env);
   const d = { venue: "pumpfun", p_win: 0.45, payoff: 3, stop_fraction: 1 };
   const pos = n => Array.from({ length: n }, () => ({ venue: "pumpfun", notional_usd: 5, worst_case_fraction: 1 }));
@@ -557,8 +571,9 @@ test("T10: a tick-less paper sell is priced at the last mark, not the entry", as
 test("T10: with bankroll_source wallet the live wallet is the bankroll; no reading means no order", async () => {
   const dir = tmp(); const env = smallEnvelope(dir, { bankroll_source: "wallet", wallet_reserve_sol: 0.02 });
   assert.equal(env.bankroll_source, "wallet");
-  // Sizer: a measured equity replaces bankroll + realized; null equity sizes nothing.
-  const sizer = new Sizer(env);
+  // Sizer: a measured equity replaces bankroll + realized; null equity sizes nothing. The floor is
+  // the old $5 here because the arithmetic is what is being checked and the sizer never sees a cost.
+  const sizer = new Sizer(smallEnvelope(dir, { bankroll_source: "wallet", wallet_reserve_sol: 0.02, pumpfun: { min_stake_usd: 5 } }));
   const d = { venue: "pumpfun", p_win: 0.45, payoff: 3, stop_fraction: 1 };
   const w = sizer.size({ decision: d, portfolio: { open: [], realized_today_usd: -5, equity_usd: 120 } });
   assert.equal(w.stake_usd, 8, "0.2667 x 0.25 x $120 = $8, realized is not subtracted twice (the wallet already fell by it)");
@@ -587,7 +602,7 @@ test("T10: with bankroll_source wallet the live wallet is the bankroll; no readi
     await engine.enqueue(() => engine.onEvent(cand("MintW", now)));
     const pos = engine.store.openPositions("pumpfun")[0];
     assert.ok(pos && !pos.paper, "live position opened from the wallet bankroll");
-    assert.equal(pos.stake_usd, 5, "Kelly on $25.9 is $1.73, floored to the $5 minimum");
+    assert.equal(pos.stake_usd, 10, "Kelly on $25.9 is $1.73, floored to the hosted $10 minimum");
     assert.ok(live.calls.filter(c => c === "preflight").length > before, "wallet re-read after the fill");
     const withOpen = engine.portfolioSnapshot();
     // The candidate carried the feed's SOL price (150), which is fresher than the 200 seeded above.
@@ -742,7 +757,7 @@ test("T10: a revival candidate is its own model: tier-3 layers with a tighter st
   assert.ok(full.stake_usd > 20, JSON.stringify(full)); assert.equal(half.stake_usd, 20); assert.ok(half.caps.includes("MODEL_CAP"));
 });
 
-test("T10: a production-shaped candidate (no enrichment, tier 3) is a GO; missing features are not zeros and tier-3 priors clear costs", async () => {
+test("T10: a production-shaped candidate (no enrichment, tier 3) is ranked, not zeroed; and its prior does not buy its way past the costs", async () => {
   const { makePumpfunEdge, pumpfunFeatures, PUMPFUN_PRIORS } = await import("../../src/velocity/venues/pumpfun/edge.mjs");
   const { GateRunner, expectedValue } = await import("../../src/velocity/core/pipeline.mjs");
   const { scoreFeatures, DEFAULT_WEIGHTS } = await import("../../src/velocity/core/learner.mjs");
@@ -772,16 +787,40 @@ test("T10: a production-shaped candidate (no enrichment, tier 3) is a GO; missin
   const evOf = (t, costs) => expectedValue({ p_win: PUMPFUN_PRIORS[t].p_win, payoff: PUMPFUN_PRIORS[t].payoff, lossFraction: PUMPFUN_PRIORS[t].loss_fraction, costs });
   assert.ok(evOf(1, 0.035) > 0, "tier 1 prior clears its costs");
   assert.ok(evOf(3, 0.035) < 0, "tier 3 prior does not: 30% win rate is below the 33.75% break-even");
-  assert.ok(evOf(3, 0) > 0, "and it is the costs that kill it, not the edge -- which is why tier 3 probes");
-  // Through the whole runner at Normal: a GO, not a confidence or EV reject.
+  assert.ok(evOf(3, 0) > 0, "and it is the costs that kill it, not the edge -- which used to be why tier 3 probed");
+  // Through the whole runner at Normal: it clears every gate and the confidence floor, and is then
+  // refused on expected value -- which is the one thing tier 3 has always done here.
+  //
+  // It used to be refused and then taken at 0.4x with nothing counting how often, which is not a
+  // probe but a standing licence to trade on a guess. The bound is what changed: the draws are
+  // counted per venue and plan key, capped at three a UTC day, and charged when the buy lands rather
+  // than when the gate approves -- see T33.
   const edge = makePumpfunEdge({ aggression: 2 });
   const runner = new GateRunner({ venue: "pumpfun", edge });
   assert.equal(runner.minConfidence, 0.40);
   const ev = makeEvent({ venue: "pumpfun", kind: "candidate", id: "MintProd", t_venue: Date.now() - 100, t_observed: Date.now(), payload: p });
   const [cand] = edge.ingest(ev);
-  const d = runner.evaluate(ev, cand, { governor: {} });
-  assert.equal(d.action, "GO", JSON.stringify(d.reasons));
+  const probes = {};
+  const d = runner.evaluate(ev, cand, { governor: {}, probes });
+  assert.ok(d.ev < 0, `priced and refused on merit: ${d.ev}`);
   assert.equal(d.tier, 3);
+  assert.equal(d.designed_stop_fraction, 0.10, "the tier's own stop, read from bondli's exit plan");
+  // So it is never taken at full size. What it does get is a bounded probe: three a day for this
+  // venue and plan key, at 0.4x, charged when the buy lands. The alternative was tried and it was an
+  // absorbing state -- tier 3's prior edge, its designed stop and the cost model are all constants,
+  // so a refusal on them is the same refusal tomorrow and for ever, and the tier could never earn
+  // the record that would settle the question either way. What is pinned is the BOUND, not a GO:
+  // 0.4x, three times, and then a refusal that says so.
+  assert.equal(d.action, "GO", JSON.stringify(d.reasons));
+  assert.equal(d.probe, true, "bought as a measurement, never taken as a trade");
+  assert.equal(d.stake_cap_fraction, 0.4);
+  assert.match(d.reasons[0], /^PROBE 1\/3: tier 3 has 0 outcomes/);
+  probes["pumpfun|3"] = 3;
+  const spent = runner.evaluate(ev, cand, { governor: {}, probes });
+  assert.equal(spent.action, "REJECT", "and the day's fourth is refused");
+  assert.equal(spent.gate, "ev", "not confidence, and not a missing estimate: it is priced and refused");
+  assert.ok(!spent.probe);
+  assert.match(spent.reasons[0], /^PROBE_BUDGET_SPENT: pumpfun\|3 has spent 3 of 3/);
   // The designed level keeps its 0.5 floor.
   assert.equal(new GateRunner({ venue: "pumpfun", edge: makePumpfunEdge({ aggression: 1 }) }).minConfidence, 0.5);
 });
@@ -1226,5 +1265,112 @@ test("T10: a DOA exit is a not-yet, so the mint can be bought back in seconds", 
     // "This token is bad" -- stay out.
     for (const r of ["SL2", "crash-exit", "MAX_HOLD"]) { book(r); assert.equal(engine.cooldown.get("M" + r) - now, engine.cfg.reentryCooldownMs, r); }
     assert.ok(engine.cfg.retryCooldownMs < engine.cfg.reentryCooldownMs / 4, "and the difference is worth having");
+  } finally { await engine.stop(); }
+});
+
+// A chunked sell can succeed part-way: the PONS and Arc routers both return ok with pct_filled under
+// 100 when the curve takes one chunk and refuses the next. The moonbag mark switches off the stop
+// loss, the max hold, the stall and the sweeper's time stop together, so an 85% trail that filled 30%
+// used to leave a 70%-sized position with none of them.
+test("T10: the moonbag mark waits for the sell that earns it", async () => {
+  const dir = tmp(); const env = smallEnvelope(dir);
+  const engine = mkEngine(dir, { envelope: env, mode: "paper" });
+  const T = 1_700_000_000_000;
+  engine.clock = () => T + 60_000;
+  const mk = (id) => ({ id: "p:" + id, venue: "pumpfun", instrument: id, status: "open", paper: true, qty: 1000, remaining_qty: 1000,
+    cost_usd: 20, notional_usd: 20, stake_usd: 20, proceeds_usd: 0, entryTime: T, entryMark: 10_000, peak: 10_000, entryScore: 66,
+    tier: 2, plan: createPlan({ venue: "pumpfun", key: 2, entry: { score: 66 } }) });
+  const tickFor = (id, mcapUsd, at = T + 60_000) => {
+    const trades = [{ side: "buy", time: T + 500 }, { side: "buy", time: T + 3_000 }, { side: "buy", time: T + 8_000 }, { side: "sell", time: T + 9_000 }, { side: "buy", time: T + 20_000 }];
+    const token = { ca: id, buys: 50, sells: 10, trades, volumeSol: 20, createdAt: T - 120_000, uniqueBuyers: { size: 30 }, mcapUsd, vSolInBondingCurve: 20 };
+    return makeEvent({ venue: "pumpfun", kind: "tick", id, t_venue: at - 100, t_observed: at,
+      payload: { mcapUsd, token, dynamics: { scores: 5, velocity: 0.05, acceleration: 0, trend: "stable" }, scores: { apeScore: 66 }, vSolInBondingCurve: 20 } });
+  };
+  const exitOf = (p) => { markPosition(p, tickFor(p.instrument, 40_000)); return evaluateExit(p, tickFor(p.instrument, 24_000)); };
+  try {
+    await engine.start({ reconcile: false });
+    // Peak 4x, giving back the trail: sell 85%, keep a moonbag.
+    const part = mk("MintChunk");
+    const r = exitOf(part);
+    assert.equal(r.action, "PARTIAL_SELL"); assert.equal(r.reason, "RIDE-trail");
+    assert.deepEqual(r.stamp, { tpHit: 3, isMoonbag: true });
+    // The router takes the first chunk and stops: 30% of the order, 700 of 1000 tokens still held.
+    engine._bookExit(part, { ok: true, fill: { price: 0.024, qty: 300, notional_usd: 21, fee_usd: 0, t_filled: T + 60_000, latency_ms: 0, paper: true, pct_filled: 30, partial: 700 } },
+      85, "RIDE-trail", { action: "PARTIAL_SELL", layer: 3, stamp: r.stamp });
+    assert.equal(part._bondli.isMoonbag, false, "30% of the order left the wallet: this is not a moonbag");
+    assert.equal(part._bondli.tpHit, 3, "the level it reached is still recorded -- that mark says nothing about size");
+    assert.equal(part.status, "open"); assert.equal(part.remaining_qty, 700);
+    // 40% down. A moonbag sits here doing nothing until the token is dead; a 70%-sized position must
+    // not. Past 2x the trail is what fires here rather than SL2, and it takes the majority out.
+    const out = evaluateExit(part, tickFor("MintChunk", 6_000));
+    assert.ok(out, "a position that still holds 70% and is 40% down has an exit");
+    assert.ok(!/^moonbag/.test(out.reason), `and it is not held like a moonbag: ${out.reason}`);
+    assert.ok(out.pct >= 85, `and the exit takes the majority of it out, not a sliver: ${out.pct}%`);
+    // The time limit is one of the four protections the mark switches off. It still applies: past it
+    // this position still has an exit, and is still not held the way a moonbag is held. Which rule
+    // provides that exit moved -- a peak at 4x arms the trail, and an armed trail owns the exit until
+    // twice the time limit -- so what is pinned is the protection rather than the label.
+    const timedOut = evaluateExit(part, tickFor("MintChunk", 6_000, T + 26 * 60_000));
+    assert.ok(timedOut, "a 70%-sized position past its time limit still has an exit");
+    assert.ok(!/^moonbag/.test(timedOut.reason), `and it is not held like a moonbag: ${timedOut.reason}`);
+    const withheld = engine.ledger.query({ kind: "exit" }).find(e => e.positionId === part.id);
+    assert.match(withheld.stamp_withheld, /isMoonbag/, "and the operator can see the mark was withheld");
+    assert.match(withheld.stamp_withheld, /30/, "with how much filled");
+
+    // The same stamp on a sell that actually landed: the reduction is real, so the mark is true.
+    const full = mk("MintFull");
+    const r2 = exitOf(full);
+    assert.deepEqual(r2.stamp, { tpHit: 3, isMoonbag: true });
+    engine._bookExit(full, { ok: true, fill: { price: 0.024, qty: 850, notional_usd: 20.4, fee_usd: 0, t_filled: T + 60_000, latency_ms: 0, paper: true, pct_filled: 100, partial: 0 } },
+      85, "RIDE-trail", { action: "PARTIAL_SELL", layer: 3, stamp: r2.stamp });
+    assert.equal(full._bondli.isMoonbag, true, "the whole order filled: the position is now the sliver the mark assumes");
+    assert.equal(engine.ledger.query({ kind: "exit" }).find(e => e.positionId === full.id).stamp_withheld, undefined, "nothing withheld");
+    // ...and the contrast that makes the case above worth testing: a real moonbag does ride out -40%.
+    assert.equal(evaluateExit(full, tickFor("MintFull", 6_000)), null, "a moonbag holds through -40%; that is why the mark must be earned");
+    assert.equal(evaluateExit(full, tickFor("MintFull", 6_000, T + 26 * 60_000)), null, "and through the time limit");
+    assert.equal(evaluateExit(full, tickFor("MintFull", 1_400))?.reason, "moonbag-dead", "it leaves only when the token is gone");
+
+    // The production shape, and the one the case above cannot see. pct_filled is written by the PONS
+    // and Arc routers only; pump.fun's router and the paper router do not write it at all. Reading
+    // its ABSENCE as "85% filled" -- which is what the requested-pct fallback does -- withheld the
+    // moonbag mark from every pump.fun and every paper moonbag there has ever been, because the test
+    // was 85 >= 100. The right tail is this strategy's whole edge and that deleted it.
+    const pump = mk("MintPump");
+    const r3 = exitOf(pump);
+    assert.deepEqual(r3.stamp, { tpHit: 3, isMoonbag: true });
+    engine._bookExit(pump, { ok: true, fill: { price: 0.024, qty: 850, notional_usd: 20.4, fee_usd: 0, t_filled: T + 60_000, latency_ms: 0, paper: true } },
+      85, "RIDE-trail", { action: "PARTIAL_SELL", layer: 3, stamp: r3.stamp });
+    assert.equal(pump._bondli.isMoonbag, true, "a router that reports no pct_filled sold all of what it was asked for");
+    assert.equal(engine.ledger.query({ kind: "exit" }).find(e => e.positionId === pump.id).stamp_withheld, undefined, "so nothing is withheld");
+    assert.equal(pump.remaining_qty, 150, "and the designed 15% moonbag is what is left");
+    assert.equal(evaluateExit(pump, tickFor("MintPump", 6_000)), null, "which then rides out -40% instead of being sold into it");
+
+    // ...and the other half of the same confusion. pct_filled is the share of the REQUEST, so an 85%
+    // trail that fills COMPLETELY comes back 100 -- and reading that as "the position is finished"
+    // booked it shut with the moonbag still in the wallet, reclaimed the rent on an account that is
+    // not empty, and wrote a 4x runner's outcome as whatever the trail happened to realize.
+    const pons = engine.store.upsertPosition(mk("MintPons"));
+    const r4 = exitOf(pons);
+    const outcomesBefore = engine.ledger.query({ kind: "outcome", limit: 50 }).length;
+    engine._bookExit(pons, { ok: true, fill: { price: 0.024, qty: 850, notional_usd: 20.4, fee_usd: 0, t_filled: T + 60_000, latency_ms: 0, paper: true, pct_filled: 100, partial: 0 } },
+      85, "RIDE-trail", { action: "PARTIAL_SELL", layer: 3, stamp: r4.stamp });
+    assert.equal(pons.status, "open", "the request filled; the POSITION did not");
+    assert.equal(pons.remaining_qty, 150, "and the 15% is still held rather than abandoned");
+    assert.equal(engine.ledger.query({ kind: "exit" }).find(e => e.positionId === pons.id).final, false, "the exit is not the final one");
+    assert.equal(engine.ledger.query({ kind: "outcome", limit: 50 }).length, outcomesBefore, "so no outcome is written for a position that is still open");
+    assert.equal(pons._bondli.isMoonbag, true, "the mark is earned -- the whole request landed");
+    // A whole-position request that fills completely still closes, which is the behaviour this
+    // must not change.
+    const done = engine.store.upsertPosition(mk("MintDone"));
+    engine._bookExit(done, { ok: true, fill: { price: 0.024, qty: 1000, notional_usd: 24, fee_usd: 0, t_filled: T + 60_000, latency_ms: 0, paper: true, pct_filled: 100 } },
+      100, "RIDE-trail", { action: "SELL", layer: 3 });
+    assert.equal(done.status, "closed", "a whole-position request that fills completely still closes");
+    assert.equal(engine.ledger.query({ kind: "exit" }).find(e => e.positionId === done.id).final, true);
+    // ...and a whole-position request that only PART fills still does not.
+    const half = engine.store.upsertPosition(mk("MintHalf"));
+    engine._bookExit(half, { ok: true, fill: { price: 0.024, qty: 400, notional_usd: 9.6, fee_usd: 0, t_filled: T + 60_000, latency_ms: 0, paper: true, pct_filled: 40, partial: 600 } },
+      100, "RIDE-trail", { action: "SELL", layer: 3 });
+    assert.equal(half.status, "open", "40% of a full exit is not a closed position");
+    assert.equal(half.remaining_qty, 600);
   } finally { await engine.stop(); }
 });

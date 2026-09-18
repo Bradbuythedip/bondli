@@ -16,6 +16,12 @@ import { PumpfunPaperRouter } from "../../src/velocity/venues/pumpfun/router.mjs
 import { Supervisor } from "../../src/velocity/core/supervisor.mjs";
 import { goodCandidatePayload, tickPayload } from "./helpers/fixtures.mjs";
 
+/** The envelope the example config ships, unedited. It floors pump.fun at $10, which is what the
+ *  hosted hub floors at (MIN_STAKE_USD) and the size every cost figure in the tree is quoted at: at
+ *  the $5 this used to ship, a round trip is 5.0% of the stake -- more than the tier-2 prior is worth
+ *  at its designed 12% stop -- so the gate refused every candidate and nothing here opened a
+ *  position. That was fixed in the config rather than worked around here, so this exercises what an
+ *  operator actually runs. See tests/velocity/t33-probe-budget.test.mjs for the rule behind it. */
 const envelope = loadRiskEnvelope(path.resolve("src/velocity/config/risk.example.json"));
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "velocity-t9-"));
 

@@ -25,7 +25,12 @@ function defaultState(now) {
     routers: {},              // venue -> { ok, latencyMs, checkedAt }
     venues: {},               // venue -> { mode }
     weightsVersion: 0,
-    day: { date: dayKey(now), realizedUsd: 0, trades: 0, paperRealizedUsd: 0, paperTrades: 0, lossAckUsd: 0 },
+    // probes / paperProbes: "venue|plan_key" -> how many information probes that key has already been
+    // sold today. A probe is a trade the gate takes on a guess rather than on a record, so it buys a
+    // measurement with real toll; counting it here is what turns that from an open tap into a budget
+    // that a day roll refills. Paper keeps its own tally for the same reason it keeps its own P&L:
+    // an imaginary probe must never spend the live one.
+    day: { date: dayKey(now), realizedUsd: 0, trades: 0, paperRealizedUsd: 0, paperTrades: 0, lossAckUsd: 0, probes: {}, paperProbes: {} },
     alerts: [],
     lastDecisions: [],
   };
@@ -62,12 +67,23 @@ export class Store {
     return this.state;
   }
 
+  /** The UTC day's counters, rolling them over first if the date has changed.
+   *
+   *  This is called on the candidate path as well as the fill path now (the probe budget is read for
+   *  every candidate), so the reset can fire from a call that only meant to READ the day. That is
+   *  harmless -- the reset is a function of the clock and nothing else, and whoever rolls it first
+   *  gets the same fresh counters everyone else would have -- but it is worth knowing that a day can
+   *  turn over without any money having moved. */
   rollDay() {
     const key = dayKey(this.now());
     // Paper and live are counted apart. They fund the same daily loss limit only when there is no
     // live venue at all, and then it is the simulation's own limit.
-    if (this.state.day.date !== key) this.state.day = { date: key, realizedUsd: 0, trades: 0, paperRealizedUsd: 0, paperTrades: 0, lossAckUsd: 0 };
+    if (this.state.day.date !== key) this.state.day = { date: key, realizedUsd: 0, trades: 0, paperRealizedUsd: 0, paperTrades: 0, lossAckUsd: 0, probes: {}, paperProbes: {} };
     if (this.state.day.paperRealizedUsd == null) { this.state.day.paperRealizedUsd = 0; this.state.day.paperTrades = 0; } // an older state file
+    // Same reason, and it matters more: a missing map here would be read as "no probes drawn" by one
+    // caller and crash the next, so a state file written before budgets existed gets its empty ones.
+    if (!this.state.day.probes) this.state.day.probes = {};
+    if (!this.state.day.paperProbes) this.state.day.paperProbes = {};
     return this.state.day;
   }
 

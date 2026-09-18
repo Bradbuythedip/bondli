@@ -181,7 +181,15 @@ test("T5: a runner keeps its moonbag, and the moonbag outlives the time limit", 
   // is still a full one, and a full position must keep its stop loss and its time limit.
   assert.deepEqual(r.stamp, { tpHit: 3, isMoonbag: true });
   assert.equal(pos._bondli.isMoonbag, false, "not a moonbag until the sell lands");
-  assert.equal(evaluateExit(pos, tick(24_000, {}, T0 + 26 * 60_000))?.reason, "MAX_HOLD", "and the time limit still applies to it");
+  // What this line exists to protect: a position that still holds everything, past its time limit,
+  // always has an exit and is never held the way a moonbag is held. Which rule provides that exit is
+  // not the point -- the trail is armed here, so the clock now defers to it and the exit comes back
+  // as the trail's own.
+  const late = evaluateExit(pos, tick(24_000, {}, T0 + 26 * 60_000));
+  assert.ok(late, "a full position past its time limit still has an exit");
+  assert.equal(late.reason, "RIDE-trail", `and it is the armed trail's, not the clock's, got ${late.reason}`);
+  assert.equal(late.pct, 85, "which is still willing to keep the moonbag it granted");
+  assert.ok(!/^moonbag/.test(late.reason), `and it is not being treated as a moonbag: ${late.reason}`);
   applyExitStamp(pos, r.stamp);
   assert.equal(pos._bondli.isMoonbag, true, "the position is now a moonbag");
   // the moonbag is not sold at the plan's time limit
@@ -196,6 +204,43 @@ test("T5: a runner keeps its moonbag, and the moonbag outlives the time limit", 
   assert.equal(r3?.reason, "RIDE-trail"); assert.equal(r3.pct, 100);
 });
 
+
+// The clock is the wrong judge of a token that is still going up. Every winner large enough to pay
+// for the losers is a position the trail was still holding when the fifteen minutes ran out, and
+// MAX_HOLD sold it anyway. The exemption is narrow by construction -- it needs a peak past rideArm,
+// which no loser reaches -- and it is a deferral, not a repeal: twice the time limit and it goes.
+test("T5: a runner whose trail is armed is the trail's to sell, but only to twice the time limit", () => {
+  const MAX = EXIT_PLANS.pumpfun[2].max_hold_ms;
+  assert.equal(MAX, 15 * 60_000);
+
+  // (a) A straight line up: +400% and still at its high when the clock runs out. The trail is armed
+  // (peak past rideArm 30) and a long way above its trigger (+280%), so nothing sells this yet.
+  const runner = pumpPos();
+  markPosition(runner, tick(50_000, {}, T0 + 14 * 60_000));
+  assert.equal(evaluateExit(runner, tick(50_000, {}, T0 + 16 * 60_000), { now: T0 + 16 * 60_000 }), null,
+    "a token still making highs is not sold because sixteen minutes elapsed");
+
+  // (b) The same runner at twice the time limit: the deferral ends and the clock takes it.
+  assert.equal(evaluateExit(runner, tick(50_000, {}, T0 + 2 * MAX), { now: T0 + 2 * MAX }), null, "at exactly 2x it is still the trail's");
+  const out = evaluateExit(runner, tick(50_000, {}, T0 + 2 * MAX + 1_000), { now: T0 + 2 * MAX + 1_000 });
+  assert.equal(out?.reason, "MAX_HOLD", `past twice the limit it goes whatever it is doing, got ${out?.reason}`);
+  assert.equal(out.action, "SELL"); assert.equal(out.pct, 100);
+
+  // (c) Armed, then given back past the trigger: the trail fires, and it is booked as the trail exit
+  // it is rather than as a timeout -- which is also what decides whether it keeps its moonbag.
+  const faded = pumpPos();
+  markPosition(faded, tick(50_000, {}, T0 + 14 * 60_000));
+  const t = evaluateExit(faded, tick(20_000, {}, T0 + 16 * 60_000), { now: T0 + 16 * 60_000 });
+  assert.equal(t?.reason, "RIDE-trail", `+100% off a +400% peak is through the trail, got ${t?.reason}`);
+  assert.notEqual(t.reason, "MAX_HOLD");
+
+  // The guard: no readable price is not a runner. A position that cannot be marked has no trail that
+  // could be holding it, so the time stop keeps it -- the same reason the time stop needs no price.
+  const dark = pumpPos();
+  markPosition(dark, tick(50_000, {}, T0 + 14 * 60_000));
+  const blind = { venue: "pumpfun", kind: "tick", id: "MintA", t_observed: T0 + 16 * 60_000, payload: { token: { ca: "MintA" } } };
+  assert.equal(evaluateExit(dark, blind, { now: T0 + 16 * 60_000 })?.reason, "MAX_HOLD", "a blind position is not a runner");
+});
 
 test("T5: a plan adjustment does not cancel the exit checks, and cannot compound away the stop", () => {
   // A dying position: the live score sits well below the entry score, which makes layer 1 return
@@ -228,7 +273,7 @@ test("T5: a plan adjustment does not cancel the exit checks, and cannot compound
   assert.ok(p3._bondli.exitPlan.tpLevels.tp1 <= tp1Before * 3, `targets are capped at 3x, got ${p3._bondli.exitPlan.tpLevels.tp1}`);
 });
 
-test("T5: a partial sell that never lands leaves a full position with its stop loss intact", () => {
+test("T5: a partial sell that never lands leaves a full position with its stop loss and its trail", () => {
   const pos = pumpPos();
   markPosition(pos, tick(40_000));            // +300%
   const r = evaluateExit(pos, tick(24_000));  // RIDE-trail: sell 85%, keep a moonbag
@@ -243,7 +288,15 @@ test("T5: a partial sell that never lands leaves a full position with its stop l
   assert.ok(!/^moonbag/.test(out.reason), `and it is not being treated as a moonbag: ${out.reason}`);
   const p2 = pumpPos();
   markPosition(p2, tick(40_000)); evaluateExit(p2, tick(24_000));
-  assert.equal(evaluateExit(p2, tick(24_000, {}, T0 + 26 * 60_000))?.reason, "MAX_HOLD", "and so does the time limit");
+  const timed = evaluateExit(p2, tick(24_000, {}, T0 + 26 * 60_000));
+  assert.ok(timed, "and past the time limit it still has one");
+  // Named rather than merely non-null, so this pins a behaviour. A peak at 4x arms the ride trail
+  // and an armed trail owns the exit until twice the time limit, so what sells this is the trail
+  // and not the clock -- and it is a 100% exit, because a position that never reduced has no
+  // moonbag to keep.
+  assert.equal(timed.reason, "RIDE-trail", `the armed trail owns it, got ${timed.reason}`);
+  assert.equal(timed.pct, 85, "and it offers the same sell again, moonbag and all -- the mark follows the FILL");
+  assert.ok(!/^moonbag/.test(timed.reason), `and still is not held like a moonbag: ${timed.reason}`);
   // The trail is still willing to try again.
   const p3 = pumpPos();
   markPosition(p3, tick(40_000)); evaluateExit(p3, tick(24_000));
@@ -332,4 +385,195 @@ test("T5: the leader of a fading wave takes half off while it is green, once; a 
   assert.notEqual(evaluateExit(pumpPos(), withWave(tick(12_000, {}, at(7 * 60_000)), building))?.reason, "wave-fade");
   // One copy is not a wave.
   assert.notEqual(evaluateExit(pumpPos(), withWave(tick(12_000, {}, at(7 * 60_000)), { ...fading, copies: 1 }))?.reason, "wave-fade");
+});
+
+// A rule written as "take some off and keep the rest" only means that if something remembers it
+// fired. Three of them -- volume-sell, the pre-graduation trim and brad-partial -- returned an empty
+// stamp, so nothing was recorded, the next tick found the same condition still true, and the rule
+// sold its percentage of what was LEFT. Sixty ticks is sixty seconds, and 25% of the remainder taken
+// sixty times is the whole position. The only thing these rules can touch is a position that is
+// already up, so this can never widen a loss: it only ever destroyed the right tail.
+test("T5: an in-profit partial fires once and cannot eat its own remainder", () => {
+  const at = ms => T0 + ms;
+  // A volume spike on a token up +30%: buys worth several SOL arriving inside the last minute,
+  // against a token whose own running average is 2 SOL/min. The rule wants a quarter off. Once.
+  const spiking = t => ({ token: {
+    volumeSol: 6, createdAt: T0 - 120_000,
+    trades: [{ side: "buy", time: T0 + 500, sol: 0.1 }, { side: "buy", time: t - 30_000, sol: 3 }, { side: "buy", time: t - 20_000, sol: 3 }, { side: "buy", time: t - 10_000, sol: 3 }],
+  } });
+  const pos = pumpPos();
+  let remainder = 100;
+  const fired = [];
+  for (let i = 0; i < 60; i++) {
+    const t = at(60_000 + i * 1_000);
+    const ev = tick(13_000, spiking(t), t);
+    markPosition(pos, ev);
+    const r = evaluateExit(pos, ev, { now: t });
+    if (!r) continue;
+    fired.push(r.reason);
+    assert.equal(r.action, "PARTIAL_SELL", `a flat +30% has no full exit to give: ${r.reason}`);
+    remainder -= remainder * (r.pct / 100);
+    applyExitStamp(pos, r.stamp);   // the engine applies the stamp when the sell lands
+  }
+  assert.deepEqual(fired, ["volume-sell"], `one trim across sixty ticks, got ${fired.length}`);
+  assert.equal(remainder, 75, "and three quarters of the position is still held");
+  assert.equal(pos._bondli.tpHit, 1, "the position knows it has been reduced");
+
+  // The same mark on the trim taken before graduation: half off at a 95%-full curve and +80%, and a
+  // stamp that says so. Without it the position had no record of the trim at all -- and the
+  // graduation rule, unlike every other partial in that file, never read the mark, so it returned
+  // the same trim on every tick and took half of what was left each time. It also runs AHEAD of the
+  // trailing stop and the stop loss, so nothing downstream could intercept it.
+  //
+  // Measured against the shipped code before the guard: sixty consecutive `pre-graduation-profit`
+  // fires over sixty one-second ticks, and 0.0000% of the position left. This is a winner being sold
+  // to nothing, one tick at a time, on the exact shape the rule exists to protect.
+  const full = { curve: 110.75, token: { vSolInBondingCurve: 110.75 } };   // (110.75 - 30) / 85 = 95%
+  const grad = pumpPos();
+  let gradRemainder = 100;
+  const gradFired = [];
+  for (let i = 0; i < 60; i++) {
+    const t = at(60_000 + i * 1_000);
+    const gev = tick(18_000, full, t);
+    markPosition(grad, gev);
+    const g = evaluateExit(grad, gev, { now: t });
+    if (!g) continue;
+    gradFired.push(g.reason);
+    assert.equal(g.action, "PARTIAL_SELL");
+    assert.equal(g.pct, 50, "half off, half held for the pool");
+    assert.deepEqual(g.stamp, { tpHit: 1 }, "and the half that is held is marked as a reduced position");
+    gradRemainder -= gradRemainder * (g.pct / 100);
+    applyExitStamp(grad, g.stamp);
+  }
+  assert.deepEqual(gradFired, ["pre-graduation-profit"], `one trim across sixty ticks, got ${gradFired.length}`);
+  assert.equal(gradRemainder, 50, "and half the position is still held for the pool");
+  assert.equal(grad._bondli.tpHit, 1);
+  // And it returns NOTHING on the later ticks rather than falling through to the full
+  // `pre-graduation-exit` below it, which would dump the kept half one tick after trimming it --
+  // the opposite of the rule's own purpose.
+  const later = evaluateExit(grad, tick(18_000, full, at(180_000)), { now: at(180_000) });
+  assert.equal(later, null, `the half that is held is held, got ${later?.reason}`);
+});
+
+test("T5: SL1 is a stop, not a take-profit, so the second stop is still reachable after it", () => {
+  // The default stamp must exclude SL1 by name. SL1 is the first half of a two-stage stop: the
+  // second half is what sells the rest, and a position 13% under water has taken no profit to mark.
+  // Stamp it as one and the post-TP1 rules, which sit above the stop loss in the running order,
+  // start bidding for a position the stop still owns.
+  const pos = pumpPos();
+  const r = evaluateExit(pos, tick(8_700));   // -13%, past a tier-2 12% stop
+  assert.equal(r?.reason, "SL1");
+  assert.equal(r.action, "PARTIAL_SELL");
+  assert.deepEqual(r.stamp, { slHit: 1 }, "a stop books a stop, never a profit");
+  applyExitStamp(pos, r.stamp);
+  assert.equal(pos._bondli.tpHit, 0, "nothing about SL1 says this position took profit");
+  const r2 = evaluateExit(pos, tick(8_000));  // it keeps falling
+  assert.equal(r2?.reason, "SL2", `a further fall after SL1 is the second stop, got ${r2?.reason}`);
+  assert.equal(r2.action, "SELL");
+  assert.equal(r2.pct, 100);
+});
+
+// The venue writes the cumulative volume under its own name -- `volumeSol` on pump.fun, `volumeQuote`
+// on PONS and on Arc -- and the spike test only ever read `volumeSol`. On both EVM venues that made
+// the baseline zero, so "three times the average" was true of any buy at all and the only thing left
+// deciding was a bare `> 0.5` in whatever the quote asset happened to be. These fixtures are the exact
+// shape pons/feed.mjs pushes: volumeQuote set, every trade carrying its quote amount, no volumeSol.
+function ponsPos(over = {}) {
+  const plan = createPlan({ venue: "pons", key: 2, entry: { score: 66 } });
+  return { id: "n1", venue: "pons", instrument: "0xfeed", entryTime: T0, entryMark: 10_000, peak: 10_000, notional_usd: 20, entryScore: 66, plan, ...over };
+}
+function ponsTick(mcapUsd, { volumeQuote, buys, createdAt = T0 - 120_000, quoteOnly = false, ageUnknown = false }, at = T0 + 60_000) {
+  // quoteOnly: the trade carries the quote amount and nothing else. Both EVM feeds happen to write
+  // `sol` alongside `quote` today, so a fixture that sets both cannot tell the two reads apart.
+  const trades = buys.map(([ago, quote]) => (quoteOnly ? { side: "buy", quote, time: at - ago } : { side: "buy", quote, sol: quote, time: at - ago }));
+  const token = { ca: "0xfeed", buys: 50, sells: 10, trades, volumeQuote, createdAt, uniqueBuyers: { size: 30 }, mcapUsd, ...(ageUnknown ? { _ageUnknown: true } : {}) };
+  return makeEvent({ venue: "pons", kind: "tick", id: "0xfeed", t_venue: at - 100, t_observed: at, payload: { mcapUsd, token, dynamics: { scores: 5, velocity: 0.05, acceleration: 0, trend: "stable" }, scores: { apeScore: 66 } } });
+}
+
+test("T5: ordinary flow in a non-SOL quote asset is not a volume spike, and no baseline is no spike at all", () => {
+  // 20 ETH traded over three minutes is a baseline of ~6.7/min. Two buys worth 0.9 between them in the
+  // last minute is a quiet minute by that measure -- but it clears the old `> 0.5` constant, and with
+  // volumeSol absent the old average was 0, so this ordinary token at +40% was trimmed for "a spike".
+  const pos = ponsPos();
+  const ev = ponsTick(14_000, { volumeQuote: 20, buys: [[30_000, 0.4], [10_000, 0.5]] });
+  markPosition(pos, ev);
+  const r = evaluateExit(pos, ev, { now: T0 + 60_000 });
+  assert.equal(r, null, `an ordinary minute is held, got ${r?.reason}`);
+
+  // And the fail-closed half: a token with no cumulative volume recorded at all has no average, so
+  // there is nothing for a burst to be three times OF. That is not a spike, it is an unanswerable
+  // question, and the answer to an unanswerable question is not a sell.
+  const blind = ponsPos();
+  const burst = ponsTick(14_000, { volumeQuote: 0, buys: [[30_000, 3], [20_000, 3], [10_000, 3] ] });
+  markPosition(blind, burst);
+  const b = evaluateExit(blind, burst, { now: T0 + 60_000 });
+  assert.equal(b, null, `no baseline, no spike, got ${b?.reason}`);
+  assert.equal(blind._bondli.tpHit, 0, "and nothing was booked as a reduction");
+});
+
+test("T5: a real spike priced in the token's own quote asset still trims, once", () => {
+  // 30 ETH over ten minutes is 3/min. Ten in the last minute is more than three times that, and worth
+  // a third of everything the token has ever traded: unusual by the only measure there is.
+  const at = ms => T0 + ms;
+  const spiking = t => ({ volumeQuote: 30, createdAt: T0 - 9 * 60_000, buys: [[30_000, 3], [20_000, 3], [10_000, 4]] });
+  const pos = ponsPos();
+  let remainder = 100;
+  const fired = [];
+  for (let i = 0; i < 60; i++) {
+    const t = at(60_000 + i * 1_000);
+    const ev = ponsTick(14_000, spiking(t), t);
+    markPosition(pos, ev);
+    const r = evaluateExit(pos, ev, { now: t });
+    if (!r) continue;
+    fired.push(r.reason);
+    remainder -= remainder * (r.pct / 100);
+    applyExitStamp(pos, r.stamp);
+  }
+  assert.deepEqual(fired, ["volume-sell"], `one trim across sixty ticks, got ${JSON.stringify(fired)}`);
+  assert.equal(remainder, 75, "a quarter off at +40%, and the rest is still held");
+  // The unit is gone from the detail: it said "SOL/min" on a venue quoted in ETH and on one quoted in
+  // USDC. What the rule decided on is the multiple, which reads the same in any currency.
+  const one = evaluateExit(ponsPos(), ponsTick(14_000, spiking(at(60_000)), at(60_000)), { now: at(60_000) });
+  assert.equal(one?.reason, "volume-sell");
+  assert.ok(!/SOL/.test(one.detail), `no currency is claimed: ${one.detail}`);
+  assert.match(one.detail, /3\.3x/);
+});
+
+test("T5: every guard on the volume spike holds its own weight", () => {
+  const AT = T0 + 60_000;
+  const fire = (over, at = AT) => {
+    const pos = ponsPos();
+    const ev = ponsTick(14_000, over, at);
+    markPosition(pos, ev);
+    return evaluateExit(pos, ev, { now: at });
+  };
+
+  // (1) The rule fires when it should, so everything below is a guard refusing a real candidate
+  // rather than a fixture that was never going to trim. Two hours old, 100 ETH cumulative, and 20
+  // of it bought in the last minute: 24x the token's own average minute and a fifth of its life.
+  const spike = fire({ volumeQuote: 100, buys: [[30_000, 10], [10_000, 10]], createdAt: AT - 120 * 60_000 });
+  assert.equal(spike?.reason, "volume-sell", `this one is a real spike, got ${spike?.reason}`);
+
+  // (2) The share floor. Past an hour the 3x multiple stops implying it, and then a trickle on a
+  // token with a long history clears "three times the average minute" while being nothing at all:
+  // 3 of a lifetime 100 over two hours is 1.2x the bar and 3% of everything it ever traded.
+  const trickle = fire({ volumeQuote: 100, buys: [[30_000, 3]], createdAt: AT - 120 * 60_000 });
+  assert.equal(trickle, null, `3% of a token's life is not a wave, got ${trickle?.reason}`);
+
+  // (3) The age floor, and what it is really for: a feed whose clock runs ahead of ours stamps a
+  // token as created in the FUTURE. The per-minute average then comes out negative, every burst is
+  // "above" it, and the position is trimmed on arithmetic rather than on flow.
+  const skewed = fire({ volumeQuote: 20, buys: [[30_000, 2]], createdAt: AT + 30_000 });
+  assert.equal(skewed, null, `a token that has not been created yet has no average minute, got ${skewed?.reason}`);
+
+  // (4) An adopted token of no known age carries a placeholder createdAt, not a clock reading, and
+  // the flag says so. Same numbers as the spike above, which would otherwise trim it.
+  const adopted = fire({ volumeQuote: 100, buys: [[30_000, 10], [10_000, 10]], createdAt: AT - 120 * 60_000, ageUnknown: true });
+  assert.equal(adopted, null, `a placeholder age is not an age, got ${adopted?.reason}`);
+
+  // (5) The recent buys are read off whichever field the trade carries. Both EVM feeds write `quote`
+  // and copy it to `sol`; reading only `sol` would work today and break the day one of them stops.
+  const quoteOnly = fire({ volumeQuote: 100, buys: [[30_000, 10], [10_000, 10]], createdAt: AT - 120 * 60_000, quoteOnly: true });
+  assert.equal(quoteOnly?.reason, "volume-sell", `a trade with only a quote amount is still a trade, got ${quoteOnly?.reason}`);
+  assert.equal(quoteOnly.pct, 25, "and it is the ordinary trim, +40% being under the 50% step");
 });

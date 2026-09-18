@@ -3,6 +3,8 @@
 // table, which is what keeps entry (DP2) and exit (DP5) decoupled: the entry
 // estimates payoff from the ledger's realized outcomes, never from these targets.
 
+import { STOP_LOSSES } from "../../autoape/exit-plan.js";
+
 const SEC = 1_000;
 const MIN = 60_000;
 
@@ -57,4 +59,17 @@ export function planFor(venue, key) {
   const p = EXIT_PLANS[ALIAS[venue] || venue]?.[key];
   if (!p) throw new Error(`no exit plan for ${venue}/${key}`);
   return p;
+}
+
+/** How big a loss this plan is DESIGNED to take, as a fraction of the stake.
+ *
+ *  Not the same number as worst_case_fraction, which is what the sizer must survive if everything
+ *  goes wrong at once and is 1.0 for every curve plan -- a token can go to zero between two blocks.
+ *  This is the ordinary loss: the level the plan actually aims to cut at. A plan that names its own
+ *  stop states it; a launch tier does not, because its stop lives in bondli's exit plan, so the one
+ *  table there is read rather than copied here. Null when the plan cuts at no level at all. */
+export function designedStopFraction(venue, key) {
+  const p = EXIT_PLANS[ALIAS[venue] || venue]?.[key];
+  const pct = Number(p?.stop_pct) > 0 ? Number(p.stop_pct) : Number(STOP_LOSSES[key]);
+  return pct > 0 ? pct / 100 : null;
 }

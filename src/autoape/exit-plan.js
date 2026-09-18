@@ -2,12 +2,18 @@
 // Every position enters with its death already planned.
 // 4 layers: Derivatives, Absolute Thresholds, Trailing Profits, Graduation.
 
+// The stop each tier is DESIGNED to lose, in percent. Exported because it is not only the exit's
+// business any more: the entry gate has to know how big a loss the plan it is about to attach is
+// actually aiming at, so that it can tell a refusal caused by a guessed loss size from one caused by
+// a cost it has measured. Two copies of this table would let those two answers drift apart.
+export const STOP_LOSSES = Object.freeze({ 1: 15, 2: 12, 3: 10 });
+
 // Creates an exit plan based on confidence tier
 export function createExitPlan(tier, entryScore, settings) {
   const s = { ...settings };
 
-  // Tier-specific stop losses
-  const STOP_LOSSES = { 1: s.sl2 || 15, 2: s.sl2 || 12, 3: s.sl2 || 10 };
+  // Tier-specific stop losses, with the operator's own override if they set one.
+  const stops = { 1: s.sl2 || STOP_LOSSES[1], 2: s.sl2 || STOP_LOSSES[2], 3: s.sl2 || STOP_LOSSES[3] };
   const MAX_HOLDS = { 1: 30 * 60000, 2: 15 * 60000, 3: 10 * 60000 }; // 30/15/10 min
 
   // Tier-specific take profit levels
@@ -29,7 +35,7 @@ export function createExitPlan(tier, entryScore, settings) {
   return {
     tier,
     entryScore,
-    stopLoss: STOP_LOSSES[tier] || 12,
+    stopLoss: stops[tier] || 12,
     maxHoldMs: MAX_HOLDS[tier] || 15 * 60000,
     tpLevels: GRADUATED_TPS[tier] || GRADUATED_TPS[2],
     // Derivative exit thresholds
@@ -213,28 +219,74 @@ export function checkGraduationExit(pos, changePct, curvePct) {
   if (curvePct <= 0.90 || !pos) return null;
 
   if (changePct > 50) {
-    // Up big → sell half before graduation, hold half for Raydium pop
+    // Half off, half held for the Raydium pop -- ONCE. Unlike every other partial in this file this
+    // one had no tpHit guard, and the graduation check runs ahead of both the trail and the stop, so
+    // a winner on a nearly-full curve returned this same trim on every tick and nothing downstream
+    // could intercept it. Measured against this file: a tier-2 position up 80% on a 95%-full curve
+    // fired sixty times over sixty one-second ticks, each time taking half of what was left, and
+    // finished holding 0.0000% of the position it started with.
+    //
+    // And it returns null rather than falling through, which is the difference between this and the
+    // obvious one-line guard. Falling through reaches the full `pre-graduation-exit` below and dumps
+    // the kept half on the very next tick -- the exact opposite of the rule's own purpose, which is
+    // to hold that half through graduation.
+    if ((pos.tpHit || 0) > 0) return null;
     return { action: "PARTIAL_SELL", pct: 50, reason: "pre-graduation-profit", layer: 4, detail: `curve ${Math.round(curvePct * 100)}%` };
   }
   // Not up much → full exit before graduation
   return { action: "SELL", pct: 100, reason: "pre-graduation-exit", layer: 4, detail: `curve ${Math.round(curvePct * 100)}%` };
 }
 
-// Sell-into-volume detection
+// Sell-into-volume detection.
+//
+// The premise of this rule is "somebody is buying much harder than usual", and on a launch that is as
+// often the top as it is the start of the next leg -- so it is worth a trim. But "harder than usual"
+// needs a measure of USUAL, and the only one to hand is the token's own cumulative volume over its
+// own age. That cumulative figure is written under a different name by each feed: pump.fun counts in
+// SOL on `volumeSol`, PONS counts in ETH and Arc in USDC, both on `volumeQuote`. This read only ever
+// looked at `volumeSol`, so on both EVM venues the baseline came out zero, every comparison against
+// it was trivially true, and all that was left standing was a bare `> 0.5` -- half an ETH on PONS and
+// sixty cents on Arc, one constant meaning two unrelated things and neither of them a spike. A rule
+// whose premise is "this is unusual flow" with no measure of usual flow is not a rule; it is a coin
+// flip that costs a round trip, and it was being flipped on the venue where the win rate was measured.
+//
+// So the baseline is whichever field this venue actually writes, and the recent buys are summed in the
+// same unit (both EVM feeds put the quote amount on the trade's `sol` as well as its `quote`). If
+// there is no cumulative volume, or no age to divide it by, there is no average -- therefore there is
+// no spike, and this returns null instead of falling through to a constant. `volumeQuote` is
+// initialised to 0 and incremented on every recorded trade by both EVM feeds (pons/feed.mjs and
+// arc/feed.mjs), so it is positive from a token's first trade and this is a working rule there rather
+// than a disabled one.
+const SPIKE_MULT = 3;          // the last minute must be this many times the token's own average minute
+// ...and worth this much of everything the token has ever traded, which is what keeps a single buy on
+// a dust token from reading as a wave. It is a ratio, so it means the same thing in SOL, ETH and USDC.
+//
+// Be plain about its reach: condition A implies this one whenever 3/ageMin >= 0.05, which is every
+// token under an hour old -- so on a launch entry, which is what this bot mostly holds, the 3x
+// multiple IS the whole rule and this constant never binds. Where it does bind is the dip plans,
+// whose holds run 45 and 180 minutes. It is kept for those and for nothing else.
+const SPIKE_MIN_SHARE = 0.05;
 export function checkVolumeExit(pos, token, changePct) {
   if (changePct < 15 || pos.isMoonbag || (pos.tpHit || 0) > 0) return null;
 
-  const vol = token.volumeSol || 0;
-  const tokenAge = Math.max(1, (Date.now() - (token.createdAt || Date.now())) / 60000);
-  const avgVolPerMin = vol / tokenAge;
+  const cumulative = token.volumeQuote ?? token.volumeSol ?? 0;
+  const createdAt = Number(token.createdAt);
+  // An adopted token of no known age (Arc's `_ageUnknown`) has a placeholder createdAt, not a clock.
+  if (!(cumulative > 0) || !(createdAt > 0) || token._ageUnknown) return null;
+  const ageMin = (Date.now() - createdAt) / 60000;
+  // Less than a minute of history is not a per-minute average: the baseline would be shorter than the
+  // window being compared against it. The old code clamped the age up to a minute instead, which came
+  // to the same thing -- a minute of buying cannot exceed three times the token's entire life volume.
+  if (!(ageMin >= 1)) return null;
+  const avgPerMin = cumulative / ageMin;
 
-  const recentTrades = (token.trades || []).filter(tr => tr.time && Date.now() - tr.time < 60000);
-  const recentBuyVol = recentTrades.filter(tr => tr.side === "buy").reduce((s, tr) => s + (tr.sol || 0), 0);
-  const isVolSpike = recentBuyVol > avgVolPerMin * 3 && recentBuyVol > 0.5;
+  const recentBuyVol = (token.trades || [])
+    .filter(tr => tr.side === "buy" && tr.time && Date.now() - tr.time < 60000)
+    .reduce((s, tr) => s + (tr.quote ?? tr.sol ?? 0), 0);
+  if (!(recentBuyVol > avgPerMin * SPIKE_MULT) || !(recentBuyVol >= cumulative * SPIKE_MIN_SHARE)) return null;
 
-  if (isVolSpike) {
-    const sellPct = changePct >= 50 ? 40 : 25;
-    return { action: "PARTIAL_SELL", pct: sellPct, reason: "volume-sell", layer: 3, detail: `vol ${recentBuyVol.toFixed(2)} SOL/min` };
-  }
-  return null;
+  const sellPct = changePct >= 50 ? 40 : 25;
+  // No unit in the detail: it read "SOL/min" on a venue quoted in ETH and on one quoted in USDC. The
+  // multiple is the thing the rule actually decided on, and it is the same number in any currency.
+  return { action: "PARTIAL_SELL", pct: sellPct, reason: "volume-sell", layer: 3, detail: `buying ${(recentBuyVol / avgPerMin).toFixed(1)}x this token's own average minute` };
 }

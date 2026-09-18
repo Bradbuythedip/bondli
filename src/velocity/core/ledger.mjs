@@ -19,14 +19,32 @@ export const RECORD_KINDS = Object.freeze([
 // Order lifecycle stages, in order. The stage reached is what a crash reveals.
 export const ORDER_STAGES = Object.freeze(["sized", "sent", "filled", "failed", "unwound"]);
 
+// How much of each kind we keep in memory. Outcomes, exits and fills are the
+// records every realized statistic is computed from, and they are rare: a live
+// fortnight is tens of them. Decisions are the opposite -- the feed writes a
+// REJECT for every token it looks at and refuses, hundreds an hour. While all
+// of them shared one ring, the depth of the fourteen-day window the statistics
+// promise was really a function of how many strangers' tokens the feed happened
+// to refuse that hour, and a busy hour could push a month of our own trades out
+// of memory without anything saying so. How often someone else launches garbage
+// is not a property of our record and must not decide how much of it we can
+// still see, so the kinds we compute on get rings of their own.
+// Worth knowing before the next capacity estimate: these rings are PER ENGINE and the hosted hub
+// runs one engine per tenant, so they are paid for once per user, not once per box.
+export const KIND_LIMITS = Object.freeze({ outcome: 5_000, exit: 5_000, fill: 5_000 });
+
 export class Ledger {
-  constructor(file, { now = () => Date.now(), fsync = true, recentLimit = 20_000 } = {}) {
+  constructor(file, { now = () => Date.now(), fsync = true, recentLimit = 20_000, kindLimits = KIND_LIMITS } = {}) {
     this.file = file;
     this.now = now;
     this.fsyncEnabled = fsync;
     this.recentLimit = recentLimit;
+    this.kindLimits = Object.freeze({ ...kindLimits });
     this.seq = 0;
     this.recent = [];
+    // A Map, not an object: kinds are read back off disk and a kind spelled
+    // "constructor" would otherwise find something on Object's prototype.
+    this.rings = new Map(Object.keys(this.kindLimits).map(k => [k, []]));
     fs.mkdirSync(path.dirname(file), { recursive: true });
     this.repairedTail = false;
     if (fs.existsSync(file)) {
@@ -57,9 +75,32 @@ export class Ledger {
     }
   }
 
+  /** The ring a kind is retained in, and the cap that trims it. */
+  _ringFor(kind) {
+    const ring = this.rings.get(kind);
+    if (ring) return { ring, cap: this.kindLimits[kind] };
+    return { ring: this.recent, cap: this.recentLimit };
+  }
+
   _remember(rec) {
-    this.recent.push(rec);
-    if (this.recent.length > this.recentLimit) this.recent.splice(0, this.recent.length - this.recentLimit);
+    const { ring, cap } = this._ringFor(rec.kind);
+    ring.push(rec);
+    if (ring.length > cap) ring.splice(0, ring.length - cap);
+  }
+
+  /** Records held in memory right now, across every ring. Bounded, always, by
+   *  retentionBudget(): the rings never grow, they only rotate. */
+  retainedCount() {
+    let n = this.recent.length;
+    for (const ring of this.rings.values()) n += ring.length;
+    return n;
+  }
+
+  /** The ceiling retainedCount() can reach. */
+  retentionBudget() {
+    let n = this.recentLimit;
+    for (const k of this.rings.keys()) n += this.kindLimits[k];
+    return n;
   }
 
   /** Append one record. Returns the record with seq and ts filled in. */
@@ -105,11 +146,37 @@ export class Ledger {
     return out;
   }
 
-  /** Recent records from memory (fast path for the governor and status). */
+  /** Recent records from memory (fast path for the governor and status).
+   *  Newest `limit` matches, returned oldest-first. Asking for one kind reads
+   *  exactly one ring, because a kind lives in one ring and nowhere else; only
+   *  an unfiltered ask has to walk them all, and it walks them newest-first in
+   *  lockstep so the answer is the same one ring would have given. */
   query({ kind, venue, limit = 100, since = 0 } = {}) {
+    if (kind) return this._scan(this._ringFor(kind).ring, kind, venue, limit, since);
+    const rings = [this.recent, ...this.rings.values()];
+    if (rings.length === 1) return this._scan(rings[0], kind, venue, limit, since);
+    const at = rings.map(r => r.length - 1);
     const out = [];
-    for (let i = this.recent.length - 1; i >= 0 && out.length < limit; i--) {
-      const r = this.recent[i];
+    while (out.length < limit) {
+      let pick = -1, newest = -Infinity;
+      for (let i = 0; i < rings.length; i++) {
+        if (at[i] < 0) continue;
+        const seq = rings[i][at[i]].seq ?? 0;
+        if (seq > newest) { newest = seq; pick = i; }
+      }
+      if (pick < 0) break;
+      const r = rings[pick][at[pick]--];
+      if (r.seq <= since) break;
+      if (venue && r.venue !== venue) continue;
+      out.push(r);
+    }
+    return out.reverse();
+  }
+
+  _scan(ring, kind, venue, limit, since) {
+    const out = [];
+    for (let i = ring.length - 1; i >= 0 && out.length < limit; i--) {
+      const r = ring[i];
       if (r.seq <= since) break;
       if (kind && r.kind !== kind) continue;
       if (venue && r.venue !== venue) continue;

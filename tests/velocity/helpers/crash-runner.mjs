@@ -1,6 +1,7 @@
 // Child process for T9: opens a paper position, prints POSITION_OPEN, keeps ticking
 // until killed. The store snapshot interval is long so the kill lands before the
 // first snapshot: the ledger and the paper book are the only truth left.
+import fs from "node:fs";
 import path from "node:path";
 import { Engine } from "../../../src/velocity/core/engine.mjs";
 import { loadRiskEnvelope } from "../../../src/velocity/core/risk.mjs";
@@ -10,6 +11,9 @@ import { PumpfunPaperRouter } from "../../../src/velocity/venues/pumpfun/router.
 import { goodCandidatePayload, tickPayload } from "./fixtures.mjs";
 
 const dataDir = process.argv[2];
+// The example config as it ships: pump.fun floored at $10, the hosted floor (MIN_STAKE_USD). At the
+// $5 it used to ship, a round trip costs more than the tier-2 prior's whole edge, the gate refuses
+// every candidate, and this child opens no position for T9 to crash with.
 const envelope = loadRiskEnvelope(path.resolve("src/velocity/config/risk.example.json"));
 const feed = new ScriptedFeed({ venue: "pumpfun", loop: true, script: [
   { delayMs: 20, kind: "candidate", id: "MintCrash", payload: goodCandidatePayload("MintCrash"), lagMs: 100 },

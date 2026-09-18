@@ -8,7 +8,7 @@ import path from "node:path";
 import { pushTrack, dipSignal, gradSignal, convictionOf, TRACK, DIP_DEFAULTS } from "../../src/api/dip.mjs";
 import { planFor } from "../../src/velocity/core/plans.mjs";
 import { createPlan, evaluateExit } from "../../src/velocity/core/exits.mjs";
-import { makePumpfunEdge } from "../../src/velocity/venues/pumpfun/edge.mjs";
+import { makePumpfunEdge, PUMPFUN_PRIORS } from "../../src/velocity/venues/pumpfun/edge.mjs";
 import { statsFromOutcomes } from "../../src/velocity/core/stats.mjs";
 import { goodCandidatePayload } from "../velocity/helpers/fixtures.mjs";
 
@@ -215,7 +215,14 @@ test("T31: a dip is priced by its own record, never by the tier whose record clo
   edge.gates.forEach(g => g.check(c));
   const est = edge.estimate(c, { stats: statsFromOutcomes([...losses, ...dips]) });
   assert.equal(est.plan_key, "dip_hold"); assert.equal(est.outcomes_seen, 40); assert.equal(est.on_priors, false);
-  assert.ok(est.p_win > 0.6, `priced by the dips, not by the launches: ${est.p_win}`);
+  // The record is blended toward the prior by its length and clamped so it can only lower the
+  // estimate, so a dip record beating its prior comes back AT the prior. What separates the two is
+  // still visible: hand the SAME plan key the launch tier's nine losses instead and both numbers
+  // fall, which is the refusal the dip entry exists to escape.
+  const asLaunches = edge.estimate(c, { stats: { pumpfun: { dip_hold: statsFromOutcomes(losses).pumpfun[2] } } });
+  assert.ok(est.p_win > asLaunches.p_win && est.payoff > asLaunches.payoff,
+    `priced by the dips, not by the launches: ${est.p_win}/${est.payoff} vs ${asLaunches.p_win}/${asLaunches.payoff}`);
+  assert.equal(est.p_win, PUMPFUN_PRIORS[2].p_win, "a record better than its prior is still priced at the prior");
   // With no dip record at all it falls to the priors rather than borrowing the losing tier's.
   const fresh = edge.estimate(c, { stats: statsFromOutcomes(losses) });
   assert.equal(fresh.on_priors, true); assert.equal(fresh.outcomes_seen, 0); assert.ok(fresh.p_win > 0);

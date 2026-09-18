@@ -91,12 +91,70 @@ because bucketing a new entry with the tier it shares a number with prices it by
 losing (`statsFromOutcomes`, keyed on the plan). Turning the launch entry off entirely is one
 setting, and the operator owns it.
 
+## 13. A record may lower an estimate and may never raise it, in the unit the gate decides in.
+The estimate for a plan key starts at the prior and moves toward the realized record with weight
+n/(n+k) -- but expected value is computed in units of STAKE, while `payoff` is a ratio denominated in
+one average loss, and `loss_fraction` is the converter between them. Clamping two of the three
+inputs left the third as a channel through which a record could make the gate KEENER: measured
+against the shipped model at $25 and tier 2, one -5% stop gave EV -0.0311 and REJECT, one -60% rug
+gave +0.0886 and a full-size GO, and one -100% close on a position the bot could not sell gave
++0.1757. The bot's worst outcomes were its strongest argument for repeating them. So the clamp is
+applied where the decision is made: the blended edge is walked back until it is worth no more of the
+stake than the prior's is, and `t32` asserts across every bucket shape that no record of any kind
+raises the decision's `ev` above the one the same candidate gets with no record at all.
+
+Two corollaries the same axiom forces. A record that only ever gets clamped away is not the thing
+speaking -- the PRIOR is -- so such a key keeps the probe that lets it go on trading; and a close the
+plan did not decide is not evidence about the plan, so a user's stop, a wallet sweep, a flatten at a
+mode change, an unwound leg and a position the venue says we do not hold are all kept out of the
+bucket entirely (`engine.modeStats`).
+
+## 14. A probe is a measurement being bought, and it is charged when the buy lands.
+A plan key whose prior does not clear its own costs can only ever trade through the probe branch, so
+whatever closes that branch decides whether the key trades again at all. Two narrower tests were
+tried and both were absorbing states: "the edge is positive before costs", which every prior in the
+table satisfies and which therefore approved every refusal there is, and "the edge clears the costs
+at the plan's designed stop", which compares constants -- measured on priors at the hosted floor,
+tier 3 is worth 0.0200 of the stake at its designed stop, the first dip 0.0280 and revival 0.0160
+against a round trip near 0.042, so all three were refused identically for the life of the account
+and could never earn the record that would settle it. The condition is `on_priors` and the bound is
+the budget: three draws a UTC day per venue and plan key, at 0.4x, live and paper counted apart.
+
+The one refusal a probe may not buy is a toll we have not read. An unread PONS creator tax or Arc leg
+tax is priced at the maximum on purpose; the answer to that is to fetch the curve, not to spend a
+round trip finding out, and `costs.assumed` is what tells the two apart. And the charge falls when
+the position OPENS, not when the gate approves: a full slot table, a throttled stake under the floor
+and a reverting router are ordinary conditions in continuous mode, and an approval that dies at any
+of them buys no measurement (`t33`).
+
 ## What is still open
 - Entry quality: 4% win rate over the last 24 live closes on Robinhood Chain, and a measured stretch
   of nine closes that lost on all nine. Acted on by axiom 12 (the first dip and the `dips` entry
   mode), which is a hypothesis with no realized record behind it yet: the dip plans start on priors
   and must earn their own statistics before the EV gate will size them up. The miss ledger
   (`engine.misses()`) records which hard rule refused each token that then ran; still not read.
+- `Engine.setRegime()` is called by nothing in `src/`, so `store.state.regime` is permanently
+  "RISK_ON" and the governor's `REGIME_MULT` table (DEAD 0, PVP 0.4) never fires: a bot at 4am in a
+  dead market sizes exactly as it does at peak. This is the single largest continuous-mode control
+  and it is currently inert. It needs either a regime source wired to it (`src/engine/regime-engine.mjs`
+  exists and is not read by velocity) or the table and its branch deleted, because a safety control
+  that reads as live and is not is worse than no control.
+- The risk envelope is built once in `hub.start` from `settings.bankrollUsd` and deep-frozen.
+  Realized profit never grows the base and sustained loss never shrinks it; only the governor's
+  daily taper moves, and it resets each day.
+- The priors table (`PUMPFUN_PRIORS`) was calibrated for an R-denominated EV and was never
+  recalibrated after the rescale into stake units. Measured against the shipped `costs()` at the $10
+  hosted floor, tier 1 clears on priors and tiers 2 and 3 do not, so most of the flow reaches the
+  market only through the probe branch and its three-a-day budget. Recalibrating that table against
+  realized closes is the fix; loosening the gate that reads it is not.
+- A plan key still shuts on six closes that speak against its prior (`weight >= 1/3` at k = 12) and
+  stays shut for the fourteen-day window. That is deliberate, and at a 4% observed win rate it will
+  happen quickly. Whether fourteen days is the right release valve is unmeasured.
+- Every threshold added by the entry work is a source constant with no operator setting behind it:
+  `statsShrinkK` (12), `probeStakeFraction` (0.4), `probeBudget` (3), the `weight >= 1/3` floor,
+  `SPIKE_MULT`, `SPIKE_MIN_SHARE` and `KIND_LIMITS`. k and the 1/3 floor between them decide when a
+  key stops trading, so k is the most consequential number in the batch and it cannot be tuned from
+  evidence without editing source.
 - `send failed` appeared in the live failure list once; not yet root-caused.
 - Exposed credentials pasted in chat during development still need rotating (xAI key, X bearer
   tokens, X consumer secret, X access token/secret).

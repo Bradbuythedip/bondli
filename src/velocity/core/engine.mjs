@@ -65,7 +65,7 @@ export class Engine extends EventEmitter {
     this.ledger = new Ledger(path.join(dataDir, "ledger.jsonl"), { now: clock });
     this.store = new Store(path.join(dataDir, "state.json"), { now: clock });
     this.weights = new WeightStore(path.join(dataDir, "weights"));
-    this.governor = new Governor({ ledger: this.ledger, envelope, clock });
+    this.governor = new Governor({ ledger: this.ledger, envelope, clock, venueMode: v => this.store.venueMode(v), anyLive: () => this.anyLiveVenue() });
     this.sizer = new Sizer(envelope);
     this.alerter = alerter;
     this.venues = {};
@@ -233,7 +233,26 @@ export class Engine extends EventEmitter {
     const cutoff = this.clock() - this.cfg.statsWindowMs;
     const outs = this.ledger.query({ kind: "outcome", limit: 5000 })
       .filter(o => o && o.venue && !!o.paper === (this.store.venueMode(o.venue) === "paper"))
-      .filter(o => !(o.ts > 0) || o.ts >= cutoff);
+      .filter(o => !(o.ts > 0) || o.ts >= cutoff)
+      // Only the closes the PLAN decided. A human's exit timing is not the model's: a user stop, a
+      // wallet sweep, the flatten every position takes when a venue is promoted, a leg unwound by a
+      // failed second fill, a position the venue says we do not hold -- none of those is the exit
+      // plan's judgement of the trade, and every one of them carries a plan_key and so lands in that
+      // key's bucket. Six of them are enough to take the record past a third of the estimate, close
+      // the probe branch, and shut the key for the fourteen days the window runs; one at a large
+      // loss is enough to move the estimate on its own. `by` already says who decided: "plan" for
+      // the tick-driven exits and "timer" for the sweeper's own DOA, STALL and MAX_HOLD.
+      .filter(o => (o.by == null || o.by === "plan" || o.by === "timer")
+        && !/^(LEG_UNWOUND|VENUE_MODE_CHANGE|FLATTEN|USER_SELL|USER_SWEEP|MISSING_AT_VENUE|RELEASED)$/.test(String(o.reason)));
+    // Whichever bound bites is worth knowing. The outcome ring holds 5_000 records, so past about
+    // 357 closes a day it is the RING and not statsWindowMs that decides how far back a plan key can
+    // see -- the same failure the rolling window was written to end, moved from twelve hours to
+    // fourteen days. Said once, because it changes what every estimate below is computed over.
+    const all = this.ledger.query({ kind: "outcome", limit: 5000 });
+    if (all.length === 5000 && all[0]?.ts > cutoff && !this._ringNoted) {
+      this._ringNoted = true;
+      this.log("warn", `the outcome ring is full and its oldest record is inside the ${Math.round(this.cfg.statsWindowMs / 86_400_000)}-day window: the ring, not the window, is what bounds the statistics now`);
+    }
     return statsFromOutcomes(outs);
   }
 
@@ -624,7 +643,14 @@ export class Engine extends EventEmitter {
     // token to the ledger the operator reads — a few hundred lines an hour that bury the exits and
     // the one line that matters. Say it once per haltNoticeMs and stop. Exits already ran above.
     if (event.kind === "candidate" && gov.halt) return this.noteHalted(venue, gov, event.t_observed);
-    const decisions = v.runner.run(event, { governor: gov, stats: this.stats, minStakeUsd: this.env.venues[venue]?.min_stake_usd ?? null, weights: { pumpfun: this.weights.current().weights } });
+    // The day's probe budget, handed over as the tally the runner draws from and writes back to.
+    // rollDay here rather than only on the fill path: a bot that spends every probe it has and then
+    // takes no trade at all would otherwise stay locked out until something closed, and the whole
+    // point of a daily budget is that a new day refills it whether or not yesterday bought anything.
+    // Live and paper hand over different tallies, so a simulated probe can never spend a real one.
+    const day = this.store.rollDay();
+    const probes = this.store.venueMode(venue) === "live" ? day.probes : day.paperProbes;
+    const decisions = v.runner.run(event, { governor: gov, stats: this.stats, probes, minStakeUsd: this.env.venues[venue]?.min_stake_usd ?? null, weights: { pumpfun: this.weights.current().weights } });
     const decideMs = performance.now() - t0;
     for (const d of decisions) {
       // A rug flag that cannot change (dev self-sniped, serial rugger, frozen, stolen art) is final for
@@ -880,6 +906,19 @@ export class Engine extends EventEmitter {
     if (!fill.paper && this.walletMode()) this.refreshWallet().catch(() => {});
     v.feed?.watch(inst);
     for (const l of position.legs || []) v.feed?.watch(l.instrument);
+    // A probe is a measurement being bought, so it is charged where the money actually moves. Charged
+    // at the GO instead, a decision that never became a trade still spent one of the day's three --
+    // and a full slot table, a throttled stake under the floor, a missing reference, a router that
+    // reverts are all ordinary conditions in continuous mode, not corner cases. No trade means no
+    // measurement, so the key stayed on priors, learned nothing, and burned the budget again the next
+    // day. Double-charging is not possible: onEvent is serialised on the engine queue and enter() is
+    // awaited, so this line runs once per position that opened.
+    if (decision.probe) {
+      const day = this.store.rollDay();
+      const tally = this.store.venueMode(venue) === "live" ? day.probes : day.paperProbes;
+      const k = `${venue}|${decision.plan_key ?? decision.tier}`;
+      tally[k] = (Number(tally[k]) || 0) + 1;
+    }
     this.store.save();
     this.emit("position", position);
     this.log("info", `ENTER ${venue} ${inst} $${fill.notional_usd.toFixed(2)} tier ${decision.tier} (${decision.model}) plan ${plan.key}`);
@@ -1037,7 +1076,6 @@ export class Engine extends EventEmitter {
   _bookExit(p, r, pct, reason, { action = "SELL", layer = null, detail = null, by = "plan", flat = false, stamp = null } = {}) {
     const venue = p.venue;
     const f = r.fill;
-    applyExitStamp(p, stamp); // the sell landed, so the marks a reduced position earns are now true
     const proceeds = f.notional_usd;
     p.proceeds_usd = (p.proceeds_usd || 0) + proceeds;
     if (f.sol_received > 0) p.sol_received = (p.sol_received || 0) + f.sol_received;
@@ -1050,8 +1088,44 @@ export class Engine extends EventEmitter {
     // What actually filled, not what was asked for. A router that sells a position in chunks can stop
     // part-way and still succeed; closing on the requested percentage abandoned the rest.
     const filledPct = Number.isFinite(f.pct_filled) ? f.pct_filled : pct;
-    const done = !!(filledPct >= 100 || p.remaining_qty <= 1e-9 || action === "REDEEM" || (p.legs && p.legs.length));
-    this.ledger.append({ kind: "exit", venue, positionId: p.id, decisionId: p.decisionId, instrument: p.instrument, pct, reason, layer, detail, price: f.price, qty: f.qty, proceeds_usd: proceeds, fee_usd: f.fee_usd || 0, latency_ms: f.latency_ms, venue_ref: f.venue_ref, sol_received: f.sol_received ?? null, exact: f.exact ?? null, final: done, by });
+    // pct_filled is the share of the REQUEST that filled, never the share of the position: both the
+    // PONS and the Arc router compute it as (units - unfilled) / units of the order they were handed.
+    // Only those two write it at all -- pump.fun's router and the paper router do not -- and a router
+    // that does not report it sold the whole of what it was asked for.
+    const requestFilled = !Number.isFinite(f.pct_filled) || f.pct_filled >= 100;
+    // So an 85% moonbag trail that fills COMPLETELY comes back as pct_filled 100, and reading that as
+    // "the position is finished" closed the book on it with fifteen per cent of the tokens still in the
+    // wallet: the moonbag orphaned to the reconciler, the rent reclaimed on an account that is not
+    // empty, and a 4x runner's whole outcome written as whatever the trail happened to realize. A
+    // position is finished when the whole of a whole-position request filled, or when there is nothing
+    // left of it. A 100% request that only part-fills keeps exactly the answer it had before: not done.
+    const done = !!((filledPct >= 100 && pct >= 100) || p.remaining_qty <= 1e-9 || action === "REDEEM" || (p.legs && p.legs.length));
+    // A sell that succeeds is not the same as a sell that finished: the PONS and Arc routers both
+    // return ok with pct_filled under 100 when the curve takes one chunk and refuses the next. So the
+    // marks a REDUCED position earns are only true once the reduction is real. tpHit and slHit say
+    // nothing about size -- they record that a level was reached, which any fill that landed proves --
+    // but isMoonbag says this position is now a sliver, and it switches off the stop loss, the max
+    // hold, the stall and the sweeper's time stop together. Handing that to an 85% trail that filled
+    // 30% left a majority-sized position with no way out short of -80%. It waits for the whole fill;
+    // the cost of waiting is that a real moonbag keeps its stop for one more tick cycle.
+    //
+    // The question is whether the REQUEST filled, which is what requestFilled answers. Asking
+    // filledPct >= 100 instead withheld the mark from every pump.fun and every paper moonbag there
+    // has ever been: those routers report no pct_filled, the fallback is the requested pct, and a
+    // ride-trail asks for 85 -- so the test was 85 >= 100 and the moonbag mechanism was dead on the
+    // venue that does nearly all the trading. The right tail is the whole of this strategy's edge and
+    // that deleted it.
+    let stampWithheld = null;
+    if (stamp) {
+      const { isMoonbag, ...landed } = stamp;
+      if (isMoonbag == null || requestFilled) applyExitStamp(p, stamp);
+      else { applyExitStamp(p, landed); stampWithheld = `isMoonbag:${(+f.pct_filled || 0).toFixed(2)}%_filled`; }
+    }
+    // Said out loud, not only written. A withheld moonbag mark means a position is being managed as
+    // a full one when the plan thought it had reduced, and a diagnostic only a log-reader with the
+    // raw ledger can find is not a diagnostic.
+    if (stampWithheld) this.log("warn", `${venue} ${p.instrument}: ${reason} asked for ${pct}% and only ${(+f.pct_filled || 0).toFixed(0)}% of it filled, so the moonbag mark is withheld and the position keeps its stop`);
+    this.ledger.append({ kind: "exit", venue, positionId: p.id, decisionId: p.decisionId, instrument: p.instrument, pct, reason, layer, detail, price: f.price, qty: f.qty, proceeds_usd: proceeds, fee_usd: f.fee_usd || 0, latency_ms: f.latency_ms, venue_ref: f.venue_ref, sol_received: f.sol_received ?? null, exact: f.exact ?? null, final: done, by, stamp_withheld: stampWithheld || undefined });
     if (done) {
       const pnl = +(p.proceeds_usd - p.cost_usd).toFixed(4);
       const held = (f.t_filled || this.clock()) - p.entryTime;
@@ -1260,7 +1334,12 @@ export class Engine extends EventEmitter {
       pnl: this.truePnl(),
       day: { ...s.day, limit_usd: this.env.daily_loss_limit_usd, counted_usd: this.realizedToday(), counting: this.anyLiveVenue() ? "live" : "paper", used_pct: +((Math.max(0, -this.realizedToday()) / this.env.daily_loss_limit_usd) * 100).toFixed(1) },
       bankroll: { source: this.walletMode() ? "wallet" : "fixed", fixed_usd: this.env.bankroll_usd, equity_usd: this.portfolioSnapshot().equity_usd ?? null, wallet: this.wallet.at ? this.wallet : null, wallets: this.wallets },
-      positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, name: p.reference?.name || "", ticker: p.reference?.ticker || "", tier: p.tier, model: p.model, notional_usd: p.notional_usd, stake_usd: p.stake_usd, mark: p.mark, entryMark: p.entryMark, peak: p.peak, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode, stall_ms: p.plan?.stall_ms ?? null, max_hold_ms: p.plan?.max_hold_ms ?? null }, tpHit: p._bondli?.tpHit ?? 0, entryTime: p.entryTime, lastTickAt: p.lastTickAt || null, curve: p.reference?.curve?.address || null, adopted: !!p.adopted, sizing: p.sizing || null, lastExitError: p.lastExitError || null })),
+      positions: this.store.openPositions().map(p => ({ id: p.id, venue: p.venue, instrument: p.instrument, name: p.reference?.name || "", ticker: p.reference?.ticker || "", tier: p.tier, model: p.model, notional_usd: p.notional_usd, stake_usd: p.stake_usd, mark: p.mark, entryMark: p.entryMark, peak: p.peak, changePct: p.changePct, unrealized_usd: p.unrealized_usd, plan: { key: p.plan?.key, mode: p.plan?.mode, stall_ms: p.plan?.stall_ms ?? null, max_hold_ms: p.plan?.max_hold_ms ?? null }, tpHit: p._bondli?.tpHit ?? 0, entryTime: p.entryTime,
+        // Past its time limit and still held, because an armed trail owns a runner until twice that
+        // limit. The deferral is bounded per position but nothing bounds how MANY may defer at once,
+        // so on a four-slot table all four can sit past their clocks for twice max_hold -- six hours
+        // on dip_hold. Named here so an operator can see the table filling up rather than infer it.
+        deferring: !p._bondli?.isMoonbag && p.plan?.max_hold_ms > 0 && this.clock() - p.entryTime > p.plan.max_hold_ms, lastTickAt: p.lastTickAt || null, curve: p.reference?.curve?.address || null, adopted: !!p.adopted, sizing: p.sizing || null, lastExitError: p.lastExitError || null })),
       review: this.review(), closes: this.closes(8),
       misses: this.misses({ limit: 300 }).slice(0, 12), // what the rules refused that then ran
       venues, weightsVersion: this.weights.current().version, lastDecisions: s.lastDecisions, alerts: s.alerts.slice(0, 10),
