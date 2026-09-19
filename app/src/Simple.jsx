@@ -5,6 +5,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { TC, D, L, BLUE, CHIP_TINT, css } from "./lib/theme.js";
 import { M, S, imgUrl, X_URL, DISCORD_URL, TOKEN_SYMBOL, TOKEN_URL } from "./lib/constants.js";
 import a from "./lib/api-client.js";
+import { phantom, phantomAbsence } from "./lib/wallet.js";
 import { shareCard, canShareCard } from "./lib/sharecard.js";
 import { useT, useLang, tEn, LANGS } from "./lib/i18n.js";
 
@@ -22,7 +23,7 @@ const SOL_USD_FALLBACK = 200;
 /** What one round trip costs at this size, as a percentage — the move needed just to get even. */
 const dragPct = (usd, solPrice) => { const p = solPrice > 0 ? solPrice : SOL_USD_FALLBACK; return ((usd * 0.03) + (0.001 + 0.00001) * p + 0.00203928 * p) / usd * 100; };
 const fmt = n => (n < 0 ? "-$" : "$") + Math.abs(Number(n) || 0).toFixed(2);
-const phantom = () => (window?.phantom?.solana?.isPhantom ? window.phantom.solana : window?.solana?.isPhantom ? window.solana : null);
+
 
 // The two places the project talks, as their own marks rather than words. Both open in a new tab.
 const XIcon = ({ s = 15 }) => <svg width={s} height={s} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" /></svg>;
@@ -618,7 +619,14 @@ export default function Simple() {
 
   const connect = async () => {
     const p = phantom();
-    if (!p) { if (/iPhone|iPad|Android/i.test(navigator.userAgent)) { window.location.href = "https://phantom.app/ul/browse/" + encodeURIComponent(window.location.href); return; } say(t("toast.installPhantom"), "error"); return; }
+    if (!p) {
+      if (/iPhone|iPad|Android/i.test(navigator.userAgent)) { window.location.href = "https://phantom.app/ul/browse/" + encodeURIComponent(window.location.href); return; }
+      // Another extension holding window.solana is not the same problem as having no wallet, and
+      // "install Phantom" is a dead end for someone who already has it installed.
+      const why = phantomAbsence();
+      say(why?.reason === "squatted" ? t("toast.otherWallet", { name: why.other || t("toast.anotherWallet") }) : t("toast.installPhantom"), "error");
+      return;
+    }
     // "Could not connect" for everything told the user nothing they could act on. A cancelled
     // prompt is still its own case; anything else says what the wallet actually reported.
     try { const r = await p.connect(); sPk(r.publicKey.toString()); }

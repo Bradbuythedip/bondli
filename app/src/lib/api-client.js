@@ -1,4 +1,5 @@
 import { API } from "./constants.js";
+import { providerFor } from "./wallet.js";
 // Base58 for the signature bytes Phantom returns (no dependency needed for one encoder).
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 function b58(bytes) { let x = 0n; for (const b of bytes) x = x * 256n + BigInt(b); let out = ""; while (x > 0n) { out = B58[Number(x % 58n)] + out; x /= 58n; } for (const b of bytes) { if (b === 0) out = "1" + out; else break; } return out; }
@@ -15,8 +16,11 @@ class A {
     if (this._signing) return this._signing;
     this._signing = (async () => {
       try {
-        const p = window?.phantom?.solana || window?.solana;
-        if (!p?.signMessage) throw new Error("wallet cannot sign");
+        // Not `window.solana`: that global is a first-come-first-served name and another wallet
+        // may hold it. This resolves Phantom specifically, and refuses when Phantom is sitting on a
+        // different account than the one being signed in -- the signature would be valid, from the
+        // wrong key, and the server would reject it as a mismatch with nothing to explain it.
+        const p = await providerFor(this.w);
         // A challenge is issued by one request and redeemed by the next, and the two can land on
         // different instances or straddle a deploy. The server says when that has happened; starting
         // over costs one more signature prompt and is the difference between signing in and being

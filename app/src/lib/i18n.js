@@ -222,6 +222,8 @@ export const en = {
 
   // Toasts, confirms and prompts.
   "toast.installPhantom": "Install Phantom to continue",
+  "toast.otherWallet": "{name} is answering instead of Phantom. Disable it for this site, or open the page in Phantom's browser.",
+  "toast.anotherWallet": "Another wallet extension",
   "toast.cancelled": "Cancelled",
   "toast.noConnect": "Could not connect",
   "toast.noStart": "Could not start",
@@ -568,6 +570,8 @@ export const zh = {
   "hide": "隐藏",
 
   "toast.installPhantom": "请先安装 Phantom",
+  "toast.otherWallet": "现在响应的是 {name}，不是 Phantom。请在本站停用它，或在 Phantom 的浏览器中打开本页。",
+  "toast.anotherWallet": "另一个钱包插件",
   "toast.cancelled": "已取消",
   "toast.noConnect": "无法连接",
   "toast.noStart": "无法启动",
