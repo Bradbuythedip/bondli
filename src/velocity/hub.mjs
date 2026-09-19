@@ -64,7 +64,17 @@ export class SharedFeedView extends Feed {
   }
   ageMs() { return this.shared.ageMs(); }
   isStale() { return this.shared.isStale(); }
-  async start() { this.running = true; this.shared.on("event", this._onEvent); this.healthy = this.shared.healthy; }
+  // How long the FEED has been up, not this view of it. A user whose bot starts against a radar that
+  // has been running for an hour is not looking at a feed that needs warming up.
+  upMs() { return this.shared.upMs(); }
+  // Health belongs to the shared feed, which is the only thing that polls and therefore the only
+  // thing that can know. This used to be copied once, at start, and never again: the shared feed
+  // called markHealth(true) on every successful poll and the view never heard about it, so a view
+  // that attached before the first poll returned read as unhealthy for as long as it lived. It is a
+  // delegation now, like ageMs and isStale above, so there is nothing to keep in step.
+  get healthy() { return this.shared.healthy; }
+  set healthy(_) { /* the base constructor and markHealth both assign it; the shared feed decides */ }
+  async start() { this.running = true; this.shared.on("event", this._onEvent); }
   async stop() { this.running = false; this.shared.off("event", this._onEvent); }
 }
 
