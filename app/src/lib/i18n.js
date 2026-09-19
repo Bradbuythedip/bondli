@@ -80,6 +80,7 @@ export const en = {
   "tag.rug": "rug",
   "tag.mayhem": "mayhem",
   "tag.copy": "copy",
+  "tag.unpriced": "checking price",
 
   // The risk dial.
   "agg.safe": "Safe",
@@ -170,6 +171,7 @@ export const en = {
   "live.neargrad": "near grad",
   "live.dips": "first dips",
   "live.curve": "curve {pct}%",
+  "live.priceUnknown": "price not known yet",
   "live.eta": " · ~{n}m left",
   "live.stalled": " · stopped filling",
   "live.dipped": " · dipped {n}% and being bought",
@@ -423,6 +425,7 @@ export const zh = {
   "tag.rug": "跑路",
   "tag.mayhem": "混战",
   "tag.copy": "仿盘",
+  "tag.unpriced": "正在核价",
 
   "agg.safe": "稳",
   "agg.safe.d": "只做最干净的新盘。交易很少。",
@@ -511,6 +514,7 @@ export const zh = {
   "live.neargrad": "接近毕业",
   "live.dips": "第一次回调",
   "live.curve": "曲线 {pct}%",
+  "live.priceUnknown": "价格尚未确认",
   "live.eta": " · 约剩 {n} 分钟",
   "live.stalled": " · 已停止填充",
   "live.dipped": " · 回调 {n}%，有人在接",
