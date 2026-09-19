@@ -584,9 +584,29 @@ export default function Simple() {
   useEffect(() => { const t = setTimeout(() => sBooted(true), 2500); return () => clearTimeout(t); }, []); // never hold the page on a wallet that never answers
   useEffect(() => { a.sw(pk); }, [pk]);
 
+  // Why there is no wallet to show, when there is none: "store down", "key missing", "the server
+  // cannot create one", or the error the call itself threw. Null means the question does not arise.
+  const [walletWhy, sWhy] = useState(null);
   const loadWallet = useCallback(async () => {
     if (!pk) return;
-    try { const r = await a.gtw(pk); sBooted(true); sTw(r?.tradingWallet ? { pubkey: r.tradingWallet, solBalance: Number(r.solBalance ?? r.sol ?? 0), tokenValueSol: Number(r.tokenValueSol || 0), evmAddress: r.evmAddress || null, ethBalance: r.ethBalance == null ? null : Number(r.ethBalance) } : null); } catch { sBooted(true); /* keep the last reading */ }
+    try {
+      const r = await a.gtw(pk);
+      sBooted(true);
+      if (r?.ok && r.tradingWallet) {
+        sWhy(null);
+        sTw({ pubkey: r.tradingWallet, solBalance: Number(r.solBalance ?? r.sol ?? 0), tokenValueSol: Number(r.tokenValueSol || 0), evmAddress: r.evmAddress || null, ethBalance: r.ethBalance == null ? null : Number(r.ethBalance) });
+      } else {
+        // A wallet whose key is missing is still the user's wallet and its address still holds their
+        // money, so it is reported rather than hidden behind an offer to make a new one.
+        sTw(null);
+        sWhy({ keyMissing: !!r?.keyMissing, unavailable: !!r?.unavailable, canCreate: r?.canCreate !== false, address: r?.tradingWallet || null, error: r?.error || null });
+      }
+    } catch (e) {
+      sBooted(true);
+      // The call itself failed -- most often the seven-day signature expired and the re-sign was
+      // dismissed. Silence here drew a Create button over an account that already has a wallet.
+      sWhy({ unavailable: true, canCreate: false, error: e.message });
+    }
   }, [pk]);
   useEffect(() => { loadWallet(); const id = setInterval(loadWallet, running ? 15000 : 8000); return () => clearInterval(id); }, [loadWallet, running]);
   useEffect(() => {
@@ -601,7 +621,9 @@ export default function Simple() {
     if (!p) { if (/iPhone|iPad|Android/i.test(navigator.userAgent)) { window.location.href = "https://phantom.app/ul/browse/" + encodeURIComponent(window.location.href); return; } say(t("toast.installPhantom"), "error"); return; }
     try { const r = await p.connect(); sPk(r.publicKey.toString()); } catch (e) { say(e.code === 4001 ? t("toast.cancelled") : t("toast.noConnect"), "error"); }
   };
-  const createWallet = async () => { sBusy("wallet"); try { await a.ctw(pk); await loadWallet(); } catch (e) { say(e.message, "error"); } finally { sBusy(null); } };
+  // On a refusal the panel has to end up in the state the server just described, not back on the
+  // same button: the reload is what turns "it did not work" into which of the four things is wrong.
+  const createWallet = async () => { sBusy("wallet"); try { await a.ctw(pk); } catch (e) { say(e.message, "error"); } finally { await loadWallet().catch(() => {}); sBusy(null); } };
   const start = async () => {
     sBusy("start");
     try {
@@ -756,8 +778,23 @@ export default function Simple() {
 
       {/* 2. Trading wallet: create, then fund */}
       {pk && !tw && <>
-        <div style={{ ...muted, marginBottom: 12 }}>{t("panel.needsWallet")}</div>
-        <Btn big T={T} onClick={createWallet} disabled={busy === "wallet"}>{busy === "wallet" ? t("panel.creating") : t("panel.create")}</Btn>
+        {/* The offer is made only when it can be honoured. Everything else says what is wrong and
+            what to do about it, instead of a button that fails silently on the click. */}
+        {walletWhy?.keyMissing ? <>
+          <div style={{ ...muted, marginBottom: 8 }}>{t("panel.keyMissing")}</div>
+          {walletWhy.address && <div style={{ fontFamily: M, fontSize: 12, wordBreak: "break-all", background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>{walletWhy.address}</div>}
+          <div style={{ ...muted, fontSize: 12 }}>{t("panel.keyMissingWhat")}</div>
+        </> : walletWhy?.unavailable ? <>
+          <div style={{ ...muted, marginBottom: 8 }}>{t("panel.storeDown")}</div>
+          {walletWhy.error && <div style={{ ...muted, fontSize: 12, marginBottom: 12 }}>{walletWhy.error}</div>}
+          <Btn big T={T} onClick={loadWallet}>{t("panel.retry")}</Btn>
+        </> : walletWhy && walletWhy.canCreate === false ? <>
+          <div style={{ ...muted, marginBottom: 8 }}>{t("panel.cannotCreate")}</div>
+          {walletWhy.error && <div style={{ ...muted, fontSize: 12 }}>{walletWhy.error}</div>}
+        </> : <>
+          <div style={{ ...muted, marginBottom: 12 }}>{t("panel.needsWallet")}</div>
+          <Btn big T={T} onClick={createWallet} disabled={busy === "wallet"}>{busy === "wallet" ? t("panel.creating") : t("panel.create")}</Btn>
+        </>}
       </>}
       {pk && tw && !running && <>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>

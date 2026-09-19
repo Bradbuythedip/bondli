@@ -252,6 +252,11 @@ export const en = {
   // The panel before the bot runs.
   "panel.connect": "Connect wallet",
   "panel.needsWallet": "The bot needs a wallet of its own to trade from. You can take the key or the money out any time.",
+  "panel.keyMissing": "This account already has a bot wallet, but the server could not load its key. A new wallet is not created over it — the money is at the address below.",
+  "panel.keyMissingWhat": "If you exported this key earlier, it still controls the address. If you did not, contact support before creating anything new.",
+  "panel.storeDown": "Cannot reach the wallet store, so whether you have a wallet is unknown. Nothing is created until it answers.",
+  "panel.cannotCreate": "The server cannot create a bot wallet right now.",
+  "panel.retry": "Try again",
   "panel.creating": "Creating…",
   "panel.create": "Create the bot's wallet",
   "panel.walletSol": "Bot wallet · Solana",
@@ -592,6 +597,11 @@ export const zh = {
 
   "panel.connect": "连接钱包",
   "panel.needsWallet": "机器人需要一个自己的钱包来交易。你随时可以把私钥或资金取出。",
+  "panel.keyMissing": "此账户已有机器人钱包，但服务器无法加载它的私钥。不会覆盖创建新钱包——资金在下面这个地址里。",
+  "panel.keyMissingWhat": "如果你之前导出过这个私钥，它仍然控制该地址。如果没有，请先联系客服，不要创建新的。",
+  "panel.storeDown": "无法连接钱包存储，因此无法确定你是否已有钱包。在它恢复之前不会创建任何东西。",
+  "panel.cannotCreate": "服务器目前无法创建机器人钱包。",
+  "panel.retry": "重试",
   "panel.creating": "创建中…",
   "panel.create": "创建机器人钱包",
   "panel.walletSol": "机器人钱包 · Solana",

@@ -3162,13 +3162,48 @@ async function stopTheClock(key) {
   } catch {}
 }
 
+// A store read that failed, remembered for long enough that the caller which just made it can ask.
+// "No wallet" and "could not look" were the same answer here, and they are not remotely the same
+// thing: one means create one, the other means we cannot see whether one already exists. Reading the
+// failure as an absence is how a funded wallet gets a fresh keypair minted over its pointer, and how
+// a returning user is shown a Create button for the wallet their money is already in. The lookup
+// still returns null so all twenty-odd call sites keep their meaning; the ones that are about to act
+// on the absence -- serving the panel, minting a key -- ask walletStoreFailed() first.
+const walletStoreErrors = new Map();
+function noteWalletStoreError(userPubkey, kind, e) {
+  walletStoreErrors.set(userPubkey, { kind, at: Date.now(), message: e?.message || String(e) });
+  console.log(`[WALLET] ${kind} for ${String(userPubkey).slice(0, 8)}: ${e?.message || e}`);
+}
+/** Why the last look at this user's wallet came back empty, if it was not simply empty. `kind` is
+ *  "store" -- the store did not answer -- or "sealed": the record is there and will not open, which
+ *  is a different thing entirely and has a different answer. */
+function walletLookupError(userPubkey, withinMs = 30_000) {
+  const e = walletStoreErrors.get(userPubkey);
+  if (!e) return null;
+  if (Date.now() - e.at > withinMs) { walletStoreErrors.delete(userPubkey); return null; }
+  return e;
+}
+/** Only the store-was-unreachable case. A sealed record that will not open is not a reason to keep
+ *  waiting -- the store answered perfectly well -- but it is still a reason never to mint over it. */
+function walletStoreFailed(userPubkey, withinMs = 30_000) {
+  return walletLookupError(userPubkey, withinMs)?.kind === "store";
+}
+
 async function getTradingWallet(userPubkey) {
   let tw = tradingWallets.get(userPubkey);
   if (!tw && redis) {
-    try {
-      const raw = await redis.get("tw:" + userPubkey);
-      if (raw) { tw = vault.openRecord(JSON.parse(raw)); tradingWallets.set(userPubkey, tw); }
-    } catch {}
+    let raw = null;
+    // Two failures live here and they used to be one silent catch. The read can fail -- Redis is
+    // down, the network went -- and the record can come back whole and refuse to open, which happens
+    // when WALLET_ENCRYPTION_KEY is missing, was rotated, or was never the key these were sealed
+    // with. Both used to return "this user has no wallet", which is how an account with money in it
+    // gets shown a Create button.
+    try { raw = await redis.get("tw:" + userPubkey); }
+    catch (e) { noteWalletStoreError(userPubkey, "store", e); return null; }
+    if (raw) {
+      try { tw = vault.openRecord(JSON.parse(raw)); tradingWallets.set(userPubkey, tw); walletStoreErrors.delete(userPubkey); }
+      catch (e) { noteWalletStoreError(userPubkey, "sealed", e); return null; }
+    } else walletStoreErrors.delete(userPubkey);
   }
   if (tw) { await stopTheClock("tw:" + userPubkey); if (tw.pubkey) await stopTheClock("tkown:" + tw.pubkey); }
   // Maintain reverse lookup
@@ -3532,7 +3567,34 @@ app.get("/api/trading-wallet/identify/:pubkey", requireOwner, async (req, res) =
 
 app.get("/api/trading-wallet/:wallet", requireOwner, async (req, res) => {
   const tw = await getTradingWallet(req.params.wallet);
-  if (!tw) return res.json({ ok: false, tradingWallet: null });
+  // Three different nothings, and the panel used to be handed the same one for all of them: it drew
+  // a Create button, the button failed, and the only thing the user could tell was that it did not
+  // work. Each is now named, because each has a different answer.
+  if (!tw) {
+    // The store could not be asked. Not "you have no wallet" -- we do not know, and offering to mint
+    // one here is offering to mint one over a wallet that may be holding money.
+    const why = walletLookupError(req.params.wallet);
+    if (why?.kind === "store") {
+      return res.status(503).json({ ok: false, tradingWallet: null, unavailable: true, canCreate: false,
+        error: "cannot reach the wallet store right now; this is not a missing wallet and nothing should be created until it answers" });
+    }
+    // The account names a wallet whose key is gone, or whose sealed record will not open -- which is
+    // what a missing or rotated WALLET_ENCRYPTION_KEY looks like from here. Say the address either
+    // way: the money is at it, and a Create button would be a lie the server is going to refuse.
+    const prior = await getUser(req.params.wallet);
+    if (why?.kind === "sealed") {
+      return res.json({ ok: false, tradingWallet: prior?.tradingWallet || null, keyMissing: true, sealed: true, canCreate: false,
+        error: "this account's wallet record could not be decrypted: the server's WALLET_ENCRYPTION_KEY is missing or is not the one it was sealed with" });
+    }
+    if (prior?.tradingWallet) {
+      return res.json({ ok: false, tradingWallet: prior.tradingWallet, keyMissing: true, canCreate: false,
+        error: "this account has a bot wallet but its key could not be loaded" });
+    }
+    // Genuinely new. The only one of the three where Create is the right offer -- and it can still be
+    // refused by the server, so say now whether it would be rather than on the click.
+    return res.json({ ok: false, tradingWallet: null, canCreate: vault.canCreate(),
+      error: vault.canCreate() ? null : "the server cannot create custodial wallets: WALLET_ENCRYPTION_KEY is not set" });
+  }
   let pubkey = tw.pubkey;
   if (!pubkey && tw.secret) {
     try { pubkey = Keypair.fromSecretKey(bs58.decode(tw.secret)).publicKey.toBase58(); } catch {}
@@ -3740,6 +3802,18 @@ app.post("/api/trading-wallet/create", requireOwner, async (req, res) => {
   if (!wallet) return res.status(400).json({ error: "wallet required" });
   const existing = await getTradingWallet(wallet);
   if (existing) return res.json({ ok: true, tradingWallet: existing.pubkey, already: true });
+  // The lookup came back empty. Empty because there is nothing, or empty because the store did not
+  // answer? Only the first is a reason to mint a key. The second used to be indistinguishable here,
+  // and the guard below only caught it when the user record happened to miss the cache too.
+  const lookupWhy = walletLookupError(wallet);
+  if (lookupWhy?.kind === "store") {
+    return res.status(503).json({ error: "cannot reach the wallet store; not creating a wallet that might already exist", unavailable: true });
+  }
+  // The record is there and will not open. That is the clearest possible signal that this account
+  // HAS a wallet, so it is the last moment at which a new key should be generated.
+  if (lookupWhy?.kind === "sealed") {
+    return res.status(409).json({ error: "this account's wallet record exists but could not be decrypted; refusing to replace it", sealed: true, recoverable: true });
+  }
   if (!vault.canCreate()) return res.status(503).json({ error: "custodial wallets are disabled until WALLET_ENCRYPTION_KEY is set on the server" });
   // Never mint a wallet over one that already exists. The user record names the trading wallet, and
   // it is a SEPARATE record from the key, so "no key but a named wallet" means the key is unreachable
