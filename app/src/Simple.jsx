@@ -619,7 +619,10 @@ export default function Simple() {
   const connect = async () => {
     const p = phantom();
     if (!p) { if (/iPhone|iPad|Android/i.test(navigator.userAgent)) { window.location.href = "https://phantom.app/ul/browse/" + encodeURIComponent(window.location.href); return; } say(t("toast.installPhantom"), "error"); return; }
-    try { const r = await p.connect(); sPk(r.publicKey.toString()); } catch (e) { say(e.code === 4001 ? t("toast.cancelled") : t("toast.noConnect"), "error"); }
+    // "Could not connect" for everything told the user nothing they could act on. A cancelled
+    // prompt is still its own case; anything else says what the wallet actually reported.
+    try { const r = await p.connect(); sPk(r.publicKey.toString()); }
+    catch (e) { say(e?.code === 4001 ? t("toast.cancelled") : `${t("toast.noConnect")}: ${e?.message || e}`, "error"); }
   };
   // On a refusal the panel has to end up in the state the server just described, not back on the
   // same button: the reload is what turns "it did not work" into which of the four things is wrong.

@@ -80,3 +80,45 @@ test("T36: both dictionaries carry the new lines", () => {
     assert.equal((I18N.match(new RegExp(`"${key}":`, "g")) || []).length, 2, `${key} in en and zh`);
   }
 });
+
+test("T36: a sign-in challenge outlives the instance that issued it", () => {
+  // The challenge is issued by one request and redeemed by the next, and the two are not guaranteed
+  // to reach the same process: behind one URL there can be more than one instance, and a deploy
+  // replaces the one holding the map mid-signature. An in-memory nonce made signing in a coin flip,
+  // and the losing side answered "no challenge for this wallet", which a browser cannot act on.
+  assert.match(SRV, /async function putNonce\(wallet, ch\)/);
+  assert.match(SRV, /redis\.set\("nonce:" \+ wallet, JSON\.stringify\(\{ message: ch\.message, nonce: ch\.nonce \}\), \{ EX: NONCE_TTL_S \}\)/);
+  // In memory first, so a box with no Redis behaves exactly as it did.
+  assert.match(SRV, /const local = authNonces\.get\(wallet\);\n\s+if \(local\) return local;/);
+  assert.match(SRV, /if \(!ch\) return res\.status\(400\)\.json\(\{ error: "that sign-in request expired; asking for a new one", retry: true \}\);/);
+  // Redeeming it clears both stores, so one signature cannot be replayed against the other.
+  assert.match(SRV, /async function dropNonce\(wallet\) \{\n\s+authNonces\.delete\(wallet\);/);
+});
+
+test("T36: the browser starts a stale sign-in over instead of reporting it", () => {
+  const CLIENT = fs.readFileSync("app/src/lib/api-client.js", "utf8");
+  assert.match(CLIENT, /if \(attempt >= 1 \|\| !\/expired\/i\.test\(e\.message \|\| ""\)\) throw e;/);
+  // ...once only: a wallet that will not produce a valid signature must not be asked forever.
+  assert.match(CLIENT, /for \(let attempt = 0; ; attempt\+\+\) \{/);
+  // And an error carries what the server said, so a caller can tell one refusal from another.
+  assert.match(CLIENT, /err\.status = r\.status; err\.body = e;/);
+});
+
+test("T36: what sign-in needs from the environment can be asked", () => {
+  // A session key that dies with the process, or a second instance that never saw the first's, is the
+  // difference between signing in working and working sometimes -- and the only thing that said so
+  // was one line in the boot log. No value is ever returned, only whether it is set.
+  assert.match(SRV, /app\.get\("\/api\/auth\/health"/);
+  assert.match(SRV, /jwtSecret: !!process\.env\.JWT_SECRET,/);
+  assert.match(SRV, /walletEncryptionKey: !!process\.env\.WALLET_ENCRYPTION_KEY,/);
+  assert.match(SRV, /nonceStore: redis \? "shared" : "memory",/);
+  assert.match(SRV, /instance: BOOT_ID,/);
+  // The probe must not leak the secrets it reports on: every environment value it touches is read
+  // through a double negation, so what leaves the route is a boolean and never a key.
+  const at = SRV.indexOf('app.get("/api/auth/health"');
+  assert.ok(at > 0);
+  const health = SRV.slice(at, SRV.indexOf("});", at) + 3);
+  for (const m of health.matchAll(/(!!)?process\.env\.[A-Z_]+/g)) {
+    assert.equal(m[1], "!!", `${m[0]} is reported as a value, not as presence`);
+  }
+});

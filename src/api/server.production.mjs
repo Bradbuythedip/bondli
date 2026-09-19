@@ -199,6 +199,11 @@ const connection = new Connection(RPC_URL, "confirmed");
 // Keys at rest and proof of ownership (src/velocity/HOSTED_DESIGN.md, DP1 and DP4).
 const vault = makeVault();
 const requireOwner = makeRequireOwner({ adminSecret: process.env.ADMIN_SECRET || null });
+// This process, as something a caller can compare between two requests: two different values
+// back from one URL is more than one instance serving, which is what turns an in-process
+// session key into an intermittent sign-in failure.
+const BOOT_ID = crypto.randomBytes(6).toString("hex");
+const BOOT_AT = Date.now();
 
 // ── RPC helper: retry with exponential backoff on 429 ──
 async function rpcRetry(fn, label = "rpc", maxRetries = 3) {
@@ -3782,19 +3787,68 @@ app.get("/api/trading-wallet/:wallet/debug", requireOwner, async (req, res) => {
 });
 
 // ── Wallet sign-in: prove ownership once, then every money route takes the Bearer token ──
-app.post("/api/auth/challenge", (req, res) => {
+// The challenge is issued by one request and redeemed by the next, and the two are not guaranteed to
+// reach the same process: behind one URL there can be more than one instance, and a deploy replaces
+// the one holding the map mid-sign. An in-memory nonce made signing in a coin flip -- the second call
+// answered "no challenge for this wallet", which the browser could do nothing with, and the user just
+// saw that logging in did not work. It is written where both can see it, and kept in memory too so a
+// box with no Redis behaves exactly as it did.
+const NONCE_TTL_S = 300;
+async function putNonce(wallet, ch) {
+  if (!redis) return;
+  try { await redis.set("nonce:" + wallet, JSON.stringify({ message: ch.message, nonce: ch.nonce }), { EX: NONCE_TTL_S }); } catch {}
+}
+async function takeNonce(wallet) {
+  const local = authNonces.get(wallet);
+  if (local) return local;
+  if (!redis) return null;
+  try {
+    const raw = await redis.get("nonce:" + wallet);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+async function dropNonce(wallet) {
+  authNonces.delete(wallet);
+  if (redis) { try { await redis.del("nonce:" + wallet); } catch {} }
+}
+
+app.post("/api/auth/challenge", async (req, res) => {
   const { wallet } = req.body || {};
   try { new PublicKey(wallet); } catch { return res.status(400).json({ error: "wallet must be a Solana public key" }); }
-  res.json({ ok: true, ...generateChallenge(wallet) });
+  const ch = generateChallenge(wallet);
+  await putNonce(wallet, ch);
+  res.json({ ok: true, ...ch });
 });
 app.post("/api/auth/verify", async (req, res) => {
   const { wallet, signature } = req.body || {};
-  const ch = wallet && authNonces.get(wallet);
-  if (!ch) return res.status(400).json({ error: "no challenge for this wallet; request one first" });
+  if (!wallet) return res.status(400).json({ error: "wallet required" });
+  const ch = await takeNonce(wallet);
+  // `retry: true` tells the browser this one is worth starting over rather than showing the user: a
+  // challenge that expired or was issued by another instance is fixed by asking for a new one.
+  if (!ch) return res.status(400).json({ error: "that sign-in request expired; asking for a new one", retry: true });
   if (!verifySolanaSignature(wallet, signature, ch.message)) return res.status(401).json({ error: "signature does not match the wallet" });
-  authNonces.delete(wallet);
+  await dropNonce(wallet);
   const tierInfo = resolveTier(wallet, await getUser(wallet));
   res.json({ ok: true, token: issueAuthToken(wallet, tierInfo.tier), tier: tierInfo.tier, wallet });
+});
+
+// What sign-in needs from the environment, without saying what any of it is. A session signed with a
+// key that dies with the process, or a second instance that never saw the first's key, is the whole
+// difference between "logging in works" and "logging in works sometimes", and until now the only
+// place that said so was one warning in the boot log.
+app.get("/api/auth/health", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    jwtSecret: !!process.env.JWT_SECRET,
+    walletEncryptionKey: !!process.env.WALLET_ENCRYPTION_KEY,
+    adminSecret: !!process.env.ADMIN_SECRET,
+    nonceStore: redis ? "shared" : "memory",
+    // Changes whenever this process does. Two different values from two calls means more than one
+    // instance is serving, which is what makes an in-process session key fail intermittently.
+    instance: BOOT_ID,
+    startedAt: BOOT_AT,
+  });
 });
 
 app.post("/api/trading-wallet/create", requireOwner, async (req, res) => {

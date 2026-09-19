@@ -17,11 +17,21 @@ class A {
       try {
         const p = window?.phantom?.solana || window?.solana;
         if (!p?.signMessage) throw new Error("wallet cannot sign");
-        const c = await this.f("/api/auth/challenge", { method: "POST", body: { wallet: this.w }, noauth: true });
-        const s = await p.signMessage(new TextEncoder().encode(c.message), "utf8");
-        const v = await this.f("/api/auth/verify", { method: "POST", body: { wallet: this.w, signature: b58(s.signature || s) }, noauth: true });
-        try { localStorage.setItem(TOK(this.w), v.token); } catch {}
-        return v.token;
+        // A challenge is issued by one request and redeemed by the next, and the two can land on
+        // different instances or straddle a deploy. The server says when that has happened; starting
+        // over costs one more signature prompt and is the difference between signing in and being
+        // told something the user cannot act on.
+        for (let attempt = 0; ; attempt++) {
+          const c = await this.f("/api/auth/challenge", { method: "POST", body: { wallet: this.w }, noauth: true });
+          const s = await p.signMessage(new TextEncoder().encode(c.message), "utf8");
+          try {
+            const v = await this.f("/api/auth/verify", { method: "POST", body: { wallet: this.w, signature: b58(s.signature || s) }, noauth: true });
+            try { localStorage.setItem(TOK(this.w), v.token); } catch {}
+            return v.token;
+          } catch (e) {
+            if (attempt >= 1 || !/expired/i.test(e.message || "")) throw e;
+          }
+        }
       } finally { this._signing = null; }
     })();
     return this._signing;
@@ -33,7 +43,9 @@ class A {
     if (!r.ok) {
       const e = await r.json().catch(() => ({ error: r.statusText }));
       if (r.status === 401 && e.auth_required && !o.noauth && !o._retried) { await this.signIn(); return this.f(p, { ...o, _retried: true }); }
-      throw new Error(e.error || `API ${r.status}`);
+      const err = new Error(e.error || `API ${r.status}`);
+      err.status = r.status; err.body = e;
+      throw err;
     }
     return r.json();
   }
