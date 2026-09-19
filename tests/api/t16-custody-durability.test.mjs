@@ -85,7 +85,9 @@ test("T16: a balance reading is only cached when every leg of it succeeded", () 
   assert.match(route, /prev && prev\.ethBalance != null \? prev\.ethBalance : null/);
   assert.match(route, /prev && prev\.usdcBalance != null \? prev\.usdcBalance : null/);
   // And every response the client cannot trust as live says so, naming each leg that is stale.
-  assert.match(route, /const staleLegs = \[ethFailed && "eth", usdcFailed && "arc"\]\.filter\(Boolean\)/);
+  // Solana joined the other two: its leg can now run out of budget rather than only failing, and a
+  // reading missing its SOL balance is exactly as partial as one missing its ETH (tests/api/t39).
+  assert.match(route, /const staleLegs = \[rpcFailed && "sol", ethFailed && "eth", usdcFailed && "arc"\]\.filter\(Boolean\)/);
   for (const marker of [/stale: staleLegs\.length \? staleLegs : null/, /stale: \["sol", "eth"\]/, /stale: \["tokens"\]/])
     assert.match(route, marker, `stale responses are labelled: ${marker}`);
   assert.match(route, /as_of: Date\.now\(\)/, "and dated");
