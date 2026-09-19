@@ -107,3 +107,46 @@ test("T40: the moment a feed came up is recorded wherever running is set", () =>
     assert.match(SRC, /async start\(\) \{\n\s+this\.running = true;/, `${v} assigns running directly`);
   }
 });
+
+test("T40: a view of a shared feed reports the shared feed's health, not a copy of it", async () => {
+  // One radar serves every user through a SharedFeedView, and the view used to take a COPY of the
+  // shared feed's health at the moment it attached:
+  //     async start() { ...; this.healthy = this.shared.healthy; }
+  // The shared feed calls markHealth(true) on every successful poll and the view never heard about
+  // it. A view that attached before the first poll returned -- which is every view, because starting
+  // a bot is what starts the feeds -- read as unhealthy for as long as it lived. All three venues go
+  // through this class, which is why all three went down together, thirty seconds after start:
+  //     02:02:19 blocked pumpfun: FEED_DOWN
+  //     02:02:19 blocked pons: FEED_DOWN
+  //     02:02:20 blocked arc: FEED_DOWN
+  const { SharedFeedView } = await import("../../src/velocity/hub.mjs");
+  NOW = 1_800_000_000_000;
+  const shared = new Feed({ venue: "pumpfun", clock: () => NOW });
+  shared.running = true;
+  const view = new SharedFeedView(shared, { clock: () => NOW });
+  await view.start();
+  assert.equal(view.healthy, false, "nothing has polled yet");
+
+  const { engine, sup } = rig(view);
+  engine.venues = { pumpfun: { feed: view } };
+  NOW += sup.feedGraceMs + 1;
+  shared.markHealth(true, "poll ok (60 scored, 3 changed)");
+  await sup.watchdog();
+  assert.equal(view.healthy, true, "the view sees the poll that succeeded");
+  assert.equal(engine.blocked.pumpfun, undefined, "and is not blocked for it");
+
+  // It follows the shared feed down as well as up.
+  shared.markHealth(false, "radar unreachable");
+  await sup.watchdog();
+  assert.equal(engine.blocked.pumpfun, "FEED_DOWN");
+  shared.markHealth(true, "poll ok");
+  await sup.watchdog();
+  assert.equal(engine.blocked.pumpfun, undefined);
+
+  // The view's grace is the FEED's uptime: a bot starting against a radar that has been up an hour
+  // is not looking at something that needs warming up.
+  const late = new SharedFeedView(shared, { clock: () => NOW });
+  await late.start();
+  assert.equal(late.upMs(), shared.upMs());
+  assert.ok(late.upMs() > sup.feedGraceMs, "it inherits the feed's age, not its own");
+});
