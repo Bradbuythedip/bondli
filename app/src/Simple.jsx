@@ -608,7 +608,11 @@ export default function Simple() {
       sBooted(true);
       if (r?.ok && r.tradingWallet) {
         sWhy(null);
-        sTw({ pubkey: r.tradingWallet, solBalance: Number(r.solBalance ?? r.sol ?? 0), tokenValueSol: Number(r.tokenValueSol || 0), evmAddress: r.evmAddress || null, ethBalance: r.ethBalance == null ? null : Number(r.ethBalance) });
+        // The address is the wallet; the balances are an attachment to it. A number that did not
+        // arrive is held as null and drawn as a dash, rather than as a confident zero or -- as it
+        // used to be -- as grounds for deciding there is no wallet at all.
+        const known = r.balancesKnown !== false;
+        sTw({ pubkey: r.tradingWallet, solBalance: known ? Number(r.solBalance ?? r.sol ?? 0) : null, tokenValueSol: Number(r.tokenValueSol || 0), evmAddress: r.evmAddress || null, ethBalance: r.ethBalance == null ? null : Number(r.ethBalance), usdcBalance: r.usdcBalance == null ? null : Number(r.usdcBalance), stale: r.stale || null });
       } else {
         // A wallet whose key is missing is still the user's wallet and its address still holds their
         // money, so it is reported rather than hidden behind an offer to make a new one.
@@ -827,7 +831,7 @@ export default function Simple() {
       {pk && tw && !running && <>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
           <span style={muted}>{t("panel.walletSol")}</span>
-          <span style={{ fontFamily: M, fontWeight: 800, fontSize: 22 }}>{tw.solBalance.toFixed(3)} SOL</span>
+          <span style={{ fontFamily: M, fontWeight: 800, fontSize: 22 }}>{tw.solBalance == null ? "…" : tw.solBalance.toFixed(3)} SOL</span>
         </div>
         <div onClick={() => copy(tw.pubkey)} title={t("copy.title")} style={{ fontFamily: M, fontSize: 12, color: T.dm, marginTop: 6, wordBreak: "break-all", cursor: "pointer", padding: "8px 10px", background: T.bg, borderRadius: 8, border: `1px solid ${T.bd}` }}>{tw.pubkey}{copied ? t("copy.done") : ""}</div>
         {/* Paper first: the cheapest way to find out whether this is worth funding. */}
@@ -859,7 +863,7 @@ export default function Simple() {
           </span>
         </div>
         {!funded && <div style={{ ...muted, marginTop: 8 }}>{t("panel.fund", { sol: MIN_BANKROLL_SOL, eth: MIN_BANKROLL_ETH, usdc: MIN_BANKROLL_USDC, drag: dragPct(SIZES[0], st?.status?.solPrice || 0).toFixed(0), good: GOOD_BANKROLL_SOL })}{t("panel.have", { sol: tw?.solBalance || 0, eth: tw?.ethBalance || 0 })}</div>}
-        {fundedSol && (tw?.solBalance || 0) < GOOD_BANKROLL_SOL && <div style={{ ...muted, marginTop: 8, color: T.yl }}>{t("panel.tight", { sol: (tw.solBalance).toFixed(2), good: GOOD_BANKROLL_SOL })}</div>}
+        {fundedSol && tw?.solBalance != null && tw.solBalance < GOOD_BANKROLL_SOL && <div style={{ ...muted, marginTop: 8, color: T.yl }}>{t("panel.tight", { sol: tw.solBalance.toFixed(2), good: GOOD_BANKROLL_SOL })}</div>}
         {!fundedSol && fundedEth && <div style={{ ...muted, marginTop: 8, color: T.yl }}>{t("panel.ethOnly", { sol: MIN_BANKROLL_SOL })}</div>}
         {tw.evmAddress && <>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginTop: 14 }}>

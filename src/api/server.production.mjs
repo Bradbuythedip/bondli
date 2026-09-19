@@ -206,7 +206,11 @@ const BOOT_ID = crypto.randomBytes(6).toString("hex");
 const BOOT_AT = Date.now();
 
 // ── RPC helper: retry with exponential backoff on 429 ──
-async function rpcRetry(fn, label = "rpc", maxRetries = 3) {
+// `deadline` is a timestamp past which retrying is pointless because nobody is still waiting. Four
+// attempts at eight seconds with 1s/2s/4s of backoff between them is thirty-nine seconds of patience
+// on behalf of a caller who gave up at twenty, and the work done after that moment is thrown away by
+// a socket that has already closed.
+async function rpcRetry(fn, label = "rpc", maxRetries = 3, deadline = 0) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
@@ -214,6 +218,10 @@ async function rpcRetry(fn, label = "rpc", maxRetries = 3) {
       const is429 = e.message?.includes("429") || e.message?.includes("Too Many Requests") || e.message?.includes("max usage");
       if (is429 && attempt < maxRetries) {
         const delay = Math.min(1000 * Math.pow(2, attempt), 8000); // 1s, 2s, 4s, 8s
+        if (deadline && Date.now() + delay >= deadline) {
+          console.warn(`[RPC-RETRY] ${label} got 429 and the caller's deadline is up; not retrying`);
+          throw e;
+        }
         console.warn(`[RPC-RETRY] ${label} got 429, retry ${attempt + 1}/${maxRetries} in ${delay}ms`);
         await new Promise(r => setTimeout(r, delay));
         continue;
@@ -221,6 +229,15 @@ async function rpcRetry(fn, label = "rpc", maxRetries = 3) {
       throw e;
     }
   }
+}
+
+/** Whatever `p` resolves to, or `fallback` once `ms` has gone by. Nothing here is worth waiting for
+ *  longer than the caller will wait for all of it together. */
+function within(ms, p, fallback = null) {
+  return Promise.race([
+    Promise.resolve(p).catch(() => fallback),
+    new Promise(r => setTimeout(() => r(fallback), Math.max(0, ms))),
+  ]);
 }
 
 // ── Balance cache (15s TTL) to avoid hammering RPC on every poll ──
@@ -3611,15 +3628,26 @@ app.get("/api/trading-wallet/:wallet", requireOwner, async (req, res) => {
   const cached = getCachedBalance(cacheKey);
   if (cached) return res.json(cached);
 
+  // A wallet's ADDRESS is known the moment the store answers; its balances take four chains and a
+  // token scan. Those were done first and the address was only reported once they finished, so a
+  // rate-limited Solana RPC -- four attempts at eight seconds with backoff between them, then PONS
+  // and Arc with no timeout at all -- ran well past the twenty seconds the browser waits. The
+  // request was aborted, the page concluded there was no wallet, and it offered to create the one
+  // the user already had. Everything below is now on a budget, and whatever has not arrived when
+  // the budget is spent is reported as not yet known rather than holding up the address.
+  const BALANCE_BUDGET_MS = 9_000;
+  const deadline = Date.now() + BALANCE_BUDGET_MS;
+  const left = () => Math.max(0, deadline - Date.now());
+
   // Fetch SOL balance with retry + timeout
   let solBalance = 0;
   let rpcFailed = false;
   try {
     const bal = await rpcRetry(() => {
       const p = connection.getBalance(new PublicKey(pubkey));
-      const t = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000));
+      const t = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), Math.min(8000, left() || 1)));
       return Promise.race([p, t]);
-    }, "getBalance:" + pubkey.slice(0, 8));
+    }, "getBalance:" + pubkey.slice(0, 8), 3, deadline);
     solBalance = bal / LAMPORTS_PER_SOL;
   } catch (e) {
     rpcFailed = true;
@@ -3633,7 +3661,12 @@ app.get("/api/trading-wallet/:wallet", requireOwner, async (req, res) => {
   const tokenDetails = [];
   try {
     const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-    const accts = await rpcRetry(() => connection.getParsedTokenAccountsByOwner(new PublicKey(pubkey), { programId: TOKEN_PROGRAM }), "getTokenAccounts:" + pubkey.slice(0, 8));
+    // The scan is the largest call on the page and the least urgent: what it adds is the value of
+    // tokens the bot is holding, and none of that is a reason to keep the wallet's own address
+    // waiting. It gets whatever is left of the budget and no more.
+    if (left() <= 0) throw new Error("no budget left for the token scan");
+    const accts = await within(left(), rpcRetry(() => connection.getParsedTokenAccountsByOwner(new PublicKey(pubkey), { programId: TOKEN_PROGRAM }), "getTokenAccounts:" + pubkey.slice(0, 8), 3, deadline), null);
+    if (!accts) throw new Error("the token scan did not answer inside the budget");
     const mintsToPrice = [];
     for (const ta of accts.value) {
       const info = ta.account.data.parsed.info;
@@ -3689,7 +3722,11 @@ app.get("/api/trading-wallet/:wallet", requireOwner, async (req, res) => {
   // the value it had before, with nothing to say the number had stopped being true.
   let ethBalance = null, ethFailed = false;
   if (tw.evmAddress) {
-    try { ethBalance = +Number(formatEther(await ponsProvider.getBalance(tw.evmAddress))).toFixed(6); }
+    try {
+      const raw = await within(Math.min(3000, left()), ponsProvider.getBalance(tw.evmAddress), null);
+      if (raw == null) throw new Error("no answer inside the budget");
+      ethBalance = +Number(formatEther(raw)).toFixed(6);
+    }
     catch (e) {
       ethFailed = true;
       const prev = getStaleCachedBalance(cacheKey);
@@ -3701,7 +3738,11 @@ app.get("/api/trading-wallet/:wallet", requireOwner, async (req, res) => {
   // pins the cache, exactly as the Robinhood Chain leg above.
   let usdcBalance = null, usdcFailed = false;
   if (tw.evmAddress) {
-    try { usdcBalance = +Number(formatEther(await arcProvider.getBalance(tw.evmAddress))).toFixed(4); }
+    try {
+      const raw = await within(Math.min(3000, left()), arcProvider.getBalance(tw.evmAddress), null);
+      if (raw == null) throw new Error("no answer inside the budget");
+      usdcBalance = +Number(formatEther(raw)).toFixed(4);
+    }
     catch (e) {
       usdcFailed = true;
       const prev = getStaleCachedBalance(cacheKey);
@@ -3709,8 +3750,10 @@ app.get("/api/trading-wallet/:wallet", requireOwner, async (req, res) => {
       console.log(`[WALLET-BAL] Arc balance failed for ${tw.evmAddress.slice(0, 10)}: ${e.message}${usdcBalance != null ? "; serving the last good reading" : ""}`);
     }
   }
-  const staleLegs = [ethFailed && "eth", usdcFailed && "arc"].filter(Boolean);
-  const result = { ok: true, tradingWallet: pubkey, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails, evmAddress: tw.evmAddress || null, ethBalance, usdcBalance, as_of: Date.now(), stale: staleLegs.length ? staleLegs : null };
+  const staleLegs = [rpcFailed && "sol", ethFailed && "eth", usdcFailed && "arc"].filter(Boolean);
+  // The address is the answer; the balances are an attachment to it. A page that has the address can
+  // show the wallet, and show a dash where a number has not arrived, which is the truth.
+  const result = { ok: true, tradingWallet: pubkey, balancesKnown: !rpcFailed, balance: totalBalance, solBalance: +solBalance.toFixed(6), tokenValueSol: +tokenValueSol.toFixed(6), tokens: tokenDetails, evmAddress: tw.evmAddress || null, ethBalance, usdcBalance, as_of: Date.now(), stale: staleLegs.length ? staleLegs : null };
   // Cache only a reading every leg of which succeeded. A partial one would be served for the next
   // fifteen seconds as though it were whole, and could then be served indefinitely as "last known
   // good" by the stale path above -- which is how a number stops moving and nobody notices.
