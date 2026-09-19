@@ -177,10 +177,15 @@ test("T31: the edge routes a dip to its own model, tier and plan, and the rug ga
 
 test("T31: the radar records a track, stamps the read, and serves the near-graduation list", () => {
   const SRC = fs.readFileSync(path.resolve("src/api/server.production.mjs"), "utf8");
-  assert.match(SRC, /pushTrack\(token\._track \|\| \(token\._track = \[\]\), now, token\.mcapUsd, \{ cv: pumpCurvePct\(token\.vSolInBondingCurve\) \}\);/);
+  // Curve progress on the track is the chain's when the chain has been read, and pump.fun's default
+  // maths only until then -- a token launched through another front end opens above 30 virtual SOL
+  // and would otherwise stamp every sample at a hundred per cent (tests/api/t35).
+  assert.match(SRC, /pushTrack\(token\._track \|\| \(token\._track = \[\]\), now, token\.mcapUsd, \{ cv: token\._curvePct != null \? token\._curvePct : pumpCurvePct\(token\.vSolInBondingCurve\) \}\);/);
   assert.equal((SRC.match(/pushTrack\(token\._track/g) || []).length, 2, "every place a market cap is recorded");
   assert.match(SRC, /function dipOf\(t, now = Date\.now\(\)\) \{\n  if \(t\._dipAt && now - t\._dipAt < 10_000\)/);
-  assert.match(SRC, /const graduating = both\.filter\(t => \{ const g = \(dipOf\(t, now\), t\._grad\); return g && g\.near && !g\.graduated; \}\)/);
+  // Same list, with one thing ahead of the read: a token whose price the chain has not confirmed is
+  // not served as nearly graduated, because a wrongly-quoted curve is exactly how it got there.
+  assert.match(SRC, /const graduating = both\.filter\(t => priceTrusted\(t, now\) && \(dipOf\(t, now\), t\._grad\) && t\._grad\.near && !t\._grad\.graduated\)/);
   assert.match(SRC, /tokens: rows, revivals, cooking, graduating,/);
   assert.match(SRC, /dips: rows\.filter\(r => r\.dip\?\.on\)\.length, nearGrad: graduating\.length/);
   // The row carries the read, and a row never carries a wallet.

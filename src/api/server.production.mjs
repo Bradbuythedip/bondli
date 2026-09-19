@@ -24,7 +24,7 @@
 
 import path from "node:path";
 import express from "express";
-import { pumpCurvePct } from "../autoape/gates/curve.js";
+import { pumpCurvePct, curvePctOf } from "../autoape/gates/curve.js";
 import { pushTrack, dipSignal, gradSignal, convictionOf } from "./dip.mjs";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -41,6 +41,7 @@ import { createToken } from "../engine/token-creator.mjs";
 import { resolveTier, buildProfitConfig, isOwnerWallet, registerOwner, calculateFee, calculateReferralSplit, getEffectiveFeeRate, recordTradeOutcome, generateWinCard, getTraderStats, addShareCredit, restoreTraderStats, PLATFORM_WALLET, NETWORK_FEE_PCT, PROFIT_LADDER } from "../engine/fee-engine.mjs";
 import { makeVault } from "../middleware/keyvault.mjs";
 import { detectMayhem, PUMP_PROGRAM as PUMP_PROGRAM_ID } from "./mayhem.mjs";
+import { reconcileFromCurve, implausible } from "./pumpcurve.mjs";
 import { CopycatIndex } from "./copycat.mjs";
 import { RevivalTracker, revivalFilter } from "./revival.mjs";
 import { tagFor } from "./verdict-tag.mjs";
@@ -1132,7 +1133,66 @@ async function probeMayhemCurve(mint) {
     const info = await connection.getAccountInfo(bc);
     const v = detectMayhem({ curve: info?.data || null });
     if (v.mayhem) markMayhem(mint, v.source);
+    reconcileCurve(mint, info?.data || null);
   } catch {}
+}
+
+/** The one place a token's price stops being the wire's opinion. The account carries the real total
+ *  supply and the real SOL raised, so both readings the wire gets wrong on a foreign launchpad are
+ *  replaced with the chain's, and the ratio between them is kept: PumpPortal will quote the same bad
+ *  market cap on every trade that follows, and it is divided out there rather than re-corrected here. */
+radar._reconciledLogged = 0;
+function reconcileCurve(mint, data) {
+  const t = radar.tokens.get(mint);
+  if (!t || !data) return null;
+  const r = reconcileFromCurve(data, { solPrice: solUsdPrice });
+  if (!r) return null;
+  t._supply = r.supply;
+  t._supplyRatio = r.supplyRatio && r.supplyRatio > 0 ? r.supplyRatio : 1;
+  t._curveFromChain = true;
+  t._curvePct = r.curvePct;
+  t._mcapSource = "chain";
+  t._priceUnknown = null;
+  if (r.mcapUsd > 0) { t.mcapSol = r.mcapSol; t.mcapUsd = r.mcapUsd; }
+  if (r.graduated) t.graduated = true;
+  // Worth saying out loud the first few times: this is the difference between a token the bot would
+  // have judged at a million dollars and the two thousand it is actually worth.
+  if (!r.standard && radar._reconciledLogged++ < 20) {
+    console.log(`[RADAR] curve reconciled: ${(t.name || mint).slice(0, 16)} ${mint.slice(0, 8)} supply ${Math.round(r.supply).toLocaleString()} (wire assumes 1B, overstates ${r.supplyRatio.toFixed(1)}x) -> $${r.mcapUsd.toLocaleString()}, curve ${Math.round((r.curvePct || 0) * 100)}% off ${r.realSol.toFixed(1)} SOL raised`);
+  }
+  return r;
+}
+
+/** The market cap the wire just quoted, divided by however much this token's curve is known to
+ *  overstate it. Before the chain has answered the ratio is 1 and nothing changes. */
+function wireMcapSol(t, mcSol) {
+  const ratio = Number(t?._supplyRatio);
+  return ratio > 0 && ratio !== 1 ? mcSol / ratio : mcSol;
+}
+
+/** Whether this token's price can be believed well enough to show it or to trade it. A curve that is
+ *  nearly full before anyone has bought, or a market cap in the hundreds of thousands with no trades
+ *  behind it, is not a fact about the token -- it is the wire quoting somebody else's constants. The
+ *  chain is asked (once, and again at most every two minutes while the reading stays impossible) and
+ *  until it answers the token is held out of the feed rather than published at a number we do not
+ *  believe. A token the chain HAS priced is trusted whatever it says: that reading is the real one. */
+radar._curveReprobeAt = new Map();
+function priceTrusted(t, now = Date.now()) {
+  if (!t) return false;
+  if (t._curveFromChain) return true;
+  // PONS and Arc read their own curves off their own chains: there is no wire opinion to correct,
+  // and a Solana bonding-curve probe on an EVM address is meaningless.
+  if (!radar.tokens.has(t.ca)) return true;
+  const why = implausible(t, { now, curvePct: curvePctOf(t) });
+  if (!why) { t._priceUnknown = null; return true; }
+  t._priceUnknown = why;
+  const last = radar._curveReprobeAt.get(t.ca) || 0;
+  if (now - last > 120_000) {
+    radar._curveReprobeAt.set(t.ca, now);
+    radar._mayhemProbed.delete(t.ca);      // the probe is the thing that can answer this
+    probeMayhemCurve(t.ca);
+  }
+  return false;
 }
 
 function subscribeToToken(mint) {
@@ -1467,16 +1527,21 @@ function processRadarMessage(data) {
       token.sellVolumeSol = (token.sellVolumeSol || 0) + sol;
     }
 
-    // Update mcap from PumpPortal data
+    // Update mcap from PumpPortal data, less whatever this token's curve is known to overstate.
     if (mcSol > 0) {
-      token.mcapSol = mcSol;
-      token.mcapUsd = Math.round(mcSol * solUsdPrice);
+      const corrected = wireMcapSol(token, mcSol);
+      token.mcapSol = corrected;
+      token.mcapUsd = Math.round(corrected * solUsdPrice);
+      if (token._priceUnknown && !implausible(token)) token._priceUnknown = null;
     }
 
     // Graduation detection: vSol must be very close to 85 SOL threshold
     // Previously used >= 79 which was too aggressive — tokens often pump to 79-83 then dump back.
     // Real graduation fires a migration event (handled separately). This is a safety net only.
-    if (vSol >= 84 && !token.graduated) {
+    // A curve the chain has read is believed over this: one that opened above pump.fun's 30 SOL is
+    // already past 84 with nothing raised, and calling that a graduation is how a brand-new token
+    // ends up in the near-graduation list at a million dollars.
+    if (vSol >= 84 && !token.graduated && !token._curveFromChain) {
       token.graduated = true;
       // Floor mcap to graduation threshold — bonding curve mcap underreports
       if (token.mcapUsd < gradMcUsd()) token.mcapUsd = gradMcUsd();
@@ -1488,7 +1553,7 @@ function processRadarMessage(data) {
     if (token.mcapUsd > 0) {
       token.spark.push(token.mcapUsd);
       if (token.spark.length > 60) token.spark = token.spark.slice(-60);
-      pushTrack(token._track || (token._track = []), now, token.mcapUsd, { cv: pumpCurvePct(token.vSolInBondingCurve) });
+      pushTrack(token._track || (token._track = []), now, token.mcapUsd, { cv: token._curvePct != null ? token._curvePct : pumpCurvePct(token.vSolInBondingCurve) });
     }
 
     // Track trade (hub = bot/router wallet: counts for volume, not for identity)
@@ -1564,7 +1629,7 @@ function applyMcapUpdate(mint, pair) {
     token.mcapSol = solUsdPrice > 0 ? Math.round(newMcap / solUsdPrice) : token.mcapSol;
     token.spark.push(token.mcapUsd);
     if (token.spark.length > 60) token.spark = token.spark.slice(-60);
-    pushTrack(token._track || (token._track = []), Date.now(), token.mcapUsd, { cv: pumpCurvePct(token.vSolInBondingCurve) });
+    pushTrack(token._track || (token._track = []), Date.now(), token.mcapUsd, { cv: token._curvePct != null ? token._curvePct : pumpCurvePct(token.vSolInBondingCurve) });
     token.raydiumPool = pair.pairAddress || true;
     // Push MC update to frontend immediately via WebSocket
     if (changed) broadcastWS({ event: "mcap-update", data: { ca: mint, mcap: token.mcapUsd, mcapSol: token.mcapSol } });
@@ -8278,6 +8343,10 @@ function buildScoredResponse(query = {}) {
     // dips-only bot was offered the launch feed and nothing else, judged nothing, and bought nothing.
     // A revival already had this bypass; the dip gets the same one. Nothing is waved through: the
     // engine's own gates still run every rug rule on the row.
+    // A price the token's own history contradicts is not a price. Held out until the chain answers,
+    // whatever the launch score says: a bot that buys a $2.5k token quoted at $1.1M sizes against a
+    // number that does not exist, and every gate above it was judging fiction.
+    if (!priceTrusted(t, now)) continue;
     const dip = !revival ? dipOf(t, now) : null;
     if (!revival && !dip?.dip) {
       if (!only && (t._apeScore || 0) < min) continue;
@@ -8374,6 +8443,9 @@ app.get("/api/radar/live", (req, res) => {
       // Stamped on the token itself, not on the copy the judge is handed, or the reading is thrown away.
       else { const qf = t._lastQf || null; slowCookOf(t, qf, now); verdict = judgeToken({ ...t, uniqueBuyers: { size: buyers } }, qf, t._lastDyn || null, aggression); tag = tagFor(verdict, !!t._slowCook); }
     }
+    // Before any judgement: is this a price at all? A row that says $1.1M when the token holds $2.5k
+    // is worse than a row that says nothing, because a number on a screen is read as a fact.
+    else if (!priceTrusted(t, now)) tag = "unpriced";
     else if (t._mayhem) tag = "mayhem"; else if (t._copyOf) tag = "copy";
     else if (ageS < (loose ? 20 : 30)) tag = "new";
     else if (buyers === 0) tag = "nobuyers";
@@ -8385,7 +8457,8 @@ app.get("/api/radar/live", (req, res) => {
     }
     // What the token is doing beyond its score: the dip read, and how far up the curve it is.
     const dp = dipOf(t, now), gd = t._grad || null;
-    return { ca: t.ca, chain: pons ? "robinhood" : arc ? "arc" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: Math.round(mc), buys: t.buys || 0, sells: t.sells || 0, buyers, smart: pons ? 0 : (arc ? arcIntel : walletIntel).smartBuyers(t.ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }).count, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, wave: !pons && !arc && t._copies ? radar._copycats.wave(t.ca, now) : null, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated,
+    return { ca: t.ca, chain: pons ? "robinhood" : arc ? "arc" : "solana", url: linkFor(t), name: t.name || "", ticker: t.ticker || "", image: t.image || "", createdAt: t.createdAt || now, mcapUsd: t._priceUnknown ? null : Math.round(mc),
+      priceUnknown: t._priceUnknown || null, priceSource: t._mcapSource || "wire", supply: t._supply || null, buys: t.buys || 0, sells: t.sells || 0, buyers, smart: pons ? 0 : (arc ? arcIntel : walletIntel).smartBuyers(t.ca, { sinceTs: t.createdAt || null, windowMs: 60_000 }).count, spark: (t.spark || []).slice(-30), score, tag, why: verdict && !verdict.enter ? verdict.reasons.slice(0, 2).join(", ") : "", tier: verdict?.tier || 0, copies: t._copies || 0, wave: !pons && !arc && t._copies ? radar._copycats.wave(t.ca, now) : null, revival: t._revival || null, slowCook: t._slowCook || null, graduated: !!t.graduated,
       dip: dp ? { on: dp.dip, phase: dp.phase, runPct: dp.runPct, drawdownPct: dp.drawdownPct, recoveryPct: dp.recoveryPct, buyers: dp.buyers } : null,
       grad: gd && gd.pct != null ? { pct: gd.pct, phase: gd.phase, ptsPerMin: gd.ptsPerMin, etaMin: gd.etaMin, stalled: gd.stalled } : null,
       hold: dp?.dip ? convictionOf(dp, gd).conviction === "hold" : false };
@@ -8412,7 +8485,7 @@ app.get("/api/radar/live", (req, res) => {
   // only when real money is deposited. Ordered by how soon it completes at the pace it is filling,
   // with the ones that stopped filling at the back -- an 85% token that stalled an hour ago is a trap,
   // not a queue position.
-  const graduating = both.filter(t => { const g = (dipOf(t, now), t._grad); return g && g.near && !g.graduated; })
+  const graduating = both.filter(t => priceTrusted(t, now) && (dipOf(t, now), t._grad) && t._grad.near && !t._grad.graduated)
     .sort((a, b) => (a._grad.stalled === b._grad.stalled ? (a._grad.etaMin ?? 1e9) - (b._grad.etaMin ?? 1e9) : a._grad.stalled ? 1 : -1))
     .slice(0, 12).map(row);
   res.json({
