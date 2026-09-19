@@ -6,6 +6,7 @@ import { TC, D, L, BLUE, CHIP_TINT, css } from "./lib/theme.js";
 import { M, S, imgUrl, X_URL, DISCORD_URL, TOKEN_SYMBOL, TOKEN_URL } from "./lib/constants.js";
 import a from "./lib/api-client.js";
 import { phantom, phantomAbsence } from "./lib/wallet.js";
+import { diagnose, copyDiagnostics } from "./lib/diagnose.js";
 import { shareCard, canShareCard } from "./lib/sharecard.js";
 import { useT, useLang, tEn, LANGS } from "./lib/i18n.js";
 
@@ -588,6 +589,18 @@ export default function Simple() {
   // Why there is no wallet to show, when there is none: "store down", "key missing", "the server
   // cannot create one", or the error the call itself threw. Null means the question does not arise.
   const [walletWhy, sWhy] = useState(null);
+  // One paste that says what actually happened. It re-runs the call that is failing so its real
+  // status and body are captured rather than described, and reports no key and no token -- only
+  // whether a session exists.
+  const [diag, sDiag] = useState(null);
+  const grabDiagnostics = async () => {
+    sBusy("diag");
+    try {
+      const text = await diagnose({ wallet: pk, label: "create wallet", attempt: () => a.ctw(pk) });
+      sDiag(text);
+      say(await copyDiagnostics(text) ? t("panel.diagCopied") : t("panel.diagShown"), "ok");
+    } catch (e) { say(e.message, "error"); } finally { sBusy(null); }
+  };
   const loadWallet = useCallback(async () => {
     if (!pk) return;
     try {
@@ -791,6 +804,7 @@ export default function Simple() {
       {pk && !tw && <>
         {/* The offer is made only when it can be honoured. Everything else says what is wrong and
             what to do about it, instead of a button that fails silently on the click. */}
+        {diag && <pre style={{ fontFamily: M, fontSize: 10, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-all", background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 8, padding: 10, marginBottom: 12, maxHeight: 260, overflow: "auto" }}>{diag}</pre>}
         {walletWhy?.keyMissing ? <>
           <div style={{ ...muted, marginBottom: 8 }}>{t("panel.keyMissing")}</div>
           {walletWhy.address && <div style={{ fontFamily: M, fontSize: 12, wordBreak: "break-all", background: T.sf, border: `1px solid ${T.bd}`, borderRadius: 8, padding: "8px 10px", marginBottom: 12 }}>{walletWhy.address}</div>}
@@ -806,6 +820,9 @@ export default function Simple() {
           <div style={{ ...muted, marginBottom: 12 }}>{t("panel.needsWallet")}</div>
           <Btn big T={T} onClick={createWallet} disabled={busy === "wallet"}>{busy === "wallet" ? t("panel.creating") : t("panel.create")}</Btn>
         </>}
+        <div onClick={busy ? undefined : grabDiagnostics} style={{ ...muted, fontSize: 11, marginTop: 12, textAlign: "center", cursor: busy ? "default" : "pointer", textDecoration: "underline" }}>
+          {busy === "diag" ? t("panel.diagRunning") : t("panel.diagnose")}
+        </div>
       </>}
       {pk && tw && !running && <>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
