@@ -8270,7 +8270,16 @@ function buildScoredResponse(query = {}) {
     const revival = !only && !all ? revivalOn(t, (qf = (() => { try { return extractQuickFeatures(t); } catch { return null; } })()), now) : null;
     if (revival) { t._revival = revival; if (radar._revivalLogged++ < 20) console.log(`[RADAR] revival: ${(t.name || t.ca).slice(0, 16)} ${t.ca.slice(0, 8)} ${Math.round((now - t.createdAt) / 3600_000)}h old, ${revival.buyers5m} buyers/5m vs ${revival.baseline5m}, curve +${revival.curveDelta}`); }
     else if (t._revival && now - t._revival.at > 10 * 60_000) t._revival = null;
-    if (!revival) {
+    // The dip is read BEFORE the launch filters, not after. Every filter below asks whether this is
+    // a good launch -- a score above the threshold, refreshed in the last ten seconds, clearing the
+    // base filter -- and a token in its first dip answers no to all three by construction: it is ten
+    // to forty minutes old, the scorer has moved on to the tokens created since, and its launch
+    // score decayed the moment the price gave back. Reading the dip after those filters meant a
+    // dips-only bot was offered the launch feed and nothing else, judged nothing, and bought nothing.
+    // A revival already had this bypass; the dip gets the same one. Nothing is waved through: the
+    // engine's own gates still run every rug rule on the row.
+    const dip = !revival ? dipOf(t, now) : null;
+    if (!revival && !dip?.dip) {
       if (!only && (t._apeScore || 0) < min) continue;
       // A score the background scorer has not refreshed within 10s is stale: the scorer skipped
       // the token (rug gate or base filter) and its old score must not be served as current.
@@ -8281,7 +8290,6 @@ function buildScoredResponse(query = {}) {
     if (!qf) { try { qf = extractQuickFeatures(t); } catch {} }
     // Stamped here, not only in judgeToken, so the row carries it to the live engine's own gates.
     if (!revival) slowCookOf(t, qf, now);
-    dipOf(t, now);
     try { dyn = scoreDynamics.get(t.ca) || null; } catch {}
     const { uniqueBuyers, trades, spark, _bradEval, _slowCookAt, ...rest } = t;
     const lastTrade = trades?.length ? trades[trades.length - 1] : null;
@@ -8306,7 +8314,11 @@ function buildScoredResponse(query = {}) {
       t_venue: lastTrade?.time || t.createdAt || now,
     });
   }
-  rows.sort((a, b) => (b.scores.apeScore || 0) - (a.scores.apeScore || 0));
+  // Ranked by launch score, EXCEPT that a dip or a revival leads. Both are served on their own model
+  // rather than on that score, and both carry a decayed one by the time they qualify, so sorting them
+  // in with the launches would push them past `limit` and the bypass above would buy nothing.
+  const jumps = r => (r.token._dip?.dip ? 2 : r.token._revival ? 1 : 0);
+  rows.sort((a, b) => jumps(b) - jumps(a) || (b.scores.apeScore || 0) - (a.scores.apeScore || 0));
   return { ts: now, solPrice: solUsdPrice, solPriceAt: solUsdPriceAt || null, gradMc: gradMcUsd(), count: rows.length, tokens: rows.slice(0, limit) };
 }
 app.get("/api/radar/scored", (req, res) => res.json(buildScoredResponse(req.query)));

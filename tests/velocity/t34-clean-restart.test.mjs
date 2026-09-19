@@ -156,3 +156,21 @@ test("T34: the dip is the hosted default, and the library stays permissive", () 
   assert.match(SITE, /localStorage\.getItem\("bondli_dips"\) !== "0"/);
   assert.match(SITE, /entries: dipsOnly \? "dips" : "all" \}\)/);
 });
+
+test("T34: a dip is read before the launch filters, and it leads the row order", () => {
+  // A dips-only bot judged nothing because the only way into the candidate feed was the launch
+  // funnel: a score above the threshold, refreshed in the last ten seconds, past the base filter.
+  // A token in its first dip fails all three by construction -- it is ten to forty minutes old and
+  // its launch score decayed the moment the price gave back -- so the dip read never even ran on it.
+  const SRV = fs.readFileSync("src/api/server.production.mjs", "utf8");
+  const scored = SRV.slice(SRV.indexOf("function buildScoredResponse"), SRV.indexOf("app.get(\"/api/radar/scored\""));
+  const dipAt = scored.indexOf("const dip = !revival ? dipOf(t, now) : null;");
+  const scoreAt = scored.indexOf("(t._apeScore || 0) < min) continue;");
+  assert.ok(dipAt > 0, "the dip is read inside buildScoredResponse");
+  assert.ok(scoreAt > dipAt, "and it is read BEFORE the score threshold, not after");
+  assert.match(scored, /if \(!revival && !dip\?\.dip\) \{/, "a dip bypasses the launch filters, as a revival already did");
+  // ...and it has to survive `limit`. Sorted in with the launches on a score it no longer has, every
+  // dip lands at the bottom of a hundred rows and is cut before the bot ever sees it.
+  assert.match(scored, /const jumps = r => \(r\.token\._dip\?\.dip \? 2 : r\.token\._revival \? 1 : 0\);/);
+  assert.match(scored, /rows\.sort\(\(a, b\) => jumps\(b\) - jumps\(a\) \|\|/);
+});
