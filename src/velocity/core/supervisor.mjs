@@ -8,13 +8,18 @@ import fs from "node:fs";
 import path from "node:path";
 
 export class Supervisor {
-  constructor({ engine, dataDir, clock = () => Date.now(), heartbeatMs = 10_000, watchdogMs = 2_000, deadmanMs = 60_000, alerter = null }) {
+  // feedGraceMs: how long a feed that has just come up is left alone. The watchdog runs every two
+  // seconds, and two seconds is less than a single poll on Arc or Robinhood Chain, so a feed was
+  // being judged before it could possibly have answered: every start blocked both venues and fired
+  // a warning about it.
+  constructor({ engine, dataDir, clock = () => Date.now(), heartbeatMs = 10_000, watchdogMs = 2_000, deadmanMs = 60_000, feedGraceMs = 30_000, alerter = null }) {
     this.engine = engine;
     this.dataDir = dataDir;
     this.clock = clock;
     this.heartbeatMs = heartbeatMs;
     this.watchdogMs = watchdogMs;
     this.deadmanMs = deadmanMs;
+    this.feedGraceMs = feedGraceMs;
     this.alerter = alerter;
     this._timers = [];
     this._beats = 0;
@@ -46,18 +51,30 @@ export class Supervisor {
     const e = this.engine;
     for (const [venue, v] of Object.entries(e.venues)) {
       if (e.store.venueMode(venue) === "off") continue;
-      const feedStale = v.feed ? v.feed.isStale() && v.feed.eventsEmitted > 0 : false;
-      const neverSeen = v.feed ? v.feed.eventsEmitted === 0 && v.feed.running && v.feed.ageMs() === Infinity : false;
+      const f = v.feed;
+      // Two things were conflated here. "This feed has produced no events" was read as "this feed is
+      // broken", and it is not: a chain with no launches in the last few minutes produces no events
+      // and is working perfectly. Arc and Robinhood Chain are quiet for minutes at a time, so both
+      // sat permanently blocked, an entry arriving on either would have been refused for the two
+      // seconds until the next watchdog, and every start wrote a warning saying so.
+      //
+      // The feed's own verdict is the signal. Each venue calls markHealth(true) on a poll that
+      // succeeded and markHealth(false) with the error when one did not, so `healthy` says whether
+      // the feed can see its chain -- which is the question -- rather than whether the chain
+      // happened to have anything on it.
+      const warmingUp = f ? f.running && f.upMs() < this.feedGraceMs : false;
+      const feedStale = f ? f.isStale() && f.eventsEmitted > 0 : false;
+      const feedDown = f ? f.running && !f.healthy && !warmingUp : false;
       const router = e.routerFor(venue);
       let health = { ok: true };
       if (router?.health) { try { health = await Promise.race([router.health(), new Promise(r => setTimeout(() => r({ ok: false, detail: "health timeout" }), 1_500))]); } catch (err) { health = { ok: false, detail: err.message }; } }
       e.store.state.routers[venue] = { ...health, checkedAt: this.clock() };
-      e.store.state.feeds[venue] = { ...(e.store.state.feeds[venue] || {}), stale: feedStale, ageMs: v.feed?.ageMs() === Infinity ? null : v.feed?.ageMs() };
+      e.store.state.feeds[venue] = { ...(e.store.state.feeds[venue] || {}), stale: feedStale, warmingUp, upMs: f?.upMs() === Infinity ? null : f?.upMs(), ageMs: f?.ageMs() === Infinity ? null : f?.ageMs() };
       const before = e.blocked[venue] || null;
-      const reason = feedStale ? "FEED_STALE" : neverSeen ? "FEED_NO_DATA" : !health.ok ? "ROUTER_DOWN" : null;
+      const reason = feedStale ? "FEED_STALE" : feedDown ? "FEED_DOWN" : !health.ok ? "ROUTER_DOWN" : null;
       if (reason) e.blocked[venue] = reason; else delete e.blocked[venue];
       if (reason !== before) {
-        e.ledger.append({ kind: "feed", venue, blocked: reason, detail: reason === "ROUTER_DOWN" ? health.detail : v.feed?.status() });
+        e.ledger.append({ kind: "feed", venue, blocked: reason, detail: reason === "ROUTER_DOWN" ? health.detail : f?.status() });
         if (reason) this.alerter?.send("warn", `${venue}: entries blocked (${reason}); exits keep running`);
       }
     }
