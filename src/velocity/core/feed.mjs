@@ -25,6 +25,9 @@ export class Feed extends EventEmitter {
     this.latency = new LatencyHistogram();
     this.lastEventAt = null;
     this.healthy = false;
+    // Set through the accessor below, which is what stamps startedAt.
+    this._running = false;
+    this.startedAt = null;
     this.running = false;
     this.watched = new Set();
     this.eventsEmitted = 0;
@@ -74,6 +77,20 @@ export class Feed extends EventEmitter {
   /** Instruments the engine holds; feeds may poll these more often. */
   watch(id) { this.watched.add(String(id)); }
   unwatch(id) { this.watched.delete(String(id)); }
+
+  // Every venue sets `running` directly rather than calling super.start(), so the moment a feed came
+  // up is recorded here, where all of them pass through. Without it there is no way to tell a feed
+  // that is down from one that started two seconds ago and has not had time to poll yet.
+  get running() { return this._running; }
+  set running(v) {
+    const on = !!v;
+    if (on && !this._running) this.startedAt = this.clock();
+    if (!on) this.startedAt = null;
+    this._running = on;
+  }
+
+  /** How long this feed has been up, or Infinity when it is not. */
+  upMs() { return this.startedAt == null ? Infinity : this.clock() - this.startedAt; }
 
   async start() { this.running = true; this.markHealth(true, "started"); }
   async stop() { this.running = false; this.markHealth(false, "stopped"); }
