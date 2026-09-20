@@ -477,6 +477,15 @@ export class PumpfunLiveRouter extends Router {
     catch (err) { return { ok: false, latencyMs: Date.now() - t0, detail: err.message }; }
   }
 
+  /** Every wallet's SOL, keyed by actor label. The root's balance stops being the whole story once
+   *  a fleet exists, so anything that reads a wallet total has to read them together. */
+  async fleetBalances() {
+    if (!this.ready) return {};
+    const out = {};
+    for (const a of this.allActors()) out[a.label] = await this._solBalance(a).catch(() => 0);
+    return out;
+  }
+
   /** Every wallet's holdings, summed per mint. Reconciliation compares this against the engine's
    *  book, and the engine's book holds one position per token however many wallets carry it — a
    *  read that saw only the root would report a fleet entry as a phantom and unwind it. */
