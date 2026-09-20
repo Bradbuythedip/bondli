@@ -117,6 +117,7 @@ export class PumpfunLiveRouter extends Router {
     this.secret = secret; this.rpcUrl = rpcUrl; this.slippageBps = slippageBps; this.buySlippagePct = buySlippagePct; this.sellSlippagePct = sellSlippagePct;
     this.priorityFeeSol = priorityFeeSol; this.confirmTimeoutMs = confirmTimeoutMs; this.lateConfirmMs = lateConfirmMs; this.tradeLocalUrl = tradeLocalUrl; this.fetch = fetchImpl; this.sleep = sleep;
     this.ready = false; this.publicKey = null;
+    this.fleet = []; // derived sub-wallets, empty until useFleet()
   }
 
   async init() {
@@ -134,6 +135,40 @@ export class PumpfunLiveRouter extends Router {
     return this.preflight();
   }
 
+  /** The root actor is defined by the keypair, not by init() having run: tests and recovery paths
+   *  set the keypair directly, and a root that only existed after a successful init would make them
+   *  sign as undefined. */
+  get root() { return { label: "root", keypair: this.keypair, publicKey: this.publicKey }; }
+  /** Every wallet that can hold this router's positions, root first. */
+  allActors() { return [this.root, ...(this.fleet || [])]; }
+
+  /** Resolve an actor: nothing, a label, or the actor itself. An unknown label is a bug, not a
+   *  fallback — silently signing with the root would put the whole stake on one address, which is
+   *  the exact thing the fleet exists to prevent. */
+  _actor(a) {
+    if (!a) return this.root;
+    if (typeof a === "string") {
+      const found = this.allActors().find(x => x.label === a);
+      if (!found) throw new Error(`unknown actor '${a}'`);
+      return found;
+    }
+    if (!a.keypair || !a.publicKey) throw new Error("actor needs a keypair and a publicKey");
+    return a;
+  }
+
+  /** Derive the fleet from the root secret. Nothing new is stored: the sub-keys are a pure function
+   *  of the secret already sealed in the vault (see core/fleet.mjs). Idempotent. */
+  async useFleet(size = 4) {
+    if (!this.ready) throw new Error("call init() first");
+    const { deriveFleet } = await import("../../core/fleet.mjs");
+    const seeds = deriveFleet({ rootSecret: this.secret.trim(), venue: "pumpfun", size });
+    this.fleet = seeds.map((seed, i) => {
+      const keypair = this.web3.Keypair.fromSeed(Uint8Array.from(seed));
+      return { label: `f${i}`, keypair, publicKey: keypair.publicKey.toBase58() };
+    });
+    return this.fleet.map(a => ({ label: a.label, publicKey: a.publicKey }));
+  }
+
   /** What the operator sees before the first real order: wallet, balance, RPC. */
   async preflight() {
     if (!this.ready) throw new Error("call init() first");
@@ -142,23 +177,23 @@ export class PumpfunLiveRouter extends Router {
     return { wallet: this.publicKey, balanceSol: lamports / 1e9, rpc: String(this.rpcUrl || "").split("?")[0] || "default", rpcLatencyMs: Date.now() - t0 };
   }
 
-  async _solBalance() { return (await this.connection.getBalance(this.keypair.publicKey, "confirmed")) / 1e9; }
+  async _solBalance(actor) { return (await this.connection.getBalance(this._actor(actor).keypair.publicKey, "confirmed")) / 1e9; }
 
-  async _tokenBalance(mint) {
+  async _tokenBalance(mint, actor) {
     const { TOKEN_PROGRAM_ID } = await import("@solana/spl-token");
-    const res = await this.connection.getParsedTokenAccountsByOwner(this.keypair.publicKey, { mint: new this.web3.PublicKey(mint) });
+    const res = await this.connection.getParsedTokenAccountsByOwner(this._actor(actor).keypair.publicKey, { mint: new this.web3.PublicKey(mint) });
     let qty = 0;
     for (const a of res?.value || []) qty += Number(a.account.data.parsed.info.tokenAmount.uiAmount) || 0;
     return qty;
   }
 
-  async _buildSignSend(body) {
+  async _buildSignSend(body, actor) {
     const res = await this.fetch(this.tradeLocalUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(8_000) });
     if (!res.ok) throw new Error(`trade builder ${res.status}: ${(await res.text().catch(() => "")).slice(0, 120)}`);
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (bytes.byteLength < 100) throw new Error("trade builder returned an empty transaction");
     const tx = this.web3.VersionedTransaction.deserialize(bytes);
-    tx.sign([this.keypair]);
+    tx.sign([this._actor(actor).keypair]);
     // The signature is ours before the RPC sees it: an RPC that forwards the transaction and then
     // drops the reply must not lose track of a transaction that can still land.
     let sig = null;
@@ -205,19 +240,19 @@ export class PumpfunLiveRouter extends Router {
   }
 
   /** Exact deltas from the confirmed transaction; null when the RPC does not have it yet. */
-  async _txDeltas(sig, mint) {
+  async _txDeltas(sig, mint, actor) {
     const tx = await this.connection.getTransaction(sig, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
-    return walletDeltasFromMeta(tx?.meta, { mint, owner: this.publicKey });
+    return walletDeltasFromMeta(tx?.meta, { mint, owner: this._actor(actor).publicKey });
   }
 
   /** Deltas for a confirmed transaction: the transaction record first, then balance reads that
    *  are retried until they move (a load-balanced RPC can answer from a node behind the slot). */
-  async _settle(sig, mint, { solBefore, qtyBefore, expectSign }) {
-    const d = await this._txDeltas(sig, mint).catch(() => null);
+  async _settle(sig, mint, { solBefore, qtyBefore, expectSign, actor }) {
+    const d = await this._txDeltas(sig, mint, actor).catch(() => null);
     if (d && !d.err && (expectSign === 0 || Math.sign(d.tokenDelta) === expectSign)) return { solDelta: d.solDelta, tokenDelta: d.tokenDelta, exact: true };
     let solAfter = solBefore, qtyAfter = qtyBefore;
     for (let i = 0; i < 8; i++) {
-      [solAfter, qtyAfter] = await Promise.all([this._solBalance().catch(() => solBefore), this._tokenBalance(mint).catch(() => null)]);
+      [solAfter, qtyAfter] = await Promise.all([this._solBalance(actor).catch(() => solBefore), this._tokenBalance(mint, actor).catch(() => null)]);
       // Both legs must have moved: a token read from one node and a SOL read from a node behind it
       // would book a sell with zero proceeds.
       const tokensMoved = qtyAfter != null && qtyAfter !== qtyBefore;
@@ -229,10 +264,10 @@ export class PumpfunLiveRouter extends Router {
   }
 
   /** The wallet's balance of a mint, re-read a few times before a zero is believed. */
-  async _tokenBalanceSettled(mint, { reads = 5 } = {}) {
+  async _tokenBalanceSettled(mint, { reads = 5, actor } = {}) {
     let qty = 0;
     for (let i = 0; i < reads; i++) {
-      qty = await this._tokenBalance(mint);
+      qty = await this._tokenBalance(mint, actor);
       if (qty > 0) return qty;
       if (i < reads - 1) await this.sleep(400);
     }
@@ -246,11 +281,11 @@ export class PumpfunLiveRouter extends Router {
    *  it reads a handful of transactions rather than the whole wallet.
    *  Returns { sig, solReceived, qty, at } for the most recent outgoing transfer since `since`, or
    *  null when nothing explains where the tokens went. */
-  async findRecentSale(mint, { since = 0, limit = 25 } = {}) {
+  async findRecentSale(mint, { since = 0, limit = 25, actor } = {}) {
     if (!this.ready) return null;
     const { getAssociatedTokenAddressSync } = await import("@solana/spl-token");
     let ata;
-    try { ata = getAssociatedTokenAddressSync(new this.web3.PublicKey(mint), this.keypair.publicKey, true); }
+    try { ata = getAssociatedTokenAddressSync(new this.web3.PublicKey(mint), this._actor(actor).keypair.publicKey, true); }
     catch { return null; }
     let sigs;
     try { sigs = await this.connection.getSignaturesForAddress(ata, { limit }); } catch { return null; }
@@ -259,7 +294,7 @@ export class PumpfunLiveRouter extends Router {
       if (s.err) continue;
       const at = s.blockTime ? s.blockTime * 1000 : null;
       if (since && at && at < since) break;
-      const d = await this._txDeltas(s.signature, mint).catch(() => null);
+      const d = await this._txDeltas(s.signature, mint, actor).catch(() => null);
       if (!d || d.err) continue;
       if (!(d.tokenDelta < 0)) continue; // a buy, or the account being closed
       return { sig: s.signature, solReceived: Math.max(0, d.solDelta), qty: -d.tokenDelta, at: at || this.clock() };
@@ -267,7 +302,7 @@ export class PumpfunLiveRouter extends Router {
     return null;
   }
 
-  async resolvePending({ instrument, side, sig, at, reference = {}, qtyHint = 0, stakeUsd = 0 }) {
+  async resolvePending({ instrument, side, sig, at, reference = {}, qtyHint = 0, stakeUsd = 0, actor }) {
     if (!this.ready) return failure({ id: sig }, "NOT_READY", "call init() first");
     const st = await this._awaitStatus(sig, 0, { history: true });
     const solPrice = Number(reference?.solPrice) || 0;
@@ -277,7 +312,7 @@ export class PumpfunLiveRouter extends Router {
       const expired = age > BLOCKHASH_LIFETIME_MS;
       return failure({ id: sig }, expired ? "EXPIRED" : "UNCONFIRMED", expired ? `tx ${sig} never landed` : `tx ${sig} still unconfirmed`, { expired, venue_ref: sig });
     }
-    let d = await this._txDeltas(sig, instrument).catch(() => null);
+    let d = await this._txDeltas(sig, instrument, actor).catch(() => null);
     const t = this.clock();
     if (!d) {
       if (age <= BLOCKHASH_LIFETIME_MS) return failure({ id: sig }, "UNCONFIRMED", `tx ${sig} confirmed but not yet readable`, { venue_ref: sig });
@@ -315,11 +350,12 @@ export class PumpfunLiveRouter extends Router {
     const solAmount = +(Number(order.stake_usd) / solPrice).toFixed(6);
     let sig = null;
     try {
-      const [solBefore, qtyBefore] = await Promise.all([this._solBalance(), this._tokenBalance(order.instrument).catch(() => 0)]);
+      const actor = this._actor(order.actor);
+      const [solBefore, qtyBefore] = await Promise.all([this._solBalance(actor), this._tokenBalance(order.instrument, actor).catch(() => 0)]);
       const need = solNeededForBuy(solAmount, { priorityFeeSol: this.priorityFeeSol, hasAccount: qtyBefore > 0, slippagePct: this.buySlippagePct });
-      if (solBefore < need) return failure(order, "INSUFFICIENT_SOL", `wallet has ${solBefore.toFixed(4)} SOL, order needs ${need.toFixed(4)}`);
-      const body = tradeLocalBody({ publicKey: this.publicKey, action: "buy", mint: order.instrument, amount: solAmount, denominatedInSol: true, slippagePct: this.buySlippagePct, priorityFeeSol: this.priorityFeeSol });
-      const sent = await this._buildSignSend(body);
+      if (solBefore < need) return failure(order, "INSUFFICIENT_SOL", `wallet ${actor.label} has ${solBefore.toFixed(4)} SOL, order needs ${need.toFixed(4)}`);
+      const body = tradeLocalBody({ publicKey: actor.publicKey, action: "buy", mint: order.instrument, amount: solAmount, denominatedInSol: true, slippagePct: this.buySlippagePct, priorityFeeSol: this.priorityFeeSol });
+      const sent = await this._buildSignSend(body, actor);
       sig = sent.sig;
       let t_filled = sent.t_filled;
       if (sent.unconfirmed) {
@@ -329,7 +365,7 @@ export class PumpfunLiveRouter extends Router {
         if (!st.confirmed) return failure(order, "UNCONFIRMED", `tx ${sig} not confirmed within ${this.confirmTimeoutMs + this.lateConfirmMs}ms`, { venue_ref: sig, t_sent: sent.t_sent });
         t_filled = this.clock();
       }
-      const d = await this._settle(sig, order.instrument, { solBefore, qtyBefore, expectSign: 1 });
+      const d = await this._settle(sig, order.instrument, { solBefore, qtyBefore, expectSign: 1, actor });
       const costSol = Math.max(0, -d.solDelta);
       const qty = d.tokenDelta > 0 ? d.tokenDelta : est.qty;
       // No readable delta yet: book the expected outflow rather than zero, so exposure is never understated.
@@ -342,7 +378,7 @@ export class PumpfunLiveRouter extends Router {
       // the numbers the EV gate and the Kelly sizer learn from. The engine subtracts it and books it
       // as a loss only if the reclaim fails.
       const rentSol = qtyBefore > 0 ? 0 : RENT_ATA_SOL;
-      return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "pumpfun", instrument: order.instrument, side: "BUY", price: qty > 0 ? notional / qty : est.price, qty, notional_usd: +notional.toFixed(4), slippage_bps: +est.slippage_bps.toFixed(2), fee_usd: +(Math.max(0, costSol - solAmount - rentSol) * solPrice).toFixed(4), rent_usd: +(rentSol * solPrice).toFixed(4), t_sent: sent.t_sent, t_filled, latency_ms: t_filled - sent.t_sent, venue_ref: sig, sol_spent: costSol, exact: d.exact } };
+      return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "pumpfun", instrument: order.instrument, side: "BUY", price: qty > 0 ? notional / qty : est.price, qty, notional_usd: +notional.toFixed(4), slippage_bps: +est.slippage_bps.toFixed(2), fee_usd: +(Math.max(0, costSol - solAmount - rentSol) * solPrice).toFixed(4), rent_usd: +(rentSol * solPrice).toFixed(4), t_sent: sent.t_sent, t_filled, latency_ms: t_filled - sent.t_sent, venue_ref: sig, sol_spent: costSol, exact: d.exact, actor: actor.label, wallet: actor.publicKey } };
     } catch (err) {
       return this._sendFailure(order, err, solPrice);
     }
@@ -353,20 +389,21 @@ export class PumpfunLiveRouter extends Router {
     const solPrice = Number(ctx.reference?.solPrice || position.reference?.solPrice) || 0;
     let sig = null;
     try {
+      const actor = this._actor(ctx.actor || position.actor);
       // A sell sent earlier that outlived its timeout: settle it before selling again.
       if (position.pendingExit?.sig) {
         const pendPct = Number(position.pendingExit.pct) || 100;
-        const prev = await this.resolvePending({ instrument: position.instrument, side: "SELL", sig: position.pendingExit.sig, at: position.pendingExit.at, reference: { ...(ctx.reference || position.reference || {}), solPrice }, qtyHint: (Number(position.remaining_qty ?? position.qty) || 0) * pendPct / 100 });
+        const prev = await this.resolvePending({ instrument: position.instrument, side: "SELL", sig: position.pendingExit.sig, at: position.pendingExit.at, reference: { ...(ctx.reference || position.reference || {}), solPrice }, qtyHint: (Number(position.remaining_qty ?? position.qty) || 0) * pendPct / 100, actor });
         if (prev.ok) return { ...prev, fill: { ...prev.fill, orderId: `${position.id}:close`, decisionId: position.decisionId, pending_pct: pendPct } };
         if (!prev.failure.expired) return prev; // still in flight: do not sell twice
       }
       // One empty read from a node behind the slot is not proof the tokens are gone.
-      const qtyBefore = await this._tokenBalanceSettled(position.instrument);
-      if (!(qtyBefore > 0)) return failure({ id: position.id }, "NO_POSITION", "no token balance to sell");
-      const solBefore = await this._solBalance();
+      const qtyBefore = await this._tokenBalanceSettled(position.instrument, { actor });
+      if (!(qtyBefore > 0)) return failure({ id: position.id }, "NO_POSITION", `wallet ${actor.label} has no token balance to sell`);
+      const solBefore = await this._solBalance(actor);
       const p = Math.min(100, Math.max(1, Math.round(pct)));
-      const body = tradeLocalBody({ publicKey: this.publicKey, action: "sell", mint: position.instrument, amount: `${p}%`, denominatedInSol: false, slippagePct: this.sellSlippagePct, priorityFeeSol: this.priorityFeeSol });
-      const sent = await this._buildSignSend(body);
+      const body = tradeLocalBody({ publicKey: actor.publicKey, action: "sell", mint: position.instrument, amount: `${p}%`, denominatedInSol: false, slippagePct: this.sellSlippagePct, priorityFeeSol: this.priorityFeeSol });
+      const sent = await this._buildSignSend(body, actor);
       sig = sent.sig;
       let t_filled = sent.t_filled;
       if (sent.unconfirmed) {
@@ -375,14 +412,14 @@ export class PumpfunLiveRouter extends Router {
         if (!st.confirmed) return failure({ id: position.id }, "UNCONFIRMED", `tx ${sig} not confirmed within ${this.confirmTimeoutMs + this.lateConfirmMs}ms`, { venue_ref: sig, t_sent: sent.t_sent });
         t_filled = this.clock();
       }
-      const d = await this._settle(sig, position.instrument, { solBefore, qtyBefore, expectSign: -1 });
+      const d = await this._settle(sig, position.instrument, { solBefore, qtyBefore, expectSign: -1, actor });
       // Tokens left but no SOL is visible yet: never book a sale at zero. The next attempt reads
       // the transaction itself.
       if (!(d.solDelta > 0) && d.tokenDelta != null && d.tokenDelta < 0) return failure({ id: position.id }, "UNCONFIRMED", `tx ${sig} sold ${-d.tokenDelta} tokens but proceeds are not readable yet`, { venue_ref: sig, t_sent: sent.t_sent });
       const proceedsSol = Math.max(0, d.solDelta);
       // A post-trade token read that failed says nothing: sold what was asked, not everything.
       const qty = d.tokenDelta == null ? qtyBefore * p / 100 : (Math.max(0, -d.tokenDelta) || qtyBefore * p / 100);
-      return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "pumpfun", instrument: position.instrument, side: "SELL", price: qty > 0 ? (proceedsSol * solPrice) / qty : 0, qty, notional_usd: +(proceedsSol * solPrice).toFixed(4), slippage_bps: null, fee_usd: 0, t_sent: sent.t_sent, t_filled, latency_ms: t_filled - sent.t_sent, venue_ref: sig, sol_received: proceedsSol, exact: d.exact } };
+      return { ok: true, fill: { orderId: `${position.id}:close`, decisionId: position.decisionId, venue: "pumpfun", instrument: position.instrument, side: "SELL", price: qty > 0 ? (proceedsSol * solPrice) / qty : 0, qty, notional_usd: +(proceedsSol * solPrice).toFixed(4), slippage_bps: null, fee_usd: 0, t_sent: sent.t_sent, t_filled, latency_ms: t_filled - sent.t_sent, venue_ref: sig, sol_received: proceedsSol, exact: d.exact, actor: actor.label, wallet: actor.publicKey } };
     } catch (err) {
       return this._sendFailure({ id: position.id }, err, solPrice);
     }
@@ -396,18 +433,19 @@ export class PumpfunLiveRouter extends Router {
    *
    *  Only accounts whose balance is exactly zero are closed, so this can never destroy a holding: the
    *  token program itself rejects closing a non-empty account, and the filter here means we never ask. */
-  async closeTokenAccount(mint) {
+  async closeTokenAccount(mint, actor) {
     if (!this.ready) throw new Error("call init() first");
+    const a = this._actor(actor);
     const { TOKEN_PROGRAM_ID, createCloseAccountInstruction } = await import("@solana/spl-token");
-    const res = await this.connection.getParsedTokenAccountsByOwner(this.keypair.publicKey, { mint: new this.web3.PublicKey(mint) });
+    const res = await this.connection.getParsedTokenAccountsByOwner(a.keypair.publicKey, { mint: new this.web3.PublicKey(mint) });
     const empty = (res?.value || []).filter(a => Number(a.account.data.parsed.info.tokenAmount.amount || 0) === 0);
     if (!empty.length) return { closed: 0, reclaimed_sol: 0, sig: null };
     const { Transaction } = this.web3;
     const tx = new Transaction();
-    for (const a of empty.slice(0, 8)) tx.add(createCloseAccountInstruction(a.pubkey, this.keypair.publicKey, this.keypair.publicKey, [], TOKEN_PROGRAM_ID));
-    tx.feePayer = this.keypair.publicKey;
+    for (const acct of empty.slice(0, 8)) tx.add(createCloseAccountInstruction(acct.pubkey, a.keypair.publicKey, a.keypair.publicKey, [], TOKEN_PROGRAM_ID));
+    tx.feePayer = a.keypair.publicKey;
     tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
-    tx.sign(this.keypair);
+    tx.sign(a.keypair);
     const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
     const st = await this._awaitStatus(sig, this.confirmTimeoutMs);
     if (st.err) throw this._chainError(sig, st.err);
@@ -416,15 +454,16 @@ export class PumpfunLiveRouter extends Router {
   }
 
   /** Plain SOL transfer from the trading wallet (the platform's performance fee). Returns the signature. */
-  async transferSol(toPubkey, sol) {
+  async transferSol(toPubkey, sol, actor) {
     if (!this.ready) throw new Error("call init() first");
+    const a = this._actor(actor);
     const lamports = Math.floor(Number(sol) * 1e9);
     if (!(lamports > 0)) throw new Error("transfer amount must be positive");
     const { SystemProgram, Transaction, PublicKey } = this.web3;
-    const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: this.keypair.publicKey, toPubkey: new PublicKey(toPubkey), lamports }));
-    tx.feePayer = this.keypair.publicKey;
+    const tx = new Transaction().add(SystemProgram.transfer({ fromPubkey: a.keypair.publicKey, toPubkey: new PublicKey(toPubkey), lamports }));
+    tx.feePayer = a.keypair.publicKey;
     tx.recentBlockhash = (await this.connection.getLatestBlockhash("confirmed")).blockhash;
-    tx.sign(this.keypair);
+    tx.sign(a.keypair);
     const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
     const st = await this._awaitStatus(sig, this.confirmTimeoutMs);
     if (st.err) throw this._chainError(sig, st.err);
@@ -438,10 +477,24 @@ export class PumpfunLiveRouter extends Router {
     catch (err) { return { ok: false, latencyMs: Date.now() - t0, detail: err.message }; }
   }
 
+  /** Every wallet's holdings, summed per mint. Reconciliation compares this against the engine's
+   *  book, and the engine's book holds one position per token however many wallets carry it — a
+   *  read that saw only the root would report a fleet entry as a phantom and unwind it. */
   async positions() {
     if (!this.ready) return [];
     const { TOKEN_PROGRAM_ID } = await import("@solana/spl-token");
-    const res = await this.connection.getParsedTokenAccountsByOwner(this.keypair.publicKey, { programId: TOKEN_PROGRAM_ID });
-    return (res?.value || []).map(a => ({ instrument: a.account.data.parsed.info.mint, qty: Number(a.account.data.parsed.info.tokenAmount.uiAmount) || 0 })).filter(p => p.qty > 0);
+    const byMint = new Map();
+    for (const actor of this.allActors()) {
+      const res = await this.connection.getParsedTokenAccountsByOwner(actor.keypair.publicKey, { programId: TOKEN_PROGRAM_ID });
+      for (const a of res?.value || []) {
+        const mint = a.account.data.parsed.info.mint;
+        const qty = Number(a.account.data.parsed.info.tokenAmount.uiAmount) || 0;
+        if (!(qty > 0)) continue;
+        const p = byMint.get(mint) || { instrument: mint, qty: 0, wallets: [] };
+        p.qty += qty; p.wallets.push({ actor: actor.label, qty });
+        byMint.set(mint, p);
+      }
+    }
+    return [...byMint.values()];
   }
 }
