@@ -475,7 +475,9 @@ test("T23: the platform fee leaves as a native transfer of USDC on the 18-decima
   assert.equal(c.s.native, 100n * 10n ** 18n - 1_500_000_000_000_000_000n);
   assert.equal(await r.transferQuote(feeWallet, 0.25), c.sent[1].hash);
   assert.deepEqual(await r.positions(), [], "nothing tracked yet");
-  r.track(TOKEN); assert.deepEqual(await r.positions(), [{ instrument: TOKEN, qty: Number(BAL) / 1e18 }]);
+  // Every wallet's holding, summed, with the per-wallet breakdown the fleet exit needs. With no
+  // fleet derived that is the root alone, which is what a single-wallet router always reported.
+  r.track(TOKEN); assert.deepEqual(await r.positions(), [{ instrument: TOKEN, qty: Number(BAL) / 1e18, wallets: [{ actor: "root", qty: Number(BAL) / 1e18 }] }]);
 });
 
 test("T23: the swap encoder round-trips and follows the Portal's currency order for either side", () => {
