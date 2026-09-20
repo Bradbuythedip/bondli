@@ -18,6 +18,8 @@ import { WeightStore, checksumFiles, verifyChecksums, retrain } from "./learner.
 import { LatencyHistogram } from "./events.mjs";
 import { statsFromOutcomes } from "./stats.mjs";
 import { promotionGate } from "./promote.mjs";
+import { planEntry, planExit } from "./fleet.mjs";
+import { executeFleetEntry, executeFleetExit } from "./fleet-entry.mjs";
 
 /** Venues that trade a bonding curve in a quote asset: pump.fun (SOL) and PONS on Robinhood Chain (ETH).
  *  Positions are marked by market cap, plans are the tiered layers, fills carry sol_spent / sol_received
@@ -183,6 +185,11 @@ export class Engine extends EventEmitter {
       if (mode !== "live" || !v.liveRouter || v.liveRouter.ready) continue;
       try {
         const pre = await v.liveRouter.init();
+        if (v.fleet?.size > 1 && typeof v.liveRouter.useFleet === "function") {
+          const wallets = await v.liveRouter.useFleet(v.fleet.size);
+          this.log("info", `${venue}: fleet of ${wallets.length} — ${wallets.map(w => `${w.label}=${String(w.publicKey).slice(0, 6)}`).join(" ")}`);
+          this.ledger.append({ kind: "venue", venue, mode: "live", by: "fleet", wallets: wallets.map(w => ({ actor: w.label, wallet: w.publicKey })) });
+        }
         const seeded = this.seedRouterKnowledge(venue);
         if (seeded) this.log("info", `${venue}: router told about ${seeded} instrument(s) this wallet has traded`);
         const h = await v.liveRouter.health();
@@ -857,6 +864,33 @@ export class Engine extends EventEmitter {
     this.ledger.append({ kind: "order", venue, orderId: `${venue}:halt`, instrument: "-", stage: "failed", reason: `HALTED:${gov.haltReason || "halt"}`, screened: true });
   }
 
+  /** The fleet's wallet labels for a venue, or null when this entry is a single order.
+   *  Paper routers have no wallets, so paper trading is unaffected — which also means a fleet's
+   *  behaviour never shows up in the paper record the promotion gate reads. That is correct: the
+   *  split changes execution, not the strategy the gate is judging. */
+  fleetFor(venue, router) {
+    const f = this.venues[venue]?.fleet;
+    if (!f?.size || f.size < 2) return null;
+    if (this.store.venueMode(venue) !== "live") return null;
+    const labels = (router?.fleet || []).map(a => a.label);
+    return labels.length > 1 ? labels : null;
+  }
+
+  /** How contested this entry is, from the only honest signal the decision carries: what kind of
+   *  entry it is. A launch is being raced by every sniper watching the same stream; a dip is minutes
+   *  old and a revival or a slow cook is hours old, and nobody is racing us into either. A measured
+   *  read (buyers in the last minute, buy share) is better and is not available here yet — the feed
+   *  has it, the decision does not carry it. Configurable per venue so an operator who knows better
+   *  can say so. */
+  contentionFor(venue, decision) {
+    const cfg = this.venues[venue]?.fleet?.lambda;
+    if (Number.isFinite(cfg)) return Math.max(0, Math.min(1, cfg));
+    const key = String(decision.plan_key || decision.model || "");
+    if (key.includes("dip")) return 0.25;
+    if (key.includes("revival") || key.includes("slowcook")) return 0.1;
+    return 0.8; // a launch: every second of stagger is a worse fill
+  }
+
   /** True when this instrument could not be entered even with a perfect score. */
   cannotEnter(venue, instrument, at) {
     return this.inflight.has(instrument) || this.pendingBuys.has(instrument)
@@ -893,8 +927,27 @@ export class Engine extends EventEmitter {
     const t_sent = this.clock();
     this.ledger.append({ kind: "order", venue, orderId, decisionId: decision.id, stage: "sent", t_sent, instrument: inst, side: "BUY", stake_usd: stake, legs: order.legs?.length || 0 });
     this.latency[venue].send.record(Math.max(0, t_sent - decision.t_decided));
+    const fleet = this.fleetFor(venue, router);
+    // Planned and recorded outside the try, so a bad plan is a loud error rather than something that
+    // reads like the router refusing the order.
+    let plan = null;
+    if (fleet) {
+      const lambda = this.contentionFor(venue, decision);
+      // The slice floor is a cost question, not a risk one, so it is not the venue's min_stake_usd:
+      // that is the smallest whole position the gate will take, and using it here would mean a
+      // fleet almost never slices. What matters is that the fixed cost of an extra transaction
+      // stays small against the slice — on pump.fun that is a base and priority fee of about $0.06,
+      // since the token-account rent is a refundable deposit rather than a cost.
+      plan = planEntry({ stake_usd: stake, wallets: fleet, lambda, minSliceUsd: this.venues[venue]?.fleet?.minSliceUsd ?? 5, maxImpactBps: order.max_slippage_bps ?? 800, seed: orderId });
+      this.ledger.append({ kind: "order", venue, orderId, decisionId: decision.id, stage: "sliced", lambda, slices: plan.slices.map(x => ({ actor: x.wallet, stake_usd: x.stake_usd, at_ms: x.at_ms })) });
+    }
     let r;
-    try { r = await router.submit(order); } catch (err) { r = { ok: false, failure: { orderId, code: "ROUTER_THREW", reason: err.message } }; }
+    try {
+      r = plan
+        ? await executeFleetEntry({ plan, order, submit: o => router.submit(o), sleep: ms => new Promise(res => setTimeout(res, ms)) })
+        : await router.submit(order);
+      if (r.aborted) this.log("warn", `${venue} ${inst}: ${r.aborted.reason}`);
+    } catch (err) { r = { ok: false, failure: { orderId, code: "ROUTER_THREW", reason: err.message } }; }
     this.inflight.delete(inst);
     if (!r.ok) {
       this.ledger.append({ kind: "order", venue, orderId, decisionId: decision.id, stage: r.unwound ? "unwound" : "failed", reason: r.failure.reason, code: r.failure.code, venue_ref: r.failure.venue_ref || null, unwound: r.unwound || null });
@@ -953,6 +1006,9 @@ export class Engine extends EventEmitter {
       sol_spent: fill.sol_spent ?? null, sol_received: 0,
       // The buy's own transaction. A public callout is only worth anything with this on it.
       venue_ref: fill.venue_ref || null,
+      // Which wallets carry it. Null for a single-wallet entry, and every exit path checks for that
+      // rather than assuming a fleet, so a position opened before this existed still closes.
+      wallets: fill.wallets?.length ? fill.wallets.map(w => ({ actor: w.actor, qty: w.qty })) : null,
     };
     this.ledger.append({ kind: "fill", venue, orderId, decisionId: decision.id, positionId: position.id, side: "BUY", instrument: inst, price: fill.price, qty: fill.qty, notional_usd: fill.notional_usd, fee_usd: fill.fee_usd || 0, slippage_bps: fill.slippage_bps, latency_ms: fill.latency_ms, venue_ref: fill.venue_ref, sol_spent: fill.sol_spent ?? null, exact: fill.exact ?? null, plan: { venue: plan.venue, key: plan.key, mode: plan.mode }, paper: !!fill.paper });
     this.ledger.append({ kind: "order", venue, orderId, decisionId: decision.id, stage: "filled", positionId: position.id });
@@ -1056,6 +1112,20 @@ export class Engine extends EventEmitter {
     } else if (p.legs?.length) {
       r = { ok: true, fill: { price: null, qty: p.legs.length, notional_usd: p.legs.reduce((s, l) => s + l.qty, 0), fee_usd: 0, t_sent: this.clock(), t_filled: this.clock(), latency_ms: 0, paper: true } };
       for (const l of p.legs) await router.close({ ...p, instrument: l.instrument, id: `${p.id}:${l.instrument}` }, 100, { reference: { book: { bids: [{ price: 1, size: l.qty }] } } });
+    } else if (p.wallets?.length > 1) {
+      // The ladder says how much of the position to sell; planExit says which wallets sell it and in
+      // what order. Signal and multiplier stay at their defaults until the engine carries a flow
+      // read — largest-first with a stagger is the part that pays for itself without one.
+      const { legs } = planExit({ holdings: p.wallets.map(w => ({ wallet: w.actor, qty: w.qty })), pct, seed: `${p.id}:${reason}` });
+      r = await executeFleetExit({ legs, position: p, close: (pp, pc, ctx) => router.close(pp, pc, { ...ctx, reference }), sleep: ms => new Promise(res => setTimeout(res, ms)) });
+      if (r.ok && r.fill.wallets) {
+        // What each wallet has left. A rung that empties one wallet must not send it a leg again:
+        // the leg would fail NO_POSITION and count towards the terminal-failure tally for a position
+        // that is selling perfectly well out of the others.
+        const sold = new Map(r.fill.wallets.map(w => [w.actor, w.qty]));
+        p.wallets = p.wallets.map(w => ({ ...w, qty: Math.max(0, w.qty - (sold.get(w.actor) || 0)) })).filter(w => w.qty > 1e-12);
+        if (!p.wallets.length) p.wallets = null;
+      }
     } else {
       r = await router.close(p, pct, { reference });
     }

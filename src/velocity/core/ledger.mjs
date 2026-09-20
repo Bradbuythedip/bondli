@@ -17,7 +17,9 @@ export const RECORD_KINDS = Object.freeze([
 ]);
 
 // Order lifecycle stages, in order. The stage reached is what a crash reveals.
-export const ORDER_STAGES = Object.freeze(["sized", "sent", "filled", "failed", "unwound"]);
+// "sliced" records a fleet entry's plan before the first slice is sent, so an abort halfway
+// through it can be explained afterwards from the ledger alone.
+export const ORDER_STAGES = Object.freeze(["sized", "sent", "sliced", "filled", "failed", "unwound"]);
 
 // How much of each kind we keep in memory. Outcomes, exits and fills are the
 // records every realized statistic is computed from, and they are rare: a live
