@@ -184,27 +184,66 @@ export class FleetTrader extends EventEmitter {
     this.emit("trade", { token: session.token, role: w.role, side, eth: side === "buy" ? (r.quoteIn != null ? toEth(r.quoteIn) : ethPlanned) : toEth(r.quoteOut || 0n), tx: r.hash, engine });
   }
 
+  /**
+   * One trade at a time per wallet.
+   *
+   * Every trade here reads a balance and then acts on it, and several engines drive the same wallets
+   * at once -- the volume engine, the dev-sell controller, the fallback sell loop and the auto-rug,
+   * which fires every holder together with Promise.allSettled. Two trades from one address that
+   * overlap race each other twice over. In the simulator the second reads a balance the first is
+   * about to change, which is the observed "insufficient tokens: 6444917 < 8423397" during a rug. On
+   * a real chain it is worse and quieter: both transactions are signed against the same nonce, so
+   * one of them is replaced or dropped, and the one that vanishes is as likely to be the sell as the
+   * buy. A rug sell that misses is the one sell there is no second chance at, because the price it
+   * was aiming at is the price the other sells just moved.
+   *
+   * So a wallet's trades queue. The lock is per address and is released in a finally, and it is held
+   * across the read AND the send, which is the only span where the race exists.
+   */
+  _lock(session, address) {
+    const locks = session._walletLocks || (session._walletLocks = new Map());
+    const prev = locks.get(address) || Promise.resolve();
+    let release;
+    const held = new Promise(r => { release = r; });
+    locks.set(address, prev.then(() => held));
+    return prev.then(() => release);
+  }
+
+  /** Wait until no wallet has a trade in flight. stop() on an engine only sets a flag; the trade it
+   *  already started is still going, and reading balances before it lands is what made the rug race. */
+  async _quiesce(session) {
+    const locks = session._walletLocks;
+    if (!locks?.size) return;
+    await Promise.allSettled([...locks.values()]);
+  }
+
   /** Buy `eth` worth from a wallet. Returns { ok, ethIn, tokens, hash } or { ok:false, error }. */
   async _executeBuy(session, w, eth, engine = "") {
     if (!(eth >= session.minTrade)) return { ok: false, error: "below minimum trade" };
-    const bal = toEth(await session.venue.ethBalance(w.address));
-    if (bal < eth + session.gasReserve) return { ok: false, error: `wallet has ${bal.toFixed(6)} ETH, needs ${(eth + session.gasReserve).toFixed(6)}` };
-    const r = await session.venue.buy(w.wallet, ethToWei(eth), { slippagePct: session.fleetConfig.slippagePct });
-    if (!r.ok) return r;
-    this._book(session, w, "buy", r, eth, engine);
-    return { ok: true, ethIn: r.quoteIn != null ? toEth(r.quoteIn) : eth, tokens: r.tokensOut != null ? toTokens(r.tokensOut) : null, hash: r.hash, graduated: !!r.graduated };
+    const release = await this._lock(session, w.address);
+    try {
+      const bal = toEth(await session.venue.ethBalance(w.address));
+      if (bal < eth + session.gasReserve) return { ok: false, error: `wallet has ${bal.toFixed(6)} ETH, needs ${(eth + session.gasReserve).toFixed(6)}` };
+      const r = await session.venue.buy(w.wallet, ethToWei(eth), { slippagePct: session.fleetConfig.slippagePct });
+      if (!r.ok) return r;
+      this._book(session, w, "buy", r, eth, engine);
+      return { ok: true, ethIn: r.quoteIn != null ? toEth(r.quoteIn) : eth, tokens: r.tokensOut != null ? toTokens(r.tokensOut) : null, hash: r.hash, graduated: !!r.graduated };
+    } finally { release(); }
   }
   /** Sell a fraction of what the wallet holds. Returns { ok, ethOut, emptied, hash } or { ok:false }. */
   async _executeSell(session, w, fraction, engine = "") {
-    const held = await session.venue.tokenBalance(w.address);
-    if (held === 0n) return { ok: false, error: "no tokens" };
-    const f = Math.max(0, Math.min(1, fraction));
-    const units = f >= 0.999 ? held : held * BigInt(Math.floor(f * 1e6)) / 1_000_000n;
-    if (units === 0n) return { ok: false, error: "too small" };
-    const r = await session.venue.sell(w.wallet, units, { slippagePct: session.fleetConfig.slippagePct });
-    if (!r.ok) return r;
-    this._book(session, w, "sell", r, 0, engine);
-    return { ok: true, ethOut: toEth(r.quoteOut), emptied: units === held, hash: r.hash };
+    const release = await this._lock(session, w.address);
+    try {
+      const held = await session.venue.tokenBalance(w.address);
+      if (held === 0n) return { ok: false, error: "no tokens" };
+      const f = Math.max(0, Math.min(1, fraction));
+      const units = f >= 0.999 ? held : held * BigInt(Math.floor(f * 1e6)) / 1_000_000n;
+      if (units === 0n) return { ok: false, error: "too small" };
+      const r = await session.venue.sell(w.wallet, units, { slippagePct: session.fleetConfig.slippagePct });
+      if (!r.ok) return r;
+      this._book(session, w, "sell", r, 0, engine);
+      return { ok: true, ethOut: toEth(r.quoteOut), emptied: units === held, hash: r.hash };
+    } finally { release(); }
   }
   /** A buy followed by a sell of the same tokens: activity on the chart. */
   async _executeVolumeTrade(session, w, eth) {
@@ -354,6 +393,10 @@ export class FleetTrader extends EventEmitter {
     if (session._rugDone) return session._rugDone; // one rug per session; a close and the drought can both ask
     session._rugDone = (async () => {
       session.running = false; session._volumeEngine?.stop(); session.gameState?.stop();
+      // stop() only sets a flag. Whatever was already in flight is still going, and every balance
+      // read below is wrong until it lands -- which is exactly how a rug sell used to be sized
+      // against tokens a volume sell had already spent.
+      await this._quiesce(session);
       const holders = [session.devWallet, ...session.fleetWallets.filter(w => w.address !== session.devWallet.address)];
       // A wallet that spent itself down to less than one sell cannot sell. Top it up from the master
       // first: the tokens are worth more than the gas, and without this its position is simply stuck.
@@ -365,7 +408,16 @@ export class FleetTrader extends EventEmitter {
       const results = await Promise.allSettled(holders.map(async (w) => { const r = await this._executeSell(session, w, 1, why); if (r.ok) log(`[${why.toUpperCase()}] ${w.role} sold → ${r.ethOut.toFixed(5)} ETH`); else if (r.error !== "no tokens") log(`[${why.toUpperCase()}] ${w.role} sell failed: ${r.error}`); return r; }));
       const sold = results.filter(r => r.status === "fulfilled" && r.value.ok).length;
       // a sell can be refused (graduated, slippage): try once more, sequentially and wider
-      for (const w of holders) { if ((await venue.tokenBalance(w.address)) > 0n) { const r = await venue.sell(w.wallet, await venue.tokenBalance(w.address), { slippagePct: 50 }); if (r.ok) { this._book(session, w, "sell", r, 0, why); log(`[${why.toUpperCase()}] ${w.role} sold on retry → ${toEth(r.quoteOut).toFixed(5)} ETH`); } else log(`[${why.toUpperCase()}] ${w.role} still holds tokens: ${r.error}`); } }
+      for (const w of holders) {
+        const release = await this._lock(session, w.address);
+        try {
+          const left = await venue.tokenBalance(w.address);
+          if (left === 0n) continue;
+          const r = await venue.sell(w.wallet, left, { slippagePct: 50 });
+          if (r.ok) { this._book(session, w, "sell", r, 0, why); log(`[${why.toUpperCase()}] ${w.role} sold on retry → ${toEth(r.quoteOut).toFixed(5)} ETH`); }
+          else log(`[${why.toUpperCase()}] ${w.role} still holds tokens: ${r.error}`);
+        } finally { release(); }
+      }
       await session.sleep(1000);
       const sw = await this._sweep(session);
       const masterBalance = toEth(await venue.ethBalance(session.master.address));
