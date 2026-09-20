@@ -109,3 +109,46 @@ test("T4: the same seed replays the same run", async () => {
   const a = await createRun("quiet", 11), b = await createRun("quiet", 11);
   assert.equal(a.rep.netEth, b.rep.netEth); assert.equal(a.rep.trades, b.rep.trades); assert.equal(a.stats.external.wallets, b.stats.external.wallets);
 });
+
+test("T4: a session is reported from both sides of the table", async () => {
+  // netEth is the fleet's wallets and nothing else. That is the right number on somebody else's
+  // launchpad -- there the curve fee is a cost and it is gone. On our own it is the wrong one: the
+  // fee goes to the factory and the creator tax to the creator, and we are both, so it is a transfer
+  // between two pockets we own. Judging the fleet by netEth alone reads a profitable session as a
+  // losing one, and would tune the fleet away from a configuration that works.
+  //
+  // Measured on the default run before this existed: net -0.0192 ETH (-6.4%), against 0.0970 ETH the
+  // launchpad took. The same session is +25.9% from the operator's side.
+  const { rep } = await createRun("organic", 7);
+  assert.ok(rep.protocolTake, "the report says what the launchpad took");
+  const take = rep.protocolTake;
+
+  // The identity: the operator's net is the fleet's net plus what came back.
+  assert.ok(Math.abs(rep.operatorNetEth - (rep.netEth + take.returnedEth)) < 1e-6,
+    `operator ${rep.operatorNetEth} = fleet ${rep.netEth} + returned ${take.returnedEth}`);
+  assert.ok(rep.operatorNetEth > rep.netEth, "and it is the larger of the two whenever anything traded");
+
+  // No double counting. The fleet's own fees are already a cost inside netEth, and they are part of
+  // what came back, so adding the take once is exactly right -- but the crowd's share must be the
+  // remainder and not an invention.
+  assert.ok(Math.abs((take.fromFleetEth + take.fromCrowdEth) - (take.feeEth + take.taxEth + take.snipeEth)) < 1e-6);
+  assert.ok(Math.abs(take.fromFleetEth - rep.feesEth) < 1e-6, "the fleet's share is exactly what its own ledger booked");
+  assert.ok(take.fromCrowdEth >= 0, "and the crowd's share is never negative");
+
+  // The assumption is named rather than buried: this only holds because we own the launchpad.
+  assert.equal(take.ownsLaunchpad, true);
+  assert.equal(take.isCreator, true);
+});
+
+test("T4: on somebody else's launchpad the fee is gone, and the report says so", async () => {
+  // The same arithmetic with the assumption removed. A fee paid to a launchpad we do not own is a
+  // cost like any other, and the operator's net collapses back to the fleet's.
+  const { rep, ft, r } = await createRun("organic", 11);
+  const session = r.session;
+  session.ownsLaunchpad = false; session.isCreator = false;
+  const theirs = await ft.report(session.token);
+  assert.equal(theirs.protocolTake.ownsLaunchpad, false);
+  assert.equal(theirs.protocolTake.returnedEth, 0, "nothing comes back");
+  assert.ok(theirs.operatorNetEth <= theirs.netEth, "and the operator is no better off than the fleet");
+  assert.ok(rep.operatorNetEth > theirs.operatorNetEth, "which is the whole difference between the two cases");
+});

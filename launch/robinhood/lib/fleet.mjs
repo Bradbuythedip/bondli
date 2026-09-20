@@ -521,7 +521,37 @@ export class FleetTrader extends EventEmitter {
     const stranded = walletEth.reduce((a, w) => a + w.eth, 0);
     const info = await venue.curveInfo().catch(() => null);
     const net = master + stranded - s.masterStartEth;
-    return { id: s.id, mode: s.mode, token: s.token, phase: s.phase, exitReason: s.exitReason, elapsedSec: Math.round(((s.endedAt || venue.now()) - s.startTime) / 1000), budgetEth: s.budgetEth, masterStartEth: +s.masterStartEth.toFixed(6), masterEndEth: +master.toFixed(6), strandedEth: +stranded.toFixed(6), netEth: +net.toFixed(6), netPct: +((net / s.budgetEth) * 100).toFixed(2), ethSpent: +s.totalEthSpent.toFixed(6), ethRecovered: +s.totalEthRecovered.toFixed(6), feesEth: +s.feesEth.toFixed(6), gasEth: +s.gasEth.toFixed(6), launchFeeEth: s.launchFee, trades: s.tradeCount, devSells: s._devSellCtrl?.summary() || null, orchestrator: s._orchestrator?.getStats() || null, volume: s._volumeEngine?.snapshot() || null, autoRug: s._autoRug?.snapshot() || null, gameState: s.gameState?.snapshot() || null, curve: info ? { mcapEth: +info.mcapEth.toFixed(5), progress: +info.progress.toFixed(4), graduated: info.graduated } : null, tokensLeft: { dev: devTokens, fleet: walletEth.reduce((a, w) => a + w.tokens, 0) }, wallets: walletEth, error: s.error || null };
+    /**
+     * The same session from the operator's side of the table.
+     *
+     * `net` is the fleet's wallets and nothing else, which is the right number on somebody else's
+     * launchpad: there the curve fee is a cost and it is gone. On OUR launchpad it is not a cost, it
+     * is a transfer between two pockets we both own -- the fee goes to the factory and the creator
+     * tax to the creator, and we are both. Judging the fleet by `net` alone therefore reads a
+     * profitable session as a losing one, and would tune the fleet away from a configuration that
+     * works. Measured on a default run: net -0.0192 ETH against 0.0250 ETH of fees that came back.
+     *
+     * The crowd's fees count too, and they are not in the fleet's ledger at all -- those were never
+     * the fleet's trades -- so the take is read off the venue's whole tape rather than from
+     * s.feesEth. The opening tax belongs here for the same reason: the fleet is exempt from it, so
+     * every wei of it was paid by somebody else.
+     *
+     * Both numbers are reported. Neither is the truth on its own, and which one matters depends on
+     * who owns the launchpad, so the answer names its own assumption instead of burying it.
+     */
+    const take = typeof venue.protocolTake === "function" ? venue.protocolTake() : { feeEth: 0, taxEth: 0, snipeEth: 0, totalEth: 0 };
+    const ownsLaunchpad = s.ownsLaunchpad !== false;
+    const isCreator = s.isCreator !== false;
+    const returned = (ownsLaunchpad ? take.feeEth + take.snipeEth : 0) + (isCreator ? take.taxEth : 0);
+    const operatorNet = net + returned - (ownsLaunchpad ? 0 : s.launchFee || 0);
+    return { id: s.id, mode: s.mode, token: s.token, phase: s.phase, exitReason: s.exitReason, elapsedSec: Math.round(((s.endedAt || venue.now()) - s.startTime) / 1000), budgetEth: s.budgetEth, masterStartEth: +s.masterStartEth.toFixed(6), masterEndEth: +master.toFixed(6), strandedEth: +stranded.toFixed(6), netEth: +net.toFixed(6), netPct: +((net / s.budgetEth) * 100).toFixed(2),
+      operatorNetEth: +operatorNet.toFixed(6), operatorNetPct: +((operatorNet / s.budgetEth) * 100).toFixed(2),
+      // fromFleet is what the fleet paid itself; the rest came from the crowd. The split matters more
+      // than the total: the fleet's own fees are a certainty, the crowd's are only as real as the
+      // crowd, and on a launch nobody turns up to, the operator's net is the fleet's net.
+      protocolTake: { feeEth: +take.feeEth.toFixed(6), taxEth: +take.taxEth.toFixed(6), snipeEth: +take.snipeEth.toFixed(6),
+        returnedEth: +returned.toFixed(6), fromFleetEth: +s.feesEth.toFixed(6), fromCrowdEth: +Math.max(0, take.totalEth - s.feesEth).toFixed(6),
+        ownsLaunchpad, isCreator }, ethSpent: +s.totalEthSpent.toFixed(6), ethRecovered: +s.totalEthRecovered.toFixed(6), feesEth: +s.feesEth.toFixed(6), gasEth: +s.gasEth.toFixed(6), launchFeeEth: s.launchFee, trades: s.tradeCount, devSells: s._devSellCtrl?.summary() || null, orchestrator: s._orchestrator?.getStats() || null, volume: s._volumeEngine?.snapshot() || null, autoRug: s._autoRug?.snapshot() || null, gameState: s.gameState?.snapshot() || null, curve: info ? { mcapEth: +info.mcapEth.toFixed(5), progress: +info.progress.toFixed(4), graduated: info.graduated } : null, tokensLeft: { dev: devTokens, fleet: walletEth.reduce((a, w) => a + w.tokens, 0) }, wallets: walletEth, error: s.error || null };
   }
 }
 export default FleetTrader;

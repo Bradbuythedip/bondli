@@ -242,6 +242,21 @@ export class SimVenue extends EventEmitter {
     return this._apply(wallet, "sell", tokenUnits, minOut, this.now());
   }
   async curveInfo() { return this.curve ? { ...this.curve.info(), address: this.curveAddress, token: this.token, launchedAt: this.launchedAt, snipeTaxStartBps: Number(this.curve.snipeTaxStartBps), snipeTaxSeconds: this.curve.snipeTaxSeconds } : null; }
+  /**
+   * What the launchpad took, from everyone, across the whole session.
+   *
+   * The fleet's own report measures only the fleet's wallets, which is the right number when the
+   * launchpad belongs to somebody else. On our own launchpad it is the wrong one: the curve fee goes
+   * to the factory and the creator tax to the creator, and when we are both, every wei of it comes
+   * back. So does the opening tax, which the crowd pays and the fleet is exempt from -- and the
+   * crowd's fees are not in the fleet's ledger at all, because they were never the fleet's trades.
+   */
+  protocolTake() {
+    let fee = 0, tax = 0, snipe = 0;
+    for (const t of this.trades) { fee += t.fee || 0; tax += t.tax || 0; snipe += t.snipe || 0; }
+    return { feeEth: fee, taxEth: tax, snipeEth: snipe, totalEth: fee + tax + snipe, trades: this.trades.length };
+  }
+
   async launchTerms() { return { launchFeeWei: BigInt(this.economics.launchFee), snipeTaxStartBps: Number(this.economics.snipeTaxStartBps), snipeTaxSeconds: Number(this.economics.snipeTaxSeconds), phantomQuote: toEth(this.economics.phantomQuote), graduationThreshold: toEth(this.economics.graduationThreshold), curveFeeBps: Number(this.economics.curveFeeBps), supply: toTokens(this.economics.supply), canLaunch: true }; }
 
   /** Every wei minted is somewhere: wallets, the curve, fees paid out, gas. The tests hold this. */

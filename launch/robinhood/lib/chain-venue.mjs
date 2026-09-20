@@ -231,6 +231,15 @@ export class ChainVenue extends EventEmitter {
     this.emit("trade", t);
   }
 
+  /** What the launchpad took, from everyone, read off this venue's own tape. The opening tax is
+   *  counted only where the curve announces it (SnipeTaxCharged); a launchpad that does not emit it
+   *  reports zero there rather than a guess. */
+  protocolTake() {
+    let fee = 0, tax = 0, snipe = 0;
+    for (const t of this.trades) { fee += t.fee || 0; tax += t.tax || 0; snipe += t.snipe || 0; }
+    return { feeEth: fee, taxEth: tax, snipeEth: snipe, totalEth: fee + tax + snipe, trades: this.trades.length };
+  }
+
   async curveInfo() {
     if (!this.curveContract) return null;
     const c = this.curveContract;

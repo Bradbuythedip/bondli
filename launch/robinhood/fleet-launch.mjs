@@ -96,6 +96,17 @@ function printReport(rep, venueStats) {
     `── ${rep.mode.toUpperCase()} ${rep.token || ""} ── phase ${rep.phase}, exit ${rep.exitReason || "-"}, ${rep.elapsedSec}s`,
     `budget ${rep.budgetEth} ETH → master ${rep.masterStartEth} → ${rep.masterEndEth} ETH   net ${fmt(rep.netEth)} ETH (${rep.netPct}%)${rep.strandedEth > 0 ? `   STRANDED ${rep.strandedEth} ETH in fleet wallets` : ""}`,
     `spent ${rep.ethSpent} ETH, recovered ${rep.ethRecovered} ETH, curve fees ${rep.feesEth} ETH, gas ${rep.gasEth} ETH, launch fee ${rep.launchFeeEth || 0} ETH, ${rep.trades} trades`,
+    // The line above is the fleet's wallets. This one is the operator's, and on our own launchpad it
+    // is the one that decides whether the session was worth running: the curve fee and the opening
+    // tax go to the factory, the creator tax to the creator, and we are both.
+    rep.protocolTake
+      ? `operator net ${fmt(rep.operatorNetEth)} ETH (${rep.operatorNetPct}%)   launchpad took ${rep.protocolTake.returnedEth} ETH back: ${rep.protocolTake.fromFleetEth} from the fleet, ${rep.protocolTake.fromCrowdEth} from the crowd${rep.protocolTake.ownsLaunchpad ? "" : " (NOT ours: the fee is gone)"}`
+      : null,
+    // Said plainly, because the operator number is mostly the second figure and the second figure is
+    // only as real as the crowd. On a launch nobody turns up to, the operator's net is the fleet's.
+    rep.protocolTake && rep.protocolTake.fromCrowdEth > rep.protocolTake.fromFleetEth
+      ? `  ↳ most of that is the crowd's fees; with no crowd the operator net is ${fmt(rep.netEth + rep.protocolTake.fromFleetEth)} ETH`
+      : null,
     rep.devSells ? `dev sells: ${rep.devSells.sellCount} for ${rep.devSells.totalSoldPct}% of the position` : null,
     rep.orchestrator ? `playbook: dev sold ${rep.orchestrator.devSellCount}× (${rep.orchestrator.devSellEth.toFixed(5)} ETH), ${rep.orchestrator.cascadeBuyCount} cascade buys, ${rep.orchestrator.mixedBuyCount}/${rep.orchestrator.mixedSellCount} mixed, ${rep.orchestrator.externalBuyersTotal} external buyers seen` : null,
     rep.volume ? `volume engine: ${rep.volume.tradeCount} trades, ${rep.volume.totalVolumeEth} ETH, peak ${rep.volume.volumeMultiplier}x over ${rep.volume.elapsedSec}s` : null,
