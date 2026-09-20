@@ -242,8 +242,10 @@ export class PonsFeed extends Feed {
       t.volumeQuote += rec.quote; t.volumeUsd = t.volumeQuote * this.solPrice;
       t.trades.push({ side: rec.kind, quote: rec.quote, sol: rec.quote, tokens: rec.tokens, wallet: rec.wallet, time: now, tx: rec.tx });
       if (t.trades.length > 100) t.trades = t.trades.slice(-100);
-      // Reserves move exactly by what the curve took in and paid out; fees leave the real reserve.
-      const spent = buy ? rec.quote - rec.fee - rec.tax : -(rec.quote + rec.fee + rec.tax);
+      // Reserves move exactly by what the curve took in and paid out; the fees leave the real
+      // reserve, and so does the opening tax, which is forwarded the instant it is charged and
+      // therefore never belonged to the curve at all.
+      const spent = buy ? rec.quote - rec.fee - rec.tax - (rec.snipe || 0) : -(rec.quote + rec.fee + rec.tax);
       t.quoteReserve = Math.max(0, t.quoteReserve + spent); t.realQuoteReserve = Math.max(0, t.realQuoteReserve + spent);
       t.tokenReserve = Math.max(0, t.tokenReserve + (buy ? -rec.tokens : rec.tokens));
       this._remark(t);
@@ -321,9 +323,18 @@ export class PonsFeed extends Feed {
     const touched = new Set();
     if (curves.length) {
       for (let i = 0; i < curves.length; i += 200) { // address lists have a cap on most nodes
-        const logs = await this.rpc.logs({ address: curves.slice(i, i + 200), topics: [[TOPICS.CurveBuy, TOPICS.CurveSell, TOPICS.CurveCompleted]], fromBlock: from, toBlock: to });
+        const logs = await this.rpc.logs({ address: curves.slice(i, i + 200), topics: [[TOPICS.CurveBuy, TOPICS.CurveSell, TOPICS.CurveCompleted, TOPICS.SnipeTaxCharged]], fromBlock: from, toBlock: to });
         logs.sort((a, b) => (a.blockNumber - b.blockNumber) || ((a.index ?? a.logIndex ?? 0) - (b.index ?? b.logIndex ?? 0)));
-        for (const l of logs) { const r = decodeLog(l); const t = this.apply(r, now); if (t) touched.add(t); }
+        // The opening tax is its own log, emitted just before the CurveBuy it belongs to and from the
+        // same curve in the same transaction, so it is folded into that buy rather than applied on
+        // its own. A venue that never emits it leaves this map empty and nothing changes.
+        const snipes = new Map();
+        for (const l of logs) {
+          const r = decodeLog(l);
+          if (r?.kind === "snipe") { const k = `${r.curve}|${r.tx}`; snipes.set(k, (snipes.get(k) || 0) + r.amount); continue; }
+          if (r?.kind === "buy") { const k = `${r.curve}|${r.tx}`; if (snipes.has(k)) { r.snipe = snipes.get(k); snipes.delete(k); } }
+          const t = this.apply(r, now); if (t) touched.add(t);
+        }
       }
     }
     this._block = to + 1;

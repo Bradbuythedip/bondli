@@ -27,6 +27,12 @@ export const CURVE_ABI = [
   "event CurveBuy(address indexed buyer, address indexed recipient, uint256 quoteIn, uint256 tokensOut, uint256 fee, uint256 tax)",
   "event CurveSell(address indexed seller, address indexed recipient, uint256 tokensIn, uint256 quoteOut, uint256 fee, uint256 tax)",
   "event CurveCompleted(address recipient, uint256 quoteOut, uint256 tokenOut)",
+  // bondli's own launchpad emits this beside CurveBuy. PONS does not, so on that venue the log
+  // simply never appears. CurveBuy reports the gross spend and the fee and tax but NOT the opening
+  // tax, which is forwarded to the launchpad the instant it is charged -- so a reader tracking the
+  // real reserve from logs alone credits the curve with money it never kept. Measured on a
+  // one-second-old launch, where the tax is 8624 bps: 7.76x too much.
+  "event SnipeTaxCharged(address indexed buyer, uint256 amount)",
   "function buy(uint256 quoteIn, uint256 minTokensOut, address recipient) payable returns (uint256 tokensOut)",
   "function sell(uint256 tokensIn, uint256 minQuoteOut, address recipient) returns (uint256 quoteOut)",
   "function getReserves() view returns (uint256 quoteReserve_, uint256 tokenReserve_)",
@@ -57,6 +63,7 @@ export const TOPICS = Object.freeze({
   CurveBuy: keccakId("CurveBuy(address,address,uint256,uint256,uint256,uint256)"),
   CurveSell: keccakId("CurveSell(address,address,uint256,uint256,uint256,uint256)"),
   CurveCompleted: keccakId("CurveCompleted(address,uint256,uint256)"),
+  SnipeTaxCharged: keccakId("SnipeTaxCharged(address,uint256)"),
   PoolGraduated: keccakId("PoolGraduated(address,uint256,uint256,uint256)"),
 });
 
@@ -80,6 +87,10 @@ export function decodeLog(log) {
         quote: toEth(buy ? e.args.quoteIn : e.args.quoteOut), tokens: toTokens(buy ? e.args.tokensOut : e.args.tokensIn),
         fee: toEth(e.args.fee), tax: toEth(e.args.tax), block: log.blockNumber, tx: log.transactionHash, logIndex: log.index ?? log.logIndex,
       };
+    }
+    if (topic === TOPICS.SnipeTaxCharged) {
+      const e = curveIface.parseLog({ topics: log.topics, data: log.data });
+      return { kind: "snipe", curve: log.address.toLowerCase(), wallet: e.args.buyer.toLowerCase(), amount: toEth(e.args.amount), block: log.blockNumber, tx: log.transactionHash, logIndex: log.index ?? log.logIndex };
     }
     if (topic === TOPICS.CurveCompleted) return { kind: "complete", curve: log.address.toLowerCase(), block: log.blockNumber, tx: log.transactionHash };
     if (topic === TOPICS.PoolGraduated) { const e = factoryIface.parseLog({ topics: log.topics, data: log.data }); return { kind: "graduated", token: e.args.token.toLowerCase(), block: log.blockNumber, tx: log.transactionHash }; }

@@ -467,3 +467,77 @@ test("T42: an overpaid launch fee is change, not revenue", async () => {
   assert.equal(short.ok, false);
   assert.match(short.error, /LaunchFeeNotPaid/);
 });
+
+test("T42: the opening tax is announced, so a reader can see what the curve kept", async () => {
+  // CurveBuy reports the gross spend, the fee and the creator tax -- but not the opening tax, which
+  // is forwarded to the launchpad the instant it is charged. Anyone tracking the curve's real
+  // reserve from logs therefore credited it with money it never kept. bondli's own PONS feed did
+  // exactly that (feed.mjs: `quote - fee - tax`), and on a one-second-old launch, where the tax is
+  // 8624 bps, it over-credited by 7.76x.
+  //
+  // The tax gets its own event rather than a field on CurveBuy, because CurveBuy's signature is the
+  // one bondli indexes by topic across two venues and PONS does not emit this at all.
+  const { evm, curve, buyer } = await rig();
+  evm.warp(1);                                   // one Ink block after the launch
+  const before = await evm.balance(curve);
+  const IN = 1n * E;
+  const r = await evm.send(curve, "buy", [IN, 0n, buyer.toString()], { from: buyer, value: IN });
+  assert.ok(r.ok, r.error);
+
+  const charged = Evm.log(r.logs, "SnipeTaxCharged");
+  assert.ok(charged, "the tax is on the record");
+  assert.equal(charged.args.buyer.toLowerCase(), buyer.toString().toLowerCase());
+
+  // The three numbers now reconcile: what the curve kept is the spend less every levy that left it.
+  const cb = Evm.log(r.logs, "CurveBuy").args;
+  const kept = await evm.balance(curve) - before;
+  assert.equal(kept, cb.quoteIn - charged.args.amount, "kept = spend less the tax that was forwarded");
+  // And the size of the error it prevents: reading CurveBuy alone says the curve took nearly all of
+  // it, when it took a fraction.
+  const naive = cb.quoteIn - cb.fee - cb.tax;
+  assert.ok(naive > kept * 5n, `reading CurveBuy alone overstates the reserve by ${Number(naive) / Number(kept)}x`);
+});
+
+test("T42: the owner cannot turn a launch into a permanent toll booth", async () => {
+  const evm = await Evm.create();
+  const dev = await evm.account("dev");
+  const pad = await evm.deploy(ART, "FleetTestLaunchpad", [0n, SUPPLY, FEE_BPS, PHANTOM, GRADUATION], { from: dev });
+  assert.equal(await evm.call(pad, "MAX_SNIPE_TAX_SECONDS"), 60n);
+
+  // An unbounded window is the toll booth: every buyer of every future launch pays, forever.
+  const forever = await evm.send(pad, "setSnipeTax", [9_000n, 86_400n], { from: dev });
+  assert.equal(forever.ok, false);
+  assert.match(forever.error, /SnipeTaxOutOfRange/);
+  const everything = await evm.send(pad, "setSnipeTax", [10_000n, 15n], { from: dev });
+  assert.equal(everything.ok, false);
+  assert.match(everything.error, /SnipeTaxOutOfRange/);
+
+  const fine = await evm.send(pad, "setSnipeTax", [8_000n, 60n], { from: dev });
+  assert.ok(fine.ok, fine.error);
+  assert.ok(Evm.log(fine.logs, "SnipeTaxUpdated"), "and a change to everyone's terms is announced");
+});
+
+test("T42: pinned economics cover the terms the owner can move", async () => {
+  // expectedEconomics used to hash the curve's shape and four uint16(0) placeholders, so it covered
+  // none of the three things the owner can actually change. A launcher could pin their economics,
+  // have the owner raise the opening tax in the same block, and launch anyway with the pin
+  // satisfied and the terms different.
+  const evm = await Evm.create();
+  const dev = await evm.account("dev");
+  const pad = await evm.deploy(ART, "FleetTestLaunchpad", [0n, SUPPLY, FEE_BPS, PHANTOM, GRADUATION], { from: dev });
+  const pinned = await evm.call(pad, "previewLaunchEconomics", [0n, ZERO]);
+
+  // Moving the opening tax moves the hash, which is the whole point.
+  assert.ok((await evm.send(pad, "setSnipeTax", [5_000n, 10n], { from: dev })).ok);
+  assert.notEqual(await evm.call(pad, "previewLaunchEconomics", [0n, ZERO]), pinned, "the tax is covered");
+  // So does the launch fee.
+  assert.ok((await evm.send(pad, "setLaunchFee", [10n ** 15n], { from: dev })).ok);
+  const moved = await evm.call(pad, "previewLaunchEconomics", [0n, ZERO]);
+
+  // A launch pinned to the old terms is refused; pinned to the new ones it goes through.
+  const stale = await evm.send(pad, LAUNCH_SIG, [params({ expectedEconomics: pinned }), 0n, ZERO], { from: dev, value: 10n ** 15n });
+  assert.equal(stale.ok, false);
+  assert.match(stale.error, /LaunchEconomicsMismatch/);
+  const fresh = await evm.send(pad, LAUNCH_SIG, [params({ expectedEconomics: moved }), 0n, ZERO], { from: dev, value: 10n ** 15n });
+  assert.ok(fresh.ok, fresh.error);
+});
