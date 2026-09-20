@@ -238,7 +238,7 @@ everything else is open.
 
 ---
 
-## [HIGH] Every closed trade books the $0.41 token-account rent as a loss; the reclaim is written to the ledger and read by nothing
+## [FIXED] Every closed trade books the $0.41 token-account rent as a loss; the reclaim is written to the ledger and read by nothing
 `src/velocity/core/engine.mjs`:881
 
 **Claim.** A live buy's cost_usd is the full wallet outflow, which includes RENT_ATA_SOL (0.00203928 SOL = $0.41 at SOL $200). The sell's proceeds_usd does not contain the rent, because the rent is only returned later by a separate closeTokenAccount transaction. reclaimRent() is called at engine.mjs:881, AFTER pnl is computed at engine.mjs:879, is deliberately not awaited, and appends kind:"rent" — a record type that ledger.mjs:14 describes as "real money, returned to the wallet" and that no accounting path anywhere reads. So every closed position is booked $0.41 worse than the wallet actually is, and those pnl_usd values are exactly what statsFromOutcomes turns into p_win / payoff / loss_fraction for the EV gate and the Kelly sizer, what day.realizedUsd feeds to the governor and the daily loss budget, and what the UI shows as closed P&L.
@@ -248,6 +248,13 @@ everything else is open.
 **Impact.** $0.41 per closed trade of phantom loss in every statistic and in the UI; $16.32 of the observed -$25.81 window. Ongoing 1.6% of stake at $25, 4.1% at the $10 floor.
 
 **Fix.** Either (a) subtract RENT_ATA_SOL * solPrice from cost_usd at entry (engine.mjs:717) and book a separate loss only if closeTokenAccount fails, or (b) make finalizeFlat/close await nothing but have reclaimRent's .then() append the reclaimed USD to the position's proceeds_usd and to store.state.day.realizedUsd, and emit a corrected outcome. Option (a) is simpler and matches what edge.mjs:67 already assumes ("The rent itself nets out because it is reclaimed").
+
+**Fixed.** Option (a), as recommended. The router reports the deposit apart from the trade on the buy
+fill (`rent_usd`), it is excluded from `cost_usd` and from `fee_usd`, and the position remembers it.
+The reclaim no longer credits the day, because nothing was ever charged for it; a reclaim that FAILS
+books the deposit as a loss against the day it was lost in, leaving the closed trade's own statistics
+alone. So `outcome.pnl_usd` is now what the wallet did, which is what statsFromOutcomes, the EV gate
+and the Kelly sizer read. Covered by two cases in tests/velocity/t10-live-path.
 
 **Reviewer's correction.** Two corrections. (1) Severity is high, not critical: no user funds are lost — the rent really does come back, and both the wallet-derived bankroll (engine.mjs:620 freeUsd) and the header "since start" P&L (truePnl, engine.mjs:255-283) read the wallet and are therefore correct. What is corrupted is outcome.pnl_usd, day.realizedUsd, review(), the tier statistics, the EV gate, the Kelly inputs and every governor throttle/halt. (2) The $16.32 = 63%-of-the-window figure assumes all 40 closes were live pump.fun closes on a fresh ATA whose reclaim landed; PONS closes carry no ATA rent, and a mint already holding an open ATA (hasAccount) pays none, so treat $16.32 as an upper bound on that window. Also worth stating in the writeup: fill.fee_usd on the buy = (costSol - solAmount)*price likewise contains the rent, so review()'s fees_usd overstates fees by the same $0.41/trade — the operator's "$26.25 fees over 40 trades" ($0.66/trade) is only reachable with the rent inside it.
 
