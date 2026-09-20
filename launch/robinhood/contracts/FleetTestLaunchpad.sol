@@ -46,6 +46,10 @@ contract FleetTestCurve {
     event CurveSell(address indexed seller, address indexed recipient, uint256 tokensIn, uint256 quoteOut, uint256 fee, uint256 tax);
     event CurveCompleted(address recipient, uint256 quoteOut, uint256 tokenOut);
     event SnipeTaxExempted(address indexed wallet);
+    /// The opening tax charged on a buy. Its own event rather than a field on CurveBuy, because
+    /// CurveBuy's signature is the one bondli's PONS adapter already indexes by topic and PONS
+    /// itself does not emit this; adding a field would break the reader for both venues.
+    event SnipeTaxCharged(address indexed buyer, uint256 amount);
     event PaymentDeferred(address indexed to, uint256 amount);
     event Claimed(address indexed to, uint256 amount);
 
@@ -201,6 +205,11 @@ contract FleetTestCurve {
         if (tokensOut < minTokensOut) revert SlippageExceeded(tokensOut, minTokensOut);
         quoteFeeBalance += fee; creatorTaxBalance += tax; trackedQuote += spent - snipe; snipeTaxPaid += snipe; trackedTokens -= tokensOut;
         FleetTestToken(token).transfer(recipient, tokensOut);
+        // Announced before it is forwarded. Without this the only public record of a buy was
+        // CurveBuy, which reports the gross spend and the fee and tax but not the snipe, so any
+        // reader tracking the curve's real reserve from logs credited it with money the curve never
+        // kept: measured at 7.76x on a one-second-old launch, where the tax is 8624 bps.
+        if (snipe != 0) emit SnipeTaxCharged(msg.sender, snipe);
         _pay(factory, snipe);
         uint256 refund = quoteIn - spent;
         // The refund is only ever non-zero on the buy that fills the curve, which is the buy that
@@ -250,14 +259,21 @@ contract FleetTestLaunchpad {
     struct LaunchConfig { uint256 supply; uint256 curveFeeBps; uint256 phantomQuote; uint256 graduationThreshold; uint24 poolFee; int24 tickSpacing; bool enabled; }
     struct LaunchedToken { address token; address curve; address deployer; address pairToken; uint256 launchConfigId; uint256 graduationThreshold; bool graduated; }
 
-    error NotOwner(); error LaunchFeeNotPaid(); error TransferFailed(); error InvalidLaunchConfigId(); error InvalidTokenParams(); error ExemptionListTooLong(); error CreatorTaxTooHigh(); error PairTokenNotApproved(); error LaunchEconomicsMismatch(bytes32 expected, bytes32 actual); error NotCurve();
+    error NotOwner(); error LaunchFeeNotPaid(); error TransferFailed(); error SnipeTaxOutOfRange(uint256 startBps, uint256 secondsWindow); error InvalidLaunchConfigId(); error InvalidTokenParams(); error ExemptionListTooLong(); error CreatorTaxTooHigh(); error PairTokenNotApproved(); error LaunchEconomicsMismatch(bytes32 expected, bytes32 actual); error NotCurve();
     event TokenLaunched(address indexed token, address indexed curve, address indexed deployer, address pairToken, uint256 launchConfigId, uint256 graduationThreshold);
     event PoolGraduated(address indexed token, uint256 positionId, uint256 tokenAmount, uint256 pairTokenAmount);
     event LaunchFeeUpdated(uint256 launchFee);
+    event SnipeTaxUpdated(uint256 startBps, uint256 secondsWindow);
 
     uint256 private constant MAX_SNIPE_TAX_EXEMPTIONS = 32;
+    /// The longest opening window the owner may set. bondli's own edge already refuses candidates
+    /// younger than sixty seconds (src/velocity/venues/pons/chain.mjs, SNIPE_TAX_WINDOW_MS), so a
+    /// window beyond it would be a tax on trades no model here would make anyway -- and an unbounded
+    /// one is a permanent toll booth on every buyer of every future launch.
+    uint256 public constant MAX_SNIPE_TAX_SECONDS = 60;
     address public owner; uint256 public launchFee; uint256 public snipeTaxStartBps = 9_900; uint256 public snipeTaxSeconds = 15; uint256 public maxCreatorTaxBps = 1_000;
     LaunchConfig[] private _configs; mapping(address => LaunchedToken) private _launched; mapping(address => bool) private _isCurve;
+    uint256 private constant BASIS_POINTS = 10_000;
 
     modifier onlyOwner() { if (msg.sender != owner) revert NotOwner(); _; }
 
@@ -271,13 +287,26 @@ contract FleetTestLaunchpad {
     function getLaunchConfig(uint256 id) external view returns (LaunchConfig memory) { if (id >= _configs.length) revert InvalidLaunchConfigId(); return _configs[id]; }
     function addLaunchConfig(LaunchConfig calldata c) external onlyOwner { _configs.push(c); }
     function setLaunchFee(uint256 f) external onlyOwner { launchFee = f; emit LaunchFeeUpdated(f); }
-    function setSnipeTax(uint256 startBps, uint256 secondsWindow) external onlyOwner { snipeTaxStartBps = startBps; snipeTaxSeconds = secondsWindow; }
+    function setSnipeTax(uint256 startBps, uint256 secondsWindow) external onlyOwner {
+        if (startBps >= BASIS_POINTS || secondsWindow > MAX_SNIPE_TAX_SECONDS) revert SnipeTaxOutOfRange(startBps, secondsWindow);
+        snipeTaxStartBps = startBps; snipeTaxSeconds = secondsWindow;
+        emit SnipeTaxUpdated(startBps, secondsWindow);
+    }
     function withdraw(address to) external onlyOwner { (bool s,) = payable(to).call{value: address(this).balance}(""); require(s, "withdraw"); }
     function canLaunch(address) external pure returns (bool) { return true; }
     function getLaunchedToken(address token) external view returns (LaunchedToken memory) { return _launched[token]; }
+    /**
+     * @notice The hash a launcher pins so that terms cannot change between quoting and mining.
+     *
+     * It used to cover the curve's shape and four uint16(0) placeholders, which meant it did not
+     * cover the launch fee, the creator-tax ceiling, or the opening tax -- the three things the
+     * owner can actually change. A launcher could pin their economics, have the owner raise the
+     * opening tax to a permanent toll in the same block, and launch anyway with the pin satisfied.
+     */
     function previewLaunchEconomics(uint256 id, address pairToken) public view returns (bytes32) {
         if (id >= _configs.length) revert InvalidLaunchConfigId(); LaunchConfig memory c = _configs[id];
-        return keccak256(abi.encode(c.phantomQuote, c.graduationThreshold, c.supply, c.curveFeeBps, c.poolFee, c.tickSpacing, uint16(0), uint16(0), uint16(0), uint16(0), pairToken));
+        return keccak256(abi.encode(c.phantomQuote, c.graduationThreshold, c.supply, c.curveFeeBps, c.poolFee, c.tickSpacing,
+            snipeTaxStartBps, snipeTaxSeconds, maxCreatorTaxBps, launchFee, pairToken));
     }
 
     function launchToken(TokenParams calldata params, uint256 launchConfigId, address pairToken) external payable returns (address token, address curve) {
