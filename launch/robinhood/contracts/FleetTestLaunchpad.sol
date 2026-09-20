@@ -58,7 +58,14 @@ contract FleetTestCurve {
     event Claimed(address indexed to, uint256 amount);
     event TokensBurned(uint256 amount);
 
-    address public token; address public immutable factory; address public deployer; address public immutable pairToken = address(0);
+    address public token; address public immutable factory; address public immutable pairToken = address(0);
+    /// Who launched the token. This is the identity a rug model follows across launches, and it used
+    /// to be overwritten with the creator's chosen fee recipient -- a different address whenever the
+    /// creator nominated one, which silently split the thing being tracked in two and disagreed with
+    /// the factory's own LaunchedToken.deployer for the same token.
+    address public deployer;
+    /// Where the creator's tax goes. Chosen by the launcher, and therefore not an identity at all.
+    address public feeRecipient;
     uint256 public immutable phantomQuote; uint256 public immutable feeBps; uint256 public immutable creatorTaxBps; uint256 public immutable graduationThreshold;
     uint256 public immutable snipeTaxStartBps; uint256 public immutable snipeTaxSeconds; uint256 public launchedAt;
     uint256 public trackedQuote; uint256 public trackedTokens; uint256 public reservedTokens; uint256 public quoteFeeBalance; uint256 public creatorTaxBalance; uint256 public snipeTaxPaid;
@@ -69,15 +76,15 @@ contract FleetTestCurve {
 
     modifier onlyFactory() { if (msg.sender != factory) revert NotFactory(); _; }
 
-    constructor(address deployer_, uint256 phantomQuote_, uint256 feeBps_, uint256 creatorTaxBps_, uint256 graduationThreshold_, uint256 snipeStart_, uint256 snipeSeconds_) {
-        if (deployer_ == address(0)) revert ZeroAddress();
+    constructor(address deployer_, address feeRecipient_, uint256 phantomQuote_, uint256 feeBps_, uint256 creatorTaxBps_, uint256 graduationThreshold_, uint256 snipeStart_, uint256 snipeSeconds_) {
+        if (deployer_ == address(0) || feeRecipient_ == address(0)) revert ZeroAddress();
         // The standing levies must leave something to buy with. These two are fixed for the life of
         // the curve, so the check belongs here; the snipe tax is time-varying and is clamped against
         // whatever they leave, in snipeTaxBps below.
         if (feeBps_ + creatorTaxBps_ >= BASIS_POINTS) revert LeviesExceedPrincipal(feeBps_ + creatorTaxBps_);
-        factory = msg.sender; deployer = deployer_; phantomQuote = phantomQuote_; feeBps = feeBps_; creatorTaxBps = creatorTaxBps_; graduationThreshold = graduationThreshold_;
+        factory = msg.sender; deployer = deployer_; feeRecipient = feeRecipient_; phantomQuote = phantomQuote_; feeBps = feeBps_; creatorTaxBps = creatorTaxBps_; graduationThreshold = graduationThreshold_;
         snipeTaxStartBps = snipeStart_; snipeTaxSeconds = snipeSeconds_;
-        snipeTaxExempt[deployer_] = true; snipeTaxExempt[msg.sender] = true; // the dev, and the launchpad's launch-and-buy
+        snipeTaxExempt[deployer_] = true; snipeTaxExempt[feeRecipient_] = true; snipeTaxExempt[msg.sender] = true; // the dev, their payee, and launch-and-buy
     }
     function initialize(address token_) external onlyFactory {
         require(token == address(0), "initialized"); token = token_; launchedAt = block.timestamp;
@@ -110,6 +117,18 @@ contract FleetTestCurve {
         if (amount == 0) return;
         (bool s,) = payable(to).call{value: amount, gas: 30_000}("");
         if (!s) { owed[to] += amount; totalOwed += amount; emit PaymentDeferred(to, amount); }
+    }
+
+    /// @notice Push any ETH the curve holds beyond what it owes to the launchpad. Nothing here
+    ///         accepts a plain transfer, but selfdestruct and a coinbase payout do not ask, so
+    ///         without this a donation is stuck in the contract for good. Permissionless, because it
+    ///         can only ever move money that belongs to nobody.
+    function skim() external returns (uint256 extra) {
+        uint256 owedOut = trackedQuote + totalOwed;
+        uint256 bal = address(this).balance;
+        if (bal <= owedOut) return 0;
+        extra = bal - owedOut;
+        _pay(factory, extra);
     }
 
     /// @notice Collect a payment that could not be pushed. Sends only to the caller.
@@ -246,7 +265,7 @@ contract FleetTestCurve {
         uint256 fee = quoteFeeBalance; uint256 tax = creatorTaxBalance; if (fee == 0 && tax == 0) return;
         quoteFeeBalance = 0; creatorTaxBalance = 0; trackedQuote -= fee + tax;
         _pay(factory, fee);
-        _pay(deployer, tax);
+        _pay(feeRecipient, tax);
     }
     /// Where the burnt remainder goes. The token refuses address(0), so the conventional dead
     /// address stands in for it.
@@ -297,7 +316,7 @@ contract FleetTestLaunchpad {
     struct LaunchedToken { address token; address curve; address deployer; address pairToken; uint256 launchConfigId; uint256 graduationThreshold; bool graduated; }
 
     error NotOwner(); error LaunchFeeNotPaid(); error TransferFailed(); error SnipeTaxOutOfRange(uint256 startBps, uint256 secondsWindow);
-    error NotSeeder(); error NotPendingOwner(); error NothingEscrowed(); error InvalidLaunchConfigId(); error InvalidTokenParams(); error ExemptionListTooLong(); error CreatorTaxTooHigh(); error PairTokenNotApproved(); error LaunchEconomicsMismatch(bytes32 expected, bytes32 actual); error NotCurve();
+    error NotSeeder(); error NotPendingOwner(); error NothingEscrowed(); error LaunchConfigDisabled(uint256 id); error TokenParamTooLong(); error InvalidLaunchConfigId(); error InvalidTokenParams(); error ExemptionListTooLong(); error CreatorTaxTooHigh(); error PairTokenNotApproved(); error LaunchEconomicsMismatch(bytes32 expected, bytes32 actual); error NotCurve();
     event TokenLaunched(address indexed token, address indexed curve, address indexed deployer, address pairToken, uint256 launchConfigId, uint256 graduationThreshold);
     event PoolGraduated(address indexed token, uint256 positionId, uint256 tokenAmount, uint256 pairTokenAmount);
     event LaunchFeeUpdated(uint256 launchFee);
@@ -305,6 +324,8 @@ contract FleetTestLaunchpad {
     event OwnershipTransferStarted(address indexed from, address indexed to);
     event OwnershipTransferred(address indexed from, address indexed to);
     event SeederUpdated(address indexed seeder);
+    event LaunchConfigAdded(uint256 indexed id, bool enabled);
+    event LaunchConfigEnabled(uint256 indexed id, bool enabled);
     event RaiseReleased(address indexed token, address indexed to, uint256 quote, uint256 tokens);
 
     uint256 private constant MAX_SNIPE_TAX_EXEMPTIONS = 32;
@@ -331,7 +352,17 @@ contract FleetTestLaunchpad {
 
     function launchConfigCount() external view returns (uint256) { return _configs.length; }
     function getLaunchConfig(uint256 id) external view returns (LaunchConfig memory) { if (id >= _configs.length) revert InvalidLaunchConfigId(); return _configs[id]; }
-    function addLaunchConfig(LaunchConfig calldata c) external onlyOwner { _configs.push(c); }
+    function addLaunchConfig(LaunchConfig calldata c) external onlyOwner {
+        if (c.curveFeeBps + maxCreatorTaxBps + snipeTaxStartBps >= BASIS_POINTS) revert SnipeTaxOutOfRange(snipeTaxStartBps, snipeTaxSeconds);
+        _configs.push(c); emit LaunchConfigAdded(_configs.length - 1, c.enabled);
+    }
+    /// Configs are append-only by design -- a launched token's economics must never move under it --
+    /// but `enabled` was declared and never read, so a config with bad economics was launchable
+    /// forever with no way to take it out of service short of deploying a new launchpad.
+    function setLaunchConfigEnabled(uint256 id, bool on) external onlyOwner {
+        if (id >= _configs.length) revert InvalidLaunchConfigId();
+        _configs[id].enabled = on; emit LaunchConfigEnabled(id, on);
+    }
     function setLaunchFee(uint256 f) external onlyOwner { launchFee = f; emit LaunchFeeUpdated(f); }
     function setSnipeTax(uint256 startBps, uint256 secondsWindow) external onlyOwner {
         if (startBps >= BASIS_POINTS || secondsWindow > MAX_SNIPE_TAX_SECONDS) revert SnipeTaxOutOfRange(startBps, secondsWindow);
@@ -418,16 +449,22 @@ contract FleetTestLaunchpad {
         if (id >= _configs.length) revert InvalidLaunchConfigId();
         if (msg.value < launchFee) revert LaunchFeeNotPaid();
         if (bytes(params.name).length == 0 || bytes(params.symbol).length == 0) revert InvalidTokenParams();
+        if (!_configs[id].enabled) revert LaunchConfigDisabled(id);
+        // Every one of these is stored on chain and read back unbounded by bondli's feed. A launcher
+        // paying gas for a megabyte of description is paying to make every reader of this launchpad
+        // slower, and a name that long is not a name.
+        if (bytes(params.name).length > 64 || bytes(params.symbol).length > 16
+            || bytes(params.logo).length > 256 || bytes(params.description).length > 512) revert TokenParamTooLong();
         if (params.creatorTaxBps > maxCreatorTaxBps) revert CreatorTaxTooHigh();
         if (pairToken != address(0)) revert PairTokenNotApproved();
         bytes32 econ = previewLaunchEconomics(id, pairToken);
         if (params.expectedEconomics != bytes32(0) && params.expectedEconomics != econ) revert LaunchEconomicsMismatch(params.expectedEconomics, econ);
         LaunchConfig memory c = _configs[id];
         address feeRecipient = params.creatorFeeRecipient == address(0) ? deployer : params.creatorFeeRecipient;
-        FleetTestCurve cv = new FleetTestCurve(feeRecipient, c.phantomQuote, c.curveFeeBps, params.creatorTaxBps, c.graduationThreshold, snipeTaxStartBps, snipeTaxSeconds);
+        FleetTestCurve cv = new FleetTestCurve(deployer, feeRecipient, c.phantomQuote, c.curveFeeBps, params.creatorTaxBps, c.graduationThreshold, snipeTaxStartBps, snipeTaxSeconds);
         FleetTestToken tk = new FleetTestToken(params.name, params.symbol, params.logo, params.description, deployer, address(cv), c.supply);
         cv.initialize(address(tk));
-        cv.exemptFromSnipeTax(deployer); if (feeRecipient != deployer) cv.exemptFromSnipeTax(feeRecipient);
+        // Both are exempt from the constructor; nothing further to do here.
         token = address(tk); curve = address(cv); _isCurve[curve] = true;
         _launched[token] = LaunchedToken({ token: token, curve: curve, deployer: deployer, pairToken: pairToken, launchConfigId: id, graduationThreshold: c.graduationThreshold, graduated: false });
         emit TokenLaunched(token, curve, deployer, pairToken, id, c.graduationThreshold);

@@ -272,8 +272,16 @@ export class PonsLiveRouter extends Router {
       const shape = await this._sellShape(curve, units, r);
       if (!shape.ok) {
         const why = await this._explainRevert(curveAddr, shape.err, position.instrument);
-        const ready = await curve.readyToGraduate().catch(() => null);
-        const hint = ready ? "; the curve is full and waiting to graduate, sell on the pool once it has" : "";
+        // Both, because readyToGraduate() is unobservable from outside a transaction: the curve
+        // graduates inside the buy that empties it, so by the time anyone can call this the flag it
+        // reads has already flipped and it answers false forever. Asking graduated() as well is what
+        // makes the hint appear in the one situation it was written for.
+        const [ready, done] = await Promise.all([
+          curve.readyToGraduate().catch(() => null),
+          curve.graduated().catch(() => null),
+        ]);
+        const hint = done ? "; the curve has graduated, sell on the pool instead"
+          : ready ? "; the curve is full and waiting to graduate, sell on the pool once it has" : "";
         return failure({ id: position.id }, "REVERT", `sell would revert (${why})${hint}`.slice(0, 300));
       }
       let leftUnits = units, gotQuote = 0, feeQuote = 0, gasEth = 0, qtySold = 0, chunks = 0, lastHash = null, exact = true;
