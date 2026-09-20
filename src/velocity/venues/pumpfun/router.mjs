@@ -335,7 +335,14 @@ export class PumpfunLiveRouter extends Router {
       // No readable delta yet: book the expected outflow rather than zero, so exposure is never understated.
       const estCostSol = solNeededForBuy(solAmount, { priorityFeeSol: this.priorityFeeSol, hasAccount: qtyBefore > 0 }) - RENT_WALLET_MIN_SOL;
       const notional = +((costSol > 0 ? costSol : estCostSol) * solPrice).toFixed(4);
-      return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "pumpfun", instrument: order.instrument, side: "BUY", price: qty > 0 ? notional / qty : est.price, qty, notional_usd: +notional.toFixed(4), slippage_bps: +est.slippage_bps.toFixed(2), fee_usd: +(Math.max(0, costSol - solAmount) * solPrice).toFixed(4), t_sent: sent.t_sent, t_filled, latency_ms: t_filled - sent.t_sent, venue_ref: sig, sol_spent: costSol, exact: d.exact } };
+      // The token-account rent, reported apart from the cost of the trade. It is inside the wallet
+      // outflow -- 0.00203928 SOL, about $0.41, the largest fixed item in a round trip -- but it is a
+      // refundable deposit, not a cost: closing the emptied account gives it back. Booking it as a
+      // cost makes every closed trade read $0.41 worse than the wallet actually is, and those are
+      // the numbers the EV gate and the Kelly sizer learn from. The engine subtracts it and books it
+      // as a loss only if the reclaim fails.
+      const rentSol = qtyBefore > 0 ? 0 : RENT_ATA_SOL;
+      return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "pumpfun", instrument: order.instrument, side: "BUY", price: qty > 0 ? notional / qty : est.price, qty, notional_usd: +notional.toFixed(4), slippage_bps: +est.slippage_bps.toFixed(2), fee_usd: +(Math.max(0, costSol - solAmount - rentSol) * solPrice).toFixed(4), rent_usd: +(rentSol * solPrice).toFixed(4), t_sent: sent.t_sent, t_filled, latency_ms: t_filled - sent.t_sent, venue_ref: sig, sol_spent: costSol, exact: d.exact } };
     } catch (err) {
       return this._sendFailure(order, err, solPrice);
     }

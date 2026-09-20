@@ -231,26 +231,37 @@ export class Engine extends EventEmitter {
    *  every new mint, about $0.41, which is the largest fixed cost of a round trip and is simply left
    *  behind unless it is claimed. Deliberately not awaited: the engine queue also drives every open
    *  position's exit checks, and no stop loss should wait on a housekeeping transaction. */
-  reclaimRent(venue, instrument) {
+  reclaimRent(venue, instrument, rentUsd = 0) {
     const router = this.venues[venue]?.liveRouter;
     if (!router?.closeTokenAccount || this.store.venueMode(venue) !== "live") return;
     Promise.resolve()
       .then(() => router.closeTokenAccount(instrument))
       .then(r => {
         if (!r?.closed) return;
-        // The rent went out at entry inside cost_usd, so the position's outcome already counts it as
-        // lost. Getting it back is realized money and is credited to the day it lands in, or every
-        // pump.fun trade is booked ~$0.40 worse than it was and the header drifts under the truth by
-        // that much per trade, forever.
+        // Nothing is credited here. The rent was never booked as a cost -- it is a deposit, excluded
+        // from cost_usd at entry -- so getting it back is not a gain, it is the expected case. This
+        // used to add it to the day's realized P&L, which was right while the entry counted it as
+        // lost and would now be counting it twice.
         const px = this.quotePriceOf(venue) || 0;
         const usd = +((Number(r.reclaimed_sol) || 0) * px).toFixed(4);
-        if (usd > 0) { this.store.rollDay(); this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd + usd).toFixed(4); }
-        this.ledger.append({ kind: "rent", venue, instrument, sol: r.reclaimed_sol, usd, accounts: r.closed, venue_ref: r.sig || null, note: "token account closed, rent reclaimed" });
+        this.ledger.append({ kind: "rent", venue, instrument, sol: r.reclaimed_sol, usd, accounts: r.closed, venue_ref: r.sig || null, note: "token account closed, deposit returned as expected" });
         this.store.save();
         this.log("info", `rent back ${r.reclaimed_sol} SOL ($${usd.toFixed(2)}) from ${instrument.slice(0, 8)}`);
         this.refreshWallet().catch(() => {});
       })
-      .catch(err => this.log("warn", `rent reclaim ${instrument.slice(0, 8)}: ${err.shortMessage || err.message}`));
+      .catch(err => {
+        // The deposit did NOT come back, so now it really is a cost. Booked against the day it was
+        // lost in rather than against the trade, which has already closed and whose statistics must
+        // not move retroactively.
+        const lost = Number(rentUsd) || 0;
+        if (lost > 0) {
+          this.store.rollDay();
+          this.store.state.day.realizedUsd = +(this.store.state.day.realizedUsd - lost).toFixed(4);
+          this.ledger.append({ kind: "rent", venue, instrument, usd: -lost, accounts: 0, note: "token account could not be closed; the deposit is a real loss" });
+          this.store.save();
+        }
+        this.log("warn", `rent reclaim ${instrument.slice(0, 8)}: ${err.shortMessage || err.message}${lost > 0 ? ` -- $${lost.toFixed(2)} written off` : ""}`);
+      });
   }
 
   /** Realized statistics, never mixed across modes. A paper fill is a model's opinion and a live fill
@@ -923,7 +934,15 @@ export class Engine extends EventEmitter {
       id: `${venue}:${inst}:${fill.t_filled}`, venue, instrument: inst, model: decision.model, tier: decision.tier, group: decision.group,
       decisionId: decision.id, orderId, entryTime: fill.t_filled, entryPrice: fill.price, qty: fill.qty, notional_usd: fill.notional_usd, stake_usd: stake,
       // notional_usd is what left the wallet, fees included, for paper and live alike; fee_usd is informational.
-      cost_usd: fill.notional_usd, proceeds_usd: 0, remaining_qty: fill.qty,
+      // The wallet outflow less the refundable token-account deposit. The rent comes back when the
+      // emptied account is closed, so counting it as a cost books every closed trade $0.41 worse
+      // than the wallet is -- and outcome.pnl_usd is exactly what statsFromOutcomes turns into
+      // p_win, payoff and loss_fraction for the EV gate and the Kelly sizer. At the $10 stake floor
+      // that phantom loss is 4.1% of stake, larger than the whole modelled round trip, so the gate
+      // was being shown a strategy strictly worse than the one being run. It is remembered on the
+      // position and booked as a real loss only if the reclaim fails.
+      cost_usd: +(fill.notional_usd - (fill.rent_usd || 0)).toFixed(4), rent_usd: +(fill.rent_usd || 0).toFixed(4),
+      proceeds_usd: 0, remaining_qty: fill.qty,
       entryMark: curveEntryMark(venue, fill, decision), mark: null, peak: null, changePct: 0,
       entryScore: decision.features ? Math.round((decision.features.apeScore || 0) * 100) : 0,
       worst_case_fraction: sizing.stop_fraction ?? decision.stop_fraction ?? 1, plan, status: "open",
@@ -1164,7 +1183,7 @@ export class Engine extends EventEmitter {
     if (done) {
       const pnl = +(p.proceeds_usd - p.cost_usd).toFixed(4);
       const held = (f.t_filled || this.clock()) - p.entryTime;
-      this.reclaimRent(venue, p.instrument); // the emptied token account's rent is ours again
+      this.reclaimRent(venue, p.instrument, p.rent_usd || 0); // the emptied account's deposit comes back
       this.store.closePosition(p.id, { exitReason: reason, pnl_usd: pnl, remaining_qty: 0 });
       this.store.rollDay();
       // Simulated money must not spend the real daily loss budget, nor raise it. The reconcile path

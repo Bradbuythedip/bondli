@@ -197,7 +197,11 @@ test("T10: the SOL a buy needs counts fees and rent, and the fill is read from t
   assert.equal(res.ok, true, JSON.stringify(res));
   assert.equal(res.fill.qty, 1200); assert.equal(res.fill.exact, true);
   assert.equal(res.fill.notional_usd, +(0.0285 * 200).toFixed(4), "notional is the whole outflow");
-  assert.ok(Math.abs(res.fill.fee_usd - (0.0285 - 0.025) * 200) < 1e-6, "fee is the part above the stake, informational");
+  // The part above the stake that is actually spent. The token-account rent is in the outflow but it
+  // is a refundable deposit, not a fee, and leaving it in here overstated the reported fees by $0.41
+  // a trade -- which is most of the gap between the modelled round trip and the observed one.
+  assert.equal(res.fill.rent_usd, +(RENT_ATA_SOL * 200).toFixed(4), "the deposit is reported apart");
+  assert.equal(res.fill.fee_usd, +((0.0285 - 0.025 - RENT_ATA_SOL) * 200).toFixed(4), "and is not counted as a fee");
   assert.equal(res.fill.venue_ref, "SIG1");
   assert.equal(walletDeltasFromMeta(null, { mint: "M", owner: "PK" }), null);
 });
@@ -986,6 +990,26 @@ test("T10: a dev holding a rug-sized share is refused on every setting and never
   assert.equal(checkDisqualifiers(crowd, { ...qf, _rg_devHoldPct: 0.14, _rg_quickFlipRate: 0.1 }, AGGRESSION[1]).flags.includes("DEV_HOLDS_SUPPLY"), true, "careful does not");
 });
 
+/** A live pump.fun engine holding one position that put down a token-account deposit. `closeThrows`
+ *  makes closeTokenAccount fail, which is the case where the deposit really is lost. */
+async function rentRig(dir, { closeThrows = false } = {}) {
+  const env = smallEnvelope(dir);
+  const live = new FakeLive({ wallet: { MintR: 1000 } });
+  live.closeImpl = (p, pct) => { const t = Date.now(); const qty = (p.remaining_qty ?? p.qty) * pct / 100; live.wallet.MintR = Math.max(0, (live.wallet.MintR || 0) - qty); return { ok: true, fill: { orderId: `${p.id}:close`, decisionId: p.decisionId, venue: "pumpfun", instrument: p.instrument, side: "SELL", price: 0.006, qty, notional_usd: 13, fee_usd: 0, t_sent: t, t_filled: t + 3, latency_ms: 3, venue_ref: "SIGSELL", sol_received: 0.065 } }; };
+  if (closeThrows) live.closeTokenAccount = async () => { throw new Error("account is not empty"); };
+  const engine = mkEngine(dir, { envelope: env, mode: "paper", live, config: { reentryCooldownMs: 0, saveMs: 600_000, governorMs: 600_000, sweepMs: 600_000 } });
+  await engine.start({ reconcile: false });
+  engine.quotePrice.pumpfun = 200;
+  await engine.setVenueMode("pumpfun", "live", { override: true });
+  const plan = createPlan({ venue: "pumpfun", key: 2, entry: { score: 66 } });
+  // The deposit, as the router would report it: excluded from cost_usd, remembered on the position.
+  const rent = +(RENT_ATA_SOL * 200).toFixed(4);
+  engine.store.upsertPosition({ id: "pos:partial", venue: "pumpfun", instrument: "MintR", status: "open", paper: false, qty: 1000, remaining_qty: 1000,
+    cost_usd: +(25 - rent).toFixed(4), rent_usd: rent, notional_usd: 25, stake_usd: 25, proceeds_usd: 0,
+    entryTime: Date.now() - 60_000, entryMark: 10_000, tier: 2, model: "bondli_gates", plan, reference: { solPrice: 200 } });
+  return { engine, live, rent };
+}
+
 test("T10: the token account's rent comes back when a position leaves for good, and not while a moonbag is still held", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rent-"));
   const env = smallEnvelope(dir);
@@ -1018,12 +1042,14 @@ test("T10: the token account's rent comes back when a position leaves for good, 
     for (let i = 0; i < 50 && !engine.ledger.query({ kind: "rent", limit: 1 }).length; i++) await new Promise(r => setTimeout(r, 10));
     const rent = engine.ledger.query({ kind: "rent", limit: 1 })[0];
     assert.equal(rent.sol, 0.002034); assert.equal(rent.instrument, "MintR"); assert.equal(rent.venue_ref, "SIGRENT");
-    // The rent went out inside cost_usd at entry, so the outcome already booked it as lost. Getting
-    // it back is realized money: 0.002034 SOL at $200 is $0.41 credited to the day it lands in.
-    assert.equal(rent.usd, 0.4068);
+    assert.equal(rent.usd, 0.4068, "the record still says what came back, because the wallet moved");
+    // But nothing is credited for it. The rent is a deposit and was never booked as a cost, so its
+    // return is the expected case rather than a gain -- crediting it here as well as excluding it at
+    // entry would count the same $0.41 twice. The day is exactly the outcome, and the outcome is
+    // exactly what the trade did, which is the number every statistic downstream is built from.
     const realized = engine.store.state.day.realizedUsd;
     const outcome = engine.ledger.query({ kind: "outcome", limit: 1 })[0];
-    assert.equal(+(realized - outcome.pnl_usd).toFixed(4), 0.4068, "the day is the outcome plus the rent that came back");
+    assert.equal(+(realized - outcome.pnl_usd).toFixed(4), 0, "the day is the outcome, with no rent adjustment");
   } finally { await engine.stop(); }
 });
 
@@ -1372,5 +1398,57 @@ test("T10: the moonbag mark waits for the sell that earns it", async () => {
       100, "RIDE-trail", { action: "SELL", layer: 3 });
     assert.equal(half.status, "open", "40% of a full exit is not a closed position");
     assert.equal(half.remaining_qty, 600);
+  } finally { await engine.stop(); }
+});
+
+test("T10: the rent is a deposit, so a trade's booked result is what the wallet actually did", async () => {
+  // The bug this prevents, quantified in docs/audit/FINDINGS.md against the live book: 40 closes at
+  // ~$25, each paying $0.4079 of token-account rent into cost_usd, each reclaim returning it to the
+  // wallet and none of it reaching outcome.pnl_usd. Reported window P&L -$25.81, of which $16.32 was
+  // rent sitting back in the wallet.
+  //
+  // The day's realized total was already corrected on reclaim, so the header was right. What stayed
+  // wrong was outcome.pnl_usd -- and that is exactly what statsFromOutcomes turns into p_win, payoff
+  // and loss_fraction for the EV gate and the Kelly sizer. A trade that netted +$0.30 booked as
+  // -$0.11. At the $10 stake floor the distortion is 4.1% of stake, larger than the entire modelled
+  // round trip, so the gate was shown a strategy strictly worse than the one being run and shut
+  // plan keys off for it.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rent2-"));
+  const { engine, live } = await rentRig(dir);
+  try {
+    const p = engine.store.state.positions["pos:partial"];
+    // The deposit is remembered on the position and kept out of what the trade cost.
+    assert.ok(p.rent_usd > 0, "the position knows what it put down");
+    assert.equal(+(p.cost_usd + p.rent_usd).toFixed(4), +p.notional_usd.toFixed(4), "cost plus deposit is the whole outflow");
+
+    await engine.closePosition(p, 100, "TEST_FINAL", { by: "test" });
+    for (let i = 0; i < 50 && !engine.ledger.query({ kind: "rent", limit: 1 }).length; i++) await new Promise(r => setTimeout(r, 10));
+    const outcome = engine.ledger.query({ kind: "outcome", limit: 1 })[0];
+    // What the trade booked is what the trade did: proceeds less the cost of trading, with the
+    // deposit on neither side of it.
+    assert.equal(outcome.pnl_usd, +(p.proceeds_usd - p.cost_usd).toFixed(4));
+    assert.equal(engine.store.state.day.realizedUsd, outcome.pnl_usd, "and the day is the same number");
+    assert.deepEqual(live.closedAccounts, ["MintR"]);
+  } finally { await engine.stop(); }
+});
+
+test("T10: a deposit that does not come back is a real loss, booked when it is lost", async () => {
+  // The other half. If the account cannot be closed the rent really is gone -- and because it was
+  // never counted at entry, nothing would ever record it. It is charged to the day it was lost in
+  // rather than to the trade, whose statistics have already been written and must not move.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "rent3-"));
+  const { engine } = await rentRig(dir, { closeThrows: true });
+  try {
+    const p = engine.store.state.positions["pos:partial"];
+    const deposit = p.rent_usd;
+    assert.ok(deposit > 0);
+    await engine.closePosition(p, 100, "TEST_FINAL", { by: "test" });
+    for (let i = 0; i < 60 && engine.ledger.query({ kind: "rent", limit: 1 }).length === 0; i++) await new Promise(r => setTimeout(r, 10));
+    const rent = engine.ledger.query({ kind: "rent", limit: 1 })[0];
+    assert.ok(rent, "the write-off is on the record");
+    assert.equal(rent.usd, -deposit, "as a negative, because that is what it is");
+    const outcome = engine.ledger.query({ kind: "outcome", limit: 1 })[0];
+    assert.equal(+(engine.store.state.day.realizedUsd - outcome.pnl_usd).toFixed(4), -deposit,
+      "the day carries the loss; the trade's own result does not move");
   } finally { await engine.stop(); }
 });
