@@ -57,6 +57,7 @@ async function books(evm, curve) {
     tax: await evm.call(curve, "creatorTaxBalance"),
     sellable: await evm.call(curve, "sellableTokens"),
     graduated: await evm.call(curve, "graduated"),
+    owed: await evm.call(curve, "totalOwed"),
     balance: await evm.balance(curve),
   };
 }
@@ -64,7 +65,10 @@ async function books(evm, curve) {
 /** The invariant everything else rests on: the curve can always pay what it says it owes. Assert it
  *  after every state change, because a curve that is one wei short cannot be sold into. */
 function solvent(b, where) {
-  assert.ok(b.balance >= b.real + b.fee + b.tax, `${where}: balance ${b.balance} < owed ${b.real + b.fee + b.tax}`);
+  // totalOwed is money the curve accepted and could not push out. It is still the curve's to hold
+  // and still somebody else's to claim, so it belongs on the same side of the ledger as the fees.
+  const debt = b.real + b.fee + b.tax + b.owed;
+  assert.ok(b.balance >= debt, `${where}: balance ${b.balance} < owed ${debt}`);
   assert.equal(b.real, b.tracked - b.fee - b.tax, `${where}: realQuoteReserve is trackedQuote less what is owed out`);
   assert.equal(b.quoteReserve, PHANTOM + b.tracked - b.fee - b.tax, `${where}: the priced reserve includes the phantom and excludes the fees`);
 }
@@ -330,4 +334,136 @@ test("T42: a curve whose standing levies eat the whole trade cannot be built", a
   // One basis point short is allowed, and still leaves the clamp something to work with.
   const okCurve = await evm.deploy(ART, "FleetTestCurve", args(9_000n, 999n), { from: dev });
   assert.ok(okCurve);
+});
+
+test("T42: a creator whose address rejects ETH cannot brick the launch", async () => {
+  // The attack, for the price of one launch fee: nominate a creatorFeeRecipient whose receive()
+  // reverts. Every payout on the graduation path used to be a push that reverted the whole
+  // transaction on failure, and _graduate() called sweepFees() first, and _graduate() is the tail of
+  // buy(). So the curve filled to its last token and then refused every further buy, forever, with
+  // the fees stranded, every holder trapped just below the top, and no rescue anywhere in the
+  // contract. An honest creator using a Safe without a payable fallback does it to themselves.
+  //
+  // A contract with no receive and no fallback rejects ETH, so a plain token serves as the hostile
+  // recipient without needing one written for the purpose.
+  const evm = await Evm.create();
+  const dev = await evm.account("dev"), buyer = await evm.account("buyer");
+  const refuser = await evm.deploy(ART, "FleetTestToken", ["R", "R", "", "", dev.toString(), dev.toString(), 1n], { from: dev });
+  const pad = await evm.deploy(ART, "FleetTestLaunchpad", [0n, SUPPLY, FEE_BPS, PHANTOM, GRADUATION], { from: dev });
+  const lr = await evm.send(pad, LAUNCH_SIG, [params({ creatorTaxBps: 200, feeRecipient: refuser.toString() }), 0n, ZERO], { from: dev });
+  assert.ok(lr.ok, lr.error);
+  const curve = evm.attach(Evm.log(lr.logs, "TokenLaunched").args.curve, ART, "FleetTestCurve");
+  evm.warp(60);
+
+  const r = await evm.send(curve, "buy", [20n * E, 0n, buyer.toString()], { from: buyer, value: 20n * E });
+  assert.ok(r.ok, `the hostile recipient blocked graduation: ${r.error}`);
+  assert.equal(await evm.call(curve, "graduated"), true, "it graduated anyway");
+
+  // The creator's tax is not lost, it is a debt. They can collect it the day they can receive ETH.
+  const debt = await evm.call(curve, "owed", [refuser.toString()]);
+  assert.ok(debt > 0n, "the tax they refused is credited to them");
+  assert.ok(Evm.log(r.logs, "PaymentDeferred"), "and the contract said so");
+  // The protocol's own fee and the raise reached the factory regardless, which is the whole point:
+  // one party's broken address is no longer a lever on everybody else's money.
+  assert.ok((await evm.balance(pad)) > 0n);
+  assert.equal(await evm.balance(curve), debt, "the curve holds exactly what it still owes");
+});
+
+test("T42: a deferred payment can be claimed, once", async () => {
+  const evm = await Evm.create();
+  const dev = await evm.account("dev"), buyer = await evm.account("buyer"), other = await evm.account("other");
+  // A curve whose factory is an address that cannot take ETH, so the protocol fee defers and there
+  // is a debt to collect without needing a hostile creator.
+  const refuser = await evm.deploy(ART, "FleetTestToken", ["R", "R", "", "", dev.toString(), dev.toString(), 1n], { from: dev });
+  const curve = await evm.deploy(ART, "FleetTestCurve", [dev.toString(), PHANTOM, FEE_BPS, 0n, GRADUATION, 0n, 15n], { from: refuser });
+  const token = await evm.deploy(ART, "FleetTestToken", ["T", "T", "", "", dev.toString(), curve.toString(), SUPPLY], { from: dev });
+  assert.ok((await evm.send(curve, "initialize", [token.toString()], { from: refuser })).ok);
+
+  assert.ok((await evm.send(curve, "buy", [1n * E, 0n, buyer.toString()], { from: buyer, value: 1n * E })).ok);
+  assert.ok((await evm.send(curve, "sweepFees", [], { from: other })).ok);
+  const debt = await evm.call(curve, "owed", [refuser.toString()]);
+  assert.ok(debt > 0n, "the factory could not take its fee, so it is owed it");
+  assert.equal(await evm.call(curve, "totalOwed"), debt);
+
+  // Nobody else can take it, and the owner of the debt cannot take it twice.
+  const stranger = await evm.send(curve, "claim", [], { from: other });
+  assert.equal(stranger.ok, false);
+  assert.match(stranger.error, /NothingOwed/);
+  // The refuser still cannot receive ETH, so its own claim reverts and the debt survives intact --
+  // a failed claim must not burn the credit.
+  const failed = await evm.send(curve, "claim", [], { from: refuser });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /TransferFailed/);
+  assert.equal(await evm.call(curve, "owed", [refuser.toString()]), debt, "the debt is intact after a failed claim");
+  solvent(await books(evm, curve), "with a debt outstanding");
+});
+
+test("T42: minTokensOut is a floor on tokens, not on the rate", async () => {
+  // Measured on this contract before the change: a buyer asking for at least 49,773,503 tokens
+  // received 1,889,169 -- 3.80% of what they demanded -- and the transaction succeeded, because the
+  // old check compared ratios (spent*min against quoteIn*out) and the clamped final buy always
+  // satisfies that: it spends proportionally less for what little is left. The price was fine. The
+  // quantity was not, and minTokensOut is a quantity.
+  const { evm, curve, buyer, other } = await rig();
+  evm.warp(60);
+  // Fill the curve to nearly nothing so the next buy clamps hard.
+  // Just short of the four-ETH raise, so a sliver of sellable supply remains and the next buy clamps.
+  assert.ok((await evm.send(curve, "buy", [3_950_000_000_000_000_000n, 0n, other.toString()], { from: other, value: 3_950_000_000_000_000_000n })).ok);
+  const left = await evm.call(curve, "sellableTokens");
+  assert.ok(left > 0n && left < SUPPLY / 50n, `a sliver is left: ${left}`);
+
+  // Ask for far more than remains. It must refuse rather than fill 3.8% of the order.
+  const greedy = await evm.send(curve, "buy", [5n * E, left * 100n, buyer.toString()], { from: buyer, value: 5n * E });
+  assert.equal(greedy.ok, false, "a fill far under the floor is refused");
+  assert.match(greedy.error, /SlippageExceeded/);
+  // The error now carries the two quantities being compared, which it could not meaningfully do
+  // when the comparison was a ratio.
+  assert.match(greedy.error, new RegExp(String(left)));
+
+  // Asking for what is actually there succeeds, and so does asking for nothing in particular --
+  // which is how the curve still gets graduated by anyone who wants whatever remains.
+  const honest = await evm.send(curve, "buy", [5n * E, left, buyer.toString()], { from: buyer, value: 5n * E });
+  assert.ok(honest.ok, `an accurate floor is accepted: ${honest.error}`);
+  assert.equal(await evm.call(curve, "graduated"), true);
+});
+
+test("T42: a launcher's change comes back to the launcher", async () => {
+  // launchAndBuy forwards the opening buy to the curve, so inside buy() the msg.sender was the
+  // launchpad. The clamped final buy refunds to msg.sender -- so a launcher who overpaid sent their
+  // change into the launchpad's balance, where the only way out was an owner withdrawal, and
+  // CurveBuyRefunded named the launchpad so nobody could even attribute it.
+  const evm = await Evm.create();
+  const dev = await evm.account("dev");
+  const FEE = 10n ** 15n;
+  const pad = await evm.deploy(ART, "FleetTestLaunchpad", [FEE, SUPPLY, FEE_BPS, PHANTOM, GRADUATION], { from: dev });
+  const SIG = "launchAndBuy((string,string,string,string,(string,string,string,string,string),address,uint16,bool,bytes32,bytes32),uint256,address,uint256,uint256,address,address[])";
+  const IN = 40n * E;                        // far more than the curve can absorb
+  const before = await evm.balance(dev);
+  const r = await evm.send(pad, SIG, [params(), 0n, ZERO, IN, 0n, ZERO, []], { from: dev, value: FEE + IN });
+  assert.ok(r.ok, r.error);
+
+  const refunded = Evm.log(r.logs, "CurveBuyRefunded");
+  assert.ok(refunded, "the curve clamped and refunded");
+  assert.equal(refunded.args.buyer.toLowerCase(), dev.toString().toLowerCase(), "to the launcher, not the launchpad");
+  const spent = Evm.log(r.logs, "CurveBuy").args.quoteIn;
+  assert.equal(await evm.balance(dev), before - FEE - spent, "the launcher is out the fee and what was actually spent");
+  // And the launchpad holds only what it is meant to: the fee and the raise, never the change.
+  assert.equal(await evm.balance(pad), FEE + spent, "the pad holds its fee and the raise, and no change that is not its own");
+});
+
+test("T42: an overpaid launch fee is change, not revenue", async () => {
+  const evm = await Evm.create();
+  const dev = await evm.account("dev");
+  const FEE = 10n ** 15n;
+  const pad = await evm.deploy(ART, "FleetTestLaunchpad", [FEE, SUPPLY, FEE_BPS, PHANTOM, GRADUATION], { from: dev });
+  const before = await evm.balance(dev);
+  const r = await evm.send(pad, LAUNCH_SIG, [params(), 0n, ZERO], { from: dev, value: FEE * 10n });
+  assert.ok(r.ok, r.error);
+  assert.equal(await evm.balance(dev), before - FEE, "nine tenths of it came straight back");
+  assert.equal(await evm.balance(pad), FEE, "and the pad kept only its price");
+  // The check stays `<` rather than `!=` on purpose: a fee raised between quoting and mining should
+  // not fail an honest launch, it should just cost what it now costs.
+  const short = await evm.send(pad, LAUNCH_SIG, [params(), 0n, ZERO], { from: dev, value: FEE - 1n });
+  assert.equal(short.ok, false);
+  assert.match(short.error, /LaunchFeeNotPaid/);
 });

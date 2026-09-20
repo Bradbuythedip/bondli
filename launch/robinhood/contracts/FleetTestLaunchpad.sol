@@ -40,16 +40,21 @@ contract FleetTestCurve {
     error CurveGraduated(); error ZeroAmount(); error ZeroAddress(); error SlippageExceeded(uint256 actual, uint256 minimum);
     error NotFactory(); error TransferFailed(); error NativeValueMismatch(uint256 supplied, uint256 expected); error InsufficientLiquidity();
     error LeviesExceedPrincipal(uint256 bps);
+    error NothingOwed();
     event CurveBuy(address indexed buyer, address indexed recipient, uint256 quoteIn, uint256 tokensOut, uint256 fee, uint256 tax);
     event CurveBuyRefunded(address indexed buyer, uint256 refund);
     event CurveSell(address indexed seller, address indexed recipient, uint256 tokensIn, uint256 quoteOut, uint256 fee, uint256 tax);
     event CurveCompleted(address recipient, uint256 quoteOut, uint256 tokenOut);
     event SnipeTaxExempted(address indexed wallet);
+    event PaymentDeferred(address indexed to, uint256 amount);
+    event Claimed(address indexed to, uint256 amount);
 
     address public token; address public immutable factory; address public deployer; address public immutable pairToken = address(0);
     uint256 public immutable phantomQuote; uint256 public immutable feeBps; uint256 public immutable creatorTaxBps; uint256 public immutable graduationThreshold;
     uint256 public immutable snipeTaxStartBps; uint256 public immutable snipeTaxSeconds; uint256 public launchedAt;
     uint256 public trackedQuote; uint256 public trackedTokens; uint256 public reservedTokens; uint256 public quoteFeeBalance; uint256 public creatorTaxBalance; uint256 public snipeTaxPaid;
+    /// Payments that could not be pushed. See _pay.
+    mapping(address => uint256) public owed; uint256 public totalOwed;
     bool public graduated;
     mapping(address => bool) public snipeTaxExempt;
 
@@ -73,6 +78,40 @@ contract FleetTestCurve {
         trackedTokens = FleetTestToken(token_).balanceOf(address(this));
     }
     function exemptFromSnipeTax(address wallet) external onlyFactory { snipeTaxExempt[wallet] = true; emit SnipeTaxExempted(wallet); }
+
+    /**
+     * Pay, and if the recipient will not take it, remember that we owe them.
+     *
+     * Every payout here used to be a push that reverted the whole transaction on failure, and three
+     * of them sat on the graduation path: the creator's tax, the protocol's fee and the raise
+     * itself. The creator's fee recipient is chosen by whoever launched the token, so for the price
+     * of one launch fee anyone could nominate a contract whose receive() reverts and the curve would
+     * fill to the last token and then refuse every further buy, forever, with the fees stranded and
+     * every holder trapped just below the top. An honest creator using a Safe without a payable
+     * fallback does the same thing to themselves by accident.
+     *
+     * The gas stipend is the other half of it: without a cap a recipient can burn the whole gas
+     * limit in its fallback and fail the transaction that way instead.
+     *
+     * So the happy path still pushes -- a seller gets their ETH in the same transaction, which is
+     * what anyone expects -- and the unhappy path becomes a debt they can collect, rather than a
+     * lever on everybody else. Nothing on the graduation path can revert any more.
+     */
+    function _pay(address to, uint256 amount) private {
+        if (amount == 0) return;
+        (bool s,) = payable(to).call{value: amount, gas: 30_000}("");
+        if (!s) { owed[to] += amount; totalOwed += amount; emit PaymentDeferred(to, amount); }
+    }
+
+    /// @notice Collect a payment that could not be pushed. Sends only to the caller.
+    function claim() external returns (uint256 amount) {
+        amount = owed[msg.sender];
+        if (amount == 0) revert NothingOwed();
+        owed[msg.sender] = 0; totalOwed -= amount;
+        emit Claimed(msg.sender, amount);
+        (bool s,) = payable(msg.sender).call{value: amount}("");
+        if (!s) revert TransferFailed();
+    }
 
     function isNativeQuote() external pure returns (bool) { return true; }
     function getReserves() public view returns (uint256 quoteReserve_, uint256 tokenReserve_) { quoteReserve_ = phantomQuote + trackedQuote - quoteFeeBalance - creatorTaxBalance; tokenReserve_ = trackedTokens; }
@@ -117,7 +156,24 @@ contract FleetTestCurve {
         return (amountOutWanted * reserveIn) / (reserveOut - amountOutWanted) + 1;
     }
 
-    function buy(uint256 quoteIn, uint256 minTokensOut, address recipient) external payable returns (uint256 tokensOut) {
+    function buy(uint256 quoteIn, uint256 minTokensOut, address recipient) external payable returns (uint256) {
+        return _buy(quoteIn, minTokensOut, recipient, msg.sender);
+    }
+
+    /**
+     * @notice As buy, but the refund from a clamped final buy goes to `refundTo`.
+     *
+     * The launchpad's launchAndBuy forwards the opening buy to the curve, so inside buy() the
+     * msg.sender is the launchpad, not the person who paid. The clamped final buy refunds to
+     * msg.sender -- so a launcher who overpaid on a nearly-full curve sent their change to the
+     * launchpad's own balance, where the only way out was an owner withdrawal, and the
+     * CurveBuyRefunded log named the launchpad so no reconciler could even attribute it.
+     */
+    function buyFor(uint256 quoteIn, uint256 minTokensOut, address recipient, address refundTo) external payable returns (uint256) {
+        return _buy(quoteIn, minTokensOut, recipient, refundTo == address(0) ? msg.sender : refundTo);
+    }
+
+    function _buy(uint256 quoteIn, uint256 minTokensOut, address recipient, address refundTo) private returns (uint256 tokensOut) {
         if (graduated) revert CurveGraduated(); if (recipient == address(0)) revert ZeroAddress();
         if (msg.value != quoteIn) revert NativeValueMismatch(msg.value, quoteIn); if (quoteIn == 0) revert ZeroAmount();
         (uint256 qr, uint256 tr) = getReserves();
@@ -136,12 +192,21 @@ contract FleetTestCurve {
             spent = grossed < quoteIn ? grossed : quoteIn;
             fee = (spent * feeBps) / BASIS_POINTS; tax = (spent * creatorTaxBps) / BASIS_POINTS; snipe = (spent * snipeBps) / BASIS_POINTS;
         }
-        if (spent * minTokensOut > quoteIn * tokensOut) revert SlippageExceeded(tokensOut, minTokensOut);
+        // A floor on the tokens, not on the rate. The old check compared ratios -- spent*min against
+        // quoteIn*out -- which the clamped final buy always satisfies, because it spends
+        // proportionally less for what little is left. Measured on this contract: a buyer asking for
+        // at least 49,773,503 tokens received 1,889,169, which is 3.80% of what they demanded, and
+        // the transaction succeeded. The price was fine; the quantity was not, and minTokensOut is a
+        // quantity. Anyone who genuinely wants whatever remains passes zero.
+        if (tokensOut < minTokensOut) revert SlippageExceeded(tokensOut, minTokensOut);
         quoteFeeBalance += fee; creatorTaxBalance += tax; trackedQuote += spent - snipe; snipeTaxPaid += snipe; trackedTokens -= tokensOut;
         FleetTestToken(token).transfer(recipient, tokensOut);
-        if (snipe != 0) { (bool s,) = payable(factory).call{value: snipe}(""); if (!s) revert TransferFailed(); }
+        _pay(factory, snipe);
         uint256 refund = quoteIn - spent;
-        if (refund != 0) { emit CurveBuyRefunded(msg.sender, refund); (bool r,) = payable(msg.sender).call{value: refund}(""); if (!r) revert TransferFailed(); }
+        // The refund is only ever non-zero on the buy that fills the curve, which is the buy that
+        // graduates it -- so a buyer who cannot receive ETH used to be able to block graduation for
+        // everyone by overpaying on the last trade.
+        if (refund != 0) { emit CurveBuyRefunded(refundTo, refund); _pay(refundTo, refund); }
         emit CurveBuy(msg.sender, recipient, spent, tokensOut, fee, tax);
         if (readyToGraduate()) _graduate();
     }
@@ -156,21 +221,23 @@ contract FleetTestCurve {
         if (quoteOut < minQuoteOut) revert SlippageExceeded(quoteOut, minQuoteOut);
         if (quoteOut > realQuoteReserve()) revert InsufficientLiquidity();
         quoteFeeBalance += fee; creatorTaxBalance += tax; trackedQuote -= quoteOut; trackedTokens += tokensIn;
-        (bool s,) = payable(recipient).call{value: quoteOut}(""); if (!s) revert TransferFailed();
         emit CurveSell(msg.sender, recipient, tokensIn, quoteOut, fee, tax);
+        // Booked and announced before the money moves: a recipient that re-enters can no longer see
+        // a curve whose state disagrees with the log it has already emitted.
+        _pay(recipient, quoteOut);
     }
 
     /// @notice Pays pending fees out: the base fee to the launchpad (protocol), the creator tax to the creator.
     function sweepFees() public {
         uint256 fee = quoteFeeBalance; uint256 tax = creatorTaxBalance; if (fee == 0 && tax == 0) return;
         quoteFeeBalance = 0; creatorTaxBalance = 0; trackedQuote -= fee + tax;
-        if (fee != 0) { (bool a,) = payable(factory).call{value: fee}(""); if (!a) revert TransferFailed(); }
-        if (tax != 0) { (bool b,) = payable(deployer).call{value: tax}(""); if (!b) revert TransferFailed(); }
+        _pay(factory, fee);
+        _pay(deployer, tax);
     }
     function _graduate() private {
         graduated = true; sweepFees();
         uint256 quoteOut = trackedQuote; uint256 tokenOut = trackedTokens; trackedQuote = 0; trackedTokens = 0;
-        if (quoteOut != 0) { (bool s,) = payable(factory).call{value: quoteOut}(""); if (!s) revert TransferFailed(); }
+        _pay(factory, quoteOut);
         if (tokenOut != 0) FleetTestToken(token).transfer(factory, tokenOut);
         emit CurveCompleted(factory, quoteOut, tokenOut);
         FleetTestLaunchpad(payable(factory)).onGraduated(token, tokenOut, quoteOut);
@@ -183,7 +250,7 @@ contract FleetTestLaunchpad {
     struct LaunchConfig { uint256 supply; uint256 curveFeeBps; uint256 phantomQuote; uint256 graduationThreshold; uint24 poolFee; int24 tickSpacing; bool enabled; }
     struct LaunchedToken { address token; address curve; address deployer; address pairToken; uint256 launchConfigId; uint256 graduationThreshold; bool graduated; }
 
-    error NotOwner(); error LaunchFeeNotPaid(); error InvalidLaunchConfigId(); error InvalidTokenParams(); error ExemptionListTooLong(); error CreatorTaxTooHigh(); error PairTokenNotApproved(); error LaunchEconomicsMismatch(bytes32 expected, bytes32 actual); error NotCurve();
+    error NotOwner(); error LaunchFeeNotPaid(); error TransferFailed(); error InvalidLaunchConfigId(); error InvalidTokenParams(); error ExemptionListTooLong(); error CreatorTaxTooHigh(); error PairTokenNotApproved(); error LaunchEconomicsMismatch(bytes32 expected, bytes32 actual); error NotCurve();
     event TokenLaunched(address indexed token, address indexed curve, address indexed deployer, address pairToken, uint256 launchConfigId, uint256 graduationThreshold);
     event PoolGraduated(address indexed token, uint256 positionId, uint256 tokenAmount, uint256 pairTokenAmount);
     event LaunchFeeUpdated(uint256 launchFee);
@@ -214,16 +281,24 @@ contract FleetTestLaunchpad {
     }
 
     function launchToken(TokenParams calldata params, uint256 launchConfigId, address pairToken) external payable returns (address token, address curve) {
-        (token, curve) = _launch(params, launchConfigId, pairToken, msg.sender);
+        (token, curve) = _launch(params, launchConfigId, pairToken, msg.sender); _refundOverpay();
     }
     function launchToken(TokenParams calldata params, uint256 launchConfigId, address pairToken, address[] calldata snipeTaxExemptions) external payable returns (address token, address curve) {
-        (token, curve) = _launch(params, launchConfigId, pairToken, msg.sender); _exempt(curve, snipeTaxExemptions);
+        (token, curve) = _launch(params, launchConfigId, pairToken, msg.sender); _exempt(curve, snipeTaxExemptions); _refundOverpay();
+    }
+    /// The fee is a price, not a floor. Anything above it was never ours; _launch checks `<` so that
+    /// a fee raised between quoting and mining does not fail the launch, and the change comes back.
+    function _refundOverpay() private {
+        uint256 over = msg.value - launchFee;
+        if (over == 0) return;
+        (bool s,) = payable(msg.sender).call{value: over}("");
+        if (!s) revert TransferFailed();
     }
     /// @notice Launch and make the opening buy in one transaction: msg.value = launchFee + quoteIn.
     function launchAndBuy(TokenParams calldata params, uint256 launchConfigId, address pairToken, uint256 quoteIn, uint256 minTokensOut, address recipient, address[] calldata snipeTaxExemptions) external payable returns (address token, address curve) {
         if (msg.value != launchFee + quoteIn) revert LaunchFeeNotPaid();
         (token, curve) = _launch(params, launchConfigId, pairToken, msg.sender); _exempt(curve, snipeTaxExemptions);
-        if (quoteIn != 0) FleetTestCurve(curve).buy{value: quoteIn}(quoteIn, minTokensOut, recipient == address(0) ? msg.sender : recipient);
+        if (quoteIn != 0) FleetTestCurve(curve).buyFor{value: quoteIn}(quoteIn, minTokensOut, recipient == address(0) ? msg.sender : recipient, msg.sender);
     }
     function _exempt(address curve, address[] calldata list) private {
         if (list.length > MAX_SNIPE_TAX_EXEMPTIONS) revert ExemptionListTooLong();
