@@ -34,6 +34,11 @@ export class Evm {
     // timestamp zero, so this is the harness matching reality rather than working around the code.
     this._now = 1_800_000_000n;
     this._number = 1n;
+    // Every interface from every artifact this harness has been handed, for decoding logs emitted by
+    // contracts it never deployed. A launchpad deploys its own token and curve, so their addresses
+    // cannot be attached in advance and their events -- which are the whole point of the test -- would
+    // otherwise come back unreadable.
+    this._known = [];
   }
 
   /** The fake block every call is executed against, so TIMESTAMP and NUMBER answer. */
@@ -58,10 +63,19 @@ export class Evm {
 
   async balance(a) { return (await this.vm.stateManager.getAccount(addr(a)))?.balance ?? 0n; }
 
+  /** Register every contract in an artifact for log decoding, whoever ends up deploying them. */
+  know(artifact) {
+    for (const [name, c] of Object.entries(artifact.contracts || {})) {
+      if (!this._known.some(k => k.name === name)) this._known.push({ name, iface: new Interface(c.abi) });
+    }
+    return this;
+  }
+
   /** Deploy, and remember the ABI so calls to this address can be encoded and its logs decoded. */
   async deploy(artifact, name, args = [], { from, value = 0n } = {}) {
     const c = artifact.contracts[name];
     if (!c) throw new Error(`no contract ${name} in the artifact`);
+    this.know(artifact);
     const iface = new Interface(c.abi);
     const data = c.bytecode + iface.encodeDeploy(args).slice(2);
     const r = await this.vm.evm.runCall({ caller: addr(from), to: undefined, data: hexToBytes(data), value, gasLimit: GAS, isStatic: false, block: this._block });
@@ -74,6 +88,7 @@ export class Evm {
 
   /** Register an ABI for an address this harness did not deploy (a token the factory made, say). */
   attach(address, artifact, name) {
+    this.know(artifact);
     const iface = new Interface(artifact.contracts[name].abi);
     this.ifaces.set(addr(address).toString().toLowerCase(), iface);
     this.names.set(addr(address).toString().toLowerCase(), name);
@@ -128,11 +143,17 @@ export class Evm {
       const a = bytesToHex(address);
       const iface = this.ifaces.get(a.toLowerCase());
       const entry = { address: a, name: null, args: null, contract: this.names.get(a.toLowerCase()) ?? null };
-      if (!iface) return entry;
-      try {
-        const p = iface.parseLog({ topics: topics.map(bytesToHex), data: bytesToHex(data) });
-        if (p) { entry.name = p.name; entry.args = p.args; }
-      } catch {}
+      const t = topics.map(bytesToHex), d = bytesToHex(data);
+      // The address's own ABI first. Failing that, every ABI we know: a contract that deploys other
+      // contracts emits from addresses the test could not attach in advance, and a log nobody can
+      // read is the one most likely to be the one the test is about.
+      for (const candidate of [iface, ...this.ifaces.values(), ...this._known.map(k => k.iface)]) {
+        if (!candidate) continue;
+        try {
+          const p = candidate.parseLog({ topics: t, data: d });
+          if (p) { entry.name = p.name; entry.args = p.args; return entry; }
+        } catch { /* not this one */ }
+      }
       return entry;
     });
   }
