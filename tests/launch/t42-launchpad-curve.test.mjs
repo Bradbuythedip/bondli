@@ -218,11 +218,19 @@ test("T42: the curve fills, clamps the last buy, refunds the difference and grad
   // pool gets seeded; here it is the factory's balance, which is what the test double does.
   assert.ok(Evm.log(r.logs, "CurveCompleted"), "the curve says it is done");
   assert.ok(Evm.log(r.logs, "PoolGraduated"), "and the factory records it");
-  assert.equal(await evm.balance(curve), 0n, "the curve keeps nothing");
-  assert.equal(await evm.call(token, "balanceOf", [curve.toString()]), 0n);
+  assert.equal(await evm.call(token, "balanceOf", [curve.toString()]), 0n, "the curve keeps no tokens");
   assert.ok((await evm.balance(pad)) > 0n, "the raise is at the factory");
-  // The reserved fifth goes with it: that is the pool's side of the seed.
-  assert.equal(await evm.call(token, "balanceOf", [pad.toString()]), SUPPLY / 5n);
+  // The curve keeps exactly the fees it has not paid out. They stay parked on purpose: getReserves
+  // already nets them out so the price does not move, and paying them here is what used to put a
+  // stranger's fallback on the graduation path.
+  const after = await books(evm, curve);
+  assert.equal(await evm.balance(curve), after.fee + after.tax);
+  solvent(after, "after graduating");
+  // The reserved supply is NOT handed over whole any more -- only what the raise can back.
+  const seeded = Evm.log(r.logs, "CurveCompleted").args.tokenOut;
+  assert.equal(await evm.call(token, "balanceOf", [pad.toString()]), seeded);
+  assert.ok(seeded < SUPPLY / 5n, "less than the reserved fifth");
+  assert.equal(await evm.call(token, "balanceOf", ["0x000000000000000000000000000000000000dEaD"]), SUPPLY / 5n - seeded, "and the rest is burnt");
   assert.equal((await evm.call(pad, "getLaunchedToken", [(await evm.call(curve, "token")).toString()])).graduated, true);
 });
 
@@ -359,10 +367,13 @@ test("T42: a creator whose address rejects ETH cannot brick the launch", async (
   assert.ok(r.ok, `the hostile recipient blocked graduation: ${r.error}`);
   assert.equal(await evm.call(curve, "graduated"), true, "it graduated anyway");
 
-  // The creator's tax is not lost, it is a debt. They can collect it the day they can receive ETH.
+  // Graduation no longer pays anyone at all -- the fees stay parked -- so the hostile address is not
+  // even on the path. It only comes up when somebody sweeps, and then it is a debt, not a wedge.
+  const sweep = await evm.send(curve, "sweepFees", [], { from: buyer });
+  assert.ok(sweep.ok, `the sweep reverted: ${sweep.error}`);
+  assert.ok(Evm.log(sweep.logs, "PaymentDeferred"), "the tax they refused is recorded as owed");
   const debt = await evm.call(curve, "owed", [refuser.toString()]);
-  assert.ok(debt > 0n, "the tax they refused is credited to them");
-  assert.ok(Evm.log(r.logs, "PaymentDeferred"), "and the contract said so");
+  assert.ok(debt > 0n, "and credited to them, to collect the day they can receive ETH");
   // The protocol's own fee and the raise reached the factory regardless, which is the whole point:
   // one party's broken address is no longer a lever on everybody else's money.
   assert.ok((await evm.balance(pad)) > 0n);
@@ -448,7 +459,10 @@ test("T42: a launcher's change comes back to the launcher", async () => {
   const spent = Evm.log(r.logs, "CurveBuy").args.quoteIn;
   assert.equal(await evm.balance(dev), before - FEE - spent, "the launcher is out the fee and what was actually spent");
   // And the launchpad holds only what it is meant to: the fee and the raise, never the change.
-  assert.equal(await evm.balance(pad), FEE + spent, "the pad holds its fee and the raise, and no change that is not its own");
+  // The pad holds its launch fee plus the raise. The raise is the spend less the levies, which stay
+  // parked in the curve until someone sweeps them.
+  const levies = Evm.log(r.logs, "CurveBuy").args.fee + Evm.log(r.logs, "CurveBuy").args.tax;
+  assert.equal(await evm.balance(pad), FEE + spent - levies, "its fee and the raise, and no change that is not its own");
 });
 
 test("T42: an overpaid launch fee is change, not revenue", async () => {
@@ -540,4 +554,104 @@ test("T42: pinned economics cover the terms the owner can move", async () => {
   assert.match(stale.error, /LaunchEconomicsMismatch/);
   const fresh = await evm.send(pad, LAUNCH_SIG, [params({ expectedEconomics: moved }), 0n, ZERO], { from: dev, value: 10n ** 15n });
   assert.ok(fresh.ok, fresh.error);
+});
+
+test("T42: the pool opens at the price the curve closed at", async () => {
+  // The curve's last price is its priced reserve over its token reserve, and the priced reserve
+  // includes the phantom quote -- money nobody deposited and which cannot be handed to a pool. So
+  // seeding with everything left, the whole raise against the whole reserved supply, opens at
+  // raise/reserved when the curve closed at (phantom+raise)/reserved.
+  //
+  // That ratio is raise/(phantom+raise). Measured here at P=1,G=4 it is a 20% gap; at the shipped
+  // P=3,G=6 it is 33.3%. Either way it lands on every holder at the moment the interface
+  // congratulates them -- and bondli's own dip read would see that manufactured gap as a token that
+  // ran and gave some back, and buy it.
+  const { evm, curve, token, pad, buyer, other } = await rig();
+  evm.warp(60);
+  assert.ok((await evm.send(curve, "buy", [2n * E, 0n, other.toString()], { from: other, value: 2n * E })).ok);
+  // The closing price, read one instant before the buy that ends the curve.
+  const [qrBefore, trBefore] = await evm.call(curve, "getReserves");
+  const r = await evm.send(curve, "buy", [20n * E, 0n, buyer.toString()], { from: buyer, value: 20n * E });
+  assert.ok(r.ok, r.error);
+
+  const done = Evm.log(r.logs, "CurveCompleted").args;
+  const raise = done.quoteOut, seeded = done.tokenOut;
+  assert.ok(raise > 0n && seeded > 0n);
+
+  // The pool's opening price is raise/seeded. The curve's closing price is the priced reserve over
+  // the token reserve at the moment the last token left. Compare as a cross-product so there is no
+  // floating point in the assertion, and allow the one unit integer division can cost.
+  const [qrEnd] = await evm.call(curve, "getReserves");
+  const tokensAtClose = SUPPLY / 5n;                     // the reserved supply, which is what was left
+  const lhs = raise * tokensAtClose, rhs = seeded * (qrEnd + raise);
+  const off = lhs > rhs ? lhs - rhs : rhs - lhs;
+  assert.ok(off <= tokensAtClose, `the pool opens at the curve's closing price (off by ${off} of ${lhs})`);
+
+  // And the untrimmed alternative is the bug: had the whole reserved supply been seeded, the pool
+  // would have opened well below.
+  const naivePriceNum = raise, naivePriceDen = tokensAtClose;
+  const realPriceNum = raise, realPriceDen = seeded;
+  assert.ok(realPriceDen < naivePriceDen, "the trim is what closes the gap");
+  const gapPct = Number(100n - (seeded * 100n) / tokensAtClose);
+  assert.ok(gapPct >= 15 && gapPct <= 25, `the gap that was avoided is ${gapPct}% at these economics`);
+
+  // Nothing is kept: what is not seeded is burnt, and the two add back to the reserved supply.
+  const burnt = await evm.call(token, "balanceOf", ["0x000000000000000000000000000000000000dEaD"]);
+  assert.equal(seeded + burnt, tokensAtClose);
+  assert.equal(Evm.log(r.logs, "TokensBurned").args.amount, burnt);
+  assert.ok(qrBefore > 0n && trBefore > 0n);
+  assert.equal(await evm.call(pad, "raiseOf", [token.toString()]), raise, "and the raise is escrowed against its token");
+});
+
+test("T42: the owner cannot withdraw a raise, only the protocol's own revenue", async () => {
+  // withdraw() used to send address(this).balance, and every graduated raise is paid into that
+  // balance. Forty graduations at six ETH is two hundred and forty ETH of other people's money one
+  // owner call from gone, with no event and nothing a holder could see coming.
+  const evm = await Evm.create();
+  const dev = await evm.account("dev"), buyer = await evm.account("buyer"), sink = await evm.account("sink");
+  const FEE = 10n ** 15n;
+  const pad = await evm.deploy(ART, "FleetTestLaunchpad", [FEE, SUPPLY, FEE_BPS, PHANTOM, GRADUATION], { from: dev });
+  const lr = await evm.send(pad, LAUNCH_SIG, [params(), 0n, ZERO], { from: dev, value: FEE });
+  const curve = evm.attach(Evm.log(lr.logs, "TokenLaunched").args.curve, ART, "FleetTestCurve");
+  const tokenAddr = Evm.log(lr.logs, "TokenLaunched").args.token;
+  evm.warp(60);
+  const r = await evm.send(curve, "buy", [20n * E, 0n, buyer.toString()], { from: buyer, value: 20n * E });
+  assert.ok(r.ok, r.error);
+
+  const raise = await evm.call(pad, "raiseOf", [tokenAddr]);
+  assert.ok(raise > 0n);
+  assert.equal(await evm.call(pad, "totalEscrowed"), raise);
+
+  const sinkBefore = await evm.balance(sink);
+  assert.ok((await evm.send(pad, "withdraw", [sink.toString()], { from: dev })).ok);
+  assert.equal(await evm.balance(sink) - sinkBefore, FEE, "the owner got the launch fee and not one wei more");
+  assert.equal(await evm.balance(pad), raise, "the raise is untouched");
+
+  // It moves only to a seeder, only once, and only the owner can name one.
+  assert.match((await evm.send(pad, "releaseRaise", [tokenAddr], { from: dev })).error, /NotSeeder/);
+  assert.match((await evm.send(pad, "setSeeder", [sink.toString()], { from: buyer })).error, /NotOwner/);
+  assert.ok((await evm.send(pad, "setSeeder", [sink.toString()], { from: dev })).ok);
+  const rel = await evm.send(pad, "releaseRaise", [tokenAddr], { from: sink });
+  assert.ok(rel.ok, rel.error);
+  assert.equal(await evm.call(pad, "totalEscrowed"), 0n);
+  assert.equal(await evm.balance(pad), 0n, "the pad is empty; the raise and the seed supply went to the seeder");
+  // The seed supply went with it: the reserved tokens used to be sent to a contract with no way to
+  // move an ERC-20 at all, so no pool could be seeded even in good faith.
+  const token = evm.attach(tokenAddr, ART, "FleetTestToken");
+  assert.ok((await evm.call(token, "balanceOf", [sink.toString()])) > 0n);
+  assert.match((await evm.send(pad, "releaseRaise", [tokenAddr], { from: sink })).error, /NothingEscrowed/, "and only once");
+});
+
+test("T42: ownership moves in two steps", async () => {
+  const evm = await Evm.create();
+  const dev = await evm.account("dev"), safe = await evm.account("safe"), other = await evm.account("other");
+  const pad = await evm.deploy(ART, "FleetTestLaunchpad", [0n, SUPPLY, FEE_BPS, PHANTOM, GRADUATION], { from: dev });
+  assert.ok((await evm.send(pad, "transferOwnership", [safe.toString()], { from: dev })).ok);
+  assert.equal(await evm.call(pad, "owner"), dev.toString(), "nothing moves until it is accepted");
+  assert.match((await evm.send(pad, "acceptOwnership", [], { from: other })).error, /NotPendingOwner/);
+  const done = await evm.send(pad, "acceptOwnership", [], { from: safe });
+  assert.ok(done.ok, done.error);
+  assert.equal(await evm.call(pad, "owner"), safe.toString());
+  assert.equal(await evm.call(pad, "pendingOwner"), "0x0000000000000000000000000000000000000000");
+  assert.match((await evm.send(pad, "setLaunchFee", [1n], { from: dev })).error, /NotOwner/, "the old key is done");
 });
