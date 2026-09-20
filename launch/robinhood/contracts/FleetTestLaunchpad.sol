@@ -9,8 +9,12 @@ pragma solidity 0.8.26;
 ///         graduationThreshold, launchToken with snipe-tax exemptions, launchAndBuy), the same
 ///         constant-product curve with quote-denominated fees, the same clamped last buy, the same
 ///         graduation point, and an opening snipe tax that decays across a window with exemptions.
-///         Graduation here parks the reserves in the launchpad instead of seeding a Uniswap V4 pool.
-///         Test double only: no fee escrow, no buyback vault, no locker, no vanity CREATE2.
+///         Graduation escrows the raise and the seed supply in the launchpad, per token, for a
+///         seeder to open a pool with; on Ink that seeder mints a Calamari v4 position. It is not a
+///         test double any more in the parts that hold money -- payouts cannot revert, the levies
+///         cannot exceed the principal, the pool is seeded at the curve's closing price rather than
+///         a third below it, and the owner cannot reach a raise -- but it has no buyback vault, no
+///         LP locker and no vanity CREATE2, and it has not been audited by anyone but itself.
 
 contract FleetTestToken {
     string public name; string public symbol; uint8 public constant decimals = 18; uint256 public totalSupply;
@@ -52,6 +56,7 @@ contract FleetTestCurve {
     event SnipeTaxCharged(address indexed buyer, uint256 amount);
     event PaymentDeferred(address indexed to, uint256 amount);
     event Claimed(address indexed to, uint256 amount);
+    event TokensBurned(uint256 amount);
 
     address public token; address public immutable factory; address public deployer; address public immutable pairToken = address(0);
     uint256 public immutable phantomQuote; uint256 public immutable feeBps; uint256 public immutable creatorTaxBps; uint256 public immutable graduationThreshold;
@@ -243,13 +248,45 @@ contract FleetTestCurve {
         _pay(factory, fee);
         _pay(deployer, tax);
     }
+    /// Where the burnt remainder goes. The token refuses address(0), so the conventional dead
+    /// address stands in for it.
+    address private constant BURN = 0x000000000000000000000000000000000000dEaD;
+
+    /**
+     * Hand the raise over at the price the curve closed at.
+     *
+     * The curve's last price is its priced reserve over its token reserve, and the priced reserve
+     * includes the phantom quote -- money that was never deposited and cannot be handed to a pool.
+     * So seeding a pool with everything left, the whole raise against the whole reserved supply,
+     * opens it at raise/reserved when the curve closed at (phantom+raise)/reserved. The ratio is
+     * raise/(phantom+raise): at the shipped economics an instant 33.3% gap down, landing on every
+     * holder at the moment the interface congratulates them. Worse for this repo specifically:
+     * bondli's own dip read would see that manufactured gap as a token that ran and gave some back,
+     * and buy it.
+     *
+     * Seeding only the tokens the raise can actually back opens the pool at the curve's closing
+     * price. The remainder is burnt rather than kept, because a launchpad holding a third of every
+     * graduated supply is a launchpad nobody should trade on.
+     *
+     * The fees stay parked. getReserves and realQuoteReserve already net them out, so leaving them
+     * does not move the price, and paying them here is what used to put a stranger's fallback on
+     * the graduation path.
+     */
     function _graduate() private {
-        graduated = true; sweepFees();
-        uint256 quoteOut = trackedQuote; uint256 tokenOut = trackedTokens; trackedQuote = 0; trackedTokens = 0;
-        _pay(factory, quoteOut);
-        if (tokenOut != 0) FleetTestToken(token).transfer(factory, tokenOut);
-        emit CurveCompleted(factory, quoteOut, tokenOut);
-        FleetTestLaunchpad(payable(factory)).onGraduated(token, tokenOut, quoteOut);
+        graduated = true;
+        uint256 priced = phantomQuote + trackedQuote - quoteFeeBalance - creatorTaxBalance;
+        uint256 raise = trackedQuote - quoteFeeBalance - creatorTaxBalance;
+        uint256 tokens = trackedTokens;
+        uint256 seedTokens = priced != 0 ? (raise * tokens) / priced : tokens;
+        uint256 burned = tokens - seedTokens;
+        // Whatever is still owed stays tracked, so realQuoteReserve reads zero and the books balance.
+        trackedQuote = quoteFeeBalance + creatorTaxBalance;
+        trackedTokens = 0;
+        if (burned != 0) { FleetTestToken(token).transfer(BURN, burned); emit TokensBurned(burned); }
+        if (seedTokens != 0) FleetTestToken(token).transfer(factory, seedTokens);
+        _pay(factory, raise);
+        emit CurveCompleted(factory, raise, seedTokens);
+        FleetTestLaunchpad(payable(factory)).onGraduated(token, seedTokens, raise);
     }
 }
 
@@ -259,11 +296,16 @@ contract FleetTestLaunchpad {
     struct LaunchConfig { uint256 supply; uint256 curveFeeBps; uint256 phantomQuote; uint256 graduationThreshold; uint24 poolFee; int24 tickSpacing; bool enabled; }
     struct LaunchedToken { address token; address curve; address deployer; address pairToken; uint256 launchConfigId; uint256 graduationThreshold; bool graduated; }
 
-    error NotOwner(); error LaunchFeeNotPaid(); error TransferFailed(); error SnipeTaxOutOfRange(uint256 startBps, uint256 secondsWindow); error InvalidLaunchConfigId(); error InvalidTokenParams(); error ExemptionListTooLong(); error CreatorTaxTooHigh(); error PairTokenNotApproved(); error LaunchEconomicsMismatch(bytes32 expected, bytes32 actual); error NotCurve();
+    error NotOwner(); error LaunchFeeNotPaid(); error TransferFailed(); error SnipeTaxOutOfRange(uint256 startBps, uint256 secondsWindow);
+    error NotSeeder(); error NotPendingOwner(); error NothingEscrowed(); error InvalidLaunchConfigId(); error InvalidTokenParams(); error ExemptionListTooLong(); error CreatorTaxTooHigh(); error PairTokenNotApproved(); error LaunchEconomicsMismatch(bytes32 expected, bytes32 actual); error NotCurve();
     event TokenLaunched(address indexed token, address indexed curve, address indexed deployer, address pairToken, uint256 launchConfigId, uint256 graduationThreshold);
     event PoolGraduated(address indexed token, uint256 positionId, uint256 tokenAmount, uint256 pairTokenAmount);
     event LaunchFeeUpdated(uint256 launchFee);
     event SnipeTaxUpdated(uint256 startBps, uint256 secondsWindow);
+    event OwnershipTransferStarted(address indexed from, address indexed to);
+    event OwnershipTransferred(address indexed from, address indexed to);
+    event SeederUpdated(address indexed seeder);
+    event RaiseReleased(address indexed token, address indexed to, uint256 quote, uint256 tokens);
 
     uint256 private constant MAX_SNIPE_TAX_EXEMPTIONS = 32;
     /// The longest opening window the owner may set. bondli's own edge already refuses candidates
@@ -271,7 +313,11 @@ contract FleetTestLaunchpad {
     /// window beyond it would be a tax on trades no model here would make anyway -- and an unbounded
     /// one is a permanent toll booth on every buyer of every future launch.
     uint256 public constant MAX_SNIPE_TAX_SECONDS = 60;
-    address public owner; uint256 public launchFee; uint256 public snipeTaxStartBps = 9_900; uint256 public snipeTaxSeconds = 15; uint256 public maxCreatorTaxBps = 1_000;
+    address public owner; address public pendingOwner; uint256 public launchFee;
+    /// Per token, the ETH a graduated curve handed over. Escrowed, never revenue.
+    mapping(address => uint256) public raiseOf; uint256 public totalEscrowed;
+    /// The only account that may move an escrowed raise, and only into a pool. Zero until set.
+    address public seeder; uint256 public snipeTaxStartBps = 9_900; uint256 public snipeTaxSeconds = 15; uint256 public maxCreatorTaxBps = 1_000;
     LaunchConfig[] private _configs; mapping(address => LaunchedToken) private _launched; mapping(address => bool) private _isCurve;
     uint256 private constant BASIS_POINTS = 10_000;
 
@@ -292,7 +338,42 @@ contract FleetTestLaunchpad {
         snipeTaxStartBps = startBps; snipeTaxSeconds = secondsWindow;
         emit SnipeTaxUpdated(startBps, secondsWindow);
     }
-    function withdraw(address to) external onlyOwner { (bool s,) = payable(to).call{value: address(this).balance}(""); require(s, "withdraw"); }
+    /**
+     * @notice Withdraw the protocol's own revenue -- launch fees and swept curve fees -- never a raise.
+     *
+     * This used to send address(this).balance, and every graduated raise is paid into that balance.
+     * Forty graduations at six ETH is two hundred and forty ETH of other people's money one owner
+     * call from gone, with no event and nothing a holder could see coming. The escrowed total is
+     * subtracted, so a raise is simply not reachable from here whatever the owner does.
+     */
+    function withdraw(address to) external onlyOwner {
+        uint256 free = address(this).balance - totalEscrowed;
+        (bool s,) = payable(to).call{value: free}(""); require(s, "withdraw");
+    }
+
+    /// @notice Hand one token's raise and its seed supply to the seeder, once, to open its pool. On
+    ///         Ink that is a Calamari v4 position; here it is whatever the seeder does with them.
+    ///         The reserved supply used to be transferred to this contract, which has no way to send
+    ///         an ERC-20 at all, so no pool could be seeded even in good faith.
+    function releaseRaise(address token) external returns (uint256 quote, uint256 tokens) {
+        if (seeder == address(0) || msg.sender != seeder) revert NotSeeder();
+        quote = raiseOf[token];
+        tokens = FleetTestToken(token).balanceOf(address(this));
+        if (quote == 0 && tokens == 0) revert NothingEscrowed();
+        raiseOf[token] = 0; totalEscrowed -= quote;
+        emit RaiseReleased(token, msg.sender, quote, tokens);
+        if (tokens != 0) FleetTestToken(token).transfer(msg.sender, tokens);
+        if (quote != 0) { (bool s,) = payable(msg.sender).call{value: quote}(""); if (!s) revert TransferFailed(); }
+    }
+    function setSeeder(address s_) external onlyOwner { seeder = s_; emit SeederUpdated(s_); }
+
+    /// Ownership moves in two steps, so a mistyped address cannot take the launchpad with it. The
+    /// key this ships with should become a multisig the day it is deployed.
+    function transferOwnership(address to) external onlyOwner { pendingOwner = to; emit OwnershipTransferStarted(owner, to); }
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert NotPendingOwner();
+        emit OwnershipTransferred(owner, msg.sender); owner = msg.sender; pendingOwner = address(0);
+    }
     function canLaunch(address) external pure returns (bool) { return true; }
     function getLaunchedToken(address token) external view returns (LaunchedToken memory) { return _launched[token]; }
     /**
@@ -352,7 +433,12 @@ contract FleetTestLaunchpad {
         emit TokenLaunched(token, curve, deployer, pairToken, id, c.graduationThreshold);
     }
     function onGraduated(address token, uint256 tokenAmount, uint256 quoteAmount) external {
-        if (!_isCurve[msg.sender]) revert NotCurve(); _launched[token].graduated = true;
+        if (!_isCurve[msg.sender]) revert NotCurve();
+        // A curve may only speak for its own token. Without this any registered curve could name any
+        // token, flip its graduated flag, and credit a raise against somebody else's escrow.
+        if (_launched[token].curve != msg.sender) revert NotCurve();
+        _launched[token].graduated = true;
+        raiseOf[token] += quoteAmount; totalEscrowed += quoteAmount;
         emit PoolGraduated(token, 0, tokenAmount, quoteAmount);
     }
 }
