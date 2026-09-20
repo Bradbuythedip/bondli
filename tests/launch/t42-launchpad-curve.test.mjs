@@ -336,7 +336,7 @@ test("T42: a curve whose standing levies eat the whole trade cannot be built", a
   // the answer is knowable, so the impossible curve never exists rather than reverting on every buy.
   const evm = await Evm.create();
   const dev = await evm.account("dev");
-  const args = (fee, tax) => [dev.toString(), PHANTOM, fee, tax, GRADUATION, 9_900n, 15n];
+  const args = (fee, tax) => [dev.toString(), dev.toString(), PHANTOM, fee, tax, GRADUATION, 9_900n, 15n];
   await assert.rejects(() => evm.deploy(ART, "FleetTestCurve", args(9_000n, 1_000n), { from: dev }), /LeviesExceedPrincipal/);
   await assert.rejects(() => evm.deploy(ART, "FleetTestCurve", args(10_000n, 0n), { from: dev }), /LeviesExceedPrincipal/);
   // One basis point short is allowed, and still leaves the clamp something to work with.
@@ -386,7 +386,7 @@ test("T42: a deferred payment can be claimed, once", async () => {
   // A curve whose factory is an address that cannot take ETH, so the protocol fee defers and there
   // is a debt to collect without needing a hostile creator.
   const refuser = await evm.deploy(ART, "FleetTestToken", ["R", "R", "", "", dev.toString(), dev.toString(), 1n], { from: dev });
-  const curve = await evm.deploy(ART, "FleetTestCurve", [dev.toString(), PHANTOM, FEE_BPS, 0n, GRADUATION, 0n, 15n], { from: refuser });
+  const curve = await evm.deploy(ART, "FleetTestCurve", [dev.toString(), dev.toString(), PHANTOM, FEE_BPS, 0n, GRADUATION, 0n, 15n], { from: refuser });
   const token = await evm.deploy(ART, "FleetTestToken", ["T", "T", "", "", dev.toString(), curve.toString(), SUPPLY], { from: dev });
   assert.ok((await evm.send(curve, "initialize", [token.toString()], { from: refuser })).ok);
 
@@ -654,4 +654,94 @@ test("T42: ownership moves in two steps", async () => {
   assert.equal(await evm.call(pad, "owner"), safe.toString());
   assert.equal(await evm.call(pad, "pendingOwner"), "0x0000000000000000000000000000000000000000");
   assert.match((await evm.send(pad, "setLaunchFee", [1n], { from: dev })).error, /NotOwner/, "the old key is done");
+});
+
+test("T42: the launcher and their payee are two different identities", async () => {
+  // The curve's public `deployer` was set to the creator's chosen fee recipient. That is a different
+  // address whenever a creator nominates one, so the identity a rug model follows across launches
+  // was silently replaced by a payout destination -- and it disagreed with the factory's own
+  // LaunchedToken.deployer for the very same token.
+  const evm = await Evm.create();
+  const dev = await evm.account("dev"), payee = await evm.account("payee"), buyer = await evm.account("buyer");
+  const pad = await evm.deploy(ART, "FleetTestLaunchpad", [0n, SUPPLY, FEE_BPS, PHANTOM, GRADUATION], { from: dev });
+  const lr = await evm.send(pad, LAUNCH_SIG, [params({ creatorTaxBps: 300, feeRecipient: payee.toString() }), 0n, ZERO], { from: dev });
+  assert.ok(lr.ok, lr.error);
+  const ev = Evm.log(lr.logs, "TokenLaunched");
+  const curve = evm.attach(ev.args.curve, ART, "FleetTestCurve");
+
+  assert.equal((await evm.call(curve, "deployer")).toLowerCase(), dev.toString().toLowerCase(), "the launcher");
+  assert.equal((await evm.call(curve, "feeRecipient")).toLowerCase(), payee.toString().toLowerCase(), "and their payee");
+  // The two records agree about who launched it, which is the point.
+  assert.equal((await evm.call(pad, "getLaunchedToken", [ev.args.token])).deployer.toLowerCase(), dev.toString().toLowerCase());
+  // Both are exempt from the opening tax, and the tax still goes to the payee.
+  assert.equal(await evm.call(curve, "snipeTaxExempt", [dev.toString()]), true);
+  assert.equal(await evm.call(curve, "snipeTaxExempt", [payee.toString()]), true);
+  evm.warp(60);
+  assert.ok((await evm.send(curve, "buy", [1n * E, 0n, buyer.toString()], { from: buyer, value: 1n * E })).ok);
+  const before = await evm.balance(payee);
+  assert.ok((await evm.send(curve, "sweepFees", [], { from: buyer })).ok);
+  assert.ok((await evm.balance(payee)) > before, "the creator's tax reaches the payee, not the launcher");
+});
+
+test("T42: a bad config can be taken out of service", async () => {
+  // `enabled` was declared on LaunchConfig and never read, and configs are append-only by design --
+  // a launched token's economics must never move under it. So a config with bad economics was
+  // launchable forever, with no remedy short of deploying a new launchpad.
+  const evm = await Evm.create();
+  const dev = await evm.account("dev");
+  const pad = await evm.deploy(ART, "FleetTestLaunchpad", [0n, SUPPLY, FEE_BPS, PHANTOM, GRADUATION], { from: dev });
+  assert.ok((await evm.send(pad, LAUNCH_SIG, [params(), 0n, ZERO], { from: dev })).ok);
+
+  const off = await evm.send(pad, "setLaunchConfigEnabled", [0n, false], { from: dev });
+  assert.ok(off.ok, off.error);
+  assert.ok(Evm.log(off.logs, "LaunchConfigEnabled"), "and it is announced");
+  const blocked = await evm.send(pad, LAUNCH_SIG, [params({ name: "Second", symbol: "TWO" }), 0n, ZERO], { from: dev });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.error, /LaunchConfigDisabled/);
+  // Tokens already launched under it are untouched: the config is frozen, not revoked.
+  assert.ok((await evm.send(pad, "setLaunchConfigEnabled", [0n, true], { from: dev })).ok);
+  assert.ok((await evm.send(pad, LAUNCH_SIG, [params({ name: "Third", symbol: "THR" }), 0n, ZERO], { from: dev })).ok);
+  assert.match((await evm.send(pad, "setLaunchConfigEnabled", [9n, false], { from: dev })).error, /InvalidLaunchConfigId/);
+});
+
+test("T42: a name is a name, not a megabyte", async () => {
+  // Every one of these is stored on chain and read back unbounded by bondli's feed, so a launcher
+  // paying gas for an enormous description is paying to make every reader of this launchpad slower.
+  const evm = await Evm.create();
+  const dev = await evm.account("dev");
+  const pad = await evm.deploy(ART, "FleetTestLaunchpad", [0n, SUPPLY, FEE_BPS, PHANTOM, GRADUATION], { from: dev });
+  const long = n => "x".repeat(n);
+  for (const [field, over] of [["name", { name: long(65) }], ["symbol", { symbol: long(17) }]]) {
+    const r = await evm.send(pad, LAUNCH_SIG, [params(over), 0n, ZERO], { from: dev });
+    assert.equal(r.ok, false, `${field} was accepted at ${Object.values(over)[0].length} characters`);
+    assert.match(r.error, /TokenParamTooLong/);
+  }
+  // At the limit it is fine: the cap is a bound, not a style guide.
+  assert.ok((await evm.send(pad, LAUNCH_SIG, [params({ name: long(64), symbol: long(16) }), 0n, ZERO], { from: dev })).ok);
+});
+
+test("T42: money forced into the curve has a way out", async () => {
+  // Nothing in the curve accepts a plain transfer, but selfdestruct and a coinbase payout do not
+  // ask. Without a skim a donation sits there for good, and it also breaks any reader that assumes
+  // the balance equals what the curve owes.
+  const { evm, curve, buyer } = await rig();
+  evm.warp(60);
+  assert.ok((await evm.send(curve, "buy", [1n * E, 0n, buyer.toString()], { from: buyer, value: 1n * E })).ok);
+  const owedOut = await evm.call(curve, "trackedQuote");
+  assert.equal(await evm.balance(curve), owedOut, "the curve holds exactly what it owes");
+
+  // Force a donation in by writing the balance directly, which is what selfdestruct amounts to.
+  const { Account, Address, hexToBytes } = await import("@ethereumjs/util");
+  const addr = new Address(hexToBytes(curve.toString()));
+  const acct = await evm.vm.stateManager.getAccount(addr);
+  await evm.vm.stateManager.putAccount(addr, new Account(acct.nonce, acct.balance + 5n * E, acct.storageRoot, acct.codeHash));
+  assert.equal(await evm.balance(curve), owedOut + 5n * E);
+
+  const r = await evm.send(curve, "skim", [], { from: buyer });
+  assert.ok(r.ok, r.error);
+  assert.equal(await evm.balance(curve), owedOut, "the donation is gone and what is owed is untouched");
+  // Skimming again moves nothing: it can only ever take what belongs to nobody.
+  assert.ok((await evm.send(curve, "skim", [], { from: buyer })).ok);
+  assert.equal(await evm.balance(curve), owedOut);
+  solvent(await books(evm, curve), "after a skim");
 });
