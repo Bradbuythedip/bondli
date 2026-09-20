@@ -19,6 +19,7 @@ import { LatencyHistogram } from "./events.mjs";
 import { statsFromOutcomes } from "./stats.mjs";
 import { promotionGate } from "./promote.mjs";
 import { planEntry, planExit } from "./fleet.mjs";
+import { maintenancePlan, readyWallets } from "./treasury.mjs";
 import { executeFleetEntry, executeFleetExit } from "./fleet-entry.mjs";
 
 /** Venues that trade a bonding curve in a quote asset: pump.fun (SOL) and PONS on Robinhood Chain (ETH).
@@ -508,6 +509,7 @@ export class Engine extends EventEmitter {
     const now = this.clock();
     const due = key => { if (now - (this._lastSweepTry.get(key) || 0) < this.cfg.sweepRetryMs) return false; this._lastSweepTry.set(key, now); return true; };
     this.pruneMemos(now);
+    await this.maintainFleet().catch(err => this.log("warn", `fleet maintenance failed: ${err.message}`));
     if (this.walletMode() && now - (this.wallet.at || 0) >= this.cfg.walletRefreshMs) await this.refreshWallet();
     for (const [inst, pb] of [...this.pendingBuys]) {
       const router = this.routerFor(pb.venue);
@@ -873,7 +875,14 @@ export class Engine extends EventEmitter {
     if (!f?.size || f.size < 2) return null;
     if (this.store.venueMode(venue) !== "live") return null;
     const labels = (router?.fleet || []).map(a => a.label);
-    return labels.length > 1 ? labels : null;
+    if (labels.length < 2) return null;
+    // Size to the fleet that exists, not the one that was configured. The readiness read is the
+    // maintenance loop's, so it is as old as a sweep interval — that is fine, because a slice on a
+    // wallet that emptied since then fails cleanly and the orchestrator keeps the rest.
+    const ready = this._fleetReady?.get(venue);
+    if (!ready) return labels;
+    const usable = labels.filter(l => ready.includes(l));
+    return usable.length > 1 ? usable : null;
   }
 
   /** How contested this entry is, from the only honest signal the decision carries: what kind of
@@ -962,6 +971,46 @@ export class Engine extends EventEmitter {
       return;
     }
     this._openPosition(decision, orderId, stake, sizing, r);
+  }
+
+  /** Keep each fleet wallet holding roughly one slice's worth, between entries and never during
+   *  one. A transfer has to confirm before the slice that spends it can be built, and on a fresh
+   *  curve those seconds are the whole trade — so the fleet holds working capital instead, and this
+   *  runs on the sweep. */
+  async maintainFleet() {
+    for (const [venue, v] of Object.entries(this.venues)) {
+      if (!v.fleet?.size || v.fleet.size < 2) continue;
+      if (this.store.venueMode(venue) !== "live") continue;
+      const router = v.liveRouter;
+      if (!router?.ready || typeof router.fleetBalances !== "function" || typeof router.transferSol !== "function") continue;
+
+      const price = this.quotePriceOf(venue) || 0;
+      if (!(price > 0)) continue; // without a price the plan cannot say what a slice costs
+      const balances = await router.fleetBalances();
+      const perSliceUsd = (this.sizer?.env?.venues?.[venue]?.max_stake_usd || this.sizer?.env?.per_trade_max_usd || 0) / v.fleet.size;
+      const idle = !this.store.openPositions(venue).length && !!v.fleet.sweepWhenIdle;
+
+      const plan = maintenancePlan({ venue, root: "root", balances, perSliceUsd, nativePriceUsd: price, rootReserve: v.fleet.rootReserve ?? 0, idle });
+      this._fleetReady = this._fleetReady || new Map();
+      this._fleetReady.set(venue, readyWallets({ venue, balances, root: "root", perSliceUsd, nativePriceUsd: price }));
+      if (!plan.transfers.length) continue;
+
+      const moved = [];
+      for (const t of plan.transfers) {
+        const from = t.from || "root";
+        const to = t.to || "root";
+        const target = plan.direction === "fund" ? router.fleet.find(a => a.label === to) : router.root;
+        if (!target) continue;
+        try {
+          const sig = await router.transferSol(target.publicKey, t.amount, from);
+          moved.push({ from, to, amount: t.amount, sig });
+        } catch (err) { this.log("warn", `${venue}: ${plan.direction} ${from}->${to} failed: ${err.message}`); }
+      }
+      if (moved.length) {
+        this.ledger.append({ kind: "venue", venue, mode: "live", by: `fleet:${plan.direction}`, transfers: moved, target: plan.target, short: plan.short });
+        this.log("info", `${venue}: fleet ${plan.direction} ${moved.length} wallet(s)${plan.short ? `, ${plan.short} still short` : ""}`);
+      }
+    }
   }
 
   /** A fee the venue charged for nothing (a send that failed on chain) is real money: the day sees it. */

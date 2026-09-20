@@ -144,10 +144,13 @@ test("the exit sells from every wallet and remembers what each has left", async 
     assert.equal(live.sells.length, 3, "one leg per wallet");
     assert.deepEqual(new Set(live.sells.map(s => s.actor)), new Set(["f0", "f1", "f2"]));
     assert.ok(Math.abs(half.fill.qty - before / 2) < 1e-6, "the rung is the ladder's, not each wallet's");
-    // Largest holding first: the fee is the one cost a fleet multiplies, so the order is not arbitrary.
+    // Largest holding first: the fee is the one cost a fleet multiplies, so the order is not
+    // arbitrary. The slice weights are drawn from the order id, so which wallet is largest differs
+    // run to run — the invariant is the ordering, not the names.
     const sold = live.sells.map(s => s.actor);
-    const sizes = p.wallets.map(w => w.actor);
-    assert.deepEqual(sold, sizes, "what is left is in the same order it was sold in");
+    const remaining = new Map(p.wallets.map(w => [w.actor, w.qty]));
+    const soldSizes = sold.map(a => remaining.get(a));
+    assert.deepEqual(soldSizes, [...soldSizes].sort((x, y) => y - x), "the legs go out largest holding first");
     assert.ok(Math.abs(p.wallets.reduce((s, w) => s + w.qty, 0) - before / 2) < 1e-6, "each wallet is decremented by what it sold");
 
     const rest = await engine.closePosition(p, 100, "TEST_FLAT");
