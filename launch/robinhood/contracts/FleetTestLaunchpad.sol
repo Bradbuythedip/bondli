@@ -39,6 +39,7 @@ contract FleetTestCurve {
     uint256 private constant BASIS_POINTS = 10_000;
     error CurveGraduated(); error ZeroAmount(); error ZeroAddress(); error SlippageExceeded(uint256 actual, uint256 minimum);
     error NotFactory(); error TransferFailed(); error NativeValueMismatch(uint256 supplied, uint256 expected); error InsufficientLiquidity();
+    error LeviesExceedPrincipal(uint256 bps);
     event CurveBuy(address indexed buyer, address indexed recipient, uint256 quoteIn, uint256 tokensOut, uint256 fee, uint256 tax);
     event CurveBuyRefunded(address indexed buyer, uint256 refund);
     event CurveSell(address indexed seller, address indexed recipient, uint256 tokensIn, uint256 quoteOut, uint256 fee, uint256 tax);
@@ -56,6 +57,10 @@ contract FleetTestCurve {
 
     constructor(address deployer_, uint256 phantomQuote_, uint256 feeBps_, uint256 creatorTaxBps_, uint256 graduationThreshold_, uint256 snipeStart_, uint256 snipeSeconds_) {
         if (deployer_ == address(0)) revert ZeroAddress();
+        // The standing levies must leave something to buy with. These two are fixed for the life of
+        // the curve, so the check belongs here; the snipe tax is time-varying and is clamped against
+        // whatever they leave, in snipeTaxBps below.
+        if (feeBps_ + creatorTaxBps_ >= BASIS_POINTS) revert LeviesExceedPrincipal(feeBps_ + creatorTaxBps_);
         factory = msg.sender; deployer = deployer_; phantomQuote = phantomQuote_; feeBps = feeBps_; creatorTaxBps = creatorTaxBps_; graduationThreshold = graduationThreshold_;
         snipeTaxStartBps = snipeStart_; snipeTaxSeconds = snipeSeconds_;
         snipeTaxExempt[deployer_] = true; snipeTaxExempt[msg.sender] = true; // the dev, and the launchpad's launch-and-buy
@@ -76,11 +81,31 @@ contract FleetTestCurve {
     function realQuoteReserve() public view returns (uint256) { return trackedQuote - quoteFeeBalance - creatorTaxBalance; }
     function sellableTokens() public view returns (uint256) { return trackedTokens > reservedTokens ? trackedTokens - reservedTokens : 0; }
     function readyToGraduate() public view returns (bool) { return !graduated && sellableTokens() == 0; }
-    /// @notice The opening tax `who` would pay right now, in bps: zero if exempt or past the window; start*(left/window)^2 inside it.
+    /**
+     * @notice The opening tax `who` would pay right now, in bps: zero if exempt or past the window;
+     *         start*(left/window)^2 inside it, clamped so the levies can never reach the principal.
+     *
+     * The clamp is not a nicety. With the shipped defaults -- a 1% curve fee and a 9900 bps opening
+     * tax -- the levies total exactly 10000 with no creator tax and more than that with any, so the
+     * whole of the launch block reverted: `ZeroAmount` at exactly 10000 because the net spend
+     * rounded to nothing, and a bare `Panic(0x11)` above it from `spent - fee - tax - snipe`
+     * underflowing. The clamped final buy divides by `BASIS_POINTS - totalBps`, which was a division
+     * by zero on the same inputs. So the most contested second of a launch -- the one the tax exists
+     * for -- was not taxed at 99%, it was unavailable, and the first trade anyone could make was a
+     * second later at 86%.
+     *
+     * Reported here rather than at the point of charge so that this view and what a buyer is
+     * actually charged cannot disagree: a quote that lies about the tax is worse than no quote.
+     */
     function snipeTaxBps(address who) public view returns (uint256) {
         if (snipeTaxExempt[who] || snipeTaxStartBps == 0 || launchedAt == 0) return 0;
         uint256 elapsed = block.timestamp - launchedAt; if (elapsed >= snipeTaxSeconds) return 0;
-        uint256 left = snipeTaxSeconds - elapsed; return (snipeTaxStartBps * left * left) / (snipeTaxSeconds * snipeTaxSeconds);
+        uint256 left = snipeTaxSeconds - elapsed;
+        uint256 bps = (snipeTaxStartBps * left * left) / (snipeTaxSeconds * snipeTaxSeconds);
+        // One basis point of the principal always survives, so a buy in the first instant is a
+        // terrible trade -- which is the intent -- rather than an impossible one.
+        uint256 headroom = BASIS_POINTS - 1 - feeBps - creatorTaxBps;
+        return bps > headroom ? headroom : bps;
     }
 
     function _amountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut) private pure returns (uint256) {
@@ -97,6 +122,10 @@ contract FleetTestCurve {
         if (msg.value != quoteIn) revert NativeValueMismatch(msg.value, quoteIn); if (quoteIn == 0) revert ZeroAmount();
         (uint256 qr, uint256 tr) = getReserves();
         uint256 snipeBps = snipeTaxBps(msg.sender); uint256 totalBps = feeBps + creatorTaxBps + snipeBps;
+        // snipeTaxBps already clamps, so this cannot fire. It is here because everything below --
+        // the subtraction of the levies from the spend, and the division by their complement in the
+        // clamped final buy -- is unsafe if it ever does, and a named error beats a panic.
+        if (totalBps >= BASIS_POINTS) revert LeviesExceedPrincipal(totalBps);
         uint256 spent = quoteIn; uint256 fee = (spent * feeBps) / BASIS_POINTS; uint256 tax = (spent * creatorTaxBps) / BASIS_POINTS; uint256 snipe = (spent * snipeBps) / BASIS_POINTS;
         tokensOut = _amountOut(spent - fee - tax - snipe, qr, tr);
         uint256 sellable = sellableTokens(); if (sellable == 0) revert CurveGraduated();

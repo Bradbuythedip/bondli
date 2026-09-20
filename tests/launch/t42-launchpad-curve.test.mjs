@@ -122,9 +122,15 @@ test("T42: the snipe tax is 99% at the first instant and decays to nothing by th
 
   // start * (left/window)^2, in integer arithmetic, second by second across the whole window. The
   // clock only moves forward, so the expectation is computed from where it has got to.
+  // ...clamped so that the levies always leave a basis point of the principal. Without the clamp the
+  // curve fee pushed the total to exactly 10000 and the launch block reverted outright; with it the
+  // first instant is 9899 rather than 9900, which is the same answer for every purpose except that
+  // the trade is possible.
+  const headroom = BPS - 1n - FEE_BPS;
   for (let elapsed = 0; elapsed <= WINDOW + 5; elapsed++) {
     const left = elapsed >= WINDOW ? 0n : BigInt(WINDOW - elapsed);
-    const expect = (START * left * left) / BigInt(WINDOW * WINDOW);
+    const raw = (START * left * left) / BigInt(WINDOW * WINDOW);
+    const expect = raw > headroom ? headroom : raw;
     assert.equal(await evm.call(curve, "snipeTaxBps", [buyer.toString()]), expect, `at +${elapsed}s`);
     evm.warp(1);
   }
@@ -152,7 +158,7 @@ test("T42: on a one-second chain the snipe window is worth naming in blocks, not
     seen.push(Number(await evm.call(curve, "snipeTaxBps", [buyer.toString()])));
     evm.warp(1);
   }
-  assert.equal(seen[0], 9900, "the launch block");
+  assert.equal(seen[0], 9899, "the launch block, clamped one bp short of the whole spend");
   assert.ok(seen[1] > 8600 && seen[1] < 8700, `one Ink block later it is still ${seen[1]} bps`);
   assert.ok(seen[5] > 4000, `five blocks in it is still ${seen[5]} bps`);
   assert.equal(seen[15], 0, "and it is gone at the window's end");
@@ -264,4 +270,64 @@ test("T42: the books balance across a whole session", async () => {
   assert.equal(after.tax, 0n);
   assert.equal(await evm.balance(dev), beforeDev + owedTax, "the creator got exactly their tax");
   solvent(after, "after a sweep");
+});
+
+test("T42: the launch block is taxed, not broken", async () => {
+  // The bug this prevents, measured on the contract before the fix: with the shipped 9900 bps
+  // opening tax and the 1% curve fee, the levies totalled exactly 10000 with no creator tax and more
+  // than that with any. Every buy in the launch block reverted -- `ZeroAmount` at exactly 10000
+  // because the net spend rounded away, and a bare `Panic(0x11)` above it from
+  // `spent - fee - tax - snipe` underflowing. The clamped final buy divides by the complement of the
+  // total, which was a division by zero on the same inputs.
+  //
+  // So the most contested second of a launch was not taxed at 99%, it was unavailable, and the first
+  // trade anyone could make was one second later at 86%. A launchpad whose opening block reverts is
+  // not a launchpad with a strong defence; it is a launchpad that does not work.
+  for (const creatorTaxBps of [0, 1, 100, 1000]) {
+    const { evm, curve, buyer } = await rig({ creatorTaxBps });
+    const snipe = await evm.call(curve, "snipeTaxBps", [buyer.toString()]);
+    const total = FEE_BPS + BigInt(creatorTaxBps) + snipe;
+    assert.equal(total, BPS - 1n, `at ${creatorTaxBps}bps creator tax the levies clamp to one bp short of everything`);
+    const r = await evm.send(curve, "buy", [1n * E, 0n, buyer.toString()], { from: buyer, value: 1n * E });
+    assert.ok(r.ok, `a buy in the launch block reverted with ${r.error}`);
+    // Taxed to the bone, which is the point: a sniper gets a hundredth of a per cent of the spend.
+    const got = Evm.log(r.logs, "CurveBuy").args.tokensOut;
+    const plain = await rig({ creatorTaxBps });
+    plain.evm.warp(60);
+    const fair = await plain.evm.send(plain.curve, "buy", [1n * E, 0n, plain.buyer.toString()], { from: plain.buyer, value: 1n * E });
+    assert.ok(got * 1000n < Evm.log(fair.logs, "CurveBuy").args.tokensOut, "the sniper gets a thousandth of what a later buyer gets");
+    solvent(await books(evm, curve), `launch-block buy at ${creatorTaxBps}bps`);
+  }
+});
+
+test("T42: the quoted snipe tax is the one that is charged", async () => {
+  // A view that disagrees with the charge is worse than no view: it is a quote that lies. The clamp
+  // lives inside snipeTaxBps so the two cannot drift apart.
+  const { evm, curve, buyer } = await rig({ creatorTaxBps: 1000 });
+  for (let s = 0; s <= 16; s++) {
+    const quoted = await evm.call(curve, "snipeTaxBps", [buyer.toString()]);
+    const IN = 10n ** 16n;
+    const before = await evm.balance(curve);
+    const r = await evm.send(curve, "buy", [IN, 0n, buyer.toString()], { from: buyer, value: IN });
+    assert.ok(r.ok, `t=+${s}s: ${r.error}`);
+    // The snipe leg is the only part of the spend that leaves the curve immediately, so what stayed
+    // behind is the spend less exactly the quoted tax.
+    const spent = Evm.log(r.logs, "CurveBuy").args.quoteIn;
+    const expectedSnipe = (spent * quoted) / BPS;
+    assert.equal(await evm.balance(curve) - before, spent - expectedSnipe, `t=+${s}s the charge matches the quote`);
+    evm.warp(1);
+  }
+});
+
+test("T42: a curve whose standing levies eat the whole trade cannot be built", async () => {
+  // The clamp handles the time-varying tax. The two fixed levies are checked at construction, where
+  // the answer is knowable, so the impossible curve never exists rather than reverting on every buy.
+  const evm = await Evm.create();
+  const dev = await evm.account("dev");
+  const args = (fee, tax) => [dev.toString(), PHANTOM, fee, tax, GRADUATION, 9_900n, 15n];
+  await assert.rejects(() => evm.deploy(ART, "FleetTestCurve", args(9_000n, 1_000n), { from: dev }), /LeviesExceedPrincipal/);
+  await assert.rejects(() => evm.deploy(ART, "FleetTestCurve", args(10_000n, 0n), { from: dev }), /LeviesExceedPrincipal/);
+  // One basis point short is allowed, and still leaves the clamp something to work with.
+  const okCurve = await evm.deploy(ART, "FleetTestCurve", args(9_000n, 999n), { from: dev });
+  assert.ok(okCurve);
 });
