@@ -177,7 +177,7 @@ export class ArcLiveRouter extends Router {
     super({ venue: "arc", mode: "live", clock });
     this.secret = secret; this.rpcUrl = rpcUrl; this.provider = provider; this.slippagePct = slippagePct; this.confirmTimeoutMs = confirmTimeoutMs;
     this.gasLimitBuy = gasLimitBuy; this.gasLimitSell = gasLimitSell;
-    this.ready = false; this.address = null; this.known = new Set(); this._pools = new Map(); // tokens this wallet has been told about (EVM has no account enumeration)
+    this.ready = false; this.address = null; this.fleet = []; this.known = new Set(); this._pools = new Map(); // tokens this wallet has been told about (EVM has no account enumeration)
     this._permit2Code = null; // whether Permit2 has code on this chain, once checked
     this._approved = new Set(); // currencies whose Permit2 path this process has already set up
   }
@@ -196,6 +196,43 @@ export class ArcLiveRouter extends Router {
   /** The wallet's USDC, read from the native face: getBalance answers in 18 decimals, and that is
    *  the same money the 6-decimal ERC-20 view shows. `balanceSol` keeps the engine's name for
    *  "quote balance" because the engine reads that field on every venue. */
+  /** The root actor is defined by the wallet, not by init() having run. Every chain-touching method
+   *  takes one and defaults to the root, so a router that never calls useFleet() is unchanged. */
+  get root() { return { label: "root", wallet: this.wallet, address: this.address }; }
+  allActors() { return [this.root, ...(this.fleet || [])]; }
+  _actor(a) {
+    if (!a) return this.root;
+    if (typeof a === "string") {
+      const found = this.allActors().find(x => x.label === a);
+      // Never a quiet fall back to the root: that would put the whole stake on one address, which
+      // is the single thing the fleet exists to prevent.
+      if (!found) throw new Error(`unknown actor '${a}'`);
+      return found;
+    }
+    if (!a.wallet || !a.address) throw new Error("actor needs a wallet and an address");
+    return a;
+  }
+
+  /** Derive the fleet from the sealed root. Nothing new is stored (see core/fleet.mjs). */
+  async useFleet(size = 4) {
+    if (!this.ready) throw new Error("call init() first");
+    const { deriveFleet } = await import("../../core/fleet.mjs");
+    const seeds = deriveFleet({ rootSecret: this.secret.trim(), venue: "arc", size });
+    this.fleet = seeds.map((seed, i) => {
+      const wallet = new Wallet("0x" + Buffer.from(seed).toString("hex"), this.provider);
+      return { label: `f${i}`, wallet, address: wallet.address };
+    });
+    return this.fleet.map(a => ({ label: a.label, publicKey: a.address }));
+  }
+
+  /** Every wallet's native balance, keyed by actor label. */
+  async fleetBalances() {
+    if (!this.ready) return {};
+    const out = {};
+    for (const a of this.allActors()) out[a.label] = await this._quoteBalance(a).catch(() => 0);
+    return out;
+  }
+
   async preflight() {
     if (!this.ready) throw new Error("call init() first");
     const t0 = Date.now();
@@ -210,8 +247,8 @@ export class ArcLiveRouter extends Router {
   }
 
   track(token) { this.known.add(lower(token)); }
-  async _quoteBalance() { return toNativeUsdc(await this.provider.getBalance(this.address)); }
-  async _tokenBalance(token) { const c = new Contract(token, ERC20_ABI, this.provider); return toTokens(await c.balanceOf(this.address)); }
+  async _quoteBalance(actor) { return toNativeUsdc(await this.provider.getBalance(this._actor(actor).address)); }
+  async _tokenBalance(token, actor) { const c = new Contract(token, ERC20_ABI, this.provider); return toTokens(await c.balanceOf(this._actor(actor).address)); }
 
   async _waitReceipt(hash, budgetMs) {
     const deadline = this.clock() + budgetMs;
@@ -292,25 +329,28 @@ export class ArcLiveRouter extends Router {
    *  the UniversalRouter draw on that. Both approvals are one-time and unbounded, so a hot path
    *  pays no approval gas. Permit2's address is assumed canonical (chain.mjs), so its code is
    *  checked before anything is approved to it. Returns null when ready, or a failure. */
-  async _ensurePermit2(currency, units, orderId) {
+  async _ensurePermit2(currency, units, orderId, actor) {
+    const a = this._actor(actor);
     if (this._permit2Code == null) {
       const code = await this.provider.getCode(PERMIT2).catch(() => "0x");
       this._permit2Code = !isZero(code);
     }
     if (!this._permit2Code) return failure({ id: orderId }, "UNSUPPORTED", `Permit2 has no code at ${PERMIT2} on this chain; the UniversalRouter cannot pull ERC-20 input`);
-    const key = lower(currency);
-    const erc = new Contract(currency, ERC20_ABI, this.wallet);
-    const p2 = new Contract(PERMIT2, PERMIT2_ABI, this.wallet);
+    // Keyed by wallet as well as currency: an approval f0 has given says nothing about f1, and
+    // skipping f1's would send a swap the router cannot pull the input for.
+    const key = `${a.label}|${lower(currency)}`;
+    const erc = new Contract(currency, ERC20_ABI, a.wallet);
+    const p2 = new Contract(PERMIT2, PERMIT2_ABI, a.wallet);
     const nowSec = BigInt(Math.floor(this.clock() / 1000));
     if (!this._approved.has(key)) {
-      const allowance = BigInt(await erc.allowance(this.address, PERMIT2));
+      const allowance = BigInt(await erc.allowance(a.address, PERMIT2));
       if (allowance < units) {
         const a = await erc.approve(PERMIT2, MaxUint256);
         const ar = await this._waitReceipt(a.hash, this.confirmTimeoutMs);
         if (!ar) return failure({ id: orderId }, "UNCONFIRMED", `approve ${a.hash} not confirmed within ${this.confirmTimeoutMs}ms`, { venue_ref: a.hash });
         if (ar.status === 0) return failure({ id: orderId }, "SEND_FAILED", `approve ${a.hash} reverted`, { venue_ref: a.hash });
       }
-      const [amount, expiration] = await p2.allowance(this.address, currency, UNIVERSAL_ROUTER);
+      const [amount, expiration] = await p2.allowance(a.address, currency, UNIVERSAL_ROUTER);
       if (BigInt(amount) < units || BigInt(expiration) <= nowSec) {
         const a = await p2.approve(currency, UNIVERSAL_ROUTER, MAX_UINT160, MAX_UINT48);
         const ar = await this._waitReceipt(a.hash, this.confirmTimeoutMs);
@@ -324,8 +364,8 @@ export class ArcLiveRouter extends Router {
 
   /** The exact call that would be sent, run without sending it. Returns { ok:true, gasLimit } or
    *  { ok:false, err }: a revert here costs nothing and carries its reason. */
-  async _dryRun(swap, { gasLimit, value = 0n }) {
-    const ur = new Contract(UNIVERSAL_ROUTER, UNIVERSAL_ROUTER_ABI, this.wallet);
+  async _dryRun(swap, { gasLimit, value = 0n, actor }) {
+    const ur = new Contract(UNIVERSAL_ROUTER, UNIVERSAL_ROUTER_ABI, this._actor(actor).wallet);
     const deadline = this._deadline();
     try {
       await ur.execute.staticCall(swap.commands, swap.inputs, deadline, { value });
@@ -352,6 +392,7 @@ export class ArcLiveRouter extends Router {
     if (est.reject) return failure(order, est.reject, est.reason);
     if (Number.isFinite(order.max_slippage_bps) && est.slippage_bps > order.max_slippage_bps) return failure(order, "SLIPPAGE_CAP", `pool slippage ${est.slippage_bps.toFixed(1)}bps > cap ${order.max_slippage_bps}bps`);
     const usdcIn = +(Number(order.stake_usd) / price).toFixed(QUOTE_DECIMALS);
+    const actor = this._actor(order.actor);
     const t_sent = this.clock();
     let hash = null;
     try {
@@ -369,15 +410,15 @@ export class ArcLiveRouter extends Router {
       // Whole units of the token, never a float rounding up past what the pool will give.
       const minOut = BigInt(Math.floor(q.tokensOut * (1 - this.slippagePct / 100) * 1e6)) * 10n ** BigInt(TOKEN_DECIMALS - 6);
       if (!(minOut > 0n)) return failure(order, "NO_POOL", "the quote is too small to set a price floor");
-      if (!QUOTE_IS_NATIVE) { const f = await this._ensurePermit2(pool.quoteAsset, amountIn, order.id); if (f) return f; }
+      if (!QUOTE_IS_NATIVE) { const f = await this._ensurePermit2(pool.quoteAsset, amountIn, order.id, actor); if (f) return f; }
       const swap = encodeV4Swap({ pool, side: "BUY", amountIn, minOut });
       const value = QUOTE_IS_NATIVE ? amountIn : 0n;
-      const dry = await this._dryRun(swap, { gasLimit: this.gasLimitBuy, value });
+      const dry = await this._dryRun(swap, { gasLimit: this.gasLimitBuy, value, actor });
       if (!dry.ok) {
         if (!this._isRevert(dry.err)) throw dry.err;
         return failure(order, "REVERT", `buy would revert (${await this._explainRevert(pool, dry.err)})`.slice(0, 300));
       }
-      const ur = new Contract(UNIVERSAL_ROUTER, UNIVERSAL_ROUTER_ABI, this.wallet);
+      const ur = new Contract(UNIVERSAL_ROUTER, UNIVERSAL_ROUTER_ABI, actor.wallet);
       const tx = await ur.execute(swap.commands, swap.inputs, this._deadline(), { value, gasLimit: dry.gasLimit });
       hash = tx.hash; this.track(order.instrument);
       const receipt = await this._waitReceipt(hash, this.confirmTimeoutMs);
@@ -391,7 +432,7 @@ export class ArcLiveRouter extends Router {
       // settles only the debt, so the stake is the ceiling, not the cost; the receipt is the truth.
       const spent = (d.trade ? d.trade.quote + d.tax : usdcIn) + d.gasUsdc;
       const fee = (d.trade ? d.tax + d.trade.quote * (now.lpFeePips / 1e6) : q.usdcTaxed + q.usdcLpFee) + d.gasUsdc;
-      return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "arc", instrument: order.instrument, side: "BUY", price: qty > 0 ? (spent * price) / qty : est.price, qty, notional_usd: +(spent * price).toFixed(4), slippage_bps: +q.slippage_bps.toFixed(2), fee_usd: +(fee * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: hash, sol_spent: spent, exact: !!d.trade } };
+      return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "arc", instrument: order.instrument, side: "BUY", price: qty > 0 ? (spent * price) / qty : est.price, qty, notional_usd: +(spent * price).toFixed(4), slippage_bps: +q.slippage_bps.toFixed(2), fee_usd: +(fee * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: hash, sol_spent: spent, exact: !!d.trade, actor: actor.label, wallet: actor.address } };
     } catch (err) {
       return failure(order, "SEND_FAILED", errorText(err.reason || err, 300), hash ? { venue_ref: hash, t_sent } : {});
     }
@@ -452,7 +493,7 @@ export class ArcLiveRouter extends Router {
    *  closed at -72% on an exit rule that only fires in profit. A sell that can only succeed with
    *  no price floor is a sell that should fail and be retried.
    *  Returns { ok, units, keep, minOut, note } or { ok:false, err }. */
-  async _sellShape(pool, units, now) {
+  async _sellShape(pool, units, now, actor) {
     const normal = Math.max(MIN_SELL_KEEP, 1 - this.slippagePct / 100);
     const keeps = normal > MIN_SELL_KEEP ? [normal, MIN_SELL_KEEP] : [normal];
     const fractions = [1n, 2n, 4n, 8n];
@@ -464,7 +505,7 @@ export class ArcLiveRouter extends Router {
         const minOut = toUsdcUnits(Math.max(0, (q.usdcOut || 0) * keep), pool.quoteDecimals);
         if (!(minOut > 0n)) continue; // no floor is not a shape, it is a blank cheque
         const swap = encodeV4Swap({ pool, side: "SELL", amountIn: u, minOut });
-        const dry = await this._dryRun(swap, { gasLimit: this.gasLimitSell });
+        const dry = await this._dryRun(swap, { gasLimit: this.gasLimitSell, actor });
         if (dry.ok) return { ok: true, units: u, keep, minOut, gasLimit: dry.gasLimit, note: `${div === 1n ? "all" : `1/${div}`} at ${Math.round(keep * 100)}% of quote` };
         err = dry.err;
         if (!this._isRevert(err)) return { ok: false, err };
@@ -482,6 +523,7 @@ export class ArcLiveRouter extends Router {
     if (!this.ready) return failure({ id: position.id }, "NOT_READY", "call init() first");
     const ref = ctx.reference || position.reference || {}, price = Number(ref.solPrice) > 0 ? Number(ref.solPrice) : 1;
     const hint = ref.curve?.hook && ref.curve?.address ? ref.curve : (position.curve?.hook ? position.curve : null);
+    const actor = this._actor(ctx.actor || position.actor);
     const t_sent = this.clock();
     let hash = null;
     try {
@@ -491,22 +533,22 @@ export class ArcLiveRouter extends Router {
       if (pool.quoteAsset && lower(pool.quoteAsset) !== lower(USDC_ERC20)) return failure({ id: position.id }, "UNSUPPORTED", "this launch is quoted in an ERC-20 other than USDC; sell by hand");
       this.track(position.instrument);
       if (position.pendingExit?.sig) {
-        const prev = await this.resolvePending({ instrument: position.instrument, side: "SELL", sig: position.pendingExit.sig, at: position.pendingExit.at, reference: { ...ref, solPrice: price }, pool });
+        const prev = await this.resolvePending({ instrument: position.instrument, side: "SELL", sig: position.pendingExit.sig, at: position.pendingExit.at, reference: { ...ref, solPrice: price }, pool, actor });
         if (prev.ok) return { ...prev, fill: { ...prev.fill, orderId: `${position.id}:close`, decisionId: position.decisionId, pending_pct: Number(position.pendingExit.pct) || 100 } };
         if (!prev.failure.expired) return prev;
       }
-      const token = new Contract(position.instrument, ERC20_ABI, this.wallet);
-      const balUnits = BigInt(await token.balanceOf(this.address));
-      if (!(balUnits > 0n)) return failure({ id: position.id }, "NO_POSITION", "no token balance to sell");
+      const token = new Contract(position.instrument, ERC20_ABI, actor.wallet);
+      const balUnits = BigInt(await token.balanceOf(actor.address));
+      if (!(balUnits > 0n)) return failure({ id: position.id }, "NO_POSITION", `wallet ${actor.label} has no token balance to sell`);
       const held = toTokens(balUnits);
       const p = Math.min(100, Math.max(1, Math.round(pct)));
       const units = p >= 100 ? balUnits : balUnits * BigInt(p) / 100n;
       if (!(units > 0n)) return failure({ id: position.id }, "NO_POSITION", "nothing left to sell at that share");
       const now = await this._poolNow(pool);
-      const permit = await this._ensurePermit2(position.instrument, units, position.id); if (permit) return permit;
-      const shape = await this._sellShape(pool, units, now);
+      const permit = await this._ensurePermit2(position.instrument, units, position.id, actor); if (permit) return permit;
+      const shape = await this._sellShape(pool, units, now, actor);
       if (!shape.ok) return failure({ id: position.id }, "REVERT", `sell would revert (${await this._explainRevert(pool, shape.err)})`.slice(0, 300));
-      const ur = new Contract(UNIVERSAL_ROUTER, UNIVERSAL_ROUTER_ABI, this.wallet);
+      const ur = new Contract(UNIVERSAL_ROUTER, UNIVERSAL_ROUTER_ABI, actor.wallet);
       let leftUnits = units, gotQuote = 0, feeQuote = 0, gasUsdc = 0, qtySold = 0, chunks = 0, lastHash = null, exact = true, gasLimit = shape.gasLimit;
       let state = now;
       while (leftUnits > 0n && chunks < 8) {
@@ -515,7 +557,7 @@ export class ArcLiveRouter extends Router {
         const minOut = chunks === 0 ? shape.minOut : toUsdcUnits(Math.max(0, (q.usdcOut || 0) * shape.keep), pool.quoteDecimals);
         if (!(minOut > 0n)) break;
         const swap = encodeV4Swap({ pool, side: "SELL", amountIn: u, minOut });
-        if (chunks > 0) { const dry = await this._dryRun(swap, { gasLimit: this.gasLimitSell }); if (!dry.ok) break; gasLimit = dry.gasLimit; }
+        if (chunks > 0) { const dry = await this._dryRun(swap, { gasLimit: this.gasLimitSell, actor }); if (!dry.ok) break; gasLimit = dry.gasLimit; }
         const tx = await ur.execute(swap.commands, swap.inputs, this._deadline(), { gasLimit });
         hash = lastHash = tx.hash;
         const receipt = await this._waitReceipt(hash, this.confirmTimeoutMs);
@@ -547,7 +589,7 @@ export class ArcLiveRouter extends Router {
    *  pool, but names the router as sender, so each candidate sale's transaction is read for its
    *  `from`; the receipt then says what the pool paid and what the hook kept.
    *  Returns { sig, solReceived, qty, at } for the most recent sale by this wallet since `since`. */
-  async findRecentSale(instrument, { since = 0, blocks = 5000 } = {}) {
+  async findRecentSale(instrument, { since = 0, blocks = 5000, actor } = {}) {
     if (!this.ready) return null;
     const pool = await this._poolFor(instrument).catch(() => null);
     if (!pool) return null;
@@ -556,7 +598,7 @@ export class ArcLiveRouter extends Router {
       const head = await this.provider.getBlockNumber();
       logs = await this.provider.getLogs({ address: POOL_MANAGER, topics: [TOPICS.Swap, zeroPadValue(pool.poolId, 32)], fromBlock: Math.max(0, head - blocks), toBlock: head });
     } catch { return null; }
-    const me = lower(this.address);
+    const me = lower(this._actor(actor).address);
     // Newest first: the sale that emptied the wallet is the last one, not the first.
     for (const log of (logs || []).slice().reverse()) {
       const r = decodeLog(log);
@@ -577,7 +619,7 @@ export class ArcLiveRouter extends Router {
   }
 
   /** A transaction sent earlier: did it land? Reads the receipt and books what it carried. */
-  async resolvePending({ instrument, side, sig, at, reference = {}, pool = null }) {
+  async resolvePending({ instrument, side, sig, at, reference = {}, pool = null, actor = null }) {
     const receipt = await this.provider.getTransactionReceipt(sig).catch(() => null);
     const price = Number(reference.solPrice) > 0 ? Number(reference.solPrice) : 1, t = this.clock();
     if (!receipt) {
@@ -597,9 +639,9 @@ export class ArcLiveRouter extends Router {
 
   /** Plain USDC transfer from the trading wallet (the platform's performance fee), on the native
    *  face: `usdc` whole USDC becomes 18-decimal wei in msg.value, no contract call. Returns the hash. */
-  async transferSol(to, usdc) {
+  async transferSol(to, usdc, actor) {
     if (!this.ready) throw new Error("call init() first");
-    const tx = await this.wallet.sendTransaction({ to, value: parseUnits(Number(usdc).toFixed(NATIVE_DECIMALS), NATIVE_DECIMALS), gasLimit: 21_000n });
+    const tx = await this._actor(actor).wallet.sendTransaction({ to, value: parseUnits(Number(usdc).toFixed(NATIVE_DECIMALS), NATIVE_DECIMALS), gasLimit: 21_000n });
     await this._waitReceipt(tx.hash, this.confirmTimeoutMs);
     return tx.hash;
   }
@@ -612,11 +654,19 @@ export class ArcLiveRouter extends Router {
     catch (err) { return { ok: false, latencyMs: Date.now() - t0, detail: errorText(err, 200) }; }
   }
 
-  /** Balances of the tokens this router knows about. An EVM wallet has no account list to enumerate. */
+  /** Balances of the tokens this router knows about, summed across every wallet. An EVM wallet has
+   *  no account list to enumerate, and the engine's book holds one position per token however many
+   *  wallets carry it — a read that saw only the root would report a fleet entry as a phantom. */
   async positions() {
     if (!this.ready) return [];
     const out = [];
-    for (const token of this.known) { try { const qty = await this._tokenBalance(token); if (qty > 0) out.push({ instrument: token, qty }); } catch {} }
+    for (const token of this.known) {
+      let qty = 0; const wallets = [];
+      for (const a of this.allActors()) {
+        try { const q = await this._tokenBalance(token, a); if (q > 0) { qty += q; wallets.push({ actor: a.label, qty: q }); } } catch {}
+      }
+      if (qty > 0) out.push({ instrument: token, qty, wallets });
+    }
     return out;
   }
 }

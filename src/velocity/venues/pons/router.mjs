@@ -45,7 +45,7 @@ export class PonsLiveRouter extends Router {
     super({ venue: "pons", mode: "live", clock });
     this.secret = secret; this.rpcUrl = rpcUrl; this.provider = provider; this.slippagePct = slippagePct; this.confirmTimeoutMs = confirmTimeoutMs;
     this.gasLimitBuy = gasLimitBuy; this.gasLimitSell = gasLimitSell;
-    this.ready = false; this.address = null; this.known = new Set(); this._curves = new Map(); // tokens this wallet has been told about (EVM has no account enumeration)
+    this.ready = false; this.address = null; this.fleet = []; this.known = new Set(); this._curves = new Map(); // tokens this wallet has been told about (EVM has no account enumeration)
   }
 
   async init() {
@@ -59,6 +59,43 @@ export class PonsLiveRouter extends Router {
     return this.preflight();
   }
 
+  /** The root actor is defined by the wallet, not by init() having run. Every chain-touching method
+   *  takes one and defaults to the root, so a router that never calls useFleet() is unchanged. */
+  get root() { return { label: "root", wallet: this.wallet, address: this.address }; }
+  allActors() { return [this.root, ...(this.fleet || [])]; }
+  _actor(a) {
+    if (!a) return this.root;
+    if (typeof a === "string") {
+      const found = this.allActors().find(x => x.label === a);
+      // Never a quiet fall back to the root: that would put the whole stake on one address, which
+      // is the single thing the fleet exists to prevent.
+      if (!found) throw new Error(`unknown actor '${a}'`);
+      return found;
+    }
+    if (!a.wallet || !a.address) throw new Error("actor needs a wallet and an address");
+    return a;
+  }
+
+  /** Derive the fleet from the sealed root. Nothing new is stored (see core/fleet.mjs). */
+  async useFleet(size = 4) {
+    if (!this.ready) throw new Error("call init() first");
+    const { deriveFleet } = await import("../../core/fleet.mjs");
+    const seeds = deriveFleet({ rootSecret: this.secret.trim(), venue: "pons", size });
+    this.fleet = seeds.map((seed, i) => {
+      const wallet = new Wallet("0x" + Buffer.from(seed).toString("hex"), this.provider);
+      return { label: `f${i}`, wallet, address: wallet.address };
+    });
+    return this.fleet.map(a => ({ label: a.label, publicKey: a.address }));
+  }
+
+  /** Every wallet's ETH, keyed by actor label. */
+  async fleetBalances() {
+    if (!this.ready) return {};
+    const out = {};
+    for (const a of this.allActors()) out[a.label] = await this._quoteBalance(a).catch(() => 0);
+    return out;
+  }
+
   async preflight() {
     if (!this.ready) throw new Error("call init() first");
     const t0 = Date.now();
@@ -68,8 +105,8 @@ export class PonsLiveRouter extends Router {
   }
 
   track(token) { this.known.add(String(token).toLowerCase()); }
-  async _quoteBalance() { return toEth(await this.provider.getBalance(this.address)); }
-  async _tokenBalance(token) { const c = new Contract(token, ERC20_ABI, this.provider); return toTokens(await c.balanceOf(this.address)); }
+  async _quoteBalance(actor) { return toEth(await this.provider.getBalance(this._actor(actor).address)); }
+  async _tokenBalance(token, actor) { const c = new Contract(token, ERC20_ABI, this.provider); return toTokens(await c.balanceOf(this._actor(actor).address)); }
 
   async _waitReceipt(hash, budgetMs) {
     const deadline = this.clock() + budgetMs;
@@ -104,11 +141,12 @@ export class PonsLiveRouter extends Router {
     const t_sent = this.clock();
     let hash = null;
     try {
-      const bal = await this._quoteBalance();
-      if (bal < quoteIn + 0.0003) return failure(order, "INSUFFICIENT_SOL", `wallet has ${bal.toFixed(5)} ETH, order needs ${(quoteIn + 0.0003).toFixed(5)} with gas`);
-      const curve = new Contract(curveAddr, CURVE_ABI, this.wallet);
+      const actor = this._actor(order.actor);
+      const bal = await this._quoteBalance(actor);
+      if (bal < quoteIn + 0.0003) return failure(order, "INSUFFICIENT_SOL", `wallet ${actor.label} has ${bal.toFixed(5)} ETH, order needs ${(quoteIn + 0.0003).toFixed(5)} with gas`);
+      const curve = new Contract(curveAddr, CURVE_ABI, actor.wallet);
       const minOut = BigInt(Math.floor(est.qty * (1 - this.slippagePct / 100) * 1e6)) * 10n ** BigInt(TOKEN_DECIMALS - 6);
-      const tx = await curve.buy(toWei(quoteIn), minOut, this.address, { value: toWei(quoteIn), gasLimit: this.gasLimitBuy });
+      const tx = await curve.buy(toWei(quoteIn), minOut, actor.address, { value: toWei(quoteIn), gasLimit: this.gasLimitBuy });
       hash = tx.hash; this.track(order.instrument);
       const receipt = await this._waitReceipt(hash, this.confirmTimeoutMs);
       if (!receipt) return failure(order, "UNCONFIRMED", `tx ${hash} not confirmed within ${this.confirmTimeoutMs}ms`, { venue_ref: hash, t_sent });
@@ -117,7 +155,7 @@ export class PonsLiveRouter extends Router {
       const t_filled = this.clock();
       const qty = d.trade?.tokens || est.qty;
       const spent = (d.trade ? d.trade.quote : quoteIn) + d.gasEth;
-      return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "pons", instrument: order.instrument, side: "BUY", price: qty > 0 ? (spent * price) / qty : est.price, qty, notional_usd: +(spent * price).toFixed(4), slippage_bps: +est.slippage_bps.toFixed(2), fee_usd: +(((d.trade?.fee || 0) + (d.trade?.tax || 0) + d.gasEth) * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: hash, sol_spent: spent, exact: !!d.trade } };
+      return { ok: true, fill: { orderId: order.id, decisionId: order.decisionId || null, venue: "pons", instrument: order.instrument, side: "BUY", price: qty > 0 ? (spent * price) / qty : est.price, qty, notional_usd: +(spent * price).toFixed(4), slippage_bps: +est.slippage_bps.toFixed(2), fee_usd: +(((d.trade?.fee || 0) + (d.trade?.tax || 0) + d.gasEth) * price).toFixed(4), t_sent, t_filled, latency_ms: t_filled - t_sent, venue_ref: hash, sol_spent: spent, exact: !!d.trade, actor: actor.label, wallet: actor.address } };
     } catch (err) {
       return failure(order, "SEND_FAILED", err.shortMessage || err.message, hash ? { venue_ref: hash, t_sent } : {});
     }
@@ -158,7 +196,7 @@ export class PonsLiveRouter extends Router {
    *  run. That is not slippage tolerance, it is a blank cheque, and it is how a close came back at
    *  -72% on a position whose exit rule only fires in profit. A sell that can only succeed with no
    *  price floor is a sell that should fail and be retried. */
-  async _sellShape(curve, units, r) {
+  async _sellShape(curve, units, r, to) {
     const normal = Math.max(MIN_SELL_KEEP, 1 - this.slippagePct / 100);
     const keeps = normal > MIN_SELL_KEEP ? [normal, MIN_SELL_KEEP] : [normal];
     const fractions = [1n, 2n, 4n, 8n];
@@ -168,7 +206,7 @@ export class PonsLiveRouter extends Router {
         const u = units / div; if (u <= 0n) break;
         const q = curveSellQuote(r, toTokens(u), r.feeBps);
         const minOut = toWei(Math.max(0, (q.quoteOut || 0) * keep));
-        try { await curve.sell.staticCall(u, minOut, this.address); return { ok: true, units: u, keep, note: `${div === 1n ? "all" : `1/${div}`} at ${Math.round(keep * 100)}% of quote` }; }
+        try { await curve.sell.staticCall(u, minOut, to); return { ok: true, units: u, keep, note: `${div === 1n ? "all" : `1/${div}`} at ${Math.round(keep * 100)}% of quote` }; }
         catch (e) { err = e; if (!/revert|CALL_EXCEPTION|execution/i.test(String(e.message || e.shortMessage || "")) && e.code !== "CALL_EXCEPTION") return { ok: false, err: e }; }
       }
     }
@@ -235,6 +273,7 @@ export class PonsLiveRouter extends Router {
     // recoverable and loud; booking a total loss on a profitable sale is neither.
     if (!(price > 0)) return failure({ id: position.id }, "NO_QUOTE_PRICE", "no ETH price yet; refusing to sell into a book that cannot be priced (the sale would be booked as a total loss)");
     let curveAddr = ref.curve?.address || position.curve || null;
+    const actor = this._actor(ctx.actor || position.actor);
     const t_sent = this.clock();
     let hash = null;
     try {
@@ -242,13 +281,13 @@ export class PonsLiveRouter extends Router {
       else this._curveFor(position.instrument, curveAddr);
       this.track(position.instrument);
       if (position.pendingExit?.sig) {
-        const prev = await this.resolvePending({ instrument: position.instrument, side: "SELL", sig: position.pendingExit.sig, at: position.pendingExit.at, reference: { ...ref, solPrice: price }, curve: curveAddr });
+        const prev = await this.resolvePending({ instrument: position.instrument, side: "SELL", sig: position.pendingExit.sig, at: position.pendingExit.at, reference: { ...ref, solPrice: price }, curve: curveAddr, actor });
         if (prev.ok) return { ...prev, fill: { ...prev.fill, orderId: `${position.id}:close`, decisionId: position.decisionId, pending_pct: Number(position.pendingExit.pct) || 100 } };
         if (!prev.failure.expired) return prev;
       }
-      const token = new Contract(position.instrument, ERC20_ABI, this.wallet);
-      const balUnits = BigInt(await token.balanceOf(this.address));
-      if (!(balUnits > 0n)) return failure({ id: position.id }, "NO_POSITION", "no token balance to sell");
+      const token = new Contract(position.instrument, ERC20_ABI, actor.wallet);
+      const balUnits = BigInt(await token.balanceOf(actor.address));
+      if (!(balUnits > 0n)) return failure({ id: position.id }, "NO_POSITION", `wallet ${actor.label} has no token balance to sell`);
       const held = toTokens(balUnits);
       const now = await this._curveNow(curveAddr);
       if (now.graduated) return failure({ id: position.id }, "GRADUATED", "the curve has graduated to a Uniswap V4 pool; sell by hand on PONS (export the key into Rabby)");
@@ -256,7 +295,7 @@ export class PonsLiveRouter extends Router {
       const units = p >= 100 ? balUnits : balUnits * BigInt(p) / 100n;
       const tokensIn = toTokens(units);
       if (!(units > 0n)) return failure({ id: position.id }, "NO_POSITION", "nothing left to sell at that share");
-      const allowance = BigInt(await token.allowance(this.address, curveAddr));
+      const allowance = BigInt(await token.allowance(actor.address, curveAddr));
       if (allowance < units) {
         const a = await token.approve(curveAddr, MaxUint256);
         const ar = await this._waitReceipt(a.hash, this.confirmTimeoutMs);
@@ -264,12 +303,12 @@ export class PonsLiveRouter extends Router {
         if (ar.status === 0) return failure({ id: position.id }, "SEND_FAILED", `approve ${a.hash} reverted`, { venue_ref: a.hash });
       }
       const r = now.tokenReserve > 0 ? now : reserves(ref);
-      const curve = new Contract(curveAddr, CURVE_ABI, this.wallet);
+      const curve = new Contract(curveAddr, CURVE_ABI, actor.wallet);
       // Find a sell the curve accepts before paying for one. First the quoted amount at the normal
       // slippage; if the curve refuses, wider slippage; if it still refuses, smaller chunks (a curve
       // can refuse a sell that would drain it past a limit while taking a quarter). The first shape
       // the dry run accepts is what gets sent, chunk by chunk until the wallet is empty or one fails.
-      const shape = await this._sellShape(curve, units, r);
+      const shape = await this._sellShape(curve, units, r, actor.address);
       if (!shape.ok) {
         const why = await this._explainRevert(curveAddr, shape.err, position.instrument);
         // Both, because readyToGraduate() is unobservable from outside a transaction: the curve
@@ -289,10 +328,10 @@ export class PonsLiveRouter extends Router {
         const u = leftUnits < shape.units ? leftUnits : shape.units;
         const tIn = toTokens(u), q = curveSellQuote(r, tIn, r.feeBps);
         const minOut = toWei(Math.max(0, (q.quoteOut || 0) * shape.keep));
-        if (chunks > 0) { try { await curve.sell.staticCall(u, minOut, this.address); } catch (err) { break; } }
+        if (chunks > 0) { try { await curve.sell.staticCall(u, minOut, actor.address); } catch (err) { break; } }
         let gasLimit = this.gasLimitSell;
-        try { const est = await curve.sell.estimateGas(u, minOut, this.address); gasLimit = est * 13n / 10n; if (gasLimit < this.gasLimitSell) gasLimit = this.gasLimitSell; } catch {}
-        const tx = await curve.sell(u, minOut, this.address, { gasLimit });
+        try { const est = await curve.sell.estimateGas(u, minOut, actor.address); gasLimit = est * 13n / 10n; if (gasLimit < this.gasLimitSell) gasLimit = this.gasLimitSell; } catch {}
+        const tx = await curve.sell(u, minOut, actor.address, { gasLimit });
         hash = lastHash = tx.hash;
         const receipt = await this._waitReceipt(hash, this.confirmTimeoutMs);
         if (!receipt) { if (chunks === 0) return failure({ id: position.id }, "UNCONFIRMED", `tx ${hash} not confirmed within ${this.confirmTimeoutMs}ms`, { venue_ref: hash, t_sent }); break; }
@@ -327,7 +366,7 @@ export class PonsLiveRouter extends Router {
    *  whole stake written off on a position that may well have been sold.
    *
    *  Returns { sig, solReceived, qty, at } for the most recent sale by this wallet since `since`. */
-  async findRecentSale(instrument, { since = 0, blocks = 5000 } = {}) {
+  async findRecentSale(instrument, { since = 0, blocks = 5000, actor } = {}) {
     if (!this.ready) return null;
     const curveAddr = await this._curveFor(instrument).catch(() => null);
     if (!curveAddr) return null;
@@ -336,7 +375,7 @@ export class PonsLiveRouter extends Router {
       const head = await this.provider.getBlockNumber();
       logs = await this.provider.getLogs({ address: curveAddr, topics: [TOPICS.CurveSell], fromBlock: Math.max(0, head - blocks), toBlock: head });
     } catch { return null; }
-    const me = String(this.address).toLowerCase();
+    const me = String(this._actor(actor).address).toLowerCase();
     // Newest first: the sale that emptied the wallet is the last one, not the first.
     for (const log of (logs || []).slice().reverse()) {
       const r = decodeLog(log);
@@ -350,7 +389,7 @@ export class PonsLiveRouter extends Router {
   }
 
   /** A transaction sent earlier: did it land? Reads the receipt and books what it carried. */
-  async resolvePending({ instrument, side, sig, at, reference = {}, curve = null, stakeUsd = 0 }) {
+  async resolvePending({ instrument, side, sig, at, reference = {}, curve = null, stakeUsd = 0, actor = null }) {
     const receipt = await this.provider.getTransactionReceipt(sig).catch(() => null);
     const price = Number(reference.solPrice) || 0, t = this.clock();
     if (!receipt) {
@@ -366,9 +405,9 @@ export class PonsLiveRouter extends Router {
   }
 
   /** Plain ETH transfer from the trading wallet (the platform's performance fee). Returns the hash. */
-  async transferSol(to, eth) {
+  async transferSol(to, eth, actor) {
     if (!this.ready) throw new Error("call init() first");
-    const tx = await this.wallet.sendTransaction({ to, value: toWei(eth), gasLimit: 21_000n });
+    const tx = await this._actor(actor).wallet.sendTransaction({ to, value: toWei(eth), gasLimit: 21_000n });
     await this._waitReceipt(tx.hash, this.confirmTimeoutMs);
     return tx.hash;
   }
@@ -381,11 +420,19 @@ export class PonsLiveRouter extends Router {
     catch (err) { return { ok: false, latencyMs: Date.now() - t0, detail: err.message }; }
   }
 
-  /** Balances of the tokens this router knows about. An EVM wallet has no account list to enumerate. */
+  /** Balances of the tokens this router knows about, summed across every wallet. An EVM wallet has
+   *  no account list to enumerate, and the engine's book holds one position per token however many
+   *  wallets carry it — a read that saw only the root would report a fleet entry as a phantom. */
   async positions() {
     if (!this.ready) return [];
     const out = [];
-    for (const token of this.known) { try { const qty = await this._tokenBalance(token); if (qty > 0) out.push({ instrument: token, qty }); } catch {} }
+    for (const token of this.known) {
+      let qty = 0; const wallets = [];
+      for (const a of this.allActors()) {
+        try { const q = await this._tokenBalance(token, a); if (q > 0) { qty += q; wallets.push({ actor: a.label, qty: q }); } } catch {}
+      }
+      if (qty > 0) out.push({ instrument: token, qty, wallets });
+    }
     return out;
   }
 }
