@@ -29,7 +29,9 @@ test("T6: order stage survives a crash between sent and filled", () => {
   assert.equal(stage.stage, "sent");
   assert.equal(reopened.seq, 3);
   assert.equal(reopened.trail("d1").length, 3);
-  assert.deepEqual(ORDER_STAGES, ["sized", "sent", "filled", "failed", "unwound"]);
+  // "sliced" sits between sized and filled: a fleet entry records its plan before the first slice
+  // goes out, so an abort halfway through it is explicable from the ledger alone.
+  assert.deepEqual(ORDER_STAGES, ["sized", "sent", "sliced", "filled", "failed", "unwound"]);
 });
 
 test("T6: torn final line is ignored, earlier records intact", () => {

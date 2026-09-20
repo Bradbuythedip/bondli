@@ -46,8 +46,10 @@ test("T25: Arc launches sit in the radar's list with their own chain and link, a
 });
 
 test("T25: a fill reaches the callouts through the hub with the buy tx on it; the record is public and hub-wide", () => {
-  // The position carries its buy transaction, which is the whole proof a callout offers.
-  assert.match(ENGINE, /venue_ref: fill\.venue_ref \|\| null,\n    \};/);
+  // The position carries its buy transaction, which is the whole proof a callout offers. A fleet
+  // entry has several, and the first one is what the position reports: it is the wallet the callout
+  // names, and the rest are on the fill record.
+  assert.match(ENGINE, /venue_ref: fill\.venue_ref \|\| null,\n      \/\/ Which wallets carry it\./);
   // One Callouts per hub, on its own ledger, injectable for tests.
   assert.match(HUB, /this\.callouts = callouts \|\| new Callouts\(\{\n\s+ledger: new Ledger\(path\.join\(rootDir, "_hub", "callouts\.jsonl"\)/);
   // Opt-in per user: a call links the buy transaction, and the transaction names the trading wallet.
