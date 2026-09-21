@@ -162,7 +162,16 @@ test("T41: what is not yet known is written down, and nothing live is built on i
   for (const s of ink.NEEDS_VERIFIED_SOURCE) assert.ok(s.length > 40, "each gap says what it is and why");
   const joined = ink.NEEDS_VERIFIED_SOURCE.join(" ").toLowerCase();
   for (const must of ["curve", "graduation", "sentry", "fee-router"]) assert.ok(joined.includes(must), `${must} is listed`);
-  assert.equal(fs.existsSync("src/velocity/venues/ink/router.mjs"), false, "no router until the selectors are read off verified source");
+  // There IS an Ink router now, and the guard this replaces is why it is worth saying what it is
+  // built on. It trades bondli's own launchpad, whose ABI we wrote and whose behaviour the
+  // tests/launch suite pins — not Tsunami and not Sentry, whose selectors are still unread. The
+  // invariant is unchanged: nothing live is built on an unverified constant.
+  const ROUTER = fs.readFileSync("src/velocity/venues/ink/router.mjs", "utf8");
+  const FEED = fs.readFileSync("src/velocity/venues/ink/feed.mjs", "utf8");
+  for (const [name, src] of [["router", ROUTER], ["feed", FEED]]) {
+    assert.match(src, /from "\.\.\/curve\/(router|feed)\.mjs"/, `the Ink ${name} is the shared curve one`);
+    assert.doesNotMatch(src, /TSUNAMI|SENTRY|CALAMARI/, `the Ink ${name} touches no unverified third-party constant`);
+  }
   // poolIdFor takes fee and tickSpacing as arguments precisely because they are not pinned; a
   // default would be a guess that silently computes the wrong pool.
   const SRC = fs.readFileSync("src/velocity/venues/ink/chain.mjs", "utf8");

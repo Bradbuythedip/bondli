@@ -192,7 +192,9 @@ test("T31: the radar records a track, stamps the read, and serves the near-gradu
   assert.match(SRC, /dip: dp \? \{ on: dp\.dip, phase: dp\.phase, runPct: dp\.runPct/);
   assert.match(SRC, /hold: dp\?\.dip \? convictionOf\(dp, gd\)\.conviction === "hold" : false \};/);
   // Both EVM feeds keep the same track and stamp the same read, so a dip is an entry on every venue.
-  for (const f of ["src/velocity/venues/pons/feed.mjs", "src/velocity/venues/arc/feed.mjs"]) {
+  // The curve feed is where PONS's body went when Ink became a second deployment of it; Arc is its
+  // own, so both paths still have to be checked.
+  for (const f of ["src/velocity/venues/curve/feed.mjs", "src/velocity/venues/arc/feed.mjs"]) {
     const F = fs.readFileSync(path.resolve(f), "utf8");
     assert.match(F, /pushTrack\(t\._track \|\| \(t\._track = \[\]\), this\.clock\(\), t\.mcapUsd, \{ cv: t\._curvePct \}\);/, f);
     assert.match(F, /t\._grad = gradSignal\(t, \{ now, pctNow: t\._curvePct \}\);\n\s+t\._dip = dipSignal\(t, \{ now \}\);/, f);
@@ -249,7 +251,7 @@ test("T31: dips-only takes the second entry and nothing else, and the operator o
   // The hosted default is the dip; "all" is what an operator asks for by name when they want the
   // create-event entry back. The edge itself stays permissive, because it is a library.
   assert.match(HUB, /const entries = settings\.entries === "all" \? "all" : "dips";/);
-  assert.equal((HUB.match(/makePumpfunEdge\(\{[^)]*entries \}\)/g) || []).length, 3, "every venue's edge, not just pump.fun");
+  assert.equal((HUB.match(/makePumpfunEdge\(\{[^)]*entries \}\)/g) || []).length, 4, "every venue's edge, not just pump.fun — pump.fun, PONS, Arc and Ink");
   const SITE = fs.readFileSync(path.resolve("app/src/Simple.jsx"), "utf8");
   assert.match(SITE, /entries: dipsOnly \? "dips" : "all" \}\);/);
   assert.match(SITE, /t\("panel\.dips"\)/);

@@ -79,6 +79,20 @@
         "send": 300,
         "confirm": 25000
       }
+    },
+    "ink": {
+      "max_exposure_usd": 0,
+      "max_concurrent": 0,
+      "kelly_fraction": 0.25,
+      "min_stake_usd": 10,
+      "worst_case_fraction": 1.0,
+      "max_slippage_bps": 300,
+      "latency_budget_ms": {
+        "observe": 2500,
+        "decide": 30,
+        "send": 300,
+        "confirm": 15000
+      }
     }
   },
   "promotion": {
