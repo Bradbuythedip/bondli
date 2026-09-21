@@ -281,3 +281,33 @@ export const NEEDS_VERIFIED_SOURCE = Object.freeze([
   "Sentry: the fee-router address, so a swap can be priced against the 1% app fee rather than around it.",
   "Both: the pool fee tier and tick spacing each launchpad initialises with, which poolIdFor() takes as arguments precisely because they are not yet pinned.",
 ]);
+
+// ── bondli's own launchpad on Ink ─────────────────────────────────────────────
+// Everything above this line is about somebody else's contracts — Tsunami's and Sentry's — and
+// every gap in NEEDS_VERIFIED_SOURCE is a gap in what can be read about them from outside. This is
+// the part that has no such gap: our own launchpad, whose ABI we wrote and whose behaviour is
+// pinned by the tests in tests/launch. It is the same curve protocol PONS runs, deliberately, so
+// trading it needs a deployment record and nothing else.
+//
+// The address is not compiled in because it does not exist yet: the contract is deployed per chain
+// by us, and a placeholder here would be worse than an admission — the router would build orders
+// against an address with no code and report them as reverts. INK_LAUNCHPAD_FACTORY supplies it,
+// and until it does, deployment.configured() is false and the venue cannot go live.
+import { makeDeployment } from "../curve/deployment.mjs";
+
+export const INK = makeDeployment({
+  venue: "ink",
+  chainId: CHAIN_ID,
+  chainName: CHAIN_NAME,
+  rpcEnv: "INK_RPC_URL",
+  defaultRpcUrl: DEFAULT_RPC_URL,
+  explorer: EXPLORER,
+  factory: null,
+  factoryEnv: "INK_LAUNCHPAD_FACTORY",
+  // The launch config's own supply. bondli's launchpad takes it as a constructor argument rather
+  // than fixing it the way PONS does, so a deployment that mints a different number must say so
+  // here or every market cap it reports is wrong by exactly that ratio.
+  tokenSupply: 1_000_000_000,
+  quoteSymbol: "ETH",
+  blockMs: BLOCK_MS,
+});
