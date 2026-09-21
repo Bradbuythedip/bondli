@@ -21,7 +21,7 @@ export const MEME_HOOK = "0xe5e702641ea86f4ae6cc3cdaed2b886f976be044";      // P
 export const TOKEN_SUPPLY = 1_000_000_000;
 
 export const PONS = makeDeployment({
-  venue: "pons", chainId: CHAIN_ID, chainName: "robinhood", rpcEnv: "PONS_RPC_URL",
+  venue: "pons", chainId: CHAIN_ID, chainName: "robinhood", rpcEnv: "PONS_RPC_URL", secretEnv: "PONS_PRIVATE_KEY",
   defaultRpcUrl: DEFAULT_RPC_URL, explorer: EXPLORER, factory: FACTORY,
   launchAndBuy: LAUNCH_AND_BUY, memeHook: MEME_HOOK, tokenSupply: TOKEN_SUPPLY, quoteSymbol: "ETH",
 });

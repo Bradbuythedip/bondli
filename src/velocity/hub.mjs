@@ -16,6 +16,8 @@ import { formatRecord } from "./core/watch.mjs";
 import { makePumpfunEdge } from "./venues/pumpfun/edge.mjs";
 import { PumpfunPaperRouter, PumpfunLiveRouter } from "./venues/pumpfun/router.mjs";
 import { PonsLiveRouter, PonsPaperRouter } from "./venues/pons/router.mjs";
+import { InkLiveRouter, InkPaperRouter } from "./venues/ink/router.mjs";
+import { INK } from "./venues/ink/chain.mjs";
 import { ArcLiveRouter, ArcPaperRouter } from "./venues/arc/router.mjs";
 import { HolderWaiver } from "./core/holder-waiver.mjs";
 import { Ledger } from "./core/ledger.mjs";
@@ -25,7 +27,7 @@ import { Callouts } from "./core/callouts.mjs";
  *  so it is accepted with a loud warning at boot rather than refused. Sweep it often. */
 export const EXPOSED_DEFAULT_PLATFORM_WALLET = "4XnHZZmHwSQ8RszJsdc7snvxG8dZtm6g4hvpkCMkguMx";
 /** Each venue's quote asset, as the ledger and the operator name it. */
-export const QUOTE_OF = Object.freeze({ pumpfun: "SOL", pons: "ETH", arc: "USDC" });
+export const QUOTE_OF = Object.freeze({ pumpfun: "SOL", pons: "ETH", arc: "USDC", ink: "ETH" });
 /** The one rate, for everyone who does not hold the house token. The site states the same number. */
 export const DEFAULT_FEE_PCT = 5;
 /** The smallest stake whose costs do not eat the trade. See the venue envelope below. */
@@ -129,6 +131,9 @@ export function userEnvelope(settings = {}, templateFile = path.resolve("src/vel
       pons: { ...t.venues.pons, max_exposure_usd: settings.pons ? portfolio : 0, max_concurrent: settings.pons ? maxPositions : 0, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.pons.kelly_fraction) },
       // Arc (Argus): opt-in like Robinhood Chain, quoted in USDC. Off until the user turns it on.
       arc: { ...t.venues.arc, max_exposure_usd: settings.arc ? portfolio : 0, max_concurrent: settings.arc ? maxPositions : 0, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.arc.kelly_fraction) },
+      // Ink: bondli's own launchpad, the same curve as Robinhood Chain on a different chain. Opt-in,
+      // quoted in ETH, and off unless a launchpad is deployed there for it to trade.
+      ink: { ...t.venues.ink, max_exposure_usd: settings.ink ? portfolio : 0, max_concurrent: settings.ink ? maxPositions : 0, min_stake_usd: MIN_STAKE_USD, kelly_fraction: kelly(t.venues.ink.kelly_fraction) },
       polymarket: { ...t.venues.polymarket, max_exposure_usd: 0 },
       perps: { ...t.venues.perps, max_exposure_usd: 0 },
     },
@@ -149,14 +154,15 @@ export class VelocityHub {
    * @param fee         { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser }
    * @param makeLiveRouter  ({ secret }) => router; tests inject a double
    */
-  constructor({ feed, ponsFeed = null, arcFeed = null, rootDir, platformWallet, platformEvmWallet = null, fee, feePct = null, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, makePonsRouter = null, makeArcRouter = null, callouts = null, onUsers = null, clock = () => Date.now(), log = console }) {
-    this.feed = feed; this.ponsFeed = ponsFeed; this.arcFeed = arcFeed; this.rootDir = rootDir;
+  constructor({ feed, ponsFeed = null, arcFeed = null, inkFeed = null, rootDir, platformWallet, platformEvmWallet = null, fee, feePct = null, rpcUrl = process.env.RPC_URL, makeLiveRouter = null, makePonsRouter = null, makeArcRouter = null, makeInkRouter = null, callouts = null, onUsers = null, clock = () => Date.now(), log = console }) {
+    this.feed = feed; this.ponsFeed = ponsFeed; this.arcFeed = arcFeed; this.inkFeed = inkFeed; this.rootDir = rootDir;
     // The activity gate asks how many bots run, on every change.
     this.onUsers = typeof onUsers === "function" ? onUsers : null;
     this.platformWallet = platformWallet || null; this.platformEvmWallet = platformEvmWallet || null; this.fee = fee; this.rpcUrl = rpcUrl;
     this.makePonsRouter = makePonsRouter || (({ secret }) => new PonsLiveRouter({ secret, clock }));
     // Arc signs with the same EVM key as Robinhood Chain: one 0x address, two chains, two balances.
     this.makeArcRouter = makeArcRouter || (({ secret }) => new ArcLiveRouter({ secret, rpcUrl: process.env.ARC_RPC_URL || null, clock }));
+    this.makeInkRouter = makeInkRouter || (({ secret }) => new InkLiveRouter({ secret, clock }));
     // A flat rate on realized profit (VELOCITY_FEE_PCT) replaces the site's ladder when set: one number, said plainly.
     // One rate for everyone who does not hold the house token. There are no tiers: the old free /
     // pro / vip ladder was a different revenue model and no longer decides anything here, so an
@@ -215,11 +221,15 @@ export class VelocityHub {
     fs.mkdirSync(dataDir, { recursive: true });
     const pons = !!settings.pons && !!this.ponsFeed && !!evmSecret; // Robinhood Chain: opted in, feed running, ETH key on file
     const arc = !!settings.arc && !!this.arcFeed && !!evmSecret; // Arc (Argus): opted in, feed running, the same EVM key
+    // Ink: opted in, feed running, the same EVM key -- and a launchpad actually deployed there. The
+    // last condition is not a formality: without a factory every order would be built against an
+    // address with no code, so the venue stays off rather than failing one trade at a time.
+    const ink = !!settings.ink && !!this.inkFeed && !!evmSecret && INK.configured();
     // pump.fun is on unless the user says otherwise. Someone who only wants Robinhood Chain turns it
     // off and never has to fund a SOL wallet; the venue goes to "off", not "paper", so the engine
     // stops looking at its feed rather than quietly paper-trading it in the background.
     const pumpfun = settings.pumpfun !== false;
-    if (!pumpfun && !pons && !arc) return { ok: false, error: "turn on at least one chain: pump.fun, Robinhood Chain, or Arc" };
+    if (!pumpfun && !pons && !arc && !ink) return { ok: false, error: "turn on at least one chain: pump.fun, Robinhood Chain, Arc, or Ink" };
     // Paper: run the whole machine on the real feed and simulate only the fills. Chosen per start, so
     // a user can paper-trade today and go live tomorrow with the same settings.
     const paper = !!settings.paper;
@@ -232,12 +242,13 @@ export class VelocityHub {
     // The dip is the entry, and the launch is the exception. The create-event entry is the one the
     // record says loses; an operator who wants it back asks for it by name.
     const entries = settings.entries === "all" ? "all" : "dips";
-    const envelope = userEnvelope({ ...settings, pons, arc, aggression });
+    const envelope = userEnvelope({ ...settings, pons, arc, ink, aggression });
     const view = new SharedFeedView(this.feed, { clock: this.clock });
     const liveRouter = this.makeLiveRouter({ secret, wallet });
     const venues = { pumpfun: { mode: "paper", feed: view, edge: makePumpfunEdge({ aggression, entries }), router: new PumpfunPaperRouter({ bookFile: path.join(dataDir, "paper-book-pumpfun.json"), clock: this.clock }), liveRouter } };
     if (pons) venues.pons = { mode: "paper", feed: new SharedFeedView(this.ponsFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "pons", aggression, entries }), router: new PonsPaperRouter({ bookFile: path.join(dataDir, "paper-book-pons.json"), clock: this.clock }), liveRouter: this.makePonsRouter({ secret: evmSecret, wallet }) };
     if (arc) venues.arc = { mode: "paper", feed: new SharedFeedView(this.arcFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "arc", aggression, entries }), router: new ArcPaperRouter({ bookFile: path.join(dataDir, "paper-book-arc.json"), clock: this.clock }), liveRouter: this.makeArcRouter({ secret: evmSecret, wallet }) };
+    if (ink) venues.ink = { mode: "paper", feed: new SharedFeedView(this.inkFeed, { clock: this.clock }), edge: makePumpfunEdge({ venue: "ink", aggression, entries }), router: new InkPaperRouter({ bookFile: path.join(dataDir, "paper-book-ink.json"), clock: this.clock }), liveRouter: this.makeInkRouter({ secret: evmSecret, wallet }) };
     const engine = new Engine({ dataDir, envelope, venues, clock: this.clock });
     // Everything the engine considers worth waking someone for -- a live router that failed to
     // initialise, a flatten that left positions open, a position booked as a total loss, the governor
@@ -270,7 +281,7 @@ export class VelocityHub {
     // the same rules, and only the router is a simulation. That means it needs no funded wallet and
     // can never spend one -- the preflight that refuses an empty wallet is the thing being skipped,
     // so it must not run at all rather than run and be ignored.
-    const wanted = [pumpfun && "pumpfun", pons && "pons", arc && "arc"].filter(Boolean);
+    const wanted = [pumpfun && "pumpfun", pons && "pons", arc && "arc", ink && "ink"].filter(Boolean);
     const results = {};
     if (paper) {
       for (const v of wanted) results[v] = { ok: true, paper: true };
@@ -290,7 +301,7 @@ export class VelocityHub {
       return { ok: false, error: first.error || "could not go live", preflight: first.preflight || null, venues: results };
     }
     sup.start();
-    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, entries, pons, arc, pumpfun, paper, callouts }, startedAt: this.clock() });
+    this.users.set(wallet, { engine, sup, view, settings: { ...settings, aggression, entries, pons, arc, ink, pumpfun, paper, callouts }, startedAt: this.clock() });
     this.onUsers?.(this.users.size);
     // Once a minute, the funnel in the server log: what the candidates hit. The first place to look when nothing fills.
     const fun = setInterval(() => { try { const f = engine.funnel(); this.log.log?.(`[velocity ${wallet.slice(0, 8)}] funnel 10m: judged ${f.judged} (${f.distinct} tokens) go ${f.gos} filled ${f.filled} | ${Object.entries(f.gates).map(([g, n]) => `${g} ${n}`).join(", ") || "no rejects"} | top: ${f.top.map(x => `${x.k} ${x.n}`).join("; ")}${f.sized0 ? ` | no size: ${JSON.stringify(f.sized0)}` : ""}${f.failed ? ` | failed: ${JSON.stringify(f.failed)}` : ""}`); } catch {} }, 60_000);
@@ -452,7 +463,7 @@ export class VelocityHub {
     const venue = position.venue || "pumpfun", quote = QUOTE_OF[venue] || "SOL";
     const feeWallet = this.feeWalletFor(venue);
     if (!feeWallet) { u.engine.log("warn", `platform fee ${f.fee.toFixed(6)} ${quote} not collected: ${venue === "pumpfun" ? "PLATFORM_WALLET" : "PLATFORM_EVM_WALLET"} not set`); return { fee: f.fee, net: f.net, collected: false }; }
-    const solPrice = u.engine.quotePriceOf(venue) || (venue === "arc" ? 1 : venue === "pons" ? this.ponsFeed?.solPrice : this.feed.solPrice) || 0;
+    const solPrice = u.engine.quotePriceOf(venue) || (venue === "arc" ? 1 : venue === "pons" ? this.ponsFeed?.solPrice : venue === "ink" ? this.inkFeed?.solPrice : this.feed.solPrice) || 0;
     let sig;
     try { sig = await u.engine.venues[venue].liveRouter.transferSol(feeWallet, f.fee); }
     catch (err) {

@@ -102,7 +102,8 @@ test("T40: the moment a feed came up is recorded wherever running is set", () =>
   assert.equal(feed.upMs(), 5_000);
   feed.running = false;
   assert.equal(feed.startedAt, null);
-  for (const v of ["arc", "pons", "pumpfun"]) {
+  // "curve" serves PONS and Ink alike; arc and pumpfun keep their own feeds.
+  for (const v of ["arc", "curve", "pumpfun"]) {
     const SRC = fs.readFileSync(`src/velocity/venues/${v}/feed.mjs`, "utf8");
     assert.match(SRC, /async start\(\) \{\n\s+this\.running = true;/, `${v} assigns running directly`);
   }

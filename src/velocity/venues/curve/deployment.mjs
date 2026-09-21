@@ -16,6 +16,7 @@ export function makeDeployment({
   chainId,
   chainName,             // what ethers should call it, so a provider never has to detect it
   rpcEnv,                // the environment variable an operator points at their own endpoint
+  secretEnv,             // ...and the one holding this chain's dedicated trading key
   defaultRpcUrl,
   explorer,
   factory = null,        // null when this chain has no deployment yet
@@ -32,7 +33,7 @@ export function makeDeployment({
   if (factory != null && !ADDRESS.test(factory)) throw new Error(`${venue}: factory ${factory} is not an address`);
 
   const d = {
-    venue, chainId, chainName: chainName || venue, rpcEnv, defaultRpcUrl, explorer,
+    venue, chainId, chainName: chainName || venue, rpcEnv, secretEnv: secretEnv || `${String(venue).toUpperCase()}_PRIVATE_KEY`, defaultRpcUrl, explorer,
     factory: factory ? factory.toLowerCase() : null, factoryEnv, launchAndBuy, memeHook,
     tokenSupply, quoteSymbol, blockMs,
   };

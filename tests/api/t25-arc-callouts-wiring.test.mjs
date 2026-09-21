@@ -87,7 +87,7 @@ test("T25: a fill reaches the callouts through the hub with the buy tx on it; th
 test("T25: the Arc venue is built in hub.start the way PONS is, on the same EVM key, and every wallet path knows it", () => {
   assert.match(HUB, /const arc = !!settings\.arc && !!this\.arcFeed && !!evmSecret;/);
   assert.match(HUB, /if \(arc\) venues\.arc = \{ mode: "paper", feed: new SharedFeedView\(this\.arcFeed, \{ clock: this\.clock \}\), edge: makePumpfunEdge\(\{ venue: "arc", aggression, entries \}\), router: new ArcPaperRouter\(/);
-  assert.match(HUB, /const wanted = \[pumpfun && "pumpfun", pons && "pons", arc && "arc"\]\.filter\(Boolean\);/);
+  assert.match(HUB, /const wanted = \[pumpfun && "pumpfun", pons && "pons", arc && "arc", ink && "ink"\]\.filter\(Boolean\);/);
   assert.match(HUB, /!\["pons", "pumpfun", "arc"\]\.includes\(venue\)/, "the sell route accepts arc");
   assert.match(HUB, /for \(const venue of \["pumpfun", "pons", "arc"\]\)/, "the sweep closes arc positions through the engine");
   // The live router refuses an RPC that answers for another chain before it reads a balance.
