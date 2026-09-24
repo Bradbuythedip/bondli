@@ -65,7 +65,7 @@ export class CurveLiveRouter extends Router {
     // A venue whose factory is not known cannot look a curve up, so every order it built would be
     // sent at an address with no code and come back as a revert. Refusing at init is the one place
     // that failure is cheap and legible.
-    if (!this.d.configured()) throw new Error(`${this.d.venue} has no launchpad factory configured${this.d.factoryEnv ? ` (set ${this.d.factoryEnv})` : ""}`);
+    if (!this.d.configured()) { const hint = this.d.configureHint(); throw new Error(`${this.d.venue} has no launchpad factory configured${hint ? ` (set ${hint})` : ""}`); }
     if (!this.provider) this.provider = new JsonRpcProvider(this.rpcUrl, this.d.network(), { staticNetwork: true });
     this.wallet = new Wallet(this.secret.trim(), this.provider);
     this.address = this.wallet.address;
@@ -181,12 +181,17 @@ export class CurveLiveRouter extends Router {
     const key = String(instrument).toLowerCase();
     if (hint) { this._curves.set(key, String(hint).toLowerCase()); return this._curves.get(key); }
     if (this._curves.has(key)) return this._curves.get(key);
-    const f = new Contract(this.d.factoryAddress(), FACTORY_ABI, this.provider);
-    const r = await f.getLaunchedToken(instrument);
-    const curve = String(r.curve || r[1] || "").toLowerCase();
-    if (!curve || /^0x0+$/.test(curve)) return null;
-    this._curves.set(key, curve);
-    return curve;
+    // Each factory on the chain in turn, home first: the one that knows the token names its curve.
+    // A factory that reverts speaks a different protocol; one answering zero does not know it.
+    for (const { address } of this.d.factories()) {
+      let r;
+      try { r = await new Contract(address, FACTORY_ABI, this.provider).getLaunchedToken(instrument); } catch { continue; }
+      const curve = String(r.curve || r[1] || "").toLowerCase();
+      if (!curve || /^0x0+$/.test(curve)) continue;
+      this._curves.set(key, curve);
+      return curve;
+    }
+    return null;
   }
 
   /** What the curve says right now: reserves and fees for the quote, graduated for the refusal. */

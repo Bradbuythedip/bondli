@@ -24,9 +24,11 @@ function withFactory(fn) {
   try { return fn(); } finally { if (before == null) delete process.env.INK_LAUNCHPAD_FACTORY; else process.env.INK_LAUNCHPAD_FACTORY = before; }
 }
 function withoutFactory(fn) {
-  const before = process.env.INK_LAUNCHPAD_FACTORY;
-  delete process.env.INK_LAUNCHPAD_FACTORY;
-  try { return fn(); } finally { if (before != null) process.env.INK_LAUNCHPAD_FACTORY = before; }
+  // Every source cleared, not just ours: the venue is configured the moment ANY launchpad on the
+  // chain is named, so a stray HOOKIT_FACTORY in the environment would make this test pass wrongly.
+  const before = {};
+  for (const k of ["INK_LAUNCHPAD_FACTORY", "HOOKIT_FACTORY", "INK_EXTRA_FACTORIES"]) { before[k] = process.env[k]; delete process.env[k]; }
+  try { return fn(); } finally { for (const [k, v] of Object.entries(before)) { if (v != null) process.env[k] = v; } }
 }
 
 test("the Ink routers are the curve routers, bound to Ink", () => {
@@ -47,8 +49,8 @@ test("the Ink routers are the curve routers, bound to Ink", () => {
 test("a live router refuses to start against a launchpad that is not deployed", async () => {
   await withoutFactory(async () => {
     const r = new InkLiveRouter({ secret: KEY });
-    await assert.rejects(() => r.init(), /no launchpad factory configured \(set INK_LAUNCHPAD_FACTORY\)/,
-      "without this every order is built at an address with no code and comes back a revert");
+    await assert.rejects(() => r.init(), /no launchpad factory configured \(set INK_LAUNCHPAD_FACTORY or HOOKIT_FACTORY\)/,
+      "without this every order is built at an address with no code and comes back a revert — and the refusal names every variable that would fix it");
     assert.equal(r.ready, false);
   });
   // A missing key is still its own error, named for the variable that fixes it.
