@@ -4,7 +4,9 @@
 
 import { createHash } from "node:crypto";
 
-export const VENUES = Object.freeze(["pumpfun", "pons", "arc", "polymarket", "perps"]);
+// "ink" joined when the venue did (t49); a feed emitting under a venue this list does not know
+// throws on its first event, which is how the gap was found — by a test, not by a silent launch.
+export const VENUES = Object.freeze(["pumpfun", "pons", "arc", "ink", "polymarket", "perps"]);
 export const EVENT_KINDS = Object.freeze([
   "candidate",   // an instrument worth running through the decision pipeline
   "tick",        // price/mark update for an instrument (drives exits)

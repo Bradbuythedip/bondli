@@ -47,6 +47,8 @@ import { RevivalTracker, revivalFilter } from "./revival.mjs";
 import { tagFor } from "./verdict-tag.mjs";
 import { AGGRESSION as VELOCITY_AGGRESSION } from "../velocity/venues/pumpfun/edge.mjs";
 import { PonsFeed, ethersRpc as ponsRpc } from "../velocity/venues/pons/feed.mjs";
+import { InkFeed } from "../velocity/venues/ink/feed.mjs";
+import { INK } from "../velocity/venues/ink/chain.mjs";
 import { LaunchStore } from "./launch.mjs";
 import { LaunchTrend } from "./launch-trend.mjs";
 import { DEFAULT_RPC_URL as PONS_DEFAULT_RPC, CHAIN_ID as PONS_CHAIN_ID } from "../velocity/venues/pons/chain.mjs";
@@ -11684,15 +11686,22 @@ if (process.env.VELOCITY_HOSTED === "1") {
         arcIntel.onTrade({ mint: t.ca, wallet: tr.wallet, isBuy: tr.side === "buy", sol: tr.quote, tokens: tr.tokens, ts: tr.ts, slot: null, signature: tr.tx, mcapUsd: t.mcapUsd || null });
         if (t.mcapUsd > 0) arcIntel.markMcap(t.ca, t.mcapUsd, tr.ts);
       } }) : null;
+  // Ink: bondli's own launchpad and hookit.fun, watched by one radar. The feed only exists when a
+  // launchpad is actually named (INK_LAUNCHPAD_FACTORY or HOOKIT_FACTORY) — a radar with no factory
+  // to watch would poll an empty filter forever, and INK.configured() is the same check the hub and
+  // the live router make, so all three agree about whether Ink is real. The ETH price is the same
+  // Coinbase read PONS uses: same quote asset, same number.
+  const inkFeed = process.env.VELOCITY_INK !== "0" && INK.configured() ? new InkFeed({ rpcUrl: process.env.INK_RPC_URL || null, pollMs: parseInt(process.env.INK_POLL_MS || "0") || null, priceFn: ethPriceUsd,
+      onTrade: (t, tr) => radar._revivals.noteTrade(t.ca, { side: tr.side, sol: tr.quote, wallet: tr.wallet, curvePct: tr.curvePct, ts: tr.ts }) }) : null;
   velocityHub = new VelocityHub({
-    feed: hubFeed, ponsFeed, arcFeed, onUsers: (n) => activity.note(n), platformEvmWallet: /^0x[0-9a-fA-F]{40}$/.test(process.env.PLATFORM_EVM_WALLET || "") ? process.env.PLATFORM_EVM_WALLET : null,
+    feed: hubFeed, ponsFeed, arcFeed, inkFeed, onUsers: (n) => activity.note(n), platformEvmWallet: /^0x[0-9a-fA-F]{40}$/.test(process.env.PLATFORM_EVM_WALLET || "") ? process.env.PLATFORM_EVM_WALLET : null,
     rootDir: path.resolve(process.env.VELOCITY_DATA_DIR || "data/velocity/users"), platformWallet: process.env.PLATFORM_WALLET || null, rpcUrl: RPC_URL,
     fee: { calculateFee, resolveTier, recordTradeOutcome, recordGlobalFee, getUser, isOwnerWallet },
     feePct: process.env.VELOCITY_FEE_PCT != null ? Number(process.env.VELOCITY_FEE_PCT) : 5,
   });
   // The three feeds run only while someone is trading. A feed restarted after idling reads from
   // the chain's head, not from the block it stopped at, so nothing is replayed as new.
-  const feeds = [["radar", hubFeed], ["Robinhood Chain (PONS)", ponsFeed], ["Arc (Argus)", arcFeed]].filter(([, f]) => f);
+  const feeds = [["radar", hubFeed], ["Robinhood Chain (PONS)", ponsFeed], ["Arc (Argus)", arcFeed], ["Ink", inkFeed]].filter(([, f]) => f);
   activity.on((active) => {
     for (const [name, f] of feeds) {
       if (active && !f.running) f.start().then(() => console.log(`[VELOCITY-HUB] ${name} feed started`)).catch(e => console.error(`[VELOCITY-HUB] ${name} feed failed to start:`, e.message));

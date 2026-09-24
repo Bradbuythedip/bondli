@@ -101,13 +101,18 @@ export function ethersRpc(deployment, rpcUrl = null) {
       }
       return null;
     },
-    /** A launch the feed did not see (it happened before this process started): ask the factory. */
+    /** A launch the feed did not see (it happened before this process started): ask each factory on
+     *  the chain in turn. One that reverts speaks a different protocol and says nothing about the
+     *  token; one that answers the zero address does not know it. Home is asked first. */
     async launchInfo(token) {
-      const f = new Contract(deployment.factoryAddress(), FACTORY_ABI, provider);
-      const r = await f.getLaunchedToken(token);
-      const curve = String(r.curve || r[1] || "").toLowerCase();
-      if (!curve || /^0x0+$/.test(curve)) return null;
-      return { token: String(token).toLowerCase(), curve, deployer: String(r.deployer || r[2] || "").toLowerCase(), pairToken: String(r.pairToken || r[3] || "").toLowerCase(), graduationThreshold: toEth(r.graduationThreshold ?? r[5] ?? 0n), graduated: !!(r.graduated ?? r[6]) };
+      for (const { name, address } of deployment.factories()) {
+        let r;
+        try { r = await new Contract(address, FACTORY_ABI, provider).getLaunchedToken(token); } catch { continue; }
+        const curve = String(r.curve || r[1] || "").toLowerCase();
+        if (!curve || /^0x0+$/.test(curve)) continue;
+        return { token: String(token).toLowerCase(), curve, deployer: String(r.deployer || r[2] || "").toLowerCase(), pairToken: String(r.pairToken || r[3] || "").toLowerCase(), graduationThreshold: toEth(r.graduationThreshold ?? r[5] ?? 0n), graduated: !!(r.graduated ?? r[6]), launchpad: name };
+      }
+      return null;
     },
   };
 }
@@ -327,7 +332,9 @@ export class CurveFeed extends Feed {
     // exactly when a frozen price must not stand in for a live one.
     if (head < this._block) { await this._adoptWatched(now); await this._tickHeld(now); this.touch(); return 0; }
     const from = this._block, to = Math.min(head, from + 2000);
-    const launches = await this.rpc.logs({ address: this.d.factoryAddress(), topics: [[TOPICS.TokenLaunched, TOPICS.PoolGraduated]], fromBlock: from, toBlock: to });
+    // Every launchpad on the chain in one read: getLogs takes a list of addresses, and a factory
+    // that emits a different event contributes logs that decode to nothing rather than lies.
+    const launches = await this.rpc.logs({ address: this.d.factories().map(f => f.address), topics: [[TOPICS.TokenLaunched, TOPICS.PoolGraduated]], fromBlock: from, toBlock: to });
     for (const l of launches) { const r = decodeLog(l); if (r?.kind === "launch") this.apply(r, now); else if (r?.kind === "graduated") { const t = this.tokens.get(r.token); if (t) { t.graduated = true; t._curvePct = 1; } } }
     await this._adoptWatched(now);
     const curves = [...this.byCurve.keys()];

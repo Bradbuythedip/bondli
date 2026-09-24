@@ -21,6 +21,8 @@ export function makeDeployment({
   explorer,
   factory = null,        // null when this chain has no deployment yet
   factoryEnv = null,     // ...and the variable that supplies one
+  extraSources = [],     // other launchpads on this chain: () => ({ name, address } | null), each with .env naming its variable
+  extraFactoriesEnv = null, // ad-hoc extras: "name=0x...,name2=0x..." for launchpads nobody wrote a module for
   launchAndBuy = null,
   memeHook = null,
   tokenSupply = 1_000_000_000,
@@ -35,7 +37,7 @@ export function makeDeployment({
   const d = {
     venue, chainId, chainName: chainName || venue, rpcEnv, secretEnv: secretEnv || `${String(venue).toUpperCase()}_PRIVATE_KEY`, defaultRpcUrl, explorer,
     factory: factory ? factory.toLowerCase() : null, factoryEnv, launchAndBuy, memeHook,
-    tokenSupply, quoteSymbol, blockMs,
+    tokenSupply, quoteSymbol, blockMs, extraSources, extraFactoriesEnv,
   };
 
   /** The factory, from the environment if this chain's address is not compiled in. */
@@ -47,9 +49,45 @@ export function makeDeployment({
     }
     return d.factory;
   };
+  /**
+   * Every launchpad this venue watches on its chain, home first: [{ name, address }].
+   *
+   * One chain can carry several deployments of the curve protocol — bondli's own launchpad and
+   * hookit.fun both live on Ink — and a radar that watched only the home factory would be blind to
+   * every launch on the others. The list is validated the way the home factory is: a malformed
+   * address in any source throws rather than reading as "that launchpad is not there", because a
+   * typo in an env var is the difference between trading a venue and not.
+   *
+   * Compatibility is self-verifying downstream, not asserted here: a factory that does not emit the
+   * protocol's TokenLaunched produces no launches (its logs decode to nothing), and a token whose
+   * curve does not answer the protocol's reads never becomes a candidate. A wrong entry in this
+   * list yields silence, never a fabricated market.
+   */
+  d.factories = () => {
+    const out = [];
+    const push = (name, address) => {
+      if (!address) return;
+      if (!ADDRESS.test(address)) throw new Error(`${d.venue}: ${name} factory ${address} is not an address`);
+      const a = address.toLowerCase();
+      if (!out.some(f => f.address === a)) out.push({ name, address: a });
+    };
+    push("home", d.factoryAddress());
+    for (const source of d.extraSources) {
+      const r = source();
+      if (r) push(r.name, r.address);
+    }
+    const adhoc = d.extraFactoriesEnv ? process.env[d.extraFactoriesEnv] : null;
+    if (adhoc) for (const pair of adhoc.split(",")) {
+      const [name, address] = pair.split("=").map(x => x?.trim());
+      push(name || "extra", address);
+    }
+    return out;
+  };
+  /** What an operator sets to bring this venue up, for the refusal that names it. */
+  d.configureHint = () => [d.factoryEnv, ...d.extraSources.map(s => s.env)].filter(Boolean).join(" or ");
   /** Whether this venue can trade at all. Read before going live, not at import. */
   d.configured = () => {
-    try { return !!d.factoryAddress(); } catch { return false; }
+    try { return d.factories().length > 0; } catch { return false; }
   };
   d.rpcUrl = () => (d.rpcEnv && process.env[d.rpcEnv]) || d.defaultRpcUrl;
   d.network = () => ({ chainId: d.chainId, name: d.chainName });

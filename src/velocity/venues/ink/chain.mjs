@@ -294,6 +294,7 @@ export const NEEDS_VERIFIED_SOURCE = Object.freeze([
 // against an address with no code and report them as reverts. INK_LAUNCHPAD_FACTORY supplies it,
 // and until it does, deployment.configured() is false and the venue cannot go live.
 import { makeDeployment } from "../curve/deployment.mjs";
+import { hookitSource } from "./hookit.mjs";
 
 export const INK = makeDeployment({
   venue: "ink",
@@ -304,6 +305,13 @@ export const INK = makeDeployment({
   explorer: EXPLORER,
   factory: null,
   factoryEnv: "INK_LAUNCHPAD_FACTORY",
+  // Ink carries more than one launchpad. hookit.fun is the first extra source the radar watches
+  // (./hookit.mjs — its factory arrives via HOOKIT_FACTORY, read off verified source by the
+  // operator), and INK_EXTRA_FACTORIES takes "name=0x..." pairs for any launchpad nobody has
+  // written a module for yet. The venue is configured the moment ANY of them is set: someone can
+  // trade hookit launches before our own launchpad is deployed there.
+  extraSources: [hookitSource],
+  extraFactoriesEnv: "INK_EXTRA_FACTORIES",
   // The launch config's own supply. bondli's launchpad takes it as a constructor argument rather
   // than fixing it the way PONS does, so a deployment that mints a different number must say so
   // here or every market cap it reports is wrong by exactly that ratio.
